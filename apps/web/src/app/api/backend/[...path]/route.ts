@@ -1,13 +1,34 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// "v1/" allows the Agent Studio router through: verified against the real
-// backend commit renaming its router prefix to `/v1/agent-studio`, mounted
-// at the FastAPI app root (not nested under the `/api` prefix every other
-// feature router uses) — see the Round 8 history entry in `lib/api.ts`.
-const ALLOWED_PREFIXES = ["api/", "v1/", "health", "ready"];
+// Only "api/" (every other feature router), the exact "v1/agent-studio"
+// namespace (verified against the real backend commit renaming its router
+// prefix to `/v1/agent-studio`, mounted at the FastAPI app root — see the
+// Round 8 history entry in `lib/api.ts`), and the two health-check paths
+// may reach the backend. A bare "v1/" prefix was too broad: it would also
+// forward any *other* future `/v1/...` router the backend adds before this
+// proxy is updated to know about it, which is a real security hardening
+// gap, not just a style nit — an allowlist proxy must allowlist the exact
+// namespace it was reviewed for, not a whole version segment.
+const EXACT_ALLOWED_PATHS = ["health", "ready"];
+const ALLOWED_PREFIXES = ["api/"];
+const AGENT_STUDIO_PATH = "v1/agent-studio";
 const MAX_PROXY_BODY_BYTES = 21_000_000;
 
 class PayloadTooLargeError extends Error {}
+
+function isAllowedPath(joined: string): boolean {
+  if (EXACT_ALLOWED_PATHS.includes(joined)) return true;
+  if (ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix))) {
+    return true;
+  }
+  // Boundary-aware match: allow the exact namespace root and any real
+  // subpath under it, but not a same-prefix-collision sibling like
+  // "v1/agent-studio-admin" or an unrelated "v1/other" router.
+  return (
+    joined === AGENT_STUDIO_PATH ||
+    joined.startsWith(`${AGENT_STUDIO_PATH}/`)
+  );
+}
 
 function boundedBody(
   body: ReadableStream<Uint8Array> | null,
@@ -29,16 +50,13 @@ function boundedBody(
   );
 }
 
-function resolveBackendUrl(path: string[]): URL {
+function resolveBackendUrl(path: string[], search: string): URL {
   const joined = path.join("/");
-  if (
-    joined.includes("..") ||
-    !ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix))
-  ) {
+  if (joined.includes("..") || !isAllowedPath(joined)) {
     throw new Error("Backend route is not allowlisted");
   }
   const base = process.env.INTERNAL_API_URL ?? "http://127.0.0.1:8000";
-  return new URL(joined, `${base.replace(/\/$/, "")}/`);
+  return new URL(`${joined}${search}`, `${base.replace(/\/$/, "")}/`);
 }
 
 async function proxy(
@@ -49,7 +67,7 @@ async function proxy(
     request.headers.get("X-Request-ID") ?? crypto.randomUUID();
   try {
     const { path } = await context.params;
-    const url = resolveBackendUrl(path);
+    const url = resolveBackendUrl(path, request.nextUrl.search);
     const contentLength = Number(request.headers.get("Content-Length") ?? "0");
     if (contentLength > MAX_PROXY_BODY_BYTES) {
       throw new PayloadTooLargeError(
