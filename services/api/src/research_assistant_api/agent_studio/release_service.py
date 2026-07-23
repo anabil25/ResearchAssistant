@@ -38,6 +38,7 @@ from research_assistant_api.agent_studio.models import (
     AgentVisibility,
     ApprovalKind,
     ApprovalState,
+    CapabilityVersionPin,
     DeploymentEnvironment,
     HealthStatus,
     LineageEdge,
@@ -376,9 +377,18 @@ class ReleaseService:
         parent_version_id = previous_versions[-1].id if previous_versions else None
 
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
-        capability_versions = {
-            binding.descriptor_ref.id: binding.descriptor_ref.version for binding in draft.manifest.capabilities
-        }
+        capability_versions = tuple(
+            CapabilityVersionPin(
+                binding_id=binding.binding_id,
+                descriptor_ref=binding.descriptor_ref,
+                operation_ref=binding.operation_ref,
+                instance_ref=binding.instance_ref,
+                configuration_ref=binding.configuration_ref,
+                connection_ref=binding.connection_ref,
+                policy_ref=binding.policy_ref,
+            )
+            for binding in draft.manifest.capabilities
+        )
 
         def _build(sequence: int) -> AgentVersion:
             # Cutting a version freezes the canonical manifest/hash/bundle

@@ -476,6 +476,15 @@ class CapabilityBinding(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    #: Stable identifier for *this* attachment, generated once at attach
+    #: time and preserved verbatim through drafts/cut versions. Distinct
+    #: from every other ref's ``id`` (which name catalog/instance/config
+    #: entities): this names the binding itself, so a future workflow
+    #: compiler (or ``AgentVersion.capability_versions``, below) can key
+    #: an exact, non-lossy pin per binding even when a manifest attaches
+    #: the same descriptor+operation more than once against different
+    #: instances/configs.
+    binding_id: str = Field(default_factory=lambda: str(uuid4()))
     provider_contract_version: str = Field(min_length=1, max_length=80)
     descriptor_ref: CapabilityDescriptorRef
     operation_ref: CapabilityOperationRef
@@ -488,6 +497,32 @@ class CapabilityBinding(BaseModel):
     config: dict[str, Any] = Field(default_factory=dict)
     attached_by: str = Field(min_length=1, max_length=200)
     attached_at: datetime = Field(default_factory=utc_now)
+
+
+class CapabilityVersionPin(BaseModel):
+    """Full, non-lossy version-pin record for one attached ``CapabilityBinding``.
+
+    Replaces a former ``dict[str, str]`` keyed only by ``descriptor_ref.id``
+    (review finding #8): that shape silently collapsed multiple bindings
+    of the same descriptor (different operations and/or instances) into a
+    single overwritten entry, and discarded every pin except the
+    descriptor version string. This is copied verbatim from the manifest's
+    ``CapabilityBinding`` at cut time (see ``release_service.cut_version``)
+    so a future workflow compiler, or any other downstream consumer of
+    ``AgentVersion.capability_versions`` / ``ResolvedAgentContract``, always
+    receives the exact ordered list of canonical pins for every binding —
+    never a summarized map.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    binding_id: str
+    descriptor_ref: CapabilityDescriptorRef
+    operation_ref: CapabilityOperationRef
+    instance_ref: CapabilityInstanceRef | None = None
+    configuration_ref: CapabilityConfigurationRef = Field(default_factory=CapabilityConfigurationRef)
+    connection_ref: CapabilityConnectionRef | None = None
+    policy_ref: CapabilityPolicyRef | None = None
 
 
 class ToolRegistrationKind(StrEnum):
@@ -962,7 +997,10 @@ class AgentVersion(BaseModel):
     runtime_target: RuntimeTarget | None = None
     runtime_selection_reasons: tuple[str, ...] = Field(default_factory=tuple)
     model_deployment: ModelDeploymentRef | None = None
-    capability_versions: dict[str, str] = Field(default_factory=dict)
+    #: One ``CapabilityVersionPin`` per attached ``CapabilityBinding`` at
+    #: cut time, in manifest attachment order — never a dict keyed by
+    #: descriptor id (see ``CapabilityVersionPin`` docstring for why).
+    capability_versions: tuple[CapabilityVersionPin, ...] = Field(default_factory=tuple)
     artifact_metadata: ReleaseArtifactMetadata = Field(default_factory=ReleaseArtifactMetadata)
     protocol_version: str = Field(default=AGENT_STUDIO_PROTOCOL_VERSION)
 
@@ -1043,7 +1081,10 @@ class ResolvedAgentContract(BaseModel):
     release_status: ReleaseStatus
     manifest_hash: str
     runtime_target: RuntimeTarget
-    capability_versions: dict[str, str] = Field(default_factory=dict)
+    #: Copied verbatim from the resolved ``AgentVersion.capability_versions``
+    #: — see ``CapabilityVersionPin`` for why this is an ordered tuple of
+    #: full pins, never a lossy ``dict[str, str]``.
+    capability_versions: tuple[CapabilityVersionPin, ...] = Field(default_factory=tuple)
     input_schema_ref: SchemaRef | None = None
     output_schema_ref: SchemaRef | None = None
     artifact_metadata: ReleaseArtifactMetadata

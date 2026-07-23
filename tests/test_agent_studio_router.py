@@ -1728,7 +1728,9 @@ def test_resolve_contract_and_catalog_routes_cover_full_happy_path(
     assert resolved["version_id"] == contract_version["id"]
     assert resolved["release_status"] == ReleaseStatus.ACTIVE.value
     assert resolved["runtime_target"] == "managed_foundry"
-    assert resolved["capability_versions"] == {"foundry.web_search": "1"}
+    assert resolved["capability_versions"][0]["descriptor_ref"]["id"] == "foundry.web_search"
+    assert resolved["capability_versions"][0]["operation_ref"]["id"] == "search"
+    assert resolved["capability_versions"][0]["binding_id"]
     assert resolved["input_schema_ref"]["ref"] == "schema://contract-input"
 
     exact_contract_response = client.get(

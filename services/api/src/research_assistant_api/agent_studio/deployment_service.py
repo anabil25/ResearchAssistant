@@ -369,7 +369,7 @@ class DeploymentService:
             release_status=release.status,
             manifest_hash=version.manifest_hash,
             runtime_target=version.runtime_target,
-            capability_versions=dict(version.capability_versions),
+            capability_versions=version.capability_versions,
             input_schema_ref=version.manifest.input_schema_ref,
             output_schema_ref=version.manifest.output_schema_ref,
             artifact_metadata=version.artifact_metadata,

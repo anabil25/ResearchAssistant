@@ -28,6 +28,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
     CapabilityDescriptorRef,
     CapabilityOperationRef,
+    CapabilityVersionPin,
     DeploymentEnvironment,
     HealthStatus,
     LogicalAgentBinding,
@@ -138,9 +139,18 @@ class ReleaseServiceHarness:
         previous_versions = self._store.list_versions(scope, logical_agent_id)
         parent_version_id = previous_versions[-1].id if previous_versions else None
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
-        capability_versions = {
-            binding.descriptor_ref.id: binding.descriptor_ref.version for binding in draft.manifest.capabilities
-        }
+        capability_versions = tuple(
+            CapabilityVersionPin(
+                binding_id=binding.binding_id,
+                descriptor_ref=binding.descriptor_ref,
+                operation_ref=binding.operation_ref,
+                instance_ref=binding.instance_ref,
+                configuration_ref=binding.configuration_ref,
+                connection_ref=binding.connection_ref,
+                policy_ref=binding.policy_ref,
+            )
+            for binding in draft.manifest.capabilities
+        )
         return self._store.allocate_version(
             scope,
             logical_agent_id,
@@ -932,7 +942,8 @@ def test_resolve_returns_full_contract_for_bound_version(
     assert resolved.release_status is ReleaseStatus.ACTIVE
     assert resolved.manifest_hash == version.manifest_hash
     assert resolved.runtime_target == version.runtime_target
-    assert resolved.capability_versions == {"foundry.web_search": "1"}
+    assert resolved.capability_versions[0].descriptor_ref.id == "foundry.web_search"
+    assert resolved.capability_versions[0].operation_ref.id == "search"
     assert resolved.input_schema_ref == input_schema
     assert resolved.output_schema_ref == output_schema
     assert resolved.artifact_metadata == version.artifact_metadata

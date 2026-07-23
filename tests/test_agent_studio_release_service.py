@@ -36,6 +36,7 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ApprovalState,
     CapabilityDescriptor,
+    CapabilityInstance,
     DeploymentEnvironment,
     DeploymentHealth,
     DeploymentRecord,
@@ -44,6 +45,7 @@ from research_assistant_api.agent_studio.models import (
     GateResult,
     GateStatus,
     HealthStatus,
+    InstanceReadiness,
     ModelDeploymentRef,
     OwnershipGrant,
     ReleaseGateReport,
@@ -716,11 +718,89 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     assert version.manifest_hash == manifest_hash(updated_manifest)
     assert version.runtime_target is RuntimeTarget.MANAGED_FOUNDRY
     assert version.model_deployment == updated_manifest.model_deployment
-    assert version.capability_versions == {"foundry.web_search": "1"}
+    assert len(version.capability_versions) == 1
+    assert version.capability_versions[0].descriptor_ref.id == "foundry.web_search"
+    assert version.capability_versions[0].operation_ref.id == "search"
+    assert version.capability_versions[0].binding_id == binding.binding_id
     assert version.artifact_metadata.package_versions
     assert version.artifact_metadata.lock_digest is not None
     assert version.artifact_metadata.lock_digest.startswith("sha256:")
     assert version.protocol_version == AGENT_STUDIO_PROTOCOL_VERSION
+
+
+def test_cut_version_capability_versions_preserves_distinct_bindings_for_same_descriptor(
+    service: ReleaseService,
+) -> None:
+    """Finding #8 regression: two bindings attaching the *same* descriptor
+
+    via different discovered instances must both survive onto
+    ``AgentVersion.capability_versions`` as distinct ``CapabilityVersionPin``
+    entries. The former ``dict[str, str]`` keyed only by
+    ``descriptor_ref.id`` silently collapsed this case to a single,
+    last-write-wins entry -- a future workflow compiler (or any other
+    consumer) must instead see the exact, non-lossy pinned list.
+    """
+    _create_agent(service, logical_agent_id="agent-multi-binding")
+    draft = service._store.get_draft(_scope(), "agent-multi-binding")
+    assert draft is not None
+
+    instance_a = service._registry.register_instance(
+        CapabilityInstance(
+            id="instance-a",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            descriptor_id="foundry.web_search",
+            readiness=InstanceReadiness.READY,
+            registered_by="user-1",
+        )
+    )
+    instance_b = service._registry.register_instance(
+        CapabilityInstance(
+            id="instance-b",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            descriptor_id="foundry.web_search",
+            readiness=InstanceReadiness.READY,
+            registered_by="user-1",
+        )
+    )
+    binding_a = service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance_a.id,
+    )
+    binding_b = service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance_b.id,
+    )
+    assert binding_a.binding_id != binding_b.binding_id
+
+    service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-multi-binding",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding_a, binding_b)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+        expected_etag=draft.etag,
+    )
+
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-multi-binding",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert len(version.capability_versions) == 2
+    pinned_binding_ids = {pin.binding_id for pin in version.capability_versions}
+    assert pinned_binding_ids == {binding_a.binding_id, binding_b.binding_id}
+    pinned_instance_ids = {pin.instance_ref.id for pin in version.capability_versions if pin.instance_ref is not None}
+    assert pinned_instance_ids == {"instance-a", "instance-b"}
 
 
 def test_cut_version_sets_sequence_parent_and_fork_lineage_once(service: ReleaseService) -> None:

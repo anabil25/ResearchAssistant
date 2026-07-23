@@ -27,6 +27,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityOperation,
     CapabilityOperationRef,
     CapabilityPolicyRef,
+    CapabilityVersionPin,
     CitationPolicy,
     DelegationScope,
     DeploymentEnvironment,
@@ -329,7 +330,17 @@ def test_related_models_construct_and_default_factories_execute() -> None:
             model_name="gpt-4o",
             model_format="openai",
         ),
-        capability_versions={"foundry.azure_ai_search": "7"},
+        capability_versions=(
+            CapabilityVersionPin(
+                binding_id=manifest.capabilities[0].binding_id,
+                descriptor_ref=manifest.capabilities[0].descriptor_ref,
+                operation_ref=manifest.capabilities[0].operation_ref,
+                instance_ref=manifest.capabilities[0].instance_ref,
+                configuration_ref=manifest.capabilities[0].configuration_ref,
+                connection_ref=manifest.capabilities[0].connection_ref,
+                policy_ref=manifest.capabilities[0].policy_ref,
+            ),
+        ),
     )
     release = AgentRelease(
         id="release-1",
