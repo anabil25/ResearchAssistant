@@ -492,7 +492,7 @@ export function AgentRegistryView({ data, onOpenAgent }: AgentRegistryProps) {
       {catalogError ? (
         <AsyncStateBanner
           kind="unavailable"
-          message="The Agent Studio catalog (/v1/agent-studio/agents) isn't available yet — showing a legacy summary built from /agents. Purpose and boundary text will populate once that endpoint ships."
+          message="The Agent Studio catalog (/agent-studio/agents) isn't available yet — showing a legacy summary built from /agents. Purpose and boundary text will populate once that endpoint ships."
         />
       ) : null}
 

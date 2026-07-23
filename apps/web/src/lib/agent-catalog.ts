@@ -47,7 +47,7 @@ export function getAgentCapability(agentId: string): CapabilityId | null {
 /**
  * Builds the Registry's "legacy summary" fallback view directly from the
  * real `/api/agents` response (`AgentSetting[]`) — the only source used
- * until `/v1/agent-studio/agents` exists and becomes authoritative. Every
+ * until `/agent-studio/agents` exists and becomes authoritative. Every
  * field `AgentSetting` doesn't carry (purpose, boundary narrative,
  * capability descriptors, releases, etc.) is left `null`/absent here so the
  * UI renders an explicit "Not available yet" rather than fabricated copy.

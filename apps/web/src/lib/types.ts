@@ -76,14 +76,18 @@ export type ResearchResult = Omit<
 };
 
 // ---------------------------------------------------------------------------
-// Agent Studio contract — PENDING BACKEND, target namespace `/v1/agent-studio`.
+// Agent Studio contract — PENDING BACKEND, target namespace `/agent-studio`
+// (updated per the coordinating session's report that the backend's actual
+// routing convention is `/api/agent-studio/...`, not the earlier proposed
+// `/v1/agent-studio` version prefix; not yet final — see `lib/api.ts` for
+// the single choke-point helper this is centralized behind).
 //
 // `packages/contracts/openapi.json` only defines `AgentSetting` today (id,
 // name, deployment, model_tier, status, web_access, workflow_steps). The
 // types below are UI-facing READ MODELS — not a reduced mirror of a backend
 // `AgentManifest` row — reconciled with the coordinating "Workflow page
-// redesign" session across two rounds of contract alignment. When the
-// backend ships generated OpenAPI types for `/v1/agent-studio/**`,
+// redesign" session across multiple rounds of contract alignment. When the
+// backend ships generated OpenAPI types for `/agent-studio/**`,
 // `lib/api.ts` should adapt those into these same read models rather than
 // changing every consuming component; that boundary is the point of keeping
 // this as a distinct layer instead of passing a raw manifest through.
@@ -182,7 +186,7 @@ export function isCapabilityApprovalActive(
 /**
  * Provider-driven catalog entry for a capability family + operation.
  * Immutable operation semantics/governance — fetched from
- * `GET /v1/agent-studio/capabilities/descriptors`. `digest` content-addresses
+ * `GET /agent-studio/capabilities/descriptors`. `digest` content-addresses
  * this descriptor's semantics/governance so a binding's pinned reference can
  * be checked for drift.
  */
@@ -198,7 +202,7 @@ export interface CapabilityDescriptor {
 
 /**
  * A concrete, tenant/workspace-scoped discovered deployment of a descriptor
- * — fetched from `GET /v1/agent-studio/capabilities/instances`. Never
+ * — fetched from `GET /agent-studio/capabilities/instances`. Never
  * carries secrets/credentials. `fingerprint` is this instance's own live
  * configuration/version fingerprint, compared against a binding's pinned
  * `instance_fingerprint` to detect drift.
@@ -219,7 +223,7 @@ export interface CapabilityInstance {
 }
 
 /**
- * Aggregate response shape for `GET /v1/agent-studio/capabilities/discovery`
+ * Aggregate response shape for `GET /agent-studio/capabilities/discovery`
  * — a single-request convenience read combining the descriptor and instance
  * catalogs for one UI load. `getCapabilityDescriptors`/`getCapabilityInstances`
  * remain the canonical per-resource reads; this is a derived/expanded read,
@@ -550,7 +554,7 @@ export interface AgentSummary {
   discovered_project_model: string | null;
   public_boundary: PublicBoundaryView;
   capability: CapabilityId | null;
-  /** `"legacy_agents_endpoint"` until `/v1/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
+  /** `"legacy_agents_endpoint"` until `/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
   source: "agent_studio" | "legacy_agents_endpoint";
 }
 

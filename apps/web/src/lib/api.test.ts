@@ -57,7 +57,7 @@ describe("apiFetch / ApiError", () => {
     fetchMock.mockResolvedValue(jsonResponse({ hello: "world" }));
     await expect(getAgentStudioCatalog()).resolves.toEqual({ hello: "world" });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents",
+      "/api/backend/api/agent-studio/agents",
       expect.objectContaining({
         headers: expect.objectContaining({ "Content-Type": "application/json" }),
       }),
@@ -275,7 +275,7 @@ describe("legacy workspace + studio + connector + settings + library endpoints",
   });
 });
 
-describe("agent studio endpoints (/v1/agent-studio/...)", () => {
+describe("agent studio endpoints (/agent-studio/...)", () => {
   let fetchMock: jest.Mock;
 
   beforeEach(() => {
@@ -286,7 +286,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the released-agent catalog", async () => {
     await getAgentStudioCatalog();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents",
+      "/api/backend/api/agent-studio/agents",
       expect.anything(),
     );
   });
@@ -294,7 +294,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets one exact release contract by version", async () => {
     await getAgentRelease("literature", "1.2.0");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/releases/1.2.0",
+      "/api/backend/api/agent-studio/agents/literature/releases/1.2.0",
       expect.anything(),
     );
   });
@@ -302,7 +302,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the full release history for an agent", async () => {
     await getAgentReleases("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/releases",
+      "/api/backend/api/agent-studio/agents/literature/releases",
       expect.anything(),
     );
   });
@@ -310,7 +310,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the mutable draft contract", async () => {
     await getAgentDraft("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/draft",
+      "/api/backend/api/agent-studio/agents/literature/draft",
       expect.anything(),
     );
   });
@@ -318,7 +318,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the capability descriptor catalog", async () => {
     await getCapabilityDescriptors();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/capabilities/descriptors",
+      "/api/backend/api/agent-studio/capabilities/descriptors",
       expect.anything(),
     );
   });
@@ -326,7 +326,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the discovered capability instance catalog", async () => {
     await getCapabilityInstances();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/capabilities/instances",
+      "/api/backend/api/agent-studio/capabilities/instances",
       expect.anything(),
     );
   });
@@ -334,7 +334,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets the combined capability discovery aggregate", async () => {
     await getCapabilityDiscovery();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/capabilities/discovery",
+      "/api/backend/api/agent-studio/capabilities/discovery",
       expect.anything(),
     );
   });
@@ -342,7 +342,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets discovered project model deployments", async () => {
     await getProjectModels();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/models",
+      "/api/backend/api/agent-studio/models",
       expect.anything(),
     );
   });
@@ -350,7 +350,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's bound connections", async () => {
     await getAgentConnections("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/connections",
+      "/api/backend/api/agent-studio/agents/literature/connections",
       expect.anything(),
     );
   });
@@ -358,7 +358,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's health summary", async () => {
     await getAgentHealth("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/health",
+      "/api/backend/api/agent-studio/agents/literature/health",
       expect.anything(),
     );
   });
@@ -366,7 +366,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's advisory evaluation summary", async () => {
     await getAgentEvaluation("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/evaluation",
+      "/api/backend/api/agent-studio/agents/literature/evaluation",
       expect.anything(),
     );
   });
@@ -374,7 +374,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's deployment status", async () => {
     await getAgentDeployment("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/deployment",
+      "/api/backend/api/agent-studio/agents/literature/deployment",
       expect.anything(),
     );
   });
@@ -382,7 +382,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's recent traces", async () => {
     await getAgentTraces("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/traces",
+      "/api/backend/api/agent-studio/agents/literature/traces",
       expect.anything(),
     );
   });
@@ -390,7 +390,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("gets an agent's per-scope memory view", async () => {
     await getAgentMemory("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/memory",
+      "/api/backend/api/agent-studio/agents/literature/memory",
       expect.anything(),
     );
   });
@@ -401,7 +401,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
       retention_days: 14,
     });
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/memory/conversation",
+      "/api/backend/api/agent-studio/agents/literature/memory/conversation",
       expect.objectContaining({
         method: "PUT",
         body: JSON.stringify({ enabled: true, retention_days: 14 }),
@@ -412,7 +412,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("forgets one memory scope", async () => {
     await forgetAgentMemoryScope("literature", "project");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/memory/project/forget",
+      "/api/backend/api/agent-studio/agents/literature/memory/project/forget",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -420,7 +420,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("posts a builder message with the message and base etag", async () => {
     await postBuilderMessage("draft-1", "add a citation tool", "etag-1");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/drafts/draft-1/builder/messages",
+      "/api/backend/api/agent-studio/drafts/draft-1/builder/messages",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ message: "add a citation tool", base_etag: "etag-1" }),
@@ -431,7 +431,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("applies a builder proposal with the proposal id and base etag", async () => {
     await applyBuilderProposal("draft-1", "proposal-1", "etag-1");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/drafts/draft-1/proposals/proposal-1/apply",
+      "/api/backend/api/agent-studio/drafts/draft-1/proposals/proposal-1/apply",
       expect.objectContaining({
         method: "POST",
         body: JSON.stringify({ base_etag: "etag-1" }),
@@ -443,7 +443,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
     const intent = { kind: "blank" } as unknown as Parameters<typeof createAgentDraft>[0];
     await createAgentDraft(intent);
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/drafts",
+      "/api/backend/api/agent-studio/drafts",
       expect.objectContaining({ method: "POST", body: JSON.stringify(intent) }),
     );
   });
@@ -451,7 +451,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("forks an agent without a version, omitting the query string", async () => {
     await forkAgent("literature");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/fork",
+      "/api/backend/api/agent-studio/agents/literature/fork",
       expect.objectContaining({ method: "POST" }),
     );
   });
@@ -459,7 +459,7 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
   it("forks a specific released version, url-encoding the version", async () => {
     await forkAgent("literature", "1.2.0+build");
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/agents/literature/fork?version=1.2.0%2Bbuild",
+      "/api/backend/api/agent-studio/agents/literature/fork?version=1.2.0%2Bbuild",
       expect.objectContaining({ method: "POST" }),
     );
   });

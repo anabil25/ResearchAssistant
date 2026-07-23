@@ -207,22 +207,21 @@ export async function uploadLibraryItem(
 }
 
 // ---------------------------------------------------------------------------
-// Agent Studio contract — PENDING BACKEND, target namespace `/v1/agent-studio`.
+// Agent Studio contract — PENDING BACKEND, target namespace `/agent-studio`.
 //
 // See the "Agent Studio contract" section in lib/types.ts for the read-model
-// rationale. This section was reconciled 2026-07-23/24 across two rounds
-// with the coordinating "Workflow page redesign" session:
+// rationale. This section was reconciled 2026-07-23/24 across rounds with
+// the coordinating "Workflow page redesign" session:
 //   Round 1 — runtime-neutral manifest direction, capability
 //     Descriptor/Instance/Binding split, risk classes, memory scopes.
 //   Round 2 — replaced the reduced `AgentManifest` idea with distinct UI
 //     read models (AgentSummary/AgentContractView/AgentDraftView/
-//     AgentReleaseSummary/CapabilityView/ConnectionView); retargeted every
-//     endpoint below to `/v1/agent-studio/...`; changed capability maturity
-//     to ga|preview|retired|unknown; made connections/memory/specialists
-//     rich objects; split immutable Release rows from mutable Draft status;
-//     replaced the flat public boundary flag with a structured summary;
-//     replaced free-form manifest-change proposals with a concurrency-safe
-//     (etag) builder-message -> proposal -> apply flow.
+//     AgentReleaseSummary/CapabilityView/ConnectionView); changed capability
+//     maturity to ga|preview|retired|unknown; made connections/memory/
+//     specialists rich objects; split immutable Release rows from mutable
+//     Draft status; replaced the flat public boundary flag with a
+//     structured summary; replaced free-form manifest-change proposals with
+//     a concurrency-safe (etag) builder-message -> proposal -> apply flow.
 //   Round 3 — split the single `/capabilities` read into three canonical
 //     resource shapes: `/capabilities/descriptors` (immutable operation
 //     semantics/governance), `/capabilities/instances` (tenant/workspace-
@@ -235,20 +234,31 @@ export async function uploadLibraryItem(
 //     a full `CapabilityApprovalSummary`) plus a derived
 //     `CapabilityBindingView {binding,resolved_descriptor,resolved_instance,
 //     stale_reason}` for rendering — the view is never the persisted shape.
+//   Round 4 — the sibling session reported the backend's actual routing
+//     convention is `/api/agent-studio/...` (matching every other real
+//     endpoint below `API_BASE`), not the earlier proposed `/v1/agent-studio`
+//     version prefix. Retargeted `agentStudioFetch` accordingly. This path
+//     is still NOT final — the backend hasn't shipped an OpenAPI contract
+//     for this namespace yet, and project-scoping/contract corrections are
+//     still in flight upstream — so every caller must keep treating these
+//     as real, possibly-404ing requests, never a fabricated success.
 //
-// `agentStudioFetch` targets the backend's own `/v1/agent-studio/...` path
-// (relative to its API root) through the same `/api/backend` proxy used
-// everywhere else — the `/api` segment is a proxy-routing detail, not part
-// of the backend's versioned namespace. Every function below issues a real
-// request; until the backend ships these routes they will reject with a
-// real error (404/502) that callers must surface as an explicit unavailable
-// state, never a fabricated success. `getWorkspaceData`'s `/agents` read
-// (AgentSetting[]) remains the one legacy exception, used only to build the
-// `source: "legacy_agents_endpoint"` fallback in `lib/agent-catalog.ts`.
+// `agentStudioFetch` is the single choke point for this namespace: every
+// Agent Studio read/write goes through it, through the same `/api/backend`
+// proxy used everywhere else. That's deliberate — when the backend's final
+// OpenAPI lands, only this one function's path prefix (and the generated
+// types layered underneath `lib/types.ts`) should need to change; no
+// consuming component should ever hard-code an Agent Studio path itself.
+// Every function below issues a real request; until the backend ships these
+// routes they will reject with a real error (404/502) that callers must
+// surface as an explicit unavailable state, never a fabricated success.
+// `getWorkspaceData`'s `/agents` read (AgentSetting[]) remains the one
+// legacy exception, used only to build the `source: "legacy_agents_endpoint"`
+// fallback in `lib/agent-catalog.ts`.
 // ---------------------------------------------------------------------------
 
 async function agentStudioFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  return apiFetch<T>(`/v1/agent-studio${path}`, init);
+  return apiFetch<T>(`/agent-studio${path}`, init);
 }
 
 /** Released-agent catalog/summary — authoritative once this endpoint exists. */
