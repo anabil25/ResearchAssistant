@@ -45,7 +45,7 @@ from research_assistant_api.agent_studio.models import (
 )
 from research_assistant_api.agent_studio.release_service import AuthorizationError, manifest_hash
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore
+from research_assistant_api.agent_studio.store import AgentStudioStore, DraftConflictError
 from research_assistant_api.config import Settings
 
 
@@ -357,7 +357,12 @@ class BuilderService:
                 "etag": new_etag,
             }
         )
-        self._store.save_draft(scope, updated_draft)
+        try:
+            self._store.save_draft(scope, updated_draft, expected_etag=base_etag)
+        except DraftConflictError as exc:
+            raise BuilderConcurrencyError(
+                f"base_etag '{base_etag}' no longer matches the current draft etag; refresh and retry."
+            ) from exc
         decided = proposal.model_copy(
             update={
                 "state": BuilderProposalState.APPLIED,

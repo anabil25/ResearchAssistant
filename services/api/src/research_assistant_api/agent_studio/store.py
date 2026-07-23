@@ -54,6 +54,16 @@ class AgentStudioStoreError(RuntimeError):
     pass
 
 
+class DraftConflictError(AgentStudioStoreError):
+    """Raised when a draft save's ``expected_etag`` no longer matches the
+
+    currently stored draft's ``etag`` -- another writer saved a change in
+    between the caller's read and this write. Callers must re-fetch the
+    latest draft and retry rather than silently clobbering the concurrent
+    edit.
+    """
+
+
 class AgentStudioStore:
     """In-memory Agent Studio metadata store."""
 
@@ -66,7 +76,7 @@ class AgentStudioStore:
         self._versions_by_agent: dict[tuple[str, str], list[str]] = {}
         self._version_lock = threading.Lock()
         self._lineage: list[LineageEdge] = []
-        self._gate_reports: dict[str, ReleaseGateReport] = {}
+        self._gate_reports: dict[tuple[str, str], ReleaseGateReport] = {}
         self._releases: dict[str, AgentRelease] = {}
         self._releases_by_version: dict[str, list[str]] = {}
         self._approvals: dict[str, StudioApprovalRecord] = {}
@@ -94,9 +104,17 @@ class AgentStudioStore:
 
     # -- Drafts -----------------------------------------------------------
 
-    def save_draft(self, scope: ScopeContext, draft: AgentDraft) -> AgentDraft:
+    def save_draft(self, scope: ScopeContext, draft: AgentDraft, *, expected_etag: str | None = None) -> AgentDraft:
         self._require_scope_match(scope, draft.tenant_id, draft.project_id)
-        self._drafts[(scope.scope_key, draft.logical_agent_id)] = draft
+        key = (scope.scope_key, draft.logical_agent_id)
+        if expected_etag is not None:
+            current = self._drafts.get(key)
+            if current is None or current.etag != expected_etag:
+                raise DraftConflictError(
+                    f"Draft '{draft.logical_agent_id}' was modified concurrently; the supplied "
+                    "etag no longer matches the stored draft. Re-fetch and retry."
+                )
+        self._drafts[key] = draft
         return draft
 
     def get_draft(self, scope: ScopeContext, logical_agent_id: str) -> AgentDraft | None:
@@ -217,16 +235,18 @@ class AgentStudioStore:
         )
 
     # -- Gate reports -----------------------------------------------------
-    # Gate reports are keyed by opaque ``version_id``-derived ``id`` only; the
-    # owning version has already been scope-checked by the caller (see
-    # ``release_service``), so no separate scope parameter is threaded here.
+    # Gate reports are project-scoped exactly like every other document:
+    # partitioned by ``scope.scope_key`` and validated against the report's
+    # own declared ``tenant_id``/``project_id`` on write, so a report can
+    # never be filed under (or later read back from) the wrong partition.
 
-    def save_gate_report(self, report: ReleaseGateReport) -> ReleaseGateReport:
-        self._gate_reports[report.id] = report
+    def save_gate_report(self, scope: ScopeContext, report: ReleaseGateReport) -> ReleaseGateReport:
+        self._require_scope_match(scope, report.tenant_id, report.project_id)
+        self._gate_reports[(scope.scope_key, report.id)] = report
         return report
 
-    def get_gate_report(self, report_id: str) -> ReleaseGateReport | None:
-        return self._gate_reports.get(report_id)
+    def get_gate_report(self, scope: ScopeContext, report_id: str) -> ReleaseGateReport | None:
+        return self._gate_reports.get((scope.scope_key, report_id))
 
     # -- Releases (append-only lifecycle for an immutable version) ---------
 

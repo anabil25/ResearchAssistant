@@ -577,6 +577,53 @@ def test_apply_raises_concurrency_error_when_proposal_itself_is_stale() -> None:
         )
 
 
+def test_apply_raises_concurrency_error_when_store_save_draft_races_after_app_level_checks_pass() -> None:
+    """Review finding #6: even when ``apply()``'s own app-level etag checks
+    pass, a true cross-instance race window between its ``get_draft`` read
+    and its ``save_draft`` write must still be caught -- this exercises the
+    store-level ``DraftConflictError`` -> ``BuilderConcurrencyError`` path
+    that ``apply()``'s own pre-checks alone cannot close."""
+
+    class RacyStore(AgentStudioStore):
+        """A store double that simulates another process winning a write
+        race in the gap between ``apply()``'s draft read and its own
+        ``save_draft`` call, even though ``apply()``'s pre-checks passed."""
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.racing = False
+
+        def save_draft(
+            self,
+            scope: ScopeContext,
+            draft: AgentDraft,
+            *,
+            expected_etag: str | None = None,
+        ) -> AgentDraft:
+            if self.racing:
+                key = (scope.scope_key, draft.logical_agent_id)
+                current = self._drafts[key]
+                self._drafts[key] = current.model_copy(update={"etag": "raced-out-by-another-instance"})
+            return super().save_draft(scope, draft, expected_etag=expected_etag)
+
+    store = RacyStore()
+    store.save_draft(_scope(), _draft())
+    service = _service(store=store)
+    proposal = _proposed(service)
+
+    store.racing = True
+    with pytest.raises(BuilderConcurrencyError, match="no longer matches"):
+        service.apply(
+            tenant_id=TENANT,
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id=AGENT_ID,
+            proposal_id=proposal.id,
+            base_etag="etag-1",
+            applied_by=USER_ID,
+            actor_role=AgentRole.CONTRIBUTOR,
+        )
+
+
 def test_apply_raises_not_found_when_draft_deleted_after_proposal() -> None:
     store = AgentStudioStore()
     store.save_draft(_scope(), _draft())

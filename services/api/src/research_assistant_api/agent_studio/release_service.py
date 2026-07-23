@@ -58,6 +58,7 @@ from research_assistant_api.agent_studio.release_artifact_metadata import (
 from research_assistant_api.agent_studio.runtime_selection import select_runtime
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
+from research_assistant_api.agent_studio.store import DraftConflictError as _StoreDraftConflictError
 
 
 class ReleaseServiceError(RuntimeError):
@@ -66,6 +67,15 @@ class ReleaseServiceError(RuntimeError):
 
 class AuthorizationError(ReleaseServiceError):
     pass
+
+
+class DraftConflictError(ReleaseServiceError):
+    """Raised when ``update_draft``'s ``expected_etag`` no longer matches the
+
+    currently stored draft -- another writer saved a change first. Callers
+    must re-fetch the latest draft (and its current ``etag``) and retry
+    rather than silently overwriting the concurrent edit.
+    """
 
 
 def manifest_hash(manifest: AgentManifest) -> str:
@@ -201,6 +211,23 @@ class ReleaseService:
         )
         return draft
 
+    def _revalidate_capability_bindings(self, manifest: AgentManifest) -> None:
+        """Hard-fail if any capability binding on ``manifest`` has gone stale.
+
+        Re-resolves every binding against the *live* registry state (not
+        the value pinned at attach time) via
+        ``CapabilityRegistry.check_binding_freshness`` and rejects the
+        manifest outright on the first stale reason found. Called on every
+        draft save and again at cut time so a fabricated/stale binding can
+        never be silently carried into an immutable version — the same
+        check also runs again as the BINDING hard gate and at deploy time,
+        since a binding attached fresh can still go stale afterward.
+        """
+        for binding in manifest.capabilities:
+            reason = self._registry.check_binding_freshness(binding)
+            if reason is not None:
+                raise ReleaseServiceError(f"Capability binding is stale and cannot be saved/cut: {reason}")
+
     def update_draft(
         self,
         *,
@@ -210,6 +237,7 @@ class ReleaseService:
         manifest: AgentManifest,
         updated_by: str,
         actor_role: AgentRole,
+        expected_etag: str,
     ) -> AgentDraft:
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
@@ -222,6 +250,7 @@ class ReleaseService:
         existing = self._store.get_draft(scope, logical_agent_id)
         if existing is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to update.")
+        self._revalidate_capability_bindings(manifest)
         updated = existing.model_copy(
             update={
                 "manifest": manifest,
@@ -230,7 +259,10 @@ class ReleaseService:
                 "etag": str(uuid4()),
             }
         )
-        return self._store.save_draft(scope, updated)
+        try:
+            return self._store.save_draft(scope, updated, expected_etag=expected_etag)
+        except _StoreDraftConflictError as exc:
+            raise DraftConflictError(str(exc)) from exc
 
     # -- Forking (private specialists) ------------------------------------
 
@@ -339,6 +371,7 @@ class ReleaseService:
         if draft is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to cut.")
         self._revalidate_model_deployment(draft.manifest)
+        self._revalidate_capability_bindings(draft.manifest)
         previous_versions = self._store.list_versions(scope, logical_agent_id)
         parent_version_id = previous_versions[-1].id if previous_versions else None
 
@@ -398,9 +431,12 @@ class ReleaseService:
         tenant_id: str,
         project_id: str,
         version_id: str,
+        actor_id: str,
+        actor_role: AgentRole,
         evidence: GateEvidence,
     ) -> ReleaseGateReport:
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        self._require_role(actor_role, AgentRole.CONTRIBUTOR)
         version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
@@ -410,11 +446,12 @@ class ReleaseService:
             manifest=version.manifest,
             manifest_hash=version.manifest_hash,
             capability_catalog=self._registry.as_mapping(),
+            capability_registry=self._registry,
             evidence=evidence,
             runtime_target=version.runtime_target,
             capability_approvals=self._store.list_approvals(scope, version_id),
         )
-        self._store.save_gate_report(report)
+        self._store.save_gate_report(scope, report)
         if report.passed:
             # Only a passing gate run produces a durable ``AgentRelease``
             # row; a failed attempt leaves the immutable ``ReleaseGateReport``
@@ -430,7 +467,7 @@ class ReleaseService:
                 status=ReleaseStatus.GATED,
                 gate_report_id=report.id,
                 previous_release_id=previous.id if previous is not None else None,
-                created_by=version.created_by,
+                created_by=actor_id,
                 detail="Passed all applicable hard gates.",
             )
             self._store.create_release(scope, release)
@@ -454,6 +491,7 @@ class ReleaseService:
         destination_policy_ref: str | None = None,
     ) -> StudioApprovalRecord | AgentVersion:
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        self._require_role(actor_role, AgentRole.CONTRIBUTOR)
         version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")

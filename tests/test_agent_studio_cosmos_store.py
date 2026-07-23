@@ -41,7 +41,11 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
+from research_assistant_api.agent_studio.store import (
+    AgentStudioStore,
+    AgentStudioStoreError,
+    DraftConflictError,
+)
 from research_assistant_api.config import Settings
 
 if TYPE_CHECKING:
@@ -162,10 +166,18 @@ def _release(
     )
 
 
-def _gate_report(report_id: str = "report-1", version_id: str = "version-1") -> ReleaseGateReport:
+def _gate_report(
+    report_id: str = "report-1",
+    version_id: str = "version-1",
+    *,
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+) -> ReleaseGateReport:
     return ReleaseGateReport(
         id=report_id,
         version_id=version_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
         results=(GateResult(name=GateName.TEST, status=GateStatus.PASSED, detail="ok"),),
     )
 
@@ -517,6 +529,63 @@ def test_drafts_round_trip_document_shape_and_scope_isolation(
     )
 
 
+def test_save_draft_enforces_expected_etag_app_level_and_cosmos_native_concurrency(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Review finding #6: Cosmos ``save_draft`` must enforce optimistic
+    concurrency both at the app level (comparing the stored ``AgentDraft.etag``)
+    and at the infra level (Cosmos ``MatchConditions.IfNotModified`` + native
+    ``_etag``), converting either failure mode into ``DraftConflictError``."""
+    store = _new_store(fake_client_factory)
+    draft = _draft()
+    assert store.save_draft(SCOPE, draft) == draft
+
+    first_editor = _new_store(fake_client_factory)
+    fetched = first_editor.get_draft(SCOPE, AGENT_ID)
+    assert fetched is not None
+
+    updated = fetched.model_copy(update={"display_name": "First Editor Update", "etag": "etag-after-first-editor"})
+    assert first_editor.save_draft(SCOPE, updated, expected_etag=fetched.etag) == updated
+
+    second_editor = _new_store(fake_client_factory)
+    stale_update = fetched.model_copy(
+        update={"display_name": "Second Editor Lost", "etag": "etag-after-second-editor"}
+    )
+    with pytest.raises(DraftConflictError, match="modified concurrently"):
+        second_editor.save_draft(SCOPE, stale_update, expected_etag=fetched.etag)
+    assert second_editor.get_draft(SCOPE, AGENT_ID) == updated
+
+    with pytest.raises(DraftConflictError, match="modified concurrently"):
+        second_editor.save_draft(SCOPE, stale_update, expected_etag="never-issued-etag")
+
+    missing_draft_store = _new_store(fake_client_factory)
+    with pytest.raises(DraftConflictError, match="modified concurrently"):
+        missing_draft_store.save_draft(
+            SAME_TENANT_OTHER_PROJECT_SCOPE,
+            _draft(project_id=SAME_TENANT_OTHER_PROJECT_SCOPE.project_id),
+            expected_etag="any-etag",
+        )
+
+    container = _metadata_container(fake_client_factory)
+    container.fail_replace_status = 412
+    race_store = _new_store(fake_client_factory)
+    with pytest.raises(DraftConflictError, match="modified concurrently"):
+        race_store.save_draft(
+            SCOPE,
+            updated.model_copy(update={"display_name": "Raced Out"}),
+            expected_etag=updated.etag,
+        )
+
+    container.fail_replace_status = 500
+    with pytest.raises(CosmosHttpResponseError):
+        race_store.save_draft(
+            SCOPE,
+            updated.model_copy(update={"display_name": "Unexpected Failure"}),
+            expected_etag=updated.etag,
+        )
+    container.fail_replace_status = None
+
+
 def test_ownership_listing_role_resolution_and_partition_scoping(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
@@ -854,7 +923,7 @@ def test_allocate_version_is_race_free_across_concurrent_store_instances(
     assert len({v.id for v in persisted}) == thread_count
 
 
-def test_lineage_and_gate_reports_round_trip_and_sentinel_partition(
+def test_lineage_and_gate_reports_round_trip_without_scope_leakage(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
     store = _new_store(fake_client_factory)
@@ -862,25 +931,59 @@ def test_lineage_and_gate_reports_round_trip_and_sentinel_partition(
     report = _gate_report()
 
     assert store.add_lineage_edge(SCOPE, edge) == edge
-    assert store.save_gate_report(report) == report
+    assert store.save_gate_report(SCOPE, report) == report
 
     reloaded = _new_store(fake_client_factory)
     assert reloaded.list_lineage(SCOPE, AGENT_ID) == (edge,)
     assert reloaded.list_lineage(SCOPE, AGENT_ID) == (edge,)
     assert reloaded.list_lineage(SAME_TENANT_OTHER_PROJECT_SCOPE, AGENT_ID) == ()
     assert reloaded.list_lineage(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
-    assert reloaded.get_gate_report(report.id) == report
-    assert reloaded.get_gate_report(report.id) == report
-    assert reloaded.get_gate_report("missing-report") is None
+    assert reloaded.get_gate_report(SCOPE, report.id) == report
+    assert reloaded.get_gate_report(SCOPE, report.id) == report
+    assert reloaded.get_gate_report(SCOPE, "missing-report") is None
+    assert reloaded.get_gate_report(SAME_TENANT_OTHER_PROJECT_SCOPE, report.id) is None
+    assert reloaded.get_gate_report(OTHER_TENANT_SAME_PROJECT_SCOPE, report.id) is None
 
     container = _metadata_container(fake_client_factory)
-    gate_report_document = container.get_document(
-        cosmos_store._GATE_REPORT_SCOPE_KEY,
-        "gate_report::report-1",
-    )
+    gate_report_document = container.get_document(SCOPE.scope_key, "gate_report::report-1")
     assert gate_report_document["documentType"] == "gate_report"
-    assert gate_report_document["scope_key"] == cosmos_store._GATE_REPORT_SCOPE_KEY
+    assert gate_report_document["scope_key"] == SCOPE.scope_key
     assert gate_report_document["payload"] == report.model_dump(mode="json")
+
+    mismatched = _gate_report(report_id="mismatch", project_id=OTHER_PROJECT)
+    with pytest.raises(AgentStudioStoreError, match="does not match"):
+        store.save_gate_report(SCOPE, mismatched)
+
+
+def test_get_gate_report_rejects_document_with_mismatched_scope_payload(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """``save_gate_report`` always writes a payload whose tenant/project
+    agree with the partition it is stored under, so an untampered read can
+    never observe a scope mismatch -- this defends against a corrupted or
+    hand-edited document landing in the right partition (e.g. an operator
+    fixing up data, or a future bug in a sibling writer) with the wrong
+    ``tenant_id``/``project_id`` recorded inside its payload. Inject such a
+    document directly into the fake container (bypassing the store's own
+    validated write path) to prove the read-time guard still refuses to
+    return -- and does not cache -- a document whose payload scope disagrees
+    with the partition it was read from."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+
+    corrupted = _gate_report(report_id="corrupted", tenant_id=OTHER_TENANT, project_id=OTHER_PROJECT)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id="gate_report::corrupted",
+        document_type="gate_report",
+        payload=corrupted.model_dump(mode="json"),
+    )
+
+    assert store.get_gate_report(SCOPE, "corrupted") is None
+    # The mismatch guard must prevent caching, too -- a second read hits the
+    # same rejected path rather than returning a stale, cached local copy.
+    assert store.get_gate_report(SCOPE, "corrupted") is None
+    assert AgentStudioStore.get_gate_report(store, SCOPE, "corrupted") is None
 
 
 def test_releases_round_trip_latest_and_scope_guards(

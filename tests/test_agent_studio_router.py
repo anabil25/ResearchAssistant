@@ -43,10 +43,16 @@ from research_assistant_api.agent_studio.models import (
     MemoryScopeKind,
     ModelDeploymentRef,
     OwnershipGrant,
+    ReleaseGateReport,
     ReleaseStatus,
     StudioApprovalRecord,
 )
-from research_assistant_api.agent_studio.release_service import AuthorizationError, ReleaseService
+from research_assistant_api.agent_studio.policy_gates import GateEvidence
+from research_assistant_api.agent_studio.release_service import (
+    AuthorizationError,
+    ReleaseService,
+    ReleaseServiceError,
+)
 from research_assistant_api.agent_studio.router import router as agent_studio_router
 from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
@@ -144,6 +150,7 @@ MULTI_PROJECT_USER_HEADERS = _project_headers(
     project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
 )
 VIEWER_HEADERS = _project_headers(tenant_id="demo", user_id="viewer-1", project_ids=(DEFAULT_PROJECT_ID,))
+READER_HEADERS = _project_headers(tenant_id="demo", user_id="reader-1", project_ids=(DEFAULT_PROJECT_ID,))
 OTHER_TENANT_HEADERS = _project_headers(
     tenant_id="other-tenant",
     user_id="other-user",
@@ -401,13 +408,22 @@ def _update_manifest(
     manifest: dict[str, Any],
     *,
     headers: dict[str, str] = USER_HEADERS,
+    if_match: str | None = None,
+    expected_status: int = 200,
 ) -> dict[str, Any]:
+    if if_match is None:
+        current = client.get(
+            f"/api/agent-studio/agents/{logical_agent_id}/draft",
+            params={"project_id": manifest.get("project_id", DEFAULT_PROJECT_ID)},
+            headers=headers,
+        )
+        if_match = cast("str", current.json()["etag"]) if current.status_code == 200 else "missing-draft-etag"
     response = client.put(
         f"/api/agent-studio/agents/{logical_agent_id}/draft",
         json={"manifest": manifest},
-        headers=headers,
+        headers={**headers, "If-Match": if_match},
     )
-    assert response.status_code == 200, response.text
+    assert response.status_code == expected_status, response.text
     return cast("dict[str, Any]", response.json())
 
 
@@ -896,7 +912,7 @@ def test_draft_routes_cover_get_update_and_missing_paths(
     viewer_response = client.put(
         "/api/agent-studio/agents/agent-draft/draft",
         json={"manifest": draft["manifest"]},
-        headers=VIEWER_HEADERS,
+        headers={**VIEWER_HEADERS, "If-Match": updated["etag"]},
     )
     assert viewer_response.status_code == 403
 
@@ -905,7 +921,7 @@ def test_draft_routes_cover_get_update_and_missing_paths(
     mismatch_response = client.put(
         "/api/agent-studio/agents/agent-draft/draft",
         json={"manifest": mismatch_manifest},
-        headers=USER_HEADERS,
+        headers={**USER_HEADERS, "If-Match": updated["etag"]},
     )
     assert mismatch_response.status_code == 404
 
@@ -930,9 +946,54 @@ def test_draft_routes_cover_get_update_and_missing_paths(
                 owner_id="user-1",
             )
         },
-        headers=USER_HEADERS,
+        headers={**USER_HEADERS, "If-Match": "irrelevant-etag"},
     )
     assert no_draft_response.status_code == 404
+
+
+def test_update_draft_enforces_if_match_optimistic_concurrency(client: TestClient) -> None:
+    """Review finding #6: PUT draft requires ``If-Match`` and rejects a
+    stale/mismatched etag with 412, without mutating the stored draft."""
+    _create_agent(client, logical_agent_id="agent-draft-etag", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-draft-etag", headers=USER_HEADERS)
+
+    missing_header_response = client.put(
+        "/api/agent-studio/agents/agent-draft-etag/draft",
+        json={"manifest": {**draft["manifest"], "display_name": "No Header"}},
+        headers=USER_HEADERS,
+    )
+    assert missing_header_response.status_code == 422
+
+    stale_response = client.put(
+        "/api/agent-studio/agents/agent-draft-etag/draft",
+        json={"manifest": {**draft["manifest"], "display_name": "Stale Update"}},
+        headers={**USER_HEADERS, "If-Match": "not-the-real-etag"},
+    )
+    assert stale_response.status_code == 412
+
+    unchanged = _get_draft(client, "agent-draft-etag", headers=USER_HEADERS)
+    assert unchanged["etag"] == draft["etag"]
+    assert unchanged["manifest"]["display_name"] == draft["manifest"]["display_name"]
+
+    first_editor_update = client.put(
+        "/api/agent-studio/agents/agent-draft-etag/draft",
+        json={"manifest": {**draft["manifest"], "display_name": "First Editor"}},
+        headers={**USER_HEADERS, "If-Match": draft["etag"]},
+    )
+    assert first_editor_update.status_code == 200
+    first_editor_body = first_editor_update.json()
+    assert first_editor_body["etag"] != draft["etag"]
+    assert first_editor_body["manifest"]["display_name"] == "First Editor"
+
+    second_editor_stale_update = client.put(
+        "/api/agent-studio/agents/agent-draft-etag/draft",
+        json={"manifest": {**draft["manifest"], "display_name": "Second Editor Lost"}},
+        headers={**USER_HEADERS, "If-Match": draft["etag"]},
+    )
+    assert second_editor_stale_update.status_code == 412
+
+    final = _get_draft(client, "agent-draft-etag", headers=USER_HEADERS)
+    assert final["manifest"]["display_name"] == "First Editor"
 
 
 def test_fork_agent_and_lineage_routes_cover_success_and_conflicts(client: TestClient) -> None:
@@ -1098,12 +1159,81 @@ def test_version_and_gate_routes_cover_success_and_error_branches(client: TestCl
         for result in passing_report["results"]
     )
 
+    viewer_gates_response = client.post(
+        f"/api/agent-studio/versions/{version['id']}/gates",
+        json=_body(**GATED_EVIDENCE),
+        headers=VIEWER_HEADERS,
+    )
+    assert viewer_gates_response.status_code == 403
+
     viewer_cut_response = client.post(
         "/api/agent-studio/agents/agent-versioned/versions",
         params=_params(),
         headers=VIEWER_HEADERS,
     )
     assert viewer_cut_response.status_code == 403
+
+
+def test_run_gates_maps_service_release_error_to_404(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> None:
+    """The route's own existence check makes the service's identical
+    ``ReleaseServiceError`` (raised inside ``run_release_gates`` when the
+    version is missing) unreachable in the ordinary case. Simulate the
+    version disappearing between the route's check and the service call
+    (a true TOCTOU race) to confirm the handler still maps that error to
+    404 instead of letting it bubble up as an unhandled 500."""
+
+    setup_app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=ReleaseService(store, registry),
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    with TestClient(setup_app) as setup_client:
+        _create_agent(setup_client, logical_agent_id="agent-gate-race", headers=USER_HEADERS)
+        version = _cut_version(setup_client, "agent-gate-race", headers=USER_HEADERS)
+
+    class _RacingReleaseService(ReleaseService):
+        def run_release_gates(
+            self,
+            *,
+            tenant_id: str,
+            project_id: str,
+            version_id: str,
+            actor_id: str,
+            actor_role: AgentRole,
+            evidence: GateEvidence,
+        ) -> ReleaseGateReport:
+            raise ReleaseServiceError(f"Version '{version_id}' not found.")
+
+    racing_app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=_RacingReleaseService(store, registry),
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    with TestClient(racing_app) as racing_client:
+        response = racing_client.post(
+            f"/api/agent-studio/versions/{version['id']}/gates",
+            json=_body(evidence={}),
+            headers=USER_HEADERS,
+        )
+    assert response.status_code == 404
 
 
 def test_cut_version_returns_404_when_granted_actor_has_no_draft(
@@ -1137,6 +1267,13 @@ def test_promotion_and_approval_routes_cover_auto_and_pending_paths(
         headers=USER_HEADERS,
     )
     assert missing_response.status_code == 404
+
+    viewer_promote_response = client.post(
+        f"/api/agent-studio/versions/{version['id']}/promote",
+        json=_body(destination="dev", evidence_summary="viewers cannot promote"),
+        headers=VIEWER_HEADERS,
+    )
+    assert viewer_promote_response.status_code == 403
 
     auto_response = client.post(
         f"/api/agent-studio/versions/{version['id']}/promote",
@@ -1417,7 +1554,7 @@ def test_escalation_routes_cover_pending_approval_and_owner_only_decision(
     update_response = client.put(
         "/api/agent-studio/agents/agent-escalation/draft",
         json={"manifest": draft["manifest"]},
-        headers=VIEWER_HEADERS,
+        headers={**VIEWER_HEADERS, "If-Match": draft["etag"]},
     )
     assert update_response.status_code == 200
 
@@ -1820,6 +1957,41 @@ def test_memory_lifecycle_covers_remember_recall_inspect_correct_forget_export_a
         "correct",
         "forget",
     ]
+
+    denied_audit = client.get(
+        f"/api/agent-studio/agents/agent-memory/memory/{first_body['id']}/audit",
+        params=_params(),
+        headers=VIEWER_HEADERS,
+    )
+    assert denied_audit.status_code == 403
+
+    reader_audit = client.get(
+        f"/api/agent-studio/agents/agent-memory/memory/{first_body['id']}/audit",
+        params=_params(),
+        headers=READER_HEADERS,
+    )
+    assert reader_audit.status_code == 200
+    assert [record["action"] for record in reader_audit.json()] == [
+        "remember",
+        "inspect",
+        "correct",
+        "forget",
+    ]
+
+    _create_agent(client, logical_agent_id="agent-memory-other", headers=USER_HEADERS)
+    cross_agent_audit = client.get(
+        f"/api/agent-studio/agents/agent-memory-other/memory/{first_body['id']}/audit",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert cross_agent_audit.status_code == 404
+
+    scope_pseudo_id_audit = client.get(
+        "/api/agent-studio/agents/agent-memory/memory/scope:conversation:thread-1/audit",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert scope_pseudo_id_audit.status_code == 403
 
 
 def test_memory_routes_cover_policy_errors_missing_records_and_unavailability(
@@ -2267,19 +2439,21 @@ def test_tenant_isolation_holds_for_tenant_scoped_routes(
         headers=USER_HEADERS,
     ).json()
 
-    cases = [
-        ("GET", f"/api/agent-studio/agents/agent-isolation/draft?project_id={DEFAULT_PROJECT_ID}", None, 404),
+    cases: list[tuple[str, str, dict[str, Any] | None, int, dict[str, str]]] = [
+        ("GET", f"/api/agent-studio/agents/agent-isolation/draft?project_id={DEFAULT_PROJECT_ID}", None, 404, {}),
         (
             "PUT",
             "/api/agent-studio/agents/agent-isolation/draft",
             {"manifest": _minimal_manifest(logical_agent_id="agent-isolation", tenant_id="other-tenant")},
             403,
+            {"If-Match": "irrelevant-etag"},
         ),
         (
             "POST",
             "/api/agent-studio/agents/agent-isolation/fork",
             _body(source_version_id=version["id"], new_logical_agent_id="agent-isolation-fork"),
             409,
+            {},
         ),
         (
             "POST",
@@ -2291,100 +2465,138 @@ def test_tenant_isolation_holds_for_tenant_scoped_routes(
                 handler_ref="builtin://web-search",
             ),
             403,
+            {},
         ),
         (
             "GET",
             f"/api/agent-studio/agents/agent-isolation/tool-registrations?project_id={DEFAULT_PROJECT_ID}",
             None,
             200,
+            {},
         ),
-        ("GET", f"/api/agent-studio/agents/agent-isolation/versions?project_id={DEFAULT_PROJECT_ID}", None, 200),
-        ("GET", f"/api/agent-studio/agents/agent-isolation/lineage?project_id={DEFAULT_PROJECT_ID}", None, 200),
-        ("POST", f"/api/agent-studio/versions/{version['id']}/gates", _body(**GATED_EVIDENCE), 404),
+        (
+            "GET",
+            f"/api/agent-studio/agents/agent-isolation/versions?project_id={DEFAULT_PROJECT_ID}",
+            None,
+            200,
+            {},
+        ),
+        (
+            "GET",
+            f"/api/agent-studio/agents/agent-isolation/lineage?project_id={DEFAULT_PROJECT_ID}",
+            None,
+            200,
+            {},
+        ),
+        ("POST", f"/api/agent-studio/versions/{version['id']}/gates", _body(**GATED_EVIDENCE), 404, {}),
         (
             "POST",
             f"/api/agent-studio/versions/{version['id']}/promote",
             _body(destination="dev", evidence_summary="no access"),
             404,
+            {},
         ),
         (
             "POST",
             f"/api/agent-studio/approvals/{approval['id']}/decision",
             _body(approve=True),
             404,
+            {},
         ),
         (
             "POST",
             "/api/agent-studio/agents/agent-isolation/deployments",
             _body(version_id=version["id"]),
             409,
+            {},
         ),
-        ("GET", f"/api/agent-studio/agents/agent-isolation/deployments?project_id={DEFAULT_PROJECT_ID}", None, 200),
+        (
+            "GET",
+            f"/api/agent-studio/agents/agent-isolation/deployments?project_id={DEFAULT_PROJECT_ID}",
+            None,
+            200,
+            {},
+        ),
         (
             "POST",
             f"/api/agent-studio/deployments/{deployment['id']}/health",
             _body(status="healthy"),
             404,
+            {},
         ),
         (
             "POST",
             "/api/agent-studio/agents/agent-isolation/rollback",
             _body(deployment_id=deployment["id"], target_version_id=version["id"]),
             409,
+            {},
         ),
-        ("GET", f"/api/agent-studio/agents/agent-isolation/resolve?project_id={DEFAULT_PROJECT_ID}", None, 404),
-        ("GET", f"/api/agent-studio/versions/{version['id']}/contract?project_id={DEFAULT_PROJECT_ID}", None, 404),
-        ("GET", f"/api/agent-studio/catalog?project_id={DEFAULT_PROJECT_ID}", None, 200),
+        ("GET", f"/api/agent-studio/agents/agent-isolation/resolve?project_id={DEFAULT_PROJECT_ID}", None, 404, {}),
+        (
+            "GET",
+            f"/api/agent-studio/versions/{version['id']}/contract?project_id={DEFAULT_PROJECT_ID}",
+            None,
+            404,
+            {},
+        ),
+        ("GET", f"/api/agent-studio/catalog?project_id={DEFAULT_PROJECT_ID}", None, 200, {}),
         (
             "POST",
             "/api/agent-studio/agents/agent-isolation/memory",
             _body(scope_kind="conversation", scope_id="thread-iso", content="no access"),
             404,
+            {},
         ),
         (
             "GET",
             f"/api/agent-studio/agents/agent-isolation/memory?project_id={DEFAULT_PROJECT_ID}&scope_kind=conversation&scope_id=thread-iso",
             None,
             404,
+            {},
         ),
         (
             "GET",
             f"/api/agent-studio/agents/agent-isolation/memory/{memory_entry['id']}?project_id={DEFAULT_PROJECT_ID}",
             None,
             404,
+            {},
         ),
         (
             "PUT",
             f"/api/agent-studio/agents/agent-isolation/memory/{memory_entry['id']}",
             _body(content="blocked"),
             404,
+            {},
         ),
         (
             "DELETE",
             f"/api/agent-studio/agents/agent-isolation/memory/{memory_entry['id']}",
             _body(reason="blocked"),
             404,
+            {},
         ),
         (
             "GET",
             f"/api/agent-studio/agents/agent-isolation/memory-export?project_id={DEFAULT_PROJECT_ID}&scope_kind=conversation&scope_id=thread-iso",
             None,
             404,
+            {},
         ),
         (
             "GET",
             f"/api/agent-studio/agents/agent-isolation/memory/{memory_entry['id']}/audit?project_id={DEFAULT_PROJECT_ID}",
             None,
             404,
+            {},
         ),
     ]
 
-    for method, path, payload, expected_status in cases:
+    for method, path, payload, expected_status, extra_headers in cases:
         response = client.request(
             method,
             path,
             json=payload,
-            headers=OTHER_TENANT_HEADERS,
+            headers={**OTHER_TENANT_HEADERS, **extra_headers},
         )
         assert response.status_code == expected_status, (method, path, response.text)
 
@@ -2477,14 +2689,14 @@ def test_draft_and_version_routes_are_cross_project_and_cross_tenant_isolated(
     cross_project_update = client.put(
         "/api/agent-studio/agents/agent-scope-draft/draft",
         json={"manifest": _minimal_manifest(logical_agent_id="agent-scope-draft", project_id=OTHER_PROJECT_ID)},
-        headers=other_project_headers,
+        headers={**other_project_headers, "If-Match": "irrelevant-etag"},
     )
     assert cross_project_update.status_code == 403
 
     cross_tenant_update = client.put(
         "/api/agent-studio/agents/agent-scope-draft/draft",
         json={"manifest": _minimal_manifest(logical_agent_id="agent-scope-draft")},
-        headers=OTHER_TENANT_HEADERS,
+        headers={**OTHER_TENANT_HEADERS, "If-Match": "irrelevant-etag"},
     )
     assert cross_tenant_update.status_code == 403
 

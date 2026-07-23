@@ -13,12 +13,11 @@ partition (``partition_key=scope.scope_key``), and single-document lookups
 prefer a true point ``read_item`` over a query wherever the document id is
 deterministic.
 
-``ReleaseGateReport`` is the one document type with no owning
-``ScopeContext`` (mirroring ``AgentStudioStore``, which does not scope-check
-it either — the caller already validated the owning version's scope before
-saving/loading a report). It is stored under a fixed sentinel partition
-key so it still fits the single-container/single-partition-key design
-without ever being treated as tenant/project data in its own right.
+``ReleaseGateReport`` documents are partitioned exactly like every other
+project-scoped document (``/scope_key``), keyed by an opaque
+``gate_report::{report_id}`` document id within that partition -- there is
+no shared/sentinel partition for gate reports; a report can only be read
+back within the scope that created it.
 
 Follows the same pattern as ``cosmos_workspace.CosmosWorkspaceStore``:
 subclass the in-memory store, override each method to read-through/
@@ -56,14 +55,8 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
+from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError, DraftConflictError
 from research_assistant_api.config import Settings
-
-#: Fixed sentinel partition for ``ReleaseGateReport`` documents, which have
-#: no owning tenant/project of their own (see module docstring). This is a
-#: single, well-known partition — reading/writing it is still a point
-#: operation, never a cross-partition fan-out.
-_GATE_REPORT_SCOPE_KEY = "sk_shared_gate_reports"
 
 
 class CosmosAgentStudioStore(AgentStudioStore):
@@ -119,9 +112,49 @@ class CosmosAgentStudioStore(AgentStudioStore):
     def _draft_id(logical_agent_id: str) -> str:
         return f"draft::{logical_agent_id}"
 
-    def save_draft(self, scope: ScopeContext, draft: AgentDraft) -> AgentDraft:
-        super().save_draft(scope, draft)
-        self._upsert(scope.scope_key, self._draft_id(draft.logical_agent_id), "draft", draft.model_dump(mode="json"))
+    def save_draft(self, scope: ScopeContext, draft: AgentDraft, *, expected_etag: str | None = None) -> AgentDraft:
+        """Optimistic-concurrency draft save.
+
+        When ``expected_etag`` is supplied, this reads the *current* Cosmos
+        document first and (a) fails fast if its stored ``AgentDraft.etag``
+        no longer matches, then (b) performs the actual write with
+        ``MatchConditions.IfNotModified`` pinned to Cosmos's own ``_etag``,
+        so a concurrent write racing between our read and our write is still
+        caught by Cosmos itself (authoritative across processes/instances),
+        not just our in-process check.
+        """
+        document_id = self._draft_id(draft.logical_agent_id)
+        document = self._read(scope.scope_key, document_id)
+        if expected_etag is not None:
+            current = AgentDraft.model_validate(document["payload"]) if document is not None else None
+            if current is None or current.etag != expected_etag:
+                raise DraftConflictError(
+                    f"Draft '{draft.logical_agent_id}' was modified concurrently; the supplied "
+                    "etag no longer matches the stored draft. Re-fetch and retry."
+                )
+        body = {
+            "id": document_id,
+            "documentType": "draft",
+            "scope_key": scope.scope_key,
+            "payload": draft.model_dump(mode="json"),
+        }
+        if document is not None:
+            try:
+                self._container.replace_item(
+                    item=document_id,
+                    body=body,
+                    etag=document.get("_etag"),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+            except CosmosHttpResponseError as exc:
+                if exc.status_code != 412:
+                    raise
+                raise DraftConflictError(
+                    f"Draft '{draft.logical_agent_id}' was modified concurrently; re-fetch and retry."
+                ) from exc
+        else:
+            self._container.upsert_item(body)
+        AgentStudioStore.save_draft(self, scope, draft)
         return draft
 
     def get_draft(self, scope: ScopeContext, logical_agent_id: str) -> AgentDraft | None:
@@ -349,29 +382,31 @@ class CosmosAgentStudioStore(AgentStudioStore):
         return super().list_lineage(scope, logical_agent_id)
 
     # -- Gate reports -----------------------------------------------------
-    # No owning ScopeContext (see module docstring) — stored under a fixed
-    # sentinel partition key, still a true point read/write.
+    # Scoped exactly like every other document (see module docstring);
+    # partitioned by ``scope.scope_key``, a true point read/write.
 
     @staticmethod
     def _gate_report_id(report_id: str) -> str:
         return f"gate_report::{report_id}"
 
-    def save_gate_report(self, report: ReleaseGateReport) -> ReleaseGateReport:
-        super().save_gate_report(report)
+    def save_gate_report(self, scope: ScopeContext, report: ReleaseGateReport) -> ReleaseGateReport:
+        super().save_gate_report(scope, report)
         self._upsert(
-            _GATE_REPORT_SCOPE_KEY, self._gate_report_id(report.id), "gate_report", report.model_dump(mode="json")
+            scope.scope_key, self._gate_report_id(report.id), "gate_report", report.model_dump(mode="json")
         )
         return report
 
-    def get_gate_report(self, report_id: str) -> ReleaseGateReport | None:
-        cached = super().get_gate_report(report_id)
+    def get_gate_report(self, scope: ScopeContext, report_id: str) -> ReleaseGateReport | None:
+        cached = super().get_gate_report(scope, report_id)
         if cached is not None:
             return cached
-        document = self._read(_GATE_REPORT_SCOPE_KEY, self._gate_report_id(report_id))
+        document = self._read(scope.scope_key, self._gate_report_id(report_id))
         if document is None:
             return None
         report = ReleaseGateReport.model_validate(document["payload"])
-        AgentStudioStore.save_gate_report(self, report)
+        if report.tenant_id != scope.tenant_id or report.project_id != scope.project_id:
+            return None
+        AgentStudioStore.save_gate_report(self, scope, report)
         return report
 
     # -- Releases (append-only lifecycle for an immutable version) ---------

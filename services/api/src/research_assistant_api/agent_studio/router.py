@@ -14,7 +14,7 @@ import json
 from typing import cast
 from uuid import uuid4
 
-from fastapi import APIRouter, HTTPException, Request, status
+from fastapi import APIRouter, Header, HTTPException, Request, status
 
 from research_assistant_api.agent_studio.approvals import ApprovalError
 from research_assistant_api.agent_studio.builder_service import (
@@ -64,6 +64,7 @@ from research_assistant_api.agent_studio.models import (
 )
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
+    DraftConflictError,
     ReleaseService,
     ReleaseServiceError,
     resolve_actor_role,
@@ -328,7 +329,12 @@ def get_draft(request: Request, logical_agent_id: str, project_id: str) -> Agent
 
 
 @router.put("/agents/{logical_agent_id}/draft", response_model=AgentDraft)
-def update_draft(request: Request, logical_agent_id: str, payload: UpdateDraftRequest) -> AgentDraft:
+def update_draft(
+    request: Request,
+    logical_agent_id: str,
+    payload: UpdateDraftRequest,
+    if_match: str = Header(..., alias="If-Match", description="Expected current draft etag (optimistic concurrency)."),
+) -> AgentDraft:
     identity = _identity(request)
     scope = _scope(identity, payload.manifest.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
@@ -340,9 +346,12 @@ def update_draft(request: Request, logical_agent_id: str, payload: UpdateDraftRe
             manifest=payload.manifest,
             updated_by=identity.user_id,
             actor_role=role,
+            expected_etag=if_match,
         )
     except AuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except DraftConflictError as exc:
+        raise HTTPException(status_code=status.HTTP_412_PRECONDITION_FAILED, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -448,13 +457,21 @@ def list_lineage(request: Request, logical_agent_id: str, project_id: str) -> li
 def run_gates(request: Request, version_id: str, payload: RunGatesRequest) -> ReleaseGateReport:
     identity = _identity(request)
     scope = _scope(identity, payload.project_id)
+    version = _store(request).get_version(scope, version_id)
+    if version is None:
+        raise _not_found(f"Version '{version_id}' was not found.")
+    role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
     try:
         return _release_service(request).run_release_gates(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             version_id=version_id,
+            actor_id=identity.user_id,
+            actor_role=role,
             evidence=payload.evidence,
         )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
 
@@ -482,6 +499,8 @@ def request_promotion(
             evidence_summary=payload.evidence_summary,
             risk=payload.risk,
         )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
@@ -970,19 +989,32 @@ def memory_audit_trail(
     entry_id: str,
     project_id: str,
 ) -> list[MemoryAuditRecord]:
-    """Deletion/provenance audit trail for a single memory entry."""
+    """Deletion/provenance audit trail for a single memory entry.
+
+    Requires read/inspect ACL on the concrete entry (creator or ``read_acl``
+    member) and the enclosing scope's ``allow_user_inspect`` control; entries
+    are resolved through the caller's own logical agent so no cross-agent or
+    cross-scope audit history can be enumerated.
+    """
     identity = _identity(request)
     scope = _scope(identity, project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
-    return list(
-        _memory_service(request).audit_trail(
-            tenant_id=scope.tenant_id,
-            project_id=scope.project_id,
-            entry_id=entry_id,
+    try:
+        return list(
+            _memory_service(request).audit_trail(
+                draft.manifest,
+                tenant_id=scope.tenant_id,
+                project_id=scope.project_id,
+                entry_id=entry_id,
+                actor_id=identity.user_id,
+            )
         )
-    )
+    except MemoryAccessError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except MemoryPolicyError as exc:
+        raise _not_found(str(exc)) from exc
 
 
 # -- Builder Agent: stored proposals (propose -> researcher review -> apply) --

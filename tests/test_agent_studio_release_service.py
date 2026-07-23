@@ -17,7 +17,11 @@ if "research_assistant_api" not in sys.modules:
 
 import research_assistant_api.agent_studio.release_service as release_service_module
 from research_assistant_api.agent_studio.approvals import ApprovalError, idempotency_key
-from research_assistant_api.agent_studio.capability_registry import CapabilityAttachmentError, default_registry
+from research_assistant_api.agent_studio.capability_registry import (
+    CapabilityAttachmentError,
+    CapabilityRegistry,
+    default_registry,
+)
 from research_assistant_api.agent_studio.model_discovery import (
     InMemoryModelDiscovery,
     UnavailableModelDiscovery,
@@ -41,6 +45,7 @@ from research_assistant_api.agent_studio.models import (
     GateStatus,
     HealthStatus,
     ModelDeploymentRef,
+    OwnershipGrant,
     ReleaseGateReport,
     ReleaseStatus,
     RuntimeRequirements,
@@ -51,6 +56,7 @@ from research_assistant_api.agent_studio.models import (
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
+    DraftConflictError,
     ReleaseService,
     ReleaseServiceError,
     manifest_hash,
@@ -148,6 +154,7 @@ def _gated_version(
             manifest=draft.manifest.model_copy(update=manifest_updates),
             updated_by=owner_id,
             actor_role=AgentRole.OWNER,
+            expected_etag=draft.etag,
         )
     version = service.cut_version(
         tenant_id=tenant_id,
@@ -160,6 +167,8 @@ def _gated_version(
         tenant_id=tenant_id,
         project_id=project_id,
         version_id=version.id,
+        actor_id=owner_id,
+        actor_role=AgentRole.OWNER,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
     return version
@@ -288,6 +297,7 @@ def test_update_draft_requires_contributor_role(service: ReleaseService) -> None
             manifest=draft.manifest.model_copy(update={"display_name": "Renamed"}),
             updated_by="user-2",
             actor_role=AgentRole.VIEWER,
+            expected_etag=draft.etag,
         )
 
 
@@ -304,6 +314,7 @@ def test_update_draft_rejects_mismatched_manifest_identity(service: ReleaseServi
             manifest=draft.manifest.model_copy(update={"logical_agent_id": "agent-other"}),
             updated_by="user-1",
             actor_role=AgentRole.OWNER,
+            expected_etag=draft.etag,
         )
 
 
@@ -325,6 +336,7 @@ def test_update_draft_raises_when_no_draft_exists(service: ReleaseService) -> No
             manifest=manifest,
             updated_by="user-1",
             actor_role=AgentRole.OWNER,
+            expected_etag="irrelevant-etag",
         )
 
 
@@ -340,12 +352,129 @@ def test_update_draft_succeeds_with_contributor_role(service: ReleaseService) ->
         manifest=draft.manifest.model_copy(update={"display_name": "Renamed Agent"}),
         updated_by="user-1",
         actor_role=AgentRole.CONTRIBUTOR,
+        expected_etag=draft.etag,
     )
 
     assert updated.manifest.display_name == "Renamed Agent"
     # Regression: each successful update must mint a fresh etag so callers
     # can detect concurrent modification; it must never be reused verbatim.
     assert updated.etag != draft.etag
+
+
+def test_update_draft_rejects_stale_capability_binding(service: ReleaseService) -> None:
+    """Finding #4 regression: a client cannot PUT a fabricated/stale binding.
+
+    ``update_draft`` re-resolves every binding on the incoming manifest
+    against the *live* registry and rejects the save outright if any
+    binding's pinned descriptor digest has drifted -- the stale binding
+    must never even reach the draft store, let alone a cut version.
+    """
+    _create_agent(service)
+    draft = service._store.get_draft(_scope(), "agent-one")
+    assert draft is not None
+    binding = service._registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    tampered = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
+
+    with pytest.raises(ReleaseServiceError, match="stale"):
+        service.update_draft(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-one",
+            manifest=draft.manifest.model_copy(update={"capabilities": (tampered,)}),
+            updated_by="user-1",
+            actor_role=AgentRole.CONTRIBUTOR,
+            expected_etag=draft.etag,
+        )
+    # Confirm the stale manifest was never persisted.
+    unchanged = service._store.get_draft(_scope(), "agent-one")
+    assert unchanged is not None
+    assert unchanged.manifest.capabilities == ()
+
+
+def test_update_draft_accepts_fresh_capability_binding(service: ReleaseService) -> None:
+    _create_agent(service)
+    draft = service._store.get_draft(_scope(), "agent-one")
+    assert draft is not None
+    binding = service._registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+
+    updated = service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.CONTRIBUTOR,
+        expected_etag=draft.etag,
+    )
+
+    assert updated.manifest.capabilities == (binding,)
+
+
+def test_update_draft_rejects_mismatched_expected_etag(service: ReleaseService) -> None:
+    """Finding #6 regression: ``update_draft`` requires ``expected_etag`` and
+
+    rejects the write outright if it no longer matches the currently stored
+    draft's etag -- optimistic concurrency must actually be enforced, not
+    merely documented on the ``etag`` field.
+    """
+    _create_agent(service)
+    draft = service._store.get_draft(_scope(), "agent-one")
+    assert draft is not None
+
+    with pytest.raises(DraftConflictError, match="concurrently"):
+        service.update_draft(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-one",
+            manifest=draft.manifest.model_copy(update={"display_name": "Racing Edit"}),
+            updated_by="user-1",
+            actor_role=AgentRole.CONTRIBUTOR,
+            expected_etag="stale-etag-from-an-earlier-read",
+        )
+    # Confirm the rejected write was never persisted.
+    unchanged = service._store.get_draft(_scope(), "agent-one")
+    assert unchanged is not None
+    assert unchanged.manifest.display_name == draft.manifest.display_name
+    assert unchanged.etag == draft.etag
+
+
+def test_update_draft_second_concurrent_editor_is_rejected_after_first_succeeds(service: ReleaseService) -> None:
+    """Two editors read the same draft; the first save succeeds and rotates
+
+    the etag, so the second editor's save (still holding the old etag) must
+    be rejected rather than silently clobbering the first editor's change.
+    """
+    _create_agent(service)
+    draft = service._store.get_draft(_scope(), "agent-one")
+    assert draft is not None
+    shared_base_etag = draft.etag
+
+    first = service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        manifest=draft.manifest.model_copy(update={"display_name": "First Editor's Change"}),
+        updated_by="editor-1",
+        actor_role=AgentRole.CONTRIBUTOR,
+        expected_etag=shared_base_etag,
+    )
+    assert first.etag != shared_base_etag
+
+    with pytest.raises(DraftConflictError, match="concurrently"):
+        service.update_draft(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-one",
+            manifest=draft.manifest.model_copy(update={"display_name": "Second Editor's Change"}),
+            updated_by="editor-2",
+            actor_role=AgentRole.CONTRIBUTOR,
+            expected_etag=shared_base_etag,
+        )
+    current = service._store.get_draft(_scope(), "agent-one")
+    assert current is not None
+    assert current.manifest.display_name == "First Editor's Change"
 
 
 def test_fork_rejects_unknown_source_version(service: ReleaseService) -> None:
@@ -500,6 +629,41 @@ def test_cut_version_rejects_cross_project_draft(service: ReleaseService) -> Non
         )
 
 
+def test_cut_version_hard_fails_when_a_capability_binding_goes_stale_before_cut(service: ReleaseService) -> None:
+    """Finding #4 regression: cutting an immutable version must re-resolve
+
+    every binding against the live registry, not just trust what
+    ``update_draft`` accepted earlier. A descriptor removed from the
+    catalog between draft-save and cut must hard-block the cut.
+    """
+    _create_agent(service, logical_agent_id="agent-binding-cut")
+    draft = service._store.get_draft(_scope(), "agent-binding-cut")
+    assert draft is not None
+    binding = service._registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-binding-cut",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+        expected_etag=draft.etag,
+    )
+    # Simulate the descriptor disappearing from the live catalog between the
+    # (successful) draft save and the cut -- the previously-fresh binding is
+    # now stale and must hard-block the cut.
+    service._registry = CapabilityRegistry(descriptors=())
+
+    with pytest.raises(ReleaseServiceError, match="stale"):
+        service.cut_version(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-binding-cut",
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
 def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     store = SpyAllocateStore()
     service = ReleaseService(
@@ -534,6 +698,7 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
         manifest=updated_manifest,
         updated_by="user-1",
         actor_role=AgentRole.OWNER,
+        expected_etag=draft.etag,
     )
 
     version = service.cut_version(
@@ -635,6 +800,8 @@ def test_run_release_gates_raises_for_missing_version(service: ReleaseService) -
             tenant_id="demo",
             project_id=TEST_PROJECT_ID,
             version_id="missing",
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
             evidence=GateEvidence(),
         )
 
@@ -654,6 +821,22 @@ def test_run_release_gates_rejects_cross_project_version(service: ReleaseService
             tenant_id="demo",
             project_id=OTHER_PROJECT_ID,
             version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        )
+
+
+def test_run_release_gates_requires_contributor_role(service: ReleaseService) -> None:
+    version = _gated_version(service)
+
+    with pytest.raises(AuthorizationError):
+        service.run_release_gates(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="viewer-1",
+            actor_role=AgentRole.VIEWER,
             evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
         )
 
@@ -681,6 +864,7 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
         manifest: AgentManifest,
         manifest_hash: str,
         capability_catalog: Mapping[str, CapabilityDescriptor],
+        capability_registry: CapabilityRegistry,
         evidence: GateEvidence,
         runtime_target: RuntimeTarget | None,
         capability_approvals: tuple[StudioApprovalRecord, ...] = (),
@@ -690,6 +874,8 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
         return ReleaseGateReport(
             id=f"report-{idx}",
             version_id=version_id,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             results=(GateResult(name=GateName.SCHEMA, status=GateStatus.PASSED),),
             evaluations=(
                 EvaluationRecord(
@@ -708,12 +894,16 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
     second = service.run_release_gates(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
 
@@ -747,6 +937,7 @@ def test_run_release_gates_failed_report_creates_no_release(
         manifest: AgentManifest,
         manifest_hash: str,
         capability_catalog: Mapping[str, CapabilityDescriptor],
+        capability_registry: CapabilityRegistry,
         evidence: GateEvidence,
         runtime_target: RuntimeTarget | None,
         capability_approvals: tuple[StudioApprovalRecord, ...] = (),
@@ -754,6 +945,8 @@ def test_run_release_gates_failed_report_creates_no_release(
         return ReleaseGateReport(
             id="report-fail",
             version_id=version_id,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             results=(GateResult(name=GateName.TEST, status=GateStatus.FAILED, detail="Tests failed."),),
         )
 
@@ -763,12 +956,69 @@ def test_run_release_gates_failed_report_creates_no_release(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
         evidence=GateEvidence(),
     )
 
     assert not report.passed
-    assert service._store.get_gate_report("report-fail") == report
+    assert service._store.get_gate_report(_scope(), "report-fail") == report
     assert service._store.list_releases_for_version(_scope(), version.id) == ()
+
+
+def test_run_release_gates_records_actual_actor_as_created_by(service: ReleaseService) -> None:
+    """The GATED release must attribute the actor who ran the gates, never
+    the original version author -- otherwise a maintainer running gates on
+    someone else's version would silently misattribute the audit trail."""
+    _create_agent(service, owner_id="author-1")
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="author-1",
+        actor_role=AgentRole.OWNER,
+    )
+    service._store.grant_ownership(
+        _scope(),
+        OwnershipGrant(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-one",
+            principal_id="maintainer-1",
+            role=AgentRole.MAINTAINER,
+            granted_by="author-1",
+        ),
+    )
+
+    report = service.run_release_gates(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="maintainer-1",
+        actor_role=AgentRole.MAINTAINER,
+        evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+    )
+
+    assert report.passed
+    releases = service._store.list_releases_for_version(_scope(), version.id)
+    assert len(releases) == 1
+    assert releases[0].created_by == "maintainer-1"
+    assert version.created_by == "author-1"
+
+
+def test_request_promotion_requires_contributor_role(service: ReleaseService) -> None:
+    version = _gated_version(service)
+
+    with pytest.raises(AuthorizationError):
+        service.request_promotion(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="viewer-1",
+            actor_role=AgentRole.VIEWER,
+            destination="production",
+            evidence_summary="evidence",
+        )
 
 
 def test_request_promotion_raises_for_missing_version(service: ReleaseService) -> None:
@@ -1040,6 +1290,8 @@ def test_request_promotion_uses_fork_promotion_kind_for_forked_versions(service:
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         version_id=fork_version.id,
+        actor_id="user-2",
+        actor_role=AgentRole.OWNER,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
 
@@ -1409,6 +1661,7 @@ def _service_with_model_deployment_manifest(
         ),
         updated_by="user-1",
         actor_role=AgentRole.OWNER,
+        expected_etag=draft.etag,
     )
     return local_service, logical_agent_id
 
@@ -1529,6 +1782,7 @@ def test_request_and_decide_capability_approval_happy_path(service: ReleaseServi
         manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
         updated_by="user-1",
         actor_role=AgentRole.OWNER,
+        expected_etag=draft.etag,
     )
     version = service.cut_version(
         tenant_id="demo",

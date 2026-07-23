@@ -154,8 +154,16 @@ def _lineage(
     )
 
 
-def _gate_report(report_id: str = "report-1", version_id: str = "version-1") -> ReleaseGateReport:
-    return ReleaseGateReport(id=report_id, version_id=version_id, results=())
+def _gate_report(
+    report_id: str = "report-1",
+    version_id: str = "version-1",
+    *,
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+) -> ReleaseGateReport:
+    return ReleaseGateReport(
+        id=report_id, version_id=version_id, tenant_id=tenant_id, project_id=project_id, results=()
+    )
 
 
 def _release(
@@ -463,9 +471,14 @@ def test_lineage_and_gate_reports_round_trip_without_scope_leakage() -> None:
     assert store.list_lineage(SAME_TENANT_OTHER_PROJECT_SCOPE, AGENT_ID) == ()
     assert store.list_lineage(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
 
-    assert store.save_gate_report(report) == report
-    assert store.get_gate_report(report.id) == report
-    assert store.get_gate_report("missing-report") is None
+    assert store.save_gate_report(SCOPE, report) == report
+    assert store.get_gate_report(SCOPE, report.id) == report
+    assert store.get_gate_report(SCOPE, "missing-report") is None
+    assert store.get_gate_report(SAME_TENANT_OTHER_PROJECT_SCOPE, report.id) is None
+    assert store.get_gate_report(OTHER_TENANT_SAME_PROJECT_SCOPE, report.id) is None
+
+    with pytest.raises(AgentStudioStoreError):
+        store.save_gate_report(SCOPE, _gate_report(report_id="mismatch", project_id=OTHER_PROJECT))
 
 
 def test_releases_round_trip_latest_transition_and_scope_guards() -> None:
