@@ -12,6 +12,12 @@ import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
+from research_assistant_api.agent_studio.authz import (
+    MembershipCheckRequest,
+    MembershipDecision,
+    MembershipOutcome,
+    ProjectMembershipResolver,
+)
 from research_assistant_api.agent_studio.builder_service import (
     BuilderService,
     InMemoryManifestProposalGenerator,
@@ -2753,6 +2759,89 @@ def test_project_membership_is_enforced_and_demo_sandbox_bypasses_it(client: Tes
     assert sandbox_create.status_code == 201, sandbox_create.text
     assert sandbox_create.json()["manifest"]["project_id"] == OTHER_PROJECT_ID
     assert sandbox_create.json()["manifest"]["owner_id"] == "demo-researcher"
+
+
+def test_project_membership_in_one_project_does_not_authorize_a_different_project(
+    client: TestClient,
+) -> None:
+    """USER_HEADERS only carries the ``project:{DEFAULT_PROJECT_ID}`` group;
+    using it against a *different* project must be denied, never silently
+    authorized by virtue of belonging to some project."""
+    _create_agent(
+        client,
+        logical_agent_id="agent-cross-project-membership",
+        project_id=OTHER_PROJECT_ID,
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    response = client.get(
+        "/v1/agent-studio/agents/agent-cross-project-membership/draft",
+        params=_params(OTHER_PROJECT_ID),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 403
+    assert "not a member of project" in response.json()["detail"]
+
+
+def test_group_overage_denies_access_even_when_target_group_is_present(client: TestClient) -> None:
+    """Regression for treating overage as a blanket fail-closed signal: even
+    a claims list that (coincidentally) contains the right group name must
+    still be rejected once the provider has reported it as truncated,
+    because the resolver cannot trust *any* claim from an incomplete list."""
+    overage_headers = _headers(
+        tenant_id="demo",
+        user_id="overage-with-group",
+        groups=(project_group_name(DEFAULT_PROJECT_ID),),
+        groups_overage=True,
+    )
+    _create_agent(client, logical_agent_id="agent-overage-with-group", headers=USER_HEADERS)
+    response = client.get(
+        "/v1/agent-studio/agents/agent-overage-with-group/draft",
+        params=_params(),
+        headers=overage_headers,
+    )
+    assert response.status_code == 403
+    assert "group overage" in response.json()["detail"]
+
+
+class _AlwaysMemberResolver:
+    """Test double proving the router consults an app-composed
+    ``ProjectMembershipResolver`` from ``app.state`` rather than hard-coding
+    the claims-based adapter -- the adapter-swap seam the domain Protocol
+    exists for."""
+
+    def resolve_membership(self, request: MembershipCheckRequest) -> MembershipDecision:
+        return MembershipDecision(outcome=MembershipOutcome.MEMBER)
+
+
+class _AlwaysUnavailableResolver:
+    def resolve_membership(self, request: MembershipCheckRequest) -> MembershipDecision:
+        return MembershipDecision(outcome=MembershipOutcome.UNAVAILABLE, reason="directory unreachable")
+
+
+def test_router_consults_app_composed_membership_resolver_when_present(client: TestClient) -> None:
+    resolver: ProjectMembershipResolver = _AlwaysMemberResolver()
+    cast(Any, client).app.state.agent_studio_membership_resolver = resolver
+    no_membership_headers = _headers(tenant_id="demo", user_id="stranger")
+    _create_agent(client, logical_agent_id="agent-swapped-resolver", headers=USER_HEADERS)
+    response = client.get(
+        "/v1/agent-studio/agents/agent-swapped-resolver/draft",
+        params=_params(),
+        headers=no_membership_headers,
+    )
+    assert response.status_code == 200, response.text
+
+
+def test_router_denies_when_app_composed_resolver_reports_unavailable(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-unavailable-resolver", headers=USER_HEADERS)
+    resolver: ProjectMembershipResolver = _AlwaysUnavailableResolver()
+    cast(Any, client).app.state.agent_studio_membership_resolver = resolver
+    response = client.get(
+        "/v1/agent-studio/agents/agent-unavailable-resolver/draft",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 403
+    assert "directory unreachable" in response.json()["detail"]
 
 
 def test_draft_and_version_routes_are_cross_project_and_cross_tenant_isolated(

@@ -21,6 +21,13 @@ from research_assistant_api.agent_studio.approvals import (
     compute_approval_effective_state,
     revoke_approval,
 )
+from research_assistant_api.agent_studio.authz import (
+    ClaimsGroupMembershipResolver,
+    MembershipCheckRequest,
+    ProjectMembershipError,
+    ProjectMembershipResolver,
+    enforce_project_membership,
+)
 from research_assistant_api.agent_studio.builder_service import (
     BuilderConcurrencyError,
     BuilderNotFoundError,
@@ -105,12 +112,18 @@ from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, Scope
 from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
+    DEMO_SANDBOX_SOURCE,
     IdentityContext,
-    enforce_project_membership,
     resolve_identity,
 )
 
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
+
+#: Default ``ProjectMembershipResolver`` used whenever the composed app
+#: hasn't wired an adapter onto ``app.state.agent_studio_membership_resolver``.
+#: See ``agent_studio.authz`` for why this is a Protocol-backed seam rather
+#: than a direct ``identity.groups`` check.
+_DEFAULT_MEMBERSHIP_RESOLVER = ClaimsGroupMembershipResolver()
 
 router = APIRouter(prefix="/v1/agent-studio", tags=["agent-studio"])
 
@@ -167,15 +180,44 @@ def _is_platform_owner(identity: IdentityContext) -> bool:
     return bool(PLATFORM_OWNER_GROUPS.intersection(identity.groups))
 
 
-def _scope(identity: IdentityContext, project_id: str) -> ScopeContext:
+def _membership_resolver(request: Request) -> ProjectMembershipResolver:
+    """Resolve the app-composed ``ProjectMembershipResolver`` adapter.
+
+    Falls back to the default claims-based adapter when the application
+    hasn't wired one onto ``app.state`` (e.g. minimal test apps that only
+    mount this router) -- this keeps the fail-closed claims behavior as the
+    baseline while still letting real deployments inject a Graph/app-role
+    membership adapter without any router change.
+    """
+    resolver = getattr(request.app.state, "agent_studio_membership_resolver", None)
+    if resolver is None:
+        return _DEFAULT_MEMBERSHIP_RESOLVER
+    return cast(ProjectMembershipResolver, resolver)
+
+
+def _scope(request: Request, identity: IdentityContext, project_id: str) -> ScopeContext:
     if project_id == PLATFORM_PROJECT_ID:
         if not _is_platform_owner(identity):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only platform owners may access platform-scoped resources.",
             )
-    else:
-        enforce_project_membership(identity, project_id)
+    elif identity.source != DEMO_SANDBOX_SOURCE:
+        membership_request = MembershipCheckRequest(
+            tenant_id=identity.tenant_id,
+            project_id=project_id,
+            principal_id=identity.user_id,
+            claimed_groups=identity.groups,
+            # ``groups_overage`` (provider-reported truncation) is the only
+            # signal that flips this to "not known-complete" today; a future
+            # non-claims adapter (e.g. Graph) would ignore this field
+            # entirely and resolve membership out-of-band instead.
+            groups_known_complete=not identity.groups_overage,
+        )
+        try:
+            enforce_project_membership(_membership_resolver(request), membership_request)
+        except ProjectMembershipError as exc:
+            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return ScopeContext(tenant_id=identity.tenant_id, project_id=project_id)
 
 
@@ -247,7 +289,7 @@ def list_capability_instances(request: Request, project_id: str | None = None) -
     """
     identity = _identity(request)
     if project_id is not None:
-        _scope(identity, project_id)
+        _scope(request, identity, project_id)
     # Intentionally preserved: registry discovery can aggregate a caller's
     # instances across all of their projects when no project_id is supplied.
     return list(_registry(request).instances_for(tenant_id=identity.tenant_id, project_id=project_id))
@@ -265,7 +307,7 @@ def get_capability_discovery(request: Request, project_id: str | None = None) ->
     """
     identity = _identity(request)
     if project_id is not None:
-        _scope(identity, project_id)
+        _scope(request, identity, project_id)
     registry = _registry(request)
     return CapabilityDiscoverySnapshot(
         descriptors=registry.catalog(),
@@ -334,6 +376,7 @@ def get_agent_manifest_schema(request: Request) -> dict[str, object]:
 def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
     identity = _identity(request)
     scope = _scope(
+        request,
         identity,
         PLATFORM_PROJECT_ID if payload.owner_kind is AgentOwnerKind.SYSTEM else payload.project_id,
     )
@@ -366,7 +409,7 @@ def get_draft(request: Request, logical_agent_id: str, project_id: str) -> Agent
     without ever being written back into the draft/manifest.
     """
     identity = _identity(request)
-    draft = _store(request).get_draft(_scope(identity, project_id), logical_agent_id)
+    draft = _store(request).get_draft(_scope(request, identity, project_id), logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
     capability_views = _registry(request).resolve_binding_views(draft.manifest.capabilities)
@@ -381,7 +424,7 @@ def update_draft(
     if_match: str = Header(..., alias="If-Match", description="Expected current draft etag (optimistic concurrency)."),
 ) -> AgentDraft:
     identity = _identity(request)
-    scope = _scope(identity, payload.manifest.project_id)
+    scope = _scope(request, identity, payload.manifest.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _release_service(request).update_draft(
@@ -404,7 +447,7 @@ def update_draft(
 @router.post("/agents/{logical_agent_id}/fork", response_model=AgentDraft, status_code=status.HTTP_201_CREATED)
 def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) -> AgentDraft:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     try:
         return _release_service(request).fork(
             tenant_id=scope.tenant_id,
@@ -435,7 +478,7 @@ def register_tool(
     for a preview/unavailable operation).
     """
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _release_service(request).register_tool(
@@ -458,7 +501,7 @@ def register_tool(
 @router.get("/agents/{logical_agent_id}/tool-registrations", response_model=list[ToolRegistrationSpec])
 def list_tool_registrations(request: Request, logical_agent_id: str, project_id: str) -> list[ToolRegistrationSpec]:
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     return list(_release_service(request).list_tool_registrations(scope.tenant_id, scope.project_id, logical_agent_id))
 
 
@@ -469,7 +512,7 @@ def list_tool_registrations(request: Request, logical_agent_id: str, project_id:
 )
 def cut_version(request: Request, logical_agent_id: str, project_id: str) -> AgentVersion:
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _release_service(request).cut_version(
@@ -488,7 +531,7 @@ def cut_version(request: Request, logical_agent_id: str, project_id: str) -> Age
 @router.get("/agents/{logical_agent_id}/versions", response_model=list[AgentVersion])
 def list_versions(request: Request, logical_agent_id: str, project_id: str) -> list[AgentVersion]:
     identity = _identity(request)
-    return list(_store(request).list_versions(_scope(identity, project_id), logical_agent_id))
+    return list(_store(request).list_versions(_scope(request, identity, project_id), logical_agent_id))
 
 
 @router.get("/versions/{version_id}/capability-views", response_model=list[CapabilityBindingView])
@@ -504,7 +547,7 @@ def get_version_capability_views(
     runtime/compiler.
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
@@ -522,7 +565,7 @@ def get_agent_workspace(request: Request, logical_agent_id: str, project_id: str
     ``/resolve``/``/versions/{id}/contract`` instead.
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     store = _store(request)
     draft = store.get_draft(scope, logical_agent_id)
     if draft is None:
@@ -547,14 +590,14 @@ def get_agent_workspace(request: Request, logical_agent_id: str, project_id: str
 @router.get("/agents/{logical_agent_id}/lineage")
 def list_lineage(request: Request, logical_agent_id: str, project_id: str) -> list[dict[str, object]]:
     identity = _identity(request)
-    edges = _store(request).list_lineage(_scope(identity, project_id), logical_agent_id)
+    edges = _store(request).list_lineage(_scope(request, identity, project_id), logical_agent_id)
     return [edge.model_dump(mode="json") for edge in edges]
 
 
 @router.post("/versions/{version_id}/gates", response_model=ReleaseGateReport)
 def run_gates(request: Request, version_id: str, payload: RunGatesRequest) -> ReleaseGateReport:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
@@ -581,7 +624,7 @@ def request_promotion(
     payload: PromotionRequest,
 ) -> StudioApprovalRecord | AgentVersion:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
@@ -618,7 +661,7 @@ def activate_release_route(
     smoke result.
     """
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
@@ -645,7 +688,7 @@ def request_capability_approval(
     payload: CapabilityApprovalRequest,
 ) -> StudioApprovalRecord:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
@@ -676,7 +719,7 @@ def decide_approval_route(
     identity = _identity(request)
     service = _release_service(request)
     store = _store(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     record = store.get_approval(scope, approval_id)
     if record is None:
         raise _not_found(f"Approval '{approval_id}' was not found.")
@@ -730,7 +773,7 @@ def get_approval_route(request: Request, approval_id: str, project_id: str) -> A
     """UI/audit read of one approval: record + recomputed ``effective_state`` + revocations."""
     identity = _identity(request)
     store = _store(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     record = store.get_approval(scope, approval_id)
     if record is None:
         raise _not_found(f"Approval '{approval_id}' was not found.")
@@ -753,7 +796,7 @@ def revoke_approval_route(
     """
     identity = _identity(request)
     store = _store(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     record = store.get_approval(scope, approval_id)
     if record is None:
         raise _not_found(f"Approval '{approval_id}' was not found.")
@@ -792,7 +835,7 @@ def request_escalation(
     payload: EscalationRequest,
 ) -> StudioApprovalRecord:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     return _release_service(request).request_role_escalation(
         tenant_id=scope.tenant_id,
         project_id=scope.project_id,
@@ -811,7 +854,7 @@ def request_escalation(
 )
 def deploy(request: Request, logical_agent_id: str, payload: DeployRequest) -> DeploymentRecord:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _deployment_service(request).deploy(
@@ -830,13 +873,13 @@ def deploy(request: Request, logical_agent_id: str, payload: DeployRequest) -> D
 @router.get("/agents/{logical_agent_id}/deployments", response_model=list[DeploymentRecord])
 def list_deployments(request: Request, logical_agent_id: str, project_id: str) -> list[DeploymentRecord]:
     identity = _identity(request)
-    return list(_store(request).list_deployments(_scope(identity, project_id), logical_agent_id))
+    return list(_store(request).list_deployments(_scope(request, identity, project_id), logical_agent_id))
 
 
 @router.post("/deployments/{deployment_id}/health", response_model=DeploymentRecord)
 def record_health(request: Request, deployment_id: str, payload: HealthUpdateRequest) -> DeploymentRecord:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     try:
         return _deployment_service(request).record_health(
             tenant_id=scope.tenant_id,
@@ -857,7 +900,7 @@ def record_health(request: Request, deployment_id: str, payload: HealthUpdateReq
 )
 def rollback(request: Request, logical_agent_id: str, payload: RollbackRequest) -> DeploymentRecord:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _deployment_service(request).rollback(
@@ -895,7 +938,7 @@ def resolve_logical_agent(
     gate-time validation.
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     try:
         contract = _deployment_service(request).resolve(
             tenant_id=scope.tenant_id,
@@ -930,7 +973,7 @@ def get_exact_version_contract(
     Fails closed on stale capability bindings, same as ``/resolve``.
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     try:
         contract = _deployment_service(request).contract_for_version(
             tenant_id=scope.tenant_id,
@@ -958,7 +1001,7 @@ def get_released_agent_catalog(
     environment binding yet are omitted (there is nothing to pin).
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     return list(
         _deployment_service(request).catalog(
             tenant_id=scope.tenant_id,
@@ -983,7 +1026,7 @@ def remember(request: Request, logical_agent_id: str, payload: RememberRequest) 
     ``REMEMBER`` provenance audit record.
     """
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1017,7 +1060,7 @@ def recall(
     limit: int = 100,
 ) -> list[MemoryEntry]:
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1041,7 +1084,7 @@ def recall(
 def inspect_memory_entry(request: Request, logical_agent_id: str, entry_id: str, project_id: str) -> MemoryEntry:
     """Inspect a single memory entry (GA-mechanism memory governance: inspect)."""
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1068,7 +1111,7 @@ def correct_memory_entry(
 ) -> MemoryEntry:
     """Correct a memory entry's content (GA-mechanism memory governance: correct)."""
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1096,7 +1139,7 @@ def forget_memory_entry(
 ) -> MemoryEntry:
     """Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance."""
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1125,7 +1168,7 @@ def export_memory(
 ) -> list[MemoryEntry]:
     """Export all readable memory entries for a scope (GA-mechanism memory governance: export)."""
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1159,7 +1202,7 @@ def memory_audit_trail(
     cross-scope audit history can be enumerated.
     """
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     draft = _store(request).get_draft(scope, logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
@@ -1214,7 +1257,7 @@ def create_builder_proposal(
     ``message`` and a ``base_etag`` acknowledgement only -- never a patch.
     """
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _builder_service(request).propose(
@@ -1236,14 +1279,14 @@ def create_builder_proposal(
 def list_builder_proposals(request: Request, logical_agent_id: str, project_id: str) -> list[BuilderProposal]:
     """Proposal history for an agent (pending, applied, and rejected)."""
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     return list(_builder_service(request).list_proposals(scope.tenant_id, scope.project_id, logical_agent_id))
 
 
 @router.get("/agents/{logical_agent_id}/proposals/{proposal_id}", response_model=BuilderProposal)
 def get_builder_proposal(request: Request, logical_agent_id: str, proposal_id: str, project_id: str) -> BuilderProposal:
     identity = _identity(request)
-    scope = _scope(identity, project_id)
+    scope = _scope(request, identity, project_id)
     proposal = _builder_service(request).get_proposal(scope.tenant_id, scope.project_id, logical_agent_id, proposal_id)
     if proposal is None:
         raise _not_found(f"Proposal '{proposal_id}' was not found.")
@@ -1264,7 +1307,7 @@ def apply_builder_proposal(
     or since the caller last read it.
     """
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _builder_service(request).apply(
@@ -1290,7 +1333,7 @@ def reject_builder_proposal(
     payload: BuilderRejectRequest,
 ) -> BuilderProposal:
     identity = _identity(request)
-    scope = _scope(identity, payload.project_id)
+    scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
     try:
         return _builder_service(request).reject(

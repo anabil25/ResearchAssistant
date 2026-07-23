@@ -31,6 +31,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
 from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
+from research_assistant_api.agent_studio.authz import ClaimsGroupMembershipResolver
 from research_assistant_api.agent_studio.builder_service import (
     BuilderService,
     build_manifest_proposal_generator,
@@ -149,6 +150,12 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     # registry honestly reports ``available=False`` rather than looking like
     # an empty-but-successful catalog.
     application.state.agent_studio_registry = registry
+    # Application-owned adapter for the ``ProjectMembershipResolver`` domain
+    # port (see ``agent_studio.authz``). Explicit here (rather than relying
+    # on the router's fallback default) so swapping in a future Graph/
+    # app-role-membership adapter is a one-line change at this composition
+    # root, with no router/service code change required.
+    application.state.agent_studio_membership_resolver = ClaimsGroupMembershipResolver()
     model_discovery = build_model_discovery(settings)
     application.state.agent_studio_model_discovery = model_discovery
     try:

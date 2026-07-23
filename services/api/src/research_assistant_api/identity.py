@@ -129,38 +129,10 @@ def project_group_name(project_id: str) -> str:
     return f"{PROJECT_GROUP_PREFIX}{project_id}"
 
 
-def enforce_project_membership(identity: IdentityContext, project_id: str) -> None:
-    """Fail-closed application-role check: does ``identity`` belong to ``project_id``?
-
-    Group claims alone are not treated as a sufficient *or* safe boundary on
-    their own:
-
-    - The interactive local/dev "demo sandbox" identity (``source ==
-      "demo-sandbox"``, only ever issued when ``Settings.allow_demo_identity``
-      is explicitly enabled) is exempt, since it never carries real Entra
-      group claims and exists purely to exercise the API without a real
-      identity provider.
-    - Every other identity must carry the ``project:{project_id}`` group.
-    - If the identity provider reported group-claim truncation
-      (``groups_overage``), the ``groups`` list is known-incomplete and this
-      check fails closed (denies) rather than silently trusting an absence
-      that might just be a token size limit -- callers see a distinct,
-      actionable 403 rather than an inexplicable "not a member" error.
-      Resolving overage via an explicit directory/Graph membership lookup is
-      a known limitation, out of scope for this pass.
-    """
-    if identity.source == "demo-sandbox":
-        return
-    if identity.groups_overage:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=(
-                "Unable to verify project membership: the identity's group claim was "
-                "truncated by the identity provider (group overage). Contact an administrator."
-            ),
-        )
-    if project_group_name(project_id) not in identity.groups:
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Identity is not a member of project '{project_id}'.",
-        )
+#: The interactive local/dev "demo sandbox" identity source (only ever issued
+#: when ``Settings.allow_demo_identity`` is explicitly enabled). It never
+#: carries real Entra group claims and exists purely to exercise the API
+#: without a real identity provider, so it is exempt from project-membership
+#: group-claim checks. See ``research_assistant_api.agent_studio.authz`` for
+#: the actual membership-resolution policy this identity is exempted from.
+DEMO_SANDBOX_SOURCE = "demo-sandbox"
