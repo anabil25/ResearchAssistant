@@ -909,6 +909,63 @@
         "title": "ApprovalConsumptionResult",
         "type": "object"
       },
+      "ApprovalContextOutcome": {
+        "description": "Outcome of a single ``resolve_context`` call.\n\n``RESOLVED``: exactly one currently-effectively-``APPROVED``\n``CAPABILITY_OPERATION`` approval exists for this release's binding's\ndestination; its ``approval_id`` and a freshly minted ``invocation_id``\nare returned.\n``NOT_APPROVED``: no such approval currently exists (never requested,\nstill pending, rejected, expired, or revoked) -- fails closed rather\nthan ever fabricating a context.\n``NOT_FOUND``: the referenced release/binding/operation itself does not\nexist (or does not match) in this scope -- a distinct, non-authorization\nfailure from \"no approval exists for an otherwise-valid binding\".",
+        "enum": [
+          "resolved",
+          "not_approved",
+          "not_found"
+        ],
+        "title": "ApprovalContextOutcome",
+        "type": "string"
+      },
+      "ApprovalContextResult": {
+        "additionalProperties": false,
+        "description": "Result of a single ``resolve_context`` call.\n\n``approval_id``/``invocation_id`` are populated only for ``RESOLVED``;\nboth are always ``None`` otherwise, so a caller can never mistake a\ndenial for a usable context by only checking for a non-``None`` field.",
+        "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Invocation Id"
+          },
+          "outcome": {
+            "$ref": "#/components/schemas/ApprovalContextOutcome"
+          },
+          "reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Reason"
+          }
+        },
+        "required": [
+          "outcome"
+        ],
+        "title": "ApprovalContextResult",
+        "type": "object"
+      },
       "ApprovalDecision": {
         "properties": {
           "decision": {
@@ -6312,6 +6369,102 @@
         "title": "ReleaseArtifactMetadata",
         "type": "object"
       },
+      "ReleaseAttestation": {
+        "additionalProperties": false,
+        "description": "Signed, objective attestation that hard release gates passed for one\nexact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a\nharness/runtime consumer to verify at startup before trusting a release.\n\nNever re-runs gates and never reflects advisory ``EvaluationRecord``\nscores -- it is a purely read-derived, reproducible projection of a\nrelease's own ``gate_report_id`` and its version's own ``manifest_hash``.\n``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==\n\"hmac-sha256\"``) over the canonical, finite JSON encoding of every field\nbelow when an attestation-signing key is configured; when none is\nconfigured, ``signature_algorithm == \"sha256-digest\"`` and ``signature``\nis a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-\nevidence check but explicitly *not* claimed as a keyed signature, so a\nconsumer can distinguish \"verified against a shared secret\" from \"just a\ncontent digest\" and this package never overstates what it can honestly\nattest.",
+        "properties": {
+          "attested_at": {
+            "format": "date-time",
+            "title": "Attested At",
+            "type": "string"
+          },
+          "blocking_gates": {
+            "items": {
+              "$ref": "#/components/schemas/GateName"
+            },
+            "title": "Blocking Gates",
+            "type": "array"
+          },
+          "environment": {
+            "$ref": "#/components/schemas/DeploymentEnvironment"
+          },
+          "gate_report_id": {
+            "title": "Gate Report Id",
+            "type": "string"
+          },
+          "gate_results": {
+            "items": {
+              "$ref": "#/components/schemas/GateResult"
+            },
+            "title": "Gate Results",
+            "type": "array"
+          },
+          "logical_agent_id": {
+            "title": "Logical Agent Id",
+            "type": "string"
+          },
+          "manifest_hash": {
+            "title": "Manifest Hash",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "release_id": {
+            "title": "Release Id",
+            "type": "string"
+          },
+          "signature": {
+            "title": "Signature",
+            "type": "string"
+          },
+          "signature_algorithm": {
+            "title": "Signature Algorithm",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/ReleaseAttestationStatus"
+          },
+          "tenant_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "version_id": {
+            "title": "Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "release_id",
+          "version_id",
+          "logical_agent_id",
+          "tenant_id",
+          "project_id",
+          "environment",
+          "manifest_hash",
+          "gate_report_id",
+          "status",
+          "gate_results",
+          "signature_algorithm",
+          "signature"
+        ],
+        "title": "ReleaseAttestation",
+        "type": "object"
+      },
+      "ReleaseAttestationStatus": {
+        "description": "Whether a ``ReleaseAttestation`` found all objective hard gates passing.\n\nDerived exclusively from ``ReleaseGateReport.passed`` (schema/build/\ntest/auth/policy/approval/security/smoke/binding) -- a report's\n``evaluations`` (advisory) never influence this value, matching the\nhard-gate/advisory-evaluation boundary enforced everywhere else in this\npackage.",
+        "enum": [
+          "attested",
+          "failed"
+        ],
+        "title": "ReleaseAttestationStatus",
+        "type": "string"
+      },
       "ReleaseGateReport": {
         "description": "The immutable, deterministic hard-gate result for one ``AgentVersion``.\n\n``tenant_id``/``project_id`` scope this report to the exact project that\nowns the underlying version (mirroring every other Agent Studio record).\nA gate report can contain sensitive detail (evidence summaries, security\nfindings) and previously had no owning scope at all -- it was persisted\nunder a single fixed, tenant/project-agnostic partition key, which made\nit a cross-tenant point-lookup-by-id target. It is now partitioned and\nqueried exactly like every other project-scoped document.",
         "properties": {
@@ -6556,6 +6709,44 @@
           "provenance"
         ],
         "title": "ResearchResult",
+        "type": "object"
+      },
+      "ResolveApprovalContextRequest": {
+        "additionalProperties": false,
+        "description": "Request body to resolve a trusted ``ApprovalContext`` for an\nabout-to-run capability-operation invocation.\n\nCarries only the plan's identifying facts (release/binding/operation) --\ndeliberately excludes ``approval_id``/``invocation_id``: a caller can\nnever assert which approval authorizes it or mint its own\n``invocation_id``. Both are always resolved and minted server-side by\n``ApprovalContextResolver`` from the release's own currently-effective\n``CAPABILITY_OPERATION`` approval for this exact binding/operation,\nclosing the gap where a hosted caller had no trusted way to discover\neither value before calling ``/approvals/{approval_id}/consume``.",
+        "properties": {
+          "binding_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "release_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Release Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "release_id",
+          "binding_id",
+          "operation_id"
+        ],
+        "title": "ResolveApprovalContextRequest",
         "type": "object"
       },
       "ResolvedAgentContract": {
@@ -10103,6 +10294,48 @@
         ]
       }
     },
+    "/v1/agent-studio/approvals/context": {
+      "post": {
+        "description": "Resolve the trusted ``approval_id``/``invocation_id`` a runtime caller\nmust pass to ``POST /approvals/{approval_id}/consume``.\n\nThe caller supplies only the plan facts it already knows on its own\n(release/binding/operation) -- never an ``approval_id`` or\n``invocation_id``, both of which are always resolved/minted server-side\nfrom this release's own currently-effectively-approved\n``CAPABILITY_OPERATION`` approval for the exact destination. This closes\nthe \"API never supplies trusted approval_id/invocation_id\" gap without\ncreating any new trust dependency: ``consume_approval_route`` still\nindependently revalidates everything regardless of what this route\nreturned. Read-only; performs no durable write and grants no authority\nby itself.",
+        "operationId": "resolve_approval_context_route_v1_agent_studio_approvals_context_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResolveApprovalContextRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalContextResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Approval Context Route",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
     "/v1/agent-studio/approvals/{approval_id}": {
       "get": {
         "description": "UI/audit read of one approval: record + recomputed ``effective_state`` + revocations.",
@@ -10842,6 +11075,58 @@
           }
         },
         "summary": "List Deployed Models",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/releases/{release_id}/attestation": {
+      "get": {
+        "description": "Return a signed, objective ``ReleaseAttestation`` for one release.\n\nDerived read-only from the release's own immutable ``ReleaseGateReport``\n(never re-run, never influenced by advisory evaluations); intended for\nharness/runtime startup to verify hard release gates passed before\ntrusting a release. Raises 404 if the release does not exist in this\nscope, or has never had release gates run against it.",
+        "operationId": "get_release_attestation_route_v1_agent_studio_releases__release_id__attestation_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "release_id",
+            "required": true,
+            "schema": {
+              "title": "Release Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseAttestation"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Release Attestation Route",
         "tags": [
           "agent-studio"
         ]

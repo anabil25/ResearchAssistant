@@ -793,6 +793,38 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agent-studio/approvals/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Approval Context Route
+         * @description Resolve the trusted ``approval_id``/``invocation_id`` a runtime caller
+         *     must pass to ``POST /approvals/{approval_id}/consume``.
+         *
+         *     The caller supplies only the plan facts it already knows on its own
+         *     (release/binding/operation) -- never an ``approval_id`` or
+         *     ``invocation_id``, both of which are always resolved/minted server-side
+         *     from this release's own currently-effectively-approved
+         *     ``CAPABILITY_OPERATION`` approval for the exact destination. This closes
+         *     the "API never supplies trusted approval_id/invocation_id" gap without
+         *     creating any new trust dependency: ``consume_approval_route`` still
+         *     independently revalidates everything regardless of what this route
+         *     returned. Read-only; performs no durable write and grants no authority
+         *     by itself.
+         */
+        post: operations["resolve_approval_context_route_v1_agent_studio_approvals_context_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/agent-studio/approvals/{approval_id}": {
         parameters: {
             query?: never;
@@ -1170,6 +1202,32 @@ export interface paths {
         };
         /** List Deployed Models */
         get: operations["list_deployed_models_v1_agent_studio_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/releases/{release_id}/attestation": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Release Attestation Route
+         * @description Return a signed, objective ``ReleaseAttestation`` for one release.
+         *
+         *     Derived read-only from the release's own immutable ``ReleaseGateReport``
+         *     (never re-run, never influenced by advisory evaluations); intended for
+         *     harness/runtime startup to verify hard release gates passed before
+         *     trusting a release. Raises 404 if the release does not exist in this
+         *     scope, or has never had release gates run against it.
+         */
+        get: operations["get_release_attestation_route_v1_agent_studio_releases__release_id__attestation_get"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1747,6 +1805,40 @@ export interface components {
             /** Reason */
             reason?: string | null;
             record?: components["schemas"]["ApprovalConsumptionRecord"] | null;
+        };
+        /**
+         * ApprovalContextOutcome
+         * @description Outcome of a single ``resolve_context`` call.
+         *
+         *     ``RESOLVED``: exactly one currently-effectively-``APPROVED``
+         *     ``CAPABILITY_OPERATION`` approval exists for this release's binding's
+         *     destination; its ``approval_id`` and a freshly minted ``invocation_id``
+         *     are returned.
+         *     ``NOT_APPROVED``: no such approval currently exists (never requested,
+         *     still pending, rejected, expired, or revoked) -- fails closed rather
+         *     than ever fabricating a context.
+         *     ``NOT_FOUND``: the referenced release/binding/operation itself does not
+         *     exist (or does not match) in this scope -- a distinct, non-authorization
+         *     failure from "no approval exists for an otherwise-valid binding".
+         * @enum {string}
+         */
+        ApprovalContextOutcome: "resolved" | "not_approved" | "not_found";
+        /**
+         * ApprovalContextResult
+         * @description Result of a single ``resolve_context`` call.
+         *
+         *     ``approval_id``/``invocation_id`` are populated only for ``RESOLVED``;
+         *     both are always ``None`` otherwise, so a caller can never mistake a
+         *     denial for a usable context by only checking for a non-``None`` field.
+         */
+        ApprovalContextResult: {
+            /** Approval Id */
+            approval_id?: string | null;
+            /** Invocation Id */
+            invocation_id?: string | null;
+            outcome: components["schemas"]["ApprovalContextOutcome"];
+            /** Reason */
+            reason?: string | null;
         };
         /** ApprovalDecision */
         ApprovalDecision: {
@@ -4120,6 +4212,68 @@ export interface components {
             source_revision?: string | null;
         };
         /**
+         * ReleaseAttestation
+         * @description Signed, objective attestation that hard release gates passed for one
+         *     exact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a
+         *     harness/runtime consumer to verify at startup before trusting a release.
+         *
+         *     Never re-runs gates and never reflects advisory ``EvaluationRecord``
+         *     scores -- it is a purely read-derived, reproducible projection of a
+         *     release's own ``gate_report_id`` and its version's own ``manifest_hash``.
+         *     ``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==
+         *     "hmac-sha256"``) over the canonical, finite JSON encoding of every field
+         *     below when an attestation-signing key is configured; when none is
+         *     configured, ``signature_algorithm == "sha256-digest"`` and ``signature``
+         *     is a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-
+         *     evidence check but explicitly *not* claimed as a keyed signature, so a
+         *     consumer can distinguish "verified against a shared secret" from "just a
+         *     content digest" and this package never overstates what it can honestly
+         *     attest.
+         */
+        ReleaseAttestation: {
+            /**
+             * Attested At
+             * Format: date-time
+             */
+            attested_at?: string;
+            /** Blocking Gates */
+            blocking_gates?: components["schemas"]["GateName"][];
+            environment: components["schemas"]["DeploymentEnvironment"];
+            /** Gate Report Id */
+            gate_report_id: string;
+            /** Gate Results */
+            gate_results: components["schemas"]["GateResult"][];
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Manifest Hash */
+            manifest_hash: string;
+            /** Project Id */
+            project_id: string;
+            /** Release Id */
+            release_id: string;
+            /** Signature */
+            signature: string;
+            /** Signature Algorithm */
+            signature_algorithm: string;
+            status: components["schemas"]["ReleaseAttestationStatus"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Version Id */
+            version_id: string;
+        };
+        /**
+         * ReleaseAttestationStatus
+         * @description Whether a ``ReleaseAttestation`` found all objective hard gates passing.
+         *
+         *     Derived exclusively from ``ReleaseGateReport.passed`` (schema/build/
+         *     test/auth/policy/approval/security/smoke/binding) -- a report's
+         *     ``evaluations`` (advisory) never influence this value, matching the
+         *     hard-gate/advisory-evaluation boundary enforced everywhere else in this
+         *     package.
+         * @enum {string}
+         */
+        ReleaseAttestationStatus: "attested" | "failed";
+        /**
          * ReleaseGateReport
          * @description The immutable, deterministic hard-gate result for one ``AgentVersion``.
          *
@@ -4227,6 +4381,30 @@ export interface components {
             title: string;
             /** Warnings */
             warnings?: string[];
+        };
+        /**
+         * ResolveApprovalContextRequest
+         * @description Request body to resolve a trusted ``ApprovalContext`` for an
+         *     about-to-run capability-operation invocation.
+         *
+         *     Carries only the plan's identifying facts (release/binding/operation) --
+         *     deliberately excludes ``approval_id``/``invocation_id``: a caller can
+         *     never assert which approval authorizes it or mint its own
+         *     ``invocation_id``. Both are always resolved and minted server-side by
+         *     ``ApprovalContextResolver`` from the release's own currently-effective
+         *     ``CAPABILITY_OPERATION`` approval for this exact binding/operation,
+         *     closing the gap where a hosted caller had no trusted way to discover
+         *     either value before calling ``/approvals/{approval_id}/consume``.
+         */
+        ResolveApprovalContextRequest: {
+            /** Binding Id */
+            binding_id: string;
+            /** Operation Id */
+            operation_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Release Id */
+            release_id: string;
         };
         /**
          * ResolvedAgentContract
@@ -6277,6 +6455,39 @@ export interface operations {
             };
         };
     };
+    resolve_approval_context_route_v1_agent_studio_approvals_context_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ResolveApprovalContextRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalContextResult"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     get_approval_route_v1_agent_studio_approvals__approval_id__get: {
         parameters: {
             query: {
@@ -6780,6 +6991,39 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ModelDeploymentRef"][];
+                };
+            };
+        };
+    };
+    get_release_attestation_route_v1_agent_studio_releases__release_id__attestation_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                release_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseAttestation"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };
