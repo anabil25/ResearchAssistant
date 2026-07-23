@@ -1698,6 +1698,40 @@ def test_deploy_hard_fails_when_capability_binding_descriptor_is_unknown_to_the_
         )
 
 
+def test_omitting_capability_registry_is_a_test_only_convenience_and_skips_freshness_revalidation(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    """Contract test for a review hardening note: ``DeploymentService``
+    accepts ``capability_registry=None`` purely so lightweight unit tests
+    can exercise deployment mechanics unrelated to capability revalidation
+    (see the constructor docstring). With no registry supplied, binding
+    freshness is *not* re-checked and an otherwise-stale binding (a
+    descriptor unknown to any catalog) deploys successfully -- this is the
+    intentionally permissive test-only path.
+
+    This must never be reachable in production: ``research_assistant_api.
+    app._init_agent_studio`` always constructs ``DeploymentService`` with
+    ``capability_registry=registry`` bound to the live
+    ``CapabilityRegistry``, so production deploys always run the freshness
+    gate exercised by ``test_deploy_hard_fails_when_capability_binding_
+    descriptor_is_unknown_to_the_registry`` above."""
+    version = _capability_gated_version(
+        release_service, store, logical_agent_id="agent-deploy-no-registry-supplied"
+    )
+    deployment_service = DeploymentService(store)
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-deploy-no-registry-supplied",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    assert record.version_id == version.id
+
+
 def test_deploy_skips_capability_bindings_whose_operation_does_not_require_approval(
     release_service: ReleaseServiceHarness,
     store: AgentStudioStore,
