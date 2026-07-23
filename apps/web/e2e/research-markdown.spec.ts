@@ -11,6 +11,8 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
     "- Evidence is bounded.",
     "- Unsupported links remain blocked.",
     "",
+    "[Jump to **Findings**](#findings)",
+    "",
     "| Measure | Value |",
     "| --- | --- |",
     "| Coverage | 100% |",
@@ -108,6 +110,12 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
   await expect(
     markdown.getByRole("link", { name: /Verified source/ }),
   ).toHaveCount(1);
+  const hashLink = markdown.getByRole("link", {
+    name: "Jump to Findings (opens in a new tab)",
+  });
+  await expect(hashLink).toHaveAttribute("href", "#findings");
+  await expect(hashLink).toHaveAttribute("target", "_blank");
+  await expect(hashLink).toHaveAttribute("rel", "noopener noreferrer");
   await expect(markdown.getByText("[code block truncated]")).toBeVisible();
   await expect(markdown.getByText("invented-source")).toBeVisible();
 

@@ -61,7 +61,7 @@ describe("ResearchMarkdown with installed markdown libraries", () => {
     expect(result.stderr).toBe("");
     expect(result.status).toBe(0);
     expect(result.stdout).toContain(
-      '<a href="#methods" target="_blank" rel="noopener noreferrer" aria-label="Methods (opens in a new tab)"><strong>Methods</strong></a>',
+      '<a href="#methods" target="_blank" rel="noopener noreferrer"><strong>Methods</strong><span class="sr-only"> (opens in a new tab)</span></a>',
     );
     expect(result.stdout).not.toContain("[blocked]");
   });
