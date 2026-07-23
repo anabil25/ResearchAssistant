@@ -11,14 +11,24 @@ Custom Hosted code is modeled as a non-Foundry-native capability so it is
 never eligible for Managed Foundry runtime selection.
 
 This module intentionally hard-codes the maturity for the built-in catalog
-(no network call at import time), but callers may extend/override the
-registry (e.g. from a live discovery source) via ``CapabilityRegistry``.
+(no network call at import time). It is a **transitional, local-only
+fallback**: the platform correction requires Agent Studio to *consume*
+provider discovery through an interface owned by the integration/harness
+session rather than duplicate Foundry/tool discovery here. See
+``capability_discovery.CapabilityDiscoverySource`` for that seam —
+``CapabilityRegistry.from_source`` builds a registry entirely from an
+injected source's output (no seed mixed in), and ``default_registry`` only
+falls back to this hard-coded seed when no source is supplied, e.g. while
+the real provider adapter has not yet been wired at this call site.
 """
 
 from __future__ import annotations
 
 from datetime import datetime
 
+from research_assistant_api.agent_studio.capability_discovery import (
+    CapabilityDiscoverySource,
+)
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
     CapabilityDescriptor,
@@ -414,6 +424,22 @@ class CapabilityRegistry:
         self._descriptors: dict[str, CapabilityDescriptor] = {descriptor.id: descriptor for descriptor in seed}
         self._instances: dict[str, CapabilityInstance] = {}
 
+    @classmethod
+    def from_source(cls, source: CapabilityDiscoverySource) -> CapabilityRegistry:
+        """Build a registry entirely from a ``CapabilityDiscoverySource``.
+
+        No local seed catalog is mixed in: the injected source is treated
+        as the authoritative, real discovery output (or an honestly empty
+        one), never merged with or silently overridden by hard-coded data.
+        Discovered instances are registered immediately so they resolve via
+        ``get_instance``/``instances_for`` without a separate wiring step.
+        """
+        result = source.discover()
+        registry = cls(descriptors=result.descriptors)
+        for instance in result.instances:
+            registry.register_instance(instance)
+        return registry
+
     def catalog(self) -> tuple[CapabilityDescriptor, ...]:
         return tuple(self._descriptors.values())
 
@@ -518,5 +544,16 @@ class CapabilityRegistry:
         )
 
 
-def default_registry() -> CapabilityRegistry:
+def default_registry(source: CapabilityDiscoverySource | None = None) -> CapabilityRegistry:
+    """Build the process-default capability registry.
+
+    When ``source`` is supplied (a real provider-integration adapter), the
+    registry is built entirely from its discovery output via
+    ``CapabilityRegistry.from_source`` — the local hard-coded seed catalog
+    is not consulted at all. When no source is supplied (no adapter wired
+    at this call site yet), this falls back to the documented local seed as
+    a transitional default.
+    """
+    if source is not None:
+        return CapabilityRegistry.from_source(source)
     return CapabilityRegistry()

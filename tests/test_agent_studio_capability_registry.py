@@ -6,6 +6,11 @@ import re
 from datetime import UTC, datetime
 
 import pytest
+from research_assistant_api.agent_studio.capability_discovery import (
+    CapabilityDiscoveryResult,
+    InMemoryCapabilityDiscoverySource,
+    NullCapabilityDiscoverySource,
+)
 from research_assistant_api.agent_studio.capability_registry import (
     CapabilityAttachmentError,
     CapabilityRegistry,
@@ -162,6 +167,53 @@ def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_unavai
         registry.validate_attachment(descriptor_id="custom.unknown", operation="run")
     with pytest.raises(CapabilityAttachmentError, match=re.escape("Unavailable in this runtime.")):
         registry.validate_attachment(descriptor_id="custom.unavailable", operation="run")
+
+
+def test_default_registry_uses_seed_when_no_source_supplied() -> None:
+    registry = default_registry()
+
+    assert registry.get("foundry.web_search") is not None
+
+
+def test_default_registry_builds_entirely_from_source_when_supplied() -> None:
+    custom_descriptor = _descriptor(
+        "custom.only",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
+    )
+    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
+    source = InMemoryCapabilityDiscoverySource(
+        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
+    )
+
+    registry = default_registry(source=source)
+
+    # Only the source's descriptor is present — the local seed is not mixed in.
+    assert registry.catalog() == (custom_descriptor,)
+    assert registry.get("foundry.web_search") is None
+    assert registry.get_instance("instance-a") == instance
+
+
+def test_from_source_builds_registry_and_registers_instances() -> None:
+    custom_descriptor = _descriptor(
+        "custom.only",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
+    )
+    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
+    source = InMemoryCapabilityDiscoverySource(
+        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
+    )
+
+    registry = CapabilityRegistry.from_source(source)
+
+    assert registry.catalog() == (custom_descriptor,)
+    assert registry.get_instance("instance-a") == instance
+
+
+def test_from_source_with_null_source_yields_empty_registry() -> None:
+    registry = CapabilityRegistry.from_source(NullCapabilityDiscoverySource())
+
+    assert registry.catalog() == ()
+    assert registry.get("foundry.web_search") is None
 
 
 def test_custom_registry_can_replace_seed_catalog() -> None:
