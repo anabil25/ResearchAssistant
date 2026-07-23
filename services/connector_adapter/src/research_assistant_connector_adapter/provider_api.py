@@ -24,6 +24,7 @@ from research_assistant_connectors.providers import (
     ProviderValidationError,
     UnavailableError,
     ValidationReport,
+    bindability_decisions,
     capability_instance_fingerprint,
 )
 from research_assistant_connectors.providers.contracts import Provider, plain_json
@@ -68,6 +69,8 @@ def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
 def _capability_json(capability: CapabilityDescriptor) -> dict[str, Any]:
     return {
         "descriptor_id": capability.descriptor_id,
+        "descriptor_version": capability.descriptor_version,
+        "descriptor_digest": capability.descriptor_digest,
         "family": capability.family,
         "resource_kind": capability.resource_kind,
         "name": capability.name,
@@ -78,6 +81,7 @@ def _capability_json(capability: CapabilityDescriptor) -> dict[str, Any]:
                 "official_url": record.official_url,
                 "source_version": record.source_version,
                 "last_verified_at": record.last_verified_at,
+                "retirement_date": record.retirement_date,
             }
             for record in capability.provenance
         ],
@@ -87,27 +91,48 @@ def _capability_json(capability: CapabilityDescriptor) -> dict[str, Any]:
     }
 
 
-def _instance_json(instance: CapabilityInstance) -> dict[str, Any]:
+def _instance_json(
+    instance: CapabilityInstance,
+    *,
+    discovery: Any,
+    context: InvocationContext,
+) -> dict[str, Any]:
+    bindability = bindability_decisions(
+        discovery,
+        instance,
+        tenant_id=context.tenant_id,
+        project_id=context.project_id,
+        policy_ref=context.policy_release,
+    )
     return {
         "provider_id": instance.provider_id,
         "instance_id": instance.instance_id,
-        "instance_ref": instance.instance_ref,
-        "descriptor_id": instance.descriptor.descriptor_id,
+        "descriptor_id": instance.descriptor_id,
+        "descriptor_version": instance.descriptor_version,
+        "descriptor_digest": instance.descriptor_digest,
         "instance_fingerprint": capability_instance_fingerprint(instance),
         "name": instance.name,
         "readiness": instance.readiness.value,
-        "health": instance.health.value if instance.health else None,
-        "attachable_operation_ids": list(instance.attachable_operation_ids),
-        "tenant_scope": instance.tenant_scope,
-        "data_boundary": instance.data_boundary,
-        "resource_id": instance.resource_id,
-        "connection_id": instance.connection_id,
+        "health": instance.health.value,
+        "last_checked_at": instance.last_checked_at,
+        "bindability": [
+            {
+                "operation_id": decision.operation_id,
+                "bindable": decision.bindable,
+                "reason_codes": [reason.value for reason in decision.reason_codes],
+            }
+            for decision in bindability
+        ],
+        "tenant_id": instance.tenant_id,
+        "project_id": instance.project_id,
+        "provider_resource_id": instance.provider_resource_id,
         "connection_ref": instance.connection_ref,
-        "discovered_version": instance.discovered_version,
         "discovered_provider_version": instance.discovered_provider_version,
+        "discovered_resource_version": instance.discovered_resource_version,
         "configuration": plain_json(instance.configuration),
-        "configuration_fingerprint": instance.configuration_fingerprint,
-        "config_ref": instance.config_ref,
+        "config_fingerprint": instance.config_fingerprint,
+        "config_validated": instance.config_validated,
+        "allowed_destination_constraints": list(instance.allowed_destination_constraints),
         "status_evidence": list(instance.status_evidence),
         "unavailable_reason": instance.unavailable_reason,
     }
@@ -125,6 +150,7 @@ def _provider_json(provider: ProviderDescriptor) -> dict[str, Any]:
                 "official_url": record.official_url,
                 "source_version": record.source_version,
                 "last_verified_at": record.last_verified_at,
+                "retirement_date": record.retirement_date,
             }
             for record in provider.provenance
         ],
@@ -165,7 +191,7 @@ class ProviderService:
 
     def catalog(self) -> dict[str, Any]:
         return {
-            "schema_version": "research-assistant.integration-provider.v3",
+            "schema_version": "research-assistant.integration-provider.v4",
             "providers": [_provider_json(provider.descriptor) for provider in self._registry.providers.values()],
         }
 
@@ -191,7 +217,7 @@ class ProviderService:
         return {
             "provider_id": provider_id,
             "descriptors": [_capability_json(descriptor) for descriptor in result.descriptors],
-            "instances": [_instance_json(instance) for instance in result.instances],
+            "instances": [_instance_json(instance, discovery=result, context=context) for instance in result.instances],
             "warnings": list(result.warnings),
             "refreshed_at": result.refreshed_at,
         }

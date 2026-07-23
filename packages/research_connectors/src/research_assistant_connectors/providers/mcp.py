@@ -15,6 +15,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     InvocationContext,
@@ -70,7 +71,7 @@ def _tool_capability(
     *,
     metadata: Mapping[str, Any],
     destination: str,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("mcp.tool", name),
@@ -81,6 +82,7 @@ def _tool_capability(
         auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
         tenant_boundary="configured tenant",
         data_boundary="configured MCP endpoint",
+        resource_id=name,
         operations=(
             OperationDescriptor(
                 "mcp.tools.call",
@@ -105,8 +107,8 @@ def _tool_capability(
 class MCPStreamableHTTPProvider:
     def __init__(self, config: MCPConfig) -> None:
         self._config = config
-        self._sessions: dict[tuple[str, str], str | None] = {}
-        self._initialized: set[tuple[str, str]] = set()
+        self._sessions: dict[tuple[str, str, str], str | None] = {}
+        self._initialized: set[tuple[str, str, str]] = set()
         self._next_id = 1
         self._descriptor = ProviderDescriptor(
             PROVIDER_ID,
@@ -146,7 +148,7 @@ class MCPStreamableHTTPProvider:
                 "MCP-Protocol-Version": self._config.protocol_version,
             }
         )
-        session_id = self._sessions.get((context.tenant_id, context.principal_id))
+        session_id = self._sessions.get((context.tenant_id, context.project_id, context.principal_id))
         if session_id:
             headers["Mcp-Session-Id"] = session_id
         return headers
@@ -200,7 +202,7 @@ class MCPStreamableHTTPProvider:
         return self._rpc_body(response, request_id, PROVIDER_ID), attempts, response
 
     def _initialize_with_session(self, context: InvocationContext) -> None:
-        session_key = (context.tenant_id, context.principal_id)
+        session_key = (context.tenant_id, context.project_id, context.principal_id)
         if session_key in self._initialized:
             return
         request_id = self._next_id
@@ -246,7 +248,7 @@ class MCPStreamableHTTPProvider:
             raise UpstreamError("MCP initialized notification was not accepted", provider_id=PROVIDER_ID)
         self._initialized.add(session_key)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
@@ -272,6 +274,7 @@ class MCPStreamableHTTPProvider:
                     auth_modes=(self._config.auth.mode,),
                     tenant_boundary="configured tenant",
                     data_boundary="configured MCP endpoint",
+                    resource_id="tools",
                     operations=(operation,),
                     provenance=PROVENANCE,
                     status_evidence=("No MCP initialization request was sent.",),
@@ -307,7 +310,11 @@ class MCPStreamableHTTPProvider:
         return tuple(capabilities)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

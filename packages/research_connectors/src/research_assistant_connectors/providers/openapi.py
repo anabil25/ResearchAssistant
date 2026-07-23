@@ -14,6 +14,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -156,8 +157,7 @@ class OpenAPIProvider:
             headers=auth_headers(self._config.document_auth, context, provider_id=PROVIDER_ID),
             idempotent=True,
         )
-        self._document = json_object(response, provider_id=PROVIDER_ID)
-        return self._document
+        return json_object(response, provider_id=PROVIDER_ID)
 
     def _operations(self, context: InvocationContext) -> tuple[tuple[str, str, str, dict[str, Any]], ...]:
         document = self._load_document(context)
@@ -188,7 +188,7 @@ class OpenAPIProvider:
                 )
         return tuple(discovered)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
@@ -214,6 +214,7 @@ class OpenAPIProvider:
                     auth_modes=(self._config.auth.mode,),
                     tenant_boundary="configured tenant",
                     data_boundary="configured base URL",
+                    resource_id="operations",
                     operations=(operation,),
                     provenance=PROVENANCE,
                     status_evidence=("No OpenAPI document was loaded.",),
@@ -223,7 +224,7 @@ class OpenAPIProvider:
         policies = {policy.operation_id: policy for policy in self._config.operation_policies}
         capabilities = []
         for operation_id, method, path, schema in self._operations(context):
-            default_class = OperationClass.READ if method in {"GET", "HEAD"} else OperationClass.WRITE_IRREVERSIBLE
+            default_class = OperationClass.READ if method in {"GET", "HEAD"} else OperationClass.PRIVILEGED
             policy = policies.get(
                 operation_id,
                 OpenAPIOperationPolicy(
@@ -234,7 +235,9 @@ class OpenAPIProvider:
             )
             idempotency = policy.idempotency
             if idempotency is None:
-                idempotency = Idempotency.INHERENT if method in {"GET", "HEAD", "PUT", "DELETE"} else Idempotency.NONE
+                idempotency = (
+                    Idempotency.PROVIDER_NATIVE if method in {"GET", "HEAD", "PUT", "DELETE"} else Idempotency.NONE
+                )
             capabilities.append(
                 capability_instance(
                     provider_id=PROVIDER_ID,
@@ -246,6 +249,7 @@ class OpenAPIProvider:
                     auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
                     tenant_boundary="configured tenant",
                     data_boundary="configured base URL; document server values are not invocation authority",
+                    resource_id=operation_id,
                     operations=(
                         OperationDescriptor(
                             operation_id,
@@ -272,7 +276,11 @@ class OpenAPIProvider:
         return tuple(capabilities)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

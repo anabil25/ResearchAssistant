@@ -11,6 +11,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -64,7 +65,7 @@ def _search_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     index_name: str | None = None,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=capability_id,
@@ -75,6 +76,7 @@ def _search_capability(
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured Search service and discovered index",
+        resource_id=index_name or capability_id,
         operations=(
             OperationDescriptor(
                 operation_id="search.documents.query",
@@ -84,7 +86,8 @@ def _search_capability(
                 output_schema={"type": "object"},
                 operation_class=OperationClass.READ,
                 approval_policy=ApprovalPolicy.NEVER,
-                idempotency=Idempotency.INHERENT,
+                max_retries=2,
+                idempotency=Idempotency.PROVIDER_NATIVE,
                 least_privilege_scopes=("https://search.azure.com/.default",),
                 least_privilege_roles=("Search Index Data Reader",),
                 docs=DOCS,
@@ -129,7 +132,7 @@ class AzureAISearchProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return (
@@ -149,6 +152,7 @@ class AzureAISearchProvider:
             url=safe_url(endpoint, "/indexes"),
             headers=auth_headers(self._config.auth, context, provider_id=PROVIDER_ID),
             params={"api-version": self._config.api_version, "$select": "name"},
+            max_retries=2,
             idempotent=True,
             consent_on_forbidden=True,
         )
@@ -167,7 +171,11 @@ class AzureAISearchProvider:
         )
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

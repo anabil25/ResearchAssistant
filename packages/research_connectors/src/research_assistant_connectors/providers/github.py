@@ -14,6 +14,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -78,7 +79,7 @@ READ_OPERATIONS = (
         OperationClass.READ,
         {"type": "object", "additionalProperties": False},
         permissions=("Metadata: read",),
-        idempotency=Idempotency.INHERENT,
+        idempotency=Idempotency.PROVIDER_NATIVE,
     ),
     _operation(
         "github.issues.list",
@@ -89,7 +90,7 @@ READ_OPERATIONS = (
             "additionalProperties": False,
         },
         permissions=("Issues: read",),
-        idempotency=Idempotency.INHERENT,
+        idempotency=Idempotency.PROVIDER_NATIVE,
     ),
 )
 CREATE_ISSUE = _operation(
@@ -123,7 +124,7 @@ def _repo_capability(
     suffix: str,
     operations: tuple[OperationDescriptor, ...],
     endpoint: str,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     destination = f"{endpoint.rstrip('/')}/repos/{full_name}/issues"
     bound_operations = tuple(
         replace(operation, external_side_effect=True, side_effect_destinations=(destination,))
@@ -141,6 +142,7 @@ def _repo_capability(
         auth_modes=(AuthMode.OAUTH, AuthMode.GITHUB_APP),
         tenant_boundary="configured organization/account and application installation",
         data_boundary=f"repository {full_name}",
+        resource_id=full_name,
         operations=bound_operations,
         provenance=PROVENANCE,
         status_evidence=("Repository returned by an authenticated GitHub REST discovery request.",),
@@ -190,7 +192,7 @@ class GitHubProvider:
         )
         return headers
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = READ_OPERATIONS[0]
@@ -205,6 +207,7 @@ class GitHubProvider:
                     auth_modes=(self._config.auth.mode,),
                     tenant_boundary="configured account",
                     data_boundary="configured GitHub endpoint",
+                    resource_id=self._config.owner or "repositories",
                     operations=(operation,),
                     provenance=PROVENANCE,
                     status_evidence=("No repository discovery request was sent.",),
@@ -228,7 +231,7 @@ class GitHubProvider:
             raise UpstreamError("GitHub returned invalid JSON", provider_id=PROVIDER_ID) from exc
         if not isinstance(payload, list):
             raise UpstreamError("GitHub repository discovery returned a non-array payload", provider_id=PROVIDER_ID)
-        capabilities: list[CapabilityInstance] = []
+        capabilities: list[CapabilityRecord] = []
         for item in payload:
             if not isinstance(item, Mapping):
                 continue
@@ -254,7 +257,11 @@ class GitHubProvider:
         return tuple(capabilities)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

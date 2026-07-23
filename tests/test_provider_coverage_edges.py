@@ -58,21 +58,24 @@ def ctx(handler: Any, *, credential: object | None = None) -> InvocationContext:
     return InvocationContext(
         tenant_id="tenant",
         principal_id="principal",
+        project_id="project",
         credential=Token() if credential is None else credential,
         transport=httpx.Client(transport=httpx.MockTransport(handler)),
         correlation_id="correlation",
         trace_id="trace",
         sleep=lambda _: None,
+        consume_approval=lambda _: True,
     )
 
 
 def approve(
     context: InvocationContext,
+    discovery: Any,
     target: Any,
     operation_id: str,
     arguments: dict[str, Any],
 ) -> InvocationContext:
-    operation = next(item for item in target.descriptor.operations if item.operation_id == operation_id)
+    operation = next(item for item in discovery.descriptor_for(target).operations if item.operation_id == operation_id)
     return replace(
         context,
         approval_decisions=(
@@ -202,13 +205,13 @@ def test_foundry_unavailable_response_and_no_response_success() -> None:
         )
     )
     vector_context = ctx(lambda _: httpx.Response(200, json={"data": [{"id": "vector-1"}]}))
+    vector_discovery = vector_only.discover(vector_context)
     vector_resource = next(
-        capability
-        for capability in vector_only.discover(vector_context)
-        if capability.configuration.get("resource_id") == "vector-1"
+        capability for capability in vector_discovery if capability.configuration.get("resource_id") == "vector-1"
     )
-    assert vector_resource.descriptor.resource_kind == "vector_store"
-    assert vector_resource.descriptor.operations[0].operation_id == "foundry.vector_stores.observe"
+    vector_descriptor = vector_discovery.descriptor_for(vector_resource)
+    assert vector_descriptor.resource_kind == "vector_store"
+    assert vector_descriptor.operations[0].operation_id == "foundry.vector_stores.observe"
 
     knowledge_without_models = FoundryProvider(
         FoundryConfig(
@@ -218,19 +221,16 @@ def test_foundry_unavailable_response_and_no_response_success() -> None:
             responses_path="/responses",
         )
     )
+    knowledge_discovery = knowledge_without_models.discover(vector_context)
     knowledge_resource = next(
-        capability
-        for capability in knowledge_without_models.discover(vector_context)
-        if capability.configuration.get("resource_id") == "vector-1"
+        capability for capability in knowledge_discovery if capability.configuration.get("resource_id") == "vector-1"
     )
     assert knowledge_resource.readiness is Readiness.DEGRADED
-    assert knowledge_resource.attachable_operation_ids == ()
-    assert "enum" not in knowledge_resource.descriptor.operations[0].input_schema["properties"]["model"]
-    responses = next(
-        capability
-        for capability in knowledge_without_models.discover(vector_context)
-        if capability.instance_id == "foundry.responses"
+    assert (
+        "enum"
+        not in knowledge_discovery.descriptor_for(knowledge_resource).operations[0].input_schema["properties"]["model"]
     )
+    responses = next(capability for capability in knowledge_discovery if capability.instance_id == "foundry.responses")
     assert responses.readiness is Readiness.DEGRADED
     assert responses.unavailable_reason == "No model deployment was discovered"
 
@@ -258,10 +258,11 @@ def test_function_without_idempotency_key_and_github_issue_list() -> None:
         )
     )
     context = ctx(function_handler)
-    capability = function.discover(context)[0]
+    function_discovery = function.discover(context)
+    capability = function_discovery[0]
     assert function.invoke(
         InvocationRequest(capability, "functions.http.invoke", {}),
-        approve(context, capability, "functions.http.invoke", {}),
+        approve(context, function_discovery, capability, "functions.http.invoke", {}),
     ).output["ok"]
 
     def github_handler(request: httpx.Request) -> httpx.Response:
@@ -295,7 +296,8 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
 
     provider = GitHubProvider(GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.NONE)))
     context = ctx(handler)
-    write = next(capability for capability in provider.discover(context) if capability.name.endswith("issues-write"))
+    github_discovery = provider.discover(context)
+    write = next(capability for capability in github_discovery if capability.name.endswith("issues-write"))
     arguments = {"title": "No duplicate"}
     with pytest.raises(UpstreamError):
         provider.invoke(
@@ -305,7 +307,7 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
                 arguments,
                 "unsupported-key",
             ),
-            approve(context, write, "github.issues.create", arguments),
+            approve(context, github_discovery, write, "github.issues.create", arguments),
         )
     assert calls == 1
 
@@ -356,15 +358,19 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
         return httpx.Response(200, json=payload)
 
     graph_context = ctx(graph_handler)
-    graph_instances = tuple(
-        next(
-            instance
-            for instance in MicrosoftGraphProvider(GraphConfig(endpoint, "tenant", discover_items=False)).discover(
-                graph_context
-            )
-            if instance.descriptor.operations[0].operation_id == "graph.drive.content.put"
+
+    def graph_write(endpoint: str) -> Any:
+        discovered = MicrosoftGraphProvider(GraphConfig(endpoint, "tenant", discover_items=False)).discover(
+            graph_context
         )
-        for endpoint in ("https://one.graph.test/v1.0", "https://two.graph.test/v1.0")
+        return next(
+            instance
+            for instance in discovered
+            if discovered.descriptor_for(instance).operations[0].operation_id == "graph.drive.content.put"
+        )
+
+    graph_instances = tuple(
+        graph_write(endpoint) for endpoint in ("https://one.graph.test/v1.0", "https://two.graph.test/v1.0")
     )
 
     for instances in (blob_instances, github_instances, graph_instances):
@@ -415,7 +421,7 @@ def test_mcp_schema_and_initialization_edges() -> None:
     no_session = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
     no_session_context = ctx(_mcp_response)
     no_session._initialize_with_session(no_session_context)
-    assert no_session._sessions[("tenant", "principal")] is None
+    assert no_session._sessions[("tenant", "project", "principal")] is None
 
     def bad_notification(request: httpx.Request) -> httpx.Response:
         response = _mcp_response(request)
@@ -463,11 +469,12 @@ def test_mcp_tools_shape_long_name_and_tool_error() -> None:
     with pytest.raises(UpstreamError, match="tools array"):
         provider.discover(context)
     mode = "tools"
-    capability = provider.discover(context)[0]
+    mcp_discovery = provider.discover(context)
+    capability = mcp_discovery[0]
     with pytest.raises(UpstreamError, match="execution error"):
         provider.invoke(
             InvocationRequest(capability, "mcp.tools.call", {}, "key"),
-            approve(context, capability, "mcp.tools.call", {}),
+            approve(context, mcp_discovery, capability, "mcp.tools.call", {}),
         )
 
 
@@ -530,17 +537,18 @@ def test_openapi_and_unsigned_webhook_idempotency_header() -> None:
                     "publish",
                     OperationClass.PRIVILEGED,
                     ApprovalPolicy.REQUIRED,
-                    Idempotency.REQUIRED,
+                    Idempotency.CALLER_KEY,
                     Maturity.GA,
                 ),
             ),
         )
     )
     context = ctx(api_handler)
-    capability = provider.discover(context)[0]
+    api_discovery = provider.discover(context)
+    capability = api_discovery[0]
     assert provider.invoke(
         InvocationRequest(capability, "publish", {}, "key"),
-        approve(context, capability, "publish", {}),
+        approve(context, api_discovery, capability, "publish", {}),
     ).output["ok"]
 
     def webhook_handler(request: httpx.Request) -> httpx.Response:
@@ -550,11 +558,12 @@ def test_openapi_and_unsigned_webhook_idempotency_header() -> None:
 
     webhook = WebhookProvider(WebhookConfig("https://hooks.test", "tenant", "send", health_method=None))
     webhook_context = ctx(webhook_handler)
-    webhook_capability = webhook.discover(webhook_context)[0]
+    webhook_discovery = webhook.discover(webhook_context)
+    webhook_capability = webhook_discovery[0]
     assert (
         webhook.invoke(
             InvocationRequest(webhook_capability, "send", {}, "key"),
-            approve(webhook_context, webhook_capability, "send", {}),
+            approve(webhook_context, webhook_discovery, webhook_capability, "send", {}),
         ).status_code
         == 204
     )

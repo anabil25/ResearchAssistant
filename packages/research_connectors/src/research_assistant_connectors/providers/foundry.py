@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from typing import Any, cast
+from urllib.parse import quote
 
 from ._http import auth_headers, collection, json_object, require_endpoint, safe_url, send, stable_resource_id
 from .config import FoundryConfig
@@ -12,6 +13,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -91,7 +93,9 @@ def _operation(
         approval_policy=approval_policy,
         external_side_effect=bool(side_effect_destinations),
         side_effect_destinations=side_effect_destinations,
-        idempotency=Idempotency.OPTIONAL if operation_class is OperationClass.PRIVILEGED else Idempotency.INHERENT,
+        idempotency=(
+            Idempotency.CALLER_KEY if operation_class is OperationClass.PRIVILEGED else Idempotency.PROVIDER_NATIVE
+        ),
         least_privilege_scopes=("https://ai.azure.com/.default",),
         least_privilege_roles=(
             ("Foundry Agent Consumer",) if operation_class is OperationClass.PRIVILEGED else ("Reader",)
@@ -112,7 +116,7 @@ def _capability(
     metadata: Mapping[str, Any] | None = None,
     auth_modes: tuple[AuthMode, ...] = (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
     data_boundary: str = "configured Foundry project endpoint",
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=capability_id,
@@ -123,6 +127,7 @@ def _capability(
         auth_modes=auth_modes,
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary=data_boundary,
+        resource_id=str((metadata or {}).get("resource_id") or capability_id),
         operations=(operation,),
         provenance=PROVENANCE,
         status_evidence=evidence,
@@ -189,7 +194,7 @@ class FoundryProvider:
             return ValidationReport(Readiness.MISCONFIGURED, ("No Foundry discovery path is configured.",))
         return ValidationReport(Readiness.READY)
 
-    def _unavailable(self, readiness: Readiness, reason: str) -> tuple[CapabilityInstance, ...]:
+    def _unavailable(self, readiness: Readiness, reason: str) -> tuple[CapabilityRecord, ...]:
         capabilities = [self._memory]
         paths = {
             "models": self._config.models_path,
@@ -219,6 +224,8 @@ class FoundryProvider:
                     _operation(
                         "foundry.responses.create",
                         operation_class=OperationClass.PRIVILEGED,
+                        approval_policy=ApprovalPolicy.REQUIRED,
+                        side_effect_destinations=(self._config.endpoint or "unconfigured:foundry-project",),
                     ),
                     readiness,
                     evidence=("No successful project discovery is available.",),
@@ -227,7 +234,7 @@ class FoundryProvider:
             )
         return tuple(capabilities)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return self._unavailable(validation.readiness, "; ".join(validation.reasons))
@@ -240,7 +247,7 @@ class FoundryProvider:
             "connections": self._config.connections_path,
             "vector_stores": self._config.vector_stores_path,
         }
-        capabilities: list[CapabilityInstance] = [self._memory]
+        capabilities: list[CapabilityRecord] = [self._memory]
         successful = 0
         deployment_ids: set[str] = set()
         for kind, path in paths.items():
@@ -306,7 +313,17 @@ class FoundryProvider:
                     data_boundary = "configured Foundry project endpoint"
                     resource_readiness = Readiness.READY
                     resource_reason = None
-                    if kind == "vector_stores" and self._config.responses_path:
+                    if kind == "agents":
+                        operation = _operation(
+                            "foundry.agents.observe",
+                            maturity=Maturity.UNKNOWN,
+                            operation_class=OperationClass.PRIVILEGED,
+                            approval_policy=ApprovalPolicy.REQUIRED,
+                            side_effect_destinations=(endpoint,),
+                        )
+                        resource_readiness = Readiness.UNAVAILABLE
+                        resource_reason = "Discovered agent release has not been attested by trusted provider policy"
+                    elif kind == "vector_stores" and self._config.responses_path:
                         model_schema = dict(FILE_SEARCH_INPUT)
                         model_schema["properties"] = dict(FILE_SEARCH_INPUT["properties"])
                         if deployment_ids:
@@ -320,6 +337,8 @@ class FoundryProvider:
                         operation = _operation(
                             "foundry.file_search.query",
                             operation_class=OperationClass.PRIVILEGED,
+                            approval_policy=ApprovalPolicy.REQUIRED,
+                            side_effect_destinations=(endpoint,),
                             input_schema=model_schema,
                         )
                         resource_kind = "project_knowledge"
@@ -359,7 +378,9 @@ class FoundryProvider:
                     _operation(
                         "foundry.responses.create",
                         operation_class=OperationClass.PRIVILEGED,
+                        approval_policy=ApprovalPolicy.REQUIRED,
                         input_schema=responses_schema,
+                        side_effect_destinations=(endpoint,),
                     ),
                     ready,
                     evidence=(f"{successful} configured project discovery endpoint(s) succeeded.",),
@@ -370,7 +391,11 @@ class FoundryProvider:
         return tuple(capabilities)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,
@@ -429,6 +454,9 @@ class FoundryProvider:
         else:
             kind = operation.operation_id.split(".")[1]
             path = getattr(self._config, f"{kind}_path")
+            if operation.operation_id.endswith(".observe"):
+                resource_id = quote(str(instance.configuration["resource_id"]), safe="")
+                path = f"{cast(str, path).rstrip('/')}/{resource_id}"
             method = "GET"
             body = None
         path = cast(str, path)

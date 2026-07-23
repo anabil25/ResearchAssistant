@@ -26,6 +26,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -92,13 +93,13 @@ LIST = _operation(
         "properties": {"prefix": {"type": "string"}},
         "additionalProperties": False,
     },
-    Idempotency.INHERENT,
+    Idempotency.PROVIDER_NATIVE,
 )
 GET = _operation(
     "blob.get",
     OperationClass.READ,
     {"type": "object", "required": ["blob"], "properties": {"blob": {"type": "string"}}, "additionalProperties": False},
-    Idempotency.INHERENT,
+    Idempotency.PROVIDER_NATIVE,
 )
 PUT = _operation(
     "blob.put",
@@ -113,7 +114,7 @@ PUT = _operation(
         },
         "additionalProperties": False,
     },
-    Idempotency.INHERENT,
+    Idempotency.PROVIDER_NATIVE,
 )
 
 
@@ -123,7 +124,7 @@ def _container_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     endpoint: str,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("blob.container", name),
@@ -134,6 +135,7 @@ def _container_capability(
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.SHARED_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured storage account and discovered container",
+        resource_id=name,
         operations=(
             LIST,
             GET,
@@ -217,7 +219,7 @@ class AzureBlobProvider:
             raise ProviderValidationError("Storage returned invalid XML", provider_id=PROVIDER_ID) from exc
         return tuple(element.text for element in root.findall(f".//{tag}") if element.text)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return (
@@ -254,7 +256,11 @@ class AzureBlobProvider:
         )
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

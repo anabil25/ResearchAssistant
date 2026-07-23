@@ -157,11 +157,13 @@ def invocation_context(client: httpx.Client) -> InvocationContext:
     return InvocationContext(
         tenant_id="tenant",
         principal_id="principal",
+        project_id="project",
         credential=None,
         transport=client,
         correlation_id="correlation",
         trace_id="trace",
         sleep=lambda _: None,
+        consume_approval=lambda _: True,
     )
 
 
@@ -223,9 +225,10 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                 AuthConfig(AuthMode.NONE),
             )
         )
-        webhook_capability = webhook.discover(context)[0]
+        webhook_discovery = webhook.discover(context)
+        webhook_capability = webhook_discovery[0]
         webhook_arguments = {"value": "network"}
-        operation = webhook_capability.descriptor.operations[0]
+        operation = webhook_discovery.descriptor_for(webhook_capability).operations[0]
         approved = replace(
             context,
             approval_decisions=(

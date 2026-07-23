@@ -13,6 +13,7 @@ from .contracts import (
     CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -59,7 +60,7 @@ class WebhookProvider:
             ApprovalPolicy.REQUIRED,
             external_side_effect=True,
             side_effect_destinations=(config.destination_url or "unconfigured:webhook-destination",),
-            idempotency=Idempotency.REQUIRED,
+            idempotency=Idempotency.CALLER_KEY,
             docs=DOCS,
         )
         self._descriptor = ProviderDescriptor(
@@ -106,7 +107,7 @@ class WebhookProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         operation = self._descriptor.capability_descriptors[0].operations[0]
         reason = None if validation.readiness is Readiness.READY else "; ".join(validation.reasons)
@@ -122,6 +123,7 @@ class WebhookProvider:
                 + ((AuthMode.SIGNATURE,) if self._config.signing_algorithm else ()),
                 tenant_boundary="configured tenant",
                 data_boundary="single configured destination URL",
+                resource_id=self._config.destination_url or self._config.operation_id,
                 operations=(operation,),
                 provenance=PROVENANCE,
                 status_evidence=("Fixed destination and credential abstraction validated.",),
@@ -130,7 +132,11 @@ class WebhookProvider:
         )
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

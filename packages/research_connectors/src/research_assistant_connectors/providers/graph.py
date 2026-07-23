@@ -15,6 +15,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -58,7 +59,7 @@ SITE_GET = OperationDescriptor(
     {"type": "object"},
     OperationClass.READ,
     ApprovalPolicy.NEVER,
-    idempotency=Idempotency.INHERENT,
+    idempotency=Idempotency.PROVIDER_NATIVE,
     least_privilege_scopes=("Sites.Read.All (delegated)",),
     least_privilege_roles=("Sites.Selected (application)",),
     docs=DOCS,
@@ -71,7 +72,7 @@ DRIVE_LIST = OperationDescriptor(
     {"type": "object"},
     OperationClass.READ,
     ApprovalPolicy.NEVER,
-    idempotency=Idempotency.INHERENT,
+    idempotency=Idempotency.PROVIDER_NATIVE,
     least_privilege_scopes=("Files.Read (delegated)",),
     least_privilege_roles=("Files.Read.All (application)",),
     docs=DOCS,
@@ -84,7 +85,7 @@ ITEM_GET = OperationDescriptor(
     {"type": "object"},
     OperationClass.READ,
     ApprovalPolicy.NEVER,
-    idempotency=Idempotency.INHERENT,
+    idempotency=Idempotency.PROVIDER_NATIVE,
     least_privilege_scopes=("Files.Read (delegated)",),
     least_privilege_roles=("Files.Read.All (application)",),
     docs=DOCS,
@@ -102,7 +103,7 @@ CONTENT_PUT = OperationDescriptor(
     {"type": "object"},
     OperationClass.WRITE_IRREVERSIBLE,
     ApprovalPolicy.REQUIRED,
-    idempotency=Idempotency.INHERENT,
+    idempotency=Idempotency.PROVIDER_NATIVE,
     least_privilege_scopes=("Files.ReadWrite (delegated)",),
     least_privilege_roles=("Files.ReadWrite.All (application)",),
     docs=DOCS,
@@ -127,7 +128,7 @@ def _capability(
     *,
     metadata: Mapping[str, Any],
     endpoint: str,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     drive_id = metadata.get("drive_id")
     bound_operations = tuple(
         replace(
@@ -149,6 +150,9 @@ def _capability(
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="discovered Graph site/drive/item",
+        resource_id=str(
+            metadata.get("item_id") or metadata.get("drive_id") or metadata.get("site_id") or capability_id
+        ),
         operations=bound_operations,
         provenance=PROVENANCE,
         status_evidence=("Resource returned by a successful Microsoft Graph v1.0 request.",),
@@ -169,6 +173,7 @@ class MicrosoftGraphProvider:
             auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
             tenant_boundary="configured Microsoft Entra tenant",
             data_boundary="preview service",
+            resource_id="work_iq",
             operations=(WORK_IQ,),
             provenance=official_provenance(
                 WORK_IQ.docs,
@@ -220,7 +225,7 @@ class MicrosoftGraphProvider:
         )
         return json_object(response, provider_id=PROVIDER_ID)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = SITE_GET
@@ -236,13 +241,14 @@ class MicrosoftGraphProvider:
                     auth_modes=(self._config.auth.mode,),
                     tenant_boundary="configured Microsoft Entra tenant",
                     data_boundary="Microsoft Graph v1.0",
+                    resource_id="graph",
                     operations=(operation,),
                     provenance=PROVENANCE,
                     status_evidence=("No Microsoft Graph discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
             )
-        capabilities: list[CapabilityInstance] = [self._work_iq]
+        capabilities: list[CapabilityRecord] = [self._work_iq]
         sites = collection(self._get(self._config.sites_path, context))
         for site in sites:
             site_id = str(site.get("id") or "")
@@ -302,7 +308,11 @@ class MicrosoftGraphProvider:
         return tuple(capabilities)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,

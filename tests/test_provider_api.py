@@ -31,11 +31,13 @@ def context(handler: Any) -> InvocationContext:
     return InvocationContext(
         tenant_id="tenant",
         principal_id="principal",
+        project_id="project",
         credential=None,
         transport=httpx.Client(transport=httpx.MockTransport(handler)),
         correlation_id="correlation",
         trace_id="trace",
         sleep=lambda _: None,
+        consume_approval=lambda _: True,
     )
 
 
@@ -60,12 +62,14 @@ def client() -> Iterator[TestClient]:
             },
         )
     )
-    capability = provider.discover(base_context)[0]
-    operation = capability.descriptor.operations[0]
+    discovered = provider.discover(base_context)
+    capability = discovered[0]
+    descriptor = discovered.descriptor_for(capability)
+    operation = descriptor.operations[0]
     binding = capability_binding(
         binding_id="binding",
-        agent_id="agent",
         instance=capability,
+        descriptor=descriptor,
         operation=operation,
         policy_ref=base_context.policy_release,
     )
@@ -120,13 +124,14 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
         },
     )
 
-    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v3"
+    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v4"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
-    assert instance["attachable_operation_ids"] == ["publish"]
-    assert instance["instance_ref"] == instance["instance_id"]
-    assert instance["config_ref"] == instance["configuration_fingerprint"]
-    assert instance["connection_ref"] == instance["connection_id"]
-    assert instance["discovered_provider_version"] == instance["discovered_version"]
+    assert instance["bindability"] == [{"operation_id": "publish", "bindable": True, "reason_codes": []}]
+    assert instance["config_fingerprint"]
+    assert instance["tenant_id"] == "tenant"
+    assert instance["project_id"] == "project"
+    assert instance["provider_resource_id"] == "https://hooks.test/events"
+    assert instance["descriptor_digest"] == descriptor["descriptor_digest"]
     assert len(instance["instance_fingerprint"]) == 64
     assert descriptor["operations"][0]["maturity"] == "ga"
     assert descriptor["operations"][0]["version"] == "1.0.0"

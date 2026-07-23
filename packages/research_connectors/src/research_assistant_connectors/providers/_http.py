@@ -29,6 +29,7 @@ from .contracts import (
 
 RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
 MAX_RETRY_DELAY_SECONDS = 30.0
+RETRY_WAIT_SLICE_SECONDS = 0.1
 
 
 def safe_url(base_url: str, path: str) -> str:
@@ -107,6 +108,23 @@ def _retry_after(response: httpx.Response) -> float | None:
         return max(0.0, (target - datetime.now(tz=target.tzinfo or UTC)).total_seconds())
 
 
+def _wait_for_retry(context: InvocationContext, delay: float, *, provider_id: str) -> None:
+    remaining = context.remaining_seconds(provider_id=provider_id)
+    wait_seconds = (
+        min(delay, MAX_RETRY_DELAY_SECONDS, remaining) if remaining is not None else min(delay, MAX_RETRY_DELAY_SECONDS)
+    )
+    if wait_seconds == 0:
+        context.sleep(0)
+        context.raise_if_cancelled_or_expired(provider_id=provider_id)
+        return
+    while wait_seconds > 0:
+        context.raise_if_cancelled_or_expired(provider_id=provider_id)
+        interval = min(wait_seconds, RETRY_WAIT_SLICE_SECONDS)
+        context.sleep(interval)
+        wait_seconds -= interval
+    context.raise_if_cancelled_or_expired(provider_id=provider_id)
+
+
 def send(
     context: InvocationContext,
     *,
@@ -118,13 +136,15 @@ def send(
     json_body: Any = None,
     content: bytes | None = None,
     timeout: float = 20.0,
-    max_retries: int = 2,
+    max_retries: int = 0,
     idempotent: bool,
     consent_on_forbidden: bool = False,
 ) -> tuple[httpx.Response, int]:
     attempts = 0
     started = monotonic()
     while True:
+        remaining = context.remaining_seconds(provider_id=provider_id)
+        request_timeout = timeout if remaining is None else min(timeout, remaining)
         attempts += 1
         try:
             response = context.transport.request(
@@ -134,18 +154,19 @@ def send(
                 params=params,
                 json=plain_json(json_body),
                 content=content,
-                timeout=timeout,
+                timeout=request_timeout,
                 follow_redirects=False,
             )
         except httpx.TimeoutException as exc:
             if idempotent and attempts <= max_retries:
-                context.sleep(min(2 ** (attempts - 1), 8))
+                _wait_for_retry(context, min(2 ** (attempts - 1), 8), provider_id=provider_id)
                 continue
             raise ProviderTimeoutError("Provider request timed out", provider_id=provider_id) from exc
+        context.raise_if_cancelled_or_expired(provider_id=provider_id)
         retry_after = _retry_after(response)
         if response.status_code in RETRY_STATUSES and idempotent and attempts <= max_retries:
             delay = retry_after if retry_after is not None else min(2 ** (attempts - 1), 8)
-            context.sleep(min(delay, MAX_RETRY_DELAY_SECONDS))
+            _wait_for_retry(context, delay, provider_id=provider_id)
             continue
         if response.status_code == 401:
             raise UnauthorizedError("Provider rejected the credential", provider_id=provider_id)

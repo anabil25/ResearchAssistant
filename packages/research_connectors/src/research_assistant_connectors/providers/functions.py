@@ -11,6 +11,7 @@ from .contracts import (
     AuthMode,
     CapabilityBinding,
     CapabilityInstance,
+    CapabilityRecord,
     DiscoveryResult,
     HealthReport,
     Idempotency,
@@ -51,7 +52,7 @@ def _function_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     destination: str,
-) -> CapabilityInstance:
+) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("functions.http", name),
@@ -62,6 +63,7 @@ def _function_capability(
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured Function App endpoint",
+        resource_id=name,
         operations=(
             OperationDescriptor(
                 operation_id="functions.http.invoke",
@@ -131,7 +133,7 @@ class AzureFunctionsProvider:
     def _discovery_headers(self, context: InvocationContext) -> dict[str, str]:
         return auth_headers(self._config.discovery_auth or self._config.auth, context, provider_id=PROVIDER_ID)
 
-    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
         policies = self._policies()
         if validation.readiness is not Readiness.READY:
@@ -158,7 +160,7 @@ class AzureFunctionsProvider:
             consent_on_forbidden=self._config.discovery_style == "arm",
         )
         items = collection(json_object(response, provider_id=PROVIDER_ID))
-        discovered: list[CapabilityInstance] = []
+        discovered: list[CapabilityRecord] = []
         for item in items:
             raw_name = str(item.get("name") or item.get("id") or "")
             name = raw_name.rsplit("/", 1)[-1] if self._config.discovery_style == "arm" else raw_name
@@ -181,7 +183,11 @@ class AzureFunctionsProvider:
         return tuple(discovered)
 
     def discover(self, context: InvocationContext) -> DiscoveryResult:
-        return discovery_result(self._discover_instances(context))
+        return discovery_result(
+            self._discover_instances(context),
+            tenant_id=self._config.tenant_id or context.tenant_id,
+            project_id=context.project_id,
+        )
 
     def validate(
         self,
