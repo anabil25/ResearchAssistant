@@ -44,6 +44,7 @@ def _manifest(**overrides: object) -> AgentManifest:
     base: dict[str, object] = {
         "logical_agent_id": "agent-policy-gates",
         "tenant_id": "tenant-1",
+        "project_id": "project-1",
         "display_name": "Policy Gates Agent",
         "owner_kind": AgentOwnerKind.USER,
         "owner_id": "user-1",

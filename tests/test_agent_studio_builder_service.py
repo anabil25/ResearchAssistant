@@ -52,6 +52,7 @@ def _manifest(*, display_name: str = "Builder Test Agent", **overrides: object) 
     base: dict[str, object] = {
         "logical_agent_id": AGENT_ID,
         "tenant_id": TENANT,
+        "project_id": TEST_PROJECT_ID,
         "display_name": display_name,
         "owner_kind": AgentOwnerKind.USER,
         "owner_id": USER_ID,

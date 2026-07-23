@@ -79,6 +79,7 @@ class ReleaseServiceHarness:
         manifest = AgentManifest(
             logical_agent_id=logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             display_name=display_name,
             owner_kind=owner_kind,
             owner_id=owner_id,
@@ -178,6 +179,7 @@ class ReleaseServiceHarness:
             logical_agent_id=version.logical_agent_id,
             tenant_id=tenant_id,
             project_id=project_id,
+            manifest_hash=version.manifest_hash,
             status=ReleaseStatus.GATED,
             previous_release_id=previous.id if previous is not None else None,
             created_by=version.created_by,
@@ -263,6 +265,7 @@ def _append_release(
         logical_agent_id=version.logical_agent_id,
         tenant_id=version.tenant_id,
         project_id=version.project_id,
+        manifest_hash=version.manifest_hash,
         status=status,
         previous_release_id=previous.id if previous is not None else None,
         created_by=created_by,

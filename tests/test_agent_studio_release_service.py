@@ -33,10 +33,13 @@ from research_assistant_api.agent_studio.models import (
     ApprovalState,
     CapabilityDescriptor,
     DeploymentEnvironment,
+    DeploymentHealth,
+    DeploymentRecord,
     EvaluationRecord,
     GateName,
     GateResult,
     GateStatus,
+    HealthStatus,
     ModelDeploymentRef,
     ReleaseGateReport,
     ReleaseStatus,
@@ -170,6 +173,29 @@ def _release_statuses(service: ReleaseService, version: AgentVersion) -> list[Re
             version.id,
         )
     ]
+
+
+def _record_healthy_deployment(
+    service: ReleaseService,
+    version: AgentVersion,
+    *,
+    deployment_id: str = "deployment-1",
+    health: HealthStatus = HealthStatus.HEALTHY,
+    environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+) -> DeploymentRecord:
+    scope = _scope(version.tenant_id, version.project_id)
+    record = DeploymentRecord(
+        id=deployment_id,
+        logical_agent_id=version.logical_agent_id,
+        tenant_id=version.tenant_id,
+        project_id=version.project_id,
+        version_id=version.id,
+        environment=environment,
+        runtime_target=version.runtime_target,
+        deployed_by="deployer-1",
+        health=DeploymentHealth(status=health, detail="smoke test"),
+    )
+    return service._store.create_deployment(scope, record)
 
 
 def test_manifest_hash_is_deterministic() -> None:
@@ -779,7 +805,7 @@ def test_request_promotion_raises_when_version_has_not_been_gated(service: Relea
         )
 
 
-def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(service: ReleaseService) -> None:
+def test_request_promotion_auto_promotes_and_blocks_repromotion_once_approved(service: ReleaseService) -> None:
     version = _gated_version(service)
 
     result = service.request_promotion(
@@ -795,15 +821,17 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(serv
     releases = service._store.list_releases_for_version(_scope(), version.id)
     assert result == version
     assert service._store.list_approvals(_scope(), version.id) == ()
+    # Promotion stops at APPROVED: ACTIVE requires a separate, explicit
+    # ``activate_release`` call gated on deploy + healthy smoke evidence —
+    # it is never an automatic side effect of approval.
     assert [release.status for release in releases] == [
         ReleaseStatus.GATED,
         ReleaseStatus.APPROVED,
-        ReleaseStatus.ACTIVE,
     ]
     assert releases[1].previous_release_id == releases[0].id
-    assert releases[2].previous_release_id == releases[1].id
+    assert releases[1].manifest_hash == version.manifest_hash
 
-    with pytest.raises(ReleaseServiceError, match="status 'active'"):
+    with pytest.raises(ReleaseServiceError, match="status 'approved'"):
         service.request_promotion(
             tenant_id="demo",
             project_id=TEST_PROJECT_ID,
@@ -812,6 +840,134 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(serv
             actor_role=AgentRole.MAINTAINER,
             destination="production",
             evidence_summary="Try again.",
+        )
+
+
+def test_activate_release_requires_maintainer_role(service: ReleaseService) -> None:
+    version = _gated_version(service)
+    service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+    _record_healthy_deployment(service, version)
+
+    with pytest.raises(AuthorizationError):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-2",
+            actor_role=AgentRole.CONTRIBUTOR,
+        )
+
+
+def test_activate_release_blocked_when_not_approved(service: ReleaseService) -> None:
+    version = _gated_version(service)
+
+    with pytest.raises(ReleaseServiceError, match="must be APPROVED"):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.MAINTAINER,
+        )
+
+
+def test_activate_release_blocked_without_deployment(service: ReleaseService) -> None:
+    version = _gated_version(service)
+    service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+
+    with pytest.raises(ReleaseServiceError, match="no successful deployment"):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.MAINTAINER,
+        )
+
+
+def test_activate_release_blocked_without_healthy_smoke(service: ReleaseService) -> None:
+    version = _gated_version(service)
+    service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+    _record_healthy_deployment(service, version, health=HealthStatus.UNHEALTHY)
+
+    with pytest.raises(ReleaseServiceError, match="no successful deployment"):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.MAINTAINER,
+        )
+
+
+def test_activate_release_succeeds_after_healthy_deployment(service: ReleaseService) -> None:
+    version = _gated_version(service)
+    approved = service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+    deployment = _record_healthy_deployment(service, version)
+    approved_release = service._store.latest_release_for_version(_scope(), version.id)
+    assert approved_release is not None
+
+    active = service.activate_release(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-3",
+        actor_role=AgentRole.MAINTAINER,
+    )
+
+    assert active.status is ReleaseStatus.ACTIVE
+    assert active.deployment_id == deployment.id
+    assert active.previous_release_id == approved_release.id
+    assert active.manifest_hash == version.manifest_hash
+    assert active.gate_report_id == approved_release.gate_report_id
+    assert _release_statuses(service, version) == [
+        ReleaseStatus.GATED,
+        ReleaseStatus.APPROVED,
+        ReleaseStatus.ACTIVE,
+    ]
+    _ = approved
+
+
+def test_activate_release_raises_for_missing_version(service: ReleaseService) -> None:
+    with pytest.raises(ReleaseServiceError, match="not found"):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id="missing",
+            actor_id="user-1",
+            actor_role=AgentRole.MAINTAINER,
         )
 
 
@@ -940,13 +1096,13 @@ def test_decide_promotion_approves_and_promotes(service: ReleaseService) -> None
     assert stored == decided
     assert stored is not None and stored.approver_id == "maintainer-1"
     assert stored.rationale == "LGTM"
+    # decide_promotion stops at APPROVED; ACTIVE requires activate_release().
     assert [release.status for release in releases] == [
         ReleaseStatus.GATED,
         ReleaseStatus.APPROVED,
-        ReleaseStatus.ACTIVE,
     ]
     assert releases[1].previous_release_id == releases[0].id
-    assert releases[2].previous_release_id == releases[1].id
+    assert releases[1].approval_id == decided.id
 
 
 def test_decide_promotion_rejection_does_not_promote(service: ReleaseService) -> None:

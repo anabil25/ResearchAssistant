@@ -39,6 +39,7 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ApprovalState,
     DeploymentEnvironment,
+    HealthStatus,
     LineageEdge,
     OwnershipGrant,
     ReleaseGateReport,
@@ -425,6 +426,7 @@ class ReleaseService:
                 logical_agent_id=version.logical_agent_id,
                 tenant_id=tenant_id,
                 project_id=project_id,
+                manifest_hash=version.manifest_hash,
                 status=ReleaseStatus.GATED,
                 gate_report_id=report.id,
                 previous_release_id=previous.id if previous is not None else None,
@@ -507,7 +509,7 @@ class ReleaseService:
         )
         self._store.save_approval_decision(scope, decided)
         if decided.state == ApprovalState.APPROVED:
-            self._promote(scope, decided.version_id)
+            self._promote(scope, decided.version_id, approval_id=decided.id)
         return decided
 
     # -- Capability-operation approvals -----------------------------------
@@ -593,7 +595,17 @@ class ReleaseService:
         )
         return self._store.save_approval_decision(scope, decided)
 
-    def _promote(self, scope: ScopeContext, version_id: str) -> AgentVersion:
+    def _promote(
+        self, scope: ScopeContext, version_id: str, *, approval_id: str | None = None
+    ) -> AgentVersion:
+        """Transition a GATED release to APPROVED.
+
+        This stops at APPROVED and never creates an ACTIVE release itself:
+        "approved to release" and "verified healthy in an environment" are
+        deliberately separate facts that must never be conflated. Call
+        :meth:`activate_release` (which requires deploy+smoke evidence) to
+        make a version live.
+        """
         version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
@@ -602,7 +614,7 @@ class ReleaseService:
             raise ReleaseServiceError(f"Version '{version_id}' has no gated release to promote.")
         # Each transition is its own append-only record, chained via
         # ``previous_release_id`` — never an in-place mutation of ``gated``.
-        approved = self._store.create_release(
+        self._store.create_release(
             scope,
             AgentRelease(
                 id=str(uuid4()),
@@ -610,14 +622,66 @@ class ReleaseService:
                 logical_agent_id=version.logical_agent_id,
                 tenant_id=scope.tenant_id,
                 project_id=scope.project_id,
+                manifest_hash=version.manifest_hash,
                 status=ReleaseStatus.APPROVED,
                 gate_report_id=gated.gate_report_id,
+                approval_id=approval_id,
                 previous_release_id=gated.id,
                 created_by=version.created_by,
                 detail="Promotion approved.",
-            )
+            ),
         )
-        active = self._store.create_release(
+        return version
+
+    def activate_release(
+        self,
+        *,
+        tenant_id: str,
+        project_id: str,
+        version_id: str,
+        actor_id: str,
+        actor_role: AgentRole,
+        environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+    ) -> AgentRelease:
+        """Transition an APPROVED release to ACTIVE.
+
+        ACTIVE may only be created once a ``DeploymentRecord`` exists for
+        this exact ``version_id``/``environment`` with a healthy smoke
+        result (``HealthStatus.HEALTHY``) recorded. Approval alone
+        (status APPROVED) is never sufficient to make a version live —
+        this is a distinct, explicit, auditable action, never an implicit
+        side effect of promotion or of ``deploy()``/``record_health()``.
+        """
+        if not role_at_least(actor_role, AgentRole.MAINTAINER):
+            raise AuthorizationError(f"Role '{actor_role.value}' cannot activate a release.")
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
+        if version is None:
+            raise ReleaseServiceError(f"Version '{version_id}' not found.")
+        approved = self._store.latest_release_for_version(scope, version_id)
+        if approved is None or approved.status != ReleaseStatus.APPROVED:
+            current_status = approved.status.value if approved is not None else "none"
+            raise ReleaseServiceError(
+                f"Version '{version_id}' has release status '{current_status}'; it must be APPROVED "
+                "before it can be activated."
+            )
+        deployments = self._store.list_deployments(scope, version.logical_agent_id)
+        healthy_deployment = next(
+            (
+                deployment
+                for deployment in deployments
+                if deployment.version_id == version_id
+                and deployment.environment == environment
+                and deployment.health.status == HealthStatus.HEALTHY
+            ),
+            None,
+        )
+        if healthy_deployment is None:
+            raise ReleaseServiceError(
+                f"Version '{version_id}' has no successful deployment with a healthy smoke result in "
+                f"environment '{environment.value}'; activation requires a healthy deployment first."
+            )
+        return self._store.create_release(
             scope,
             AgentRelease(
                 id=str(uuid4()),
@@ -625,15 +689,17 @@ class ReleaseService:
                 logical_agent_id=version.logical_agent_id,
                 tenant_id=scope.tenant_id,
                 project_id=scope.project_id,
+                manifest_hash=version.manifest_hash,
                 status=ReleaseStatus.ACTIVE,
-                gate_report_id=gated.gate_report_id,
+                environment=environment,
+                gate_report_id=approved.gate_report_id,
+                approval_id=approved.approval_id,
+                deployment_id=healthy_deployment.id,
                 previous_release_id=approved.id,
-                created_by=version.created_by,
-                detail="Version activated.",
-            )
+                created_by=actor_id,
+                detail="Version activated after a successful deployment and healthy smoke check.",
+            ),
         )
-        _ = active
-        return version
 
     # -- Admin escalation --------------------------------------------------
 

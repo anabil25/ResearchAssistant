@@ -573,3 +573,66 @@ def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() 
     )
 
     assert registry.check_binding_freshness(binding) is None
+
+
+def test_attach_pins_destination_constraints_from_resolved_operation() -> None:
+    descriptor = _descriptor(
+        "custom.destination-test",
+        CapabilityOperation(
+            name="send",
+            maturity=OperationMaturity.GA,
+            side_effect_destinations=("webhook.example",),
+        ),
+    )
+    registry = CapabilityRegistry(descriptors=(descriptor,))
+
+    binding = registry.attach(descriptor_id="custom.destination-test", operation="send", attached_by="user-1")
+
+    assert binding.destination_constraints == ("webhook.example",)
+
+
+def test_check_binding_freshness_detects_operation_removed_from_descriptor() -> None:
+    descriptor = _descriptor(
+        "custom.destination-test",
+        CapabilityOperation(
+            name="send",
+            maturity=OperationMaturity.GA,
+            side_effect_destinations=("webhook.example",),
+        ),
+    )
+    registry = CapabilityRegistry(descriptors=(descriptor,))
+    binding = registry.attach(descriptor_id="custom.destination-test", operation="send", attached_by="user-1")
+
+    # Catalog update replaces the descriptor content (operation renamed/removed).
+    # Pin the binding's descriptor_digest to the *new* content so the digest
+    # check passes and the operation-removed branch is isolated.
+    replacement_descriptor = _descriptor(
+        "custom.destination-test",
+        CapabilityOperation(name="other", maturity=OperationMaturity.GA),
+    )
+    stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
+    binding = binding.model_copy(
+        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+    )
+
+    reason = stale_registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "no longer exists" in reason
+
+
+def test_check_binding_freshness_detects_destination_constraints_drift() -> None:
+    descriptor = _descriptor(
+        "custom.destination-test",
+        CapabilityOperation(
+            name="send",
+            maturity=OperationMaturity.GA,
+            side_effect_destinations=("webhook.example",),
+        ),
+    )
+    registry = CapabilityRegistry(descriptors=(descriptor,))
+    binding = registry.attach(descriptor_id="custom.destination-test", operation="send", attached_by="user-1")
+    drifted = binding.model_copy(update={"destination_constraints": ("webhook.other",)})
+
+    reason = registry.check_binding_freshness(drifted)
+    assert reason is not None
+    assert "destination_constraints mismatch" in reason

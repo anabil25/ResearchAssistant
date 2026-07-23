@@ -50,6 +50,7 @@ def _manifest(
     return AgentManifest(
         logical_agent_id=logical_agent_id,
         tenant_id="demo",
+        project_id="proj-1",
         display_name="Memory Test Agent",
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",
@@ -102,6 +103,7 @@ def test_memory_policy_defaults_to_disabled_with_no_scopes() -> None:
     manifest = AgentManifest(
         logical_agent_id="agent-memory-default",
         tenant_id="demo",
+        project_id="proj-1",
         display_name="Default Memory Agent",
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",

@@ -43,6 +43,7 @@ from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
     AgentOwnerKind,
+    AgentRelease,
     AgentRole,
     AgentVersion,
     ApprovalKind,
@@ -68,6 +69,7 @@ from research_assistant_api.agent_studio.release_service import (
     resolve_actor_role,
 )
 from research_assistant_api.agent_studio.schemas import (
+    ActivationRequest,
     ApprovalDecisionRequest,
     AttachCapabilityRequest,
     BuilderApplyRequest,
@@ -100,7 +102,7 @@ from research_assistant_api.identity import (
 
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 
-router = APIRouter(prefix="/v1/agent-studio", tags=["agent-studio"])
+router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
 
 
 def _identity(request: Request) -> IdentityContext:
@@ -484,7 +486,42 @@ def request_promotion(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.post("/versions/{version_id}/capability-approvals", response_model=StudioApprovalRecord)
+@router.post("/versions/{version_id}/activate", response_model=AgentRelease)
+def activate_release_route(
+    request: Request,
+    version_id: str,
+    payload: ActivationRequest,
+) -> AgentRelease:
+    """Explicit ACTIVE transition, gated on a healthy deploy+smoke record.
+
+    Never triggered implicitly by ``/promote``, ``/deployments`` (deploy),
+    or ``/deployments/{id}/health`` (record_health) — the caller must ask
+    for activation explicitly, and it is rejected unless the exact
+    version/environment already has a ``DeploymentRecord`` with a healthy
+    smoke result.
+    """
+    identity = _identity(request)
+    scope = _scope(identity, payload.project_id)
+    version = _store(request).get_version(scope, version_id)
+    if version is None:
+        raise _not_found(f"Version '{version_id}' was not found.")
+    role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
+    try:
+        return _release_service(request).activate_release(
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            version_id=version_id,
+            actor_id=identity.user_id,
+            actor_role=role,
+            environment=payload.environment,
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ReleaseServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/versions/{version_id}/capability-approvals")
 def request_capability_approval(
     request: Request,
     version_id: str,

@@ -688,6 +688,7 @@ class CapabilityRegistry:
             config_hash=compute_config_hash(resolved_config),
             connection_ref=connection_ref,
             policy_ref=policy_ref,
+            destination_constraints=resolved.side_effect_destinations,
             attached_by=attached_by,
         )
 
@@ -708,6 +709,18 @@ class CapabilityRegistry:
             return (
                 f"Descriptor '{binding.descriptor_id}' content has changed since attach "
                 "(descriptor_digest mismatch)."
+            )
+        current_operation = descriptor.operation(binding.operation)
+        if current_operation is None:
+            return f"Operation '{binding.operation}' no longer exists on descriptor '{binding.descriptor_id}'."
+        if (
+            binding.destination_constraints
+            and tuple(current_operation.side_effect_destinations) != tuple(binding.destination_constraints)
+        ):
+            return (
+                f"Operation '{binding.descriptor_id}.{binding.operation}' side-effect destinations have "
+                "changed since attach (destination_constraints mismatch) — rebind and re-review before "
+                "release/invoke."
             )
         if binding.instance_id is not None:
             instance = self._instances.get(binding.instance_id)

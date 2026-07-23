@@ -141,6 +141,7 @@ def test_agent_manifest_validates_full_current_shape_and_defaults() -> None:
     manifest = AgentManifest(
         logical_agent_id="agent-agent-studio-test",
         tenant_id="tenant-1",
+        project_id="project-1",
         display_name="Agent Studio test agent",
         description="Exercises the full manifest shape.",
         owner_kind=AgentOwnerKind.USER,
@@ -204,7 +205,7 @@ def test_agent_manifest_validates_full_current_shape_and_defaults() -> None:
         tags=("governed", "agent-studio"),
     )
 
-    assert manifest.project_id == "default"
+    assert manifest.project_id == "project-1"
     assert manifest.schema_version == AGENT_MANIFEST_SCHEMA_VERSION
     assert manifest.capabilities[0].instance_id == "instance-1"
     assert manifest.capabilities[0].connection_ref == "conn-search"
@@ -223,6 +224,7 @@ def test_agent_manifest_rejects_invalid_logical_agent_id() -> None:
         AgentManifest(
             logical_agent_id="not-valid",
             tenant_id="tenant-1",
+            project_id="project-1",
             display_name="Broken",
             owner_kind=AgentOwnerKind.USER,
             owner_id="user-1",
@@ -233,6 +235,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     manifest = AgentManifest(
         logical_agent_id="agent-related-models",
         tenant_id="tenant-1",
+        project_id="project-1",
         display_name="Related models agent",
         owner_kind=AgentOwnerKind.SYSTEM,
         owner_id="system",
@@ -318,6 +321,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         logical_agent_id=version.logical_agent_id,
         tenant_id="tenant-1",
         project_id="project-1",
+        manifest_hash=version.manifest_hash,
         status=ReleaseStatus.ACTIVE,
         created_by="user-1",
     )

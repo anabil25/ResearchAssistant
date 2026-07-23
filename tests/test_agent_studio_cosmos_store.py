@@ -154,6 +154,7 @@ def _release(
         logical_agent_id=logical_agent_id,
         tenant_id=tenant_id,
         project_id=project_id,
+        manifest_hash="hash-" + version_id,
         status=status,
         previous_release_id=previous_release_id,
         created_by=USER_ID,

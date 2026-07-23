@@ -20,6 +20,7 @@ from research_assistant_api.agent_studio.models import (
     AgentVisibility,
     CapabilityDescriptor,
     CapabilityInstance,
+    DeploymentEnvironment,
     HealthStatus,
     MemoryScopeKind,
     ToolRegistrationKind,
@@ -67,6 +68,21 @@ class PromotionRequest(BaseModel):
     destination: str = Field(min_length=1, max_length=200)
     evidence_summary: str = Field(min_length=1, max_length=4000)
     risk: str = Field(default="medium")
+
+
+class ActivationRequest(BaseModel):
+    """Explicit request to activate an APPROVED release once deploy+smoke evidence exists.
+
+    ACTIVE is never an implicit side effect of promotion, ``deploy()``, or
+    ``record_health()`` — this is the one caller-visible action that flips a
+    version live for an environment, and it is rejected unless a healthy
+    ``DeploymentRecord`` for the exact version/environment already exists.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT
 
 
 class ApprovalDecisionRequest(BaseModel):

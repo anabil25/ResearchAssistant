@@ -26,7 +26,7 @@ def utc_now() -> datetime:
 
 #: Canonical JSON Schema version identifier for the persisted ``AgentManifest``
 #: shape. Consumers outside this codebase (e.g. the harness) resolve the
-#: manifest contract via ``GET /v1/agent-studio/schemas/agent-manifest``
+#: manifest contract via ``GET /api/agent-studio/schemas/agent-manifest``
 #: (JSON Schema + content digest), never by importing this Python class.
 AGENT_MANIFEST_SCHEMA_VERSION = "agent-studio.manifest.v1"
 
@@ -323,6 +323,12 @@ class CapabilityBinding(BaseModel):
     against the current instance and hard-fails on drift (stale binding).
     ``config_hash`` is a canonical digest of ``config`` computed at attach
     time so any later config drift is independently detectable.
+    ``destination_constraints`` pins the resolved operation's
+    ``side_effect_destinations`` at attach time, independent of
+    ``descriptor_digest`` — an operation whose declared destinations change
+    (e.g. a provider widening what a "write" operation can reach) is
+    detected explicitly by ``check_binding_freshness`` rather than only
+    incidentally via a whole-descriptor digest mismatch.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -340,6 +346,7 @@ class CapabilityBinding(BaseModel):
     config_hash: str | None = None
     connection_ref: str | None = None
     policy_ref: str | None = None
+    destination_constraints: tuple[str, ...] = Field(default_factory=tuple)
     attached_by: str = Field(min_length=1, max_length=200)
     attached_at: datetime = Field(default_factory=utc_now)
 
@@ -693,10 +700,11 @@ class AgentManifest(BaseModel):
     logical_agent_id: str = Field(pattern=r"^agent-[a-z0-9-]{3,80}$")
     tenant_id: str = Field(min_length=1, max_length=200)
     #: Workspace/project membership boundary (Phase 2 tenant+workspace scoping
-    #: correction). Defaults to ``"default"`` for backward compatibility with
-    #: single-project tenants/tests; see ``OwnershipGrant.project_id`` and
-    #: ``AgentStudioStore.role_for`` for how this is enforced when supplied.
-    project_id: str = Field(default="default", min_length=1, max_length=200)
+    #: correction). Required with no default: every manifest is bound to an
+    #: exact project, matching every other project-scoped record in this
+    #: module. See ``OwnershipGrant.project_id`` and ``AgentStudioStore.role_for``
+    #: for how this is enforced.
+    project_id: str = Field(min_length=1, max_length=200)
     schema_version: str = Field(default=AGENT_MANIFEST_SCHEMA_VERSION, min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
@@ -851,8 +859,19 @@ class AgentRelease(BaseModel):
     project_id: str = Field(min_length=1, max_length=200)
     status: ReleaseStatus
     environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT
+    #: Copied verbatim from ``AgentVersion.manifest_hash`` at record-creation
+    #: time so the exact content this release governs is directly
+    #: auditable without a join — a release record is tamper-evident on its
+    #: own even if the referenced version were somehow altered.
+    manifest_hash: str
     gate_report_id: str | None = None
     approval_id: str | None = None
+    #: The ``DeploymentRecord`` whose successful deployment + healthy smoke
+    #: evidence for this exact ``version_id`` authorized an ``ACTIVE``
+    #: transition. ``None`` for every other status; required (enforced by
+    #: ``release_service.activate_release``, not by this model) before an
+    #: ``ACTIVE`` record may be created.
+    deployment_id: str | None = None
     previous_release_id: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     created_by: str
