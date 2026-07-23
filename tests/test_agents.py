@@ -12,7 +12,12 @@ import yaml
 from openai import APIStatusError
 from shared import credentials, runtime
 from shared.profiles import get_profile, list_profiles
-from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
+from shared.tools import (
+    _invoke_specialist,
+    build_delegate_tool,
+    delegated_agent_name,
+    tools_for_profile,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -203,6 +208,133 @@ def test_coordinator_specialist_invocation_retries_transient_shapes(
     assert output == "Bounded specialist analysis"
     assert attempts == 3
     assert sleeps == [15, 2]
+
+
+def test_coordinator_specialist_invocation_rejects_non_retryable_and_empty_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[int] = []
+    monkeypatch.setattr("shared.tools.time.sleep", sleeps.append)
+    status_error = APIStatusError(
+        "upstream failure",
+        response=httpx.Response(
+            500,
+            request=httpx.Request(
+                "POST",
+                "https://foundry.example.test/responses",
+            ),
+        ),
+        body={"error": {"code": "session_not_ready"}},
+    )
+
+    class FailedResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            raise status_error
+
+    with pytest.raises(APIStatusError) as raised:
+        _invoke_specialist(
+            SimpleNamespace(responses=FailedResponses()),
+            "Analyze supplied evidence.",
+            "literature-agent",
+        )
+    assert raised.value is status_error
+    assert sleeps == []
+
+    attempts = 0
+
+    class EmptyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            nonlocal attempts
+            attempts += 1
+            return SimpleNamespace(output_text=None)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Hosted specialist literature-agent returned no output after bounded retries",
+    ):
+        _invoke_specialist(
+            SimpleNamespace(responses=EmptyResponses()),
+            "Analyze supplied evidence.",
+            "literature-agent",
+        )
+    assert attempts == 3
+    assert sleeps == [2, 5]
+
+
+def test_delegate_tool_validates_policy_before_remote_invocation() -> None:
+    delegate = build_delegate_tool()
+
+    unsupported = json.loads(
+        delegate.func(
+            capability="unknown",
+            request="Analyze supplied evidence.",
+            sensitivity="internal",
+        )
+    )
+    assert unsupported == {
+        "error": "unsupported_capability",
+        "allowed": ["dataset", "grant", "institutional_qa", "literature", "matching"],
+    }
+
+    invalid_sensitivity = json.loads(
+        delegate.func(
+            capability="literature",
+            request="Analyze supplied evidence.",
+            sensitivity="secret",
+        )
+    )
+    assert invalid_sensitivity == {
+        "error": "invalid_sensitivity",
+        "allowed": ["public", "internal", "confidential", "restricted"],
+    }
+
+
+def test_delegate_tool_constructs_the_bound_specialist_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = object()
+    specialist_client = object()
+    calls: dict[str, Any] = {}
+
+    class FakeProjectClient:
+        def __init__(
+            self,
+            *,
+            endpoint: str,
+            credential: object,
+            allow_preview: bool,
+        ) -> None:
+            calls["project"] = (endpoint, credential, allow_preview)
+
+        def get_openai_client(self, *, agent_name: str) -> object:
+            calls["agent_name"] = agent_name
+            return specialist_client
+
+    def invoke_specialist(client: object, request: str, agent_name: str) -> str:
+        calls["invocation"] = (client, request, agent_name)
+        return "Bounded specialist analysis"
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test")
+    monkeypatch.setattr("shared.tools.get_credential", lambda: credential)
+    monkeypatch.setattr("shared.tools.AIProjectClient", FakeProjectClient)
+    monkeypatch.setattr("shared.tools._invoke_specialist", invoke_specialist)
+
+    result = build_delegate_tool().func(
+        capability="literature",
+        request="Analyze supplied evidence.",
+        sensitivity="internal",
+    )
+
+    assert result == "Bounded specialist analysis"
+    assert calls == {
+        "project": ("https://foundry.example.test", credential, True),
+        "agent_name": "literature-agent",
+        "invocation": (
+            specialist_client,
+            "Analyze supplied evidence.",
+            "literature-agent",
+        ),
+    }
 
 
 def test_coordinator_and_specialist_names_are_stable() -> None:
