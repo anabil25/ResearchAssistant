@@ -6,6 +6,7 @@ from typing import Self
 
 import httpx
 import pytest
+import research_assistant_api.connector_gateway as connector_gateway
 from azure.core.credentials import AccessToken
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import (
@@ -120,6 +121,32 @@ async def test_gateway_rejects_unknown_source_without_network_call() -> None:
 
 
 @pytest.mark.asyncio
+async def test_gateway_rejects_unsupported_capability_without_network_call() -> None:
+    calls = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        del request
+        calls += 1
+        return httpx.Response(500)
+
+    client = httpx.AsyncClient(
+        base_url="https://gateway.example",
+        transport=httpx.MockTransport(handler),
+    )
+    gateway = HttpConnectorGateway("https://gateway.example", client=client)
+
+    with pytest.raises(
+        ConnectorGatewayError,
+        match="has no public connector gateway",
+    ):
+        await gateway.search(Capability.DATASET, "pubmed", "query", limit=3)
+    await client.aclose()
+
+    assert calls == 0
+
+
+@pytest.mark.asyncio
 async def test_gateway_rejects_invalid_or_failed_responses() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         del request
@@ -136,6 +163,22 @@ async def test_gateway_rejects_invalid_or_failed_responses() -> None:
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_gateway_closes_owned_client_without_credential() -> None:
+    gateway = HttpConnectorGateway("https://gateway.example")
+    closed = False
+
+    async def fake_aclose() -> None:
+        nonlocal closed
+        closed = True
+
+    gateway._client.aclose = fake_aclose  # type: ignore[method-assign]
+
+    await gateway.close()
+
+    assert closed is True
+
+
 def test_gateway_configuration_requires_https_or_local_loopback() -> None:
     disabled = build_connector_gateway(Settings())
     local = build_connector_gateway(
@@ -146,6 +189,33 @@ def test_gateway_configuration_requires_https_or_local_loopback() -> None:
     assert isinstance(local, HttpConnectorGateway)
     with pytest.raises(ValueError, match="must use HTTPS"):
         Settings(connector_gateway_url="http://gateway.example")
+
+
+def test_gateway_configuration_builds_managed_identity_for_token_scope(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, str | None] = {}
+
+    class FakeManagedIdentityCredential:
+        def __init__(self, *, client_id: str | None = None) -> None:
+            captured["client_id"] = client_id
+
+    monkeypatch.setattr(
+        connector_gateway,
+        "ManagedIdentityCredential",
+        FakeManagedIdentityCredential,
+    )
+
+    gateway = build_connector_gateway(
+        Settings(
+            connector_gateway_url="https://gateway.example",
+            connector_gateway_token_scope="api://gateway/.default",
+            managed_identity_client_id="managed-client",
+        )
+    )
+
+    assert isinstance(gateway, HttpConnectorGateway)
+    assert captured == {"client_id": "managed-client"}
 
 
 @pytest.mark.asyncio
