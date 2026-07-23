@@ -35,10 +35,7 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
-import {
-  describeUrlPolicyRejection,
-  evaluateExternalUrlPolicy,
-} from "@/lib/url-policy";
+import { PolicyGatedExternalLink } from "@/components/policy-gated-external-link";
 import type {
   ApprovalRecord,
   CapabilityId,
@@ -1638,37 +1635,9 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                     </div>
 
                     <div className="connector-manager-actions">
-                      {(() => {
-                        // `managedConnector` is narrowed non-null in this scope, so
-                        // recomputing here (rather than reusing the outer nullable
-                        // `managedConnectorTermsPolicy`) guarantees a real policy
-                        // result and removes an otherwise-unreachable null branch.
-                        const termsPolicy = evaluateExternalUrlPolicy(
-                          managedConnector.terms_url,
-                        );
-                        return termsPolicy.allowed ? (
-                          <a
-                            href={termsPolicy.url}
-                            target="_blank"
-                            rel="noreferrer"
-                            data-terms-state="ready"
-                          >
-                            Provider terms <ArrowUpRight size={13} />
-                          </a>
-                        ) : (
-                          <span
-                            className="connector-terms-blocked"
-                            role="status"
-                            data-terms-state="blocked-url"
-                            aria-label={describeUrlPolicyRejection(
-                              termsPolicy.reason,
-                            )}
-                          >
-                            <Lock size={13} aria-hidden="true" />
-                            {describeUrlPolicyRejection(termsPolicy.reason)}
-                          </span>
-                        );
-                      })()}
+                      <PolicyGatedExternalLink url={managedConnector.terms_url}>
+                        Provider terms <ArrowUpRight size={13} />
+                      </PolicyGatedExternalLink>
                       <div>
                         <button
                           type="button"
