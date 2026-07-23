@@ -571,6 +571,31 @@ describe("BuildTab", () => {
     expect(within(conflictMessage).getByText("Conflict")).toBeInTheDocument();
   });
 
+  it("has no detectable accessibility violations with a non-color-only conflict-tone builder message rendered", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({ draft_id: "draft-42", etag: "etag-42" }),
+    );
+    jest.mocked(postBuilderMessage).mockRejectedValue(
+      new ApiError("stale etag", 409),
+    );
+    const { container } = render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+    await screen.findByText(
+      /This draft changed since you last loaded it \(etag conflict\)/,
+    );
+
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it("gives non-error/conflict builder messages a status role, not an alert role", async () => {
     const user = userEvent.setup();
     jest.mocked(getAgentDraft).mockResolvedValue(
