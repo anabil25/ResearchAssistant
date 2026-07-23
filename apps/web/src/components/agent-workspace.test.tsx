@@ -31,6 +31,8 @@ import type {
   AgentContractView,
   AgentDraftView,
   AgentReleaseSummary,
+  AgentVersionSummary,
+  DeploymentSummary,
   RunSummary,
   WorkflowBlueprint,
 } from "@/lib/types";
@@ -221,19 +223,25 @@ function builderProposal(
 }
 
 function releaseSummary(
-  overrides: Partial<AgentReleaseSummary> = {},
+  overrides: Partial<AgentVersionSummary> = {},
+  deploymentOverrides: Partial<DeploymentSummary> = {},
 ): AgentReleaseSummary {
   return {
-    version: "1.0.0",
-    created_at: "2026-01-01T00:00:00Z",
-    created_by: "platform",
-    changelog: "Initial release.",
-    derived_from: null,
-    content_hash: "sha256:0000000000000000",
-    model_version: "gpt-5-fast",
-    capability_versions: {},
-    deployment_status: "deployed",
-    ...overrides,
+    version_summary: {
+      version: "1.0.0",
+      created_at: "2026-01-01T00:00:00Z",
+      created_by: "platform",
+      changelog: "Initial release.",
+      derived_from: null,
+      content_hash: "sha256:0000000000000000",
+      model_version: "gpt-5-fast",
+      capability_versions: {},
+      ...overrides,
+    },
+    deployment: {
+      deployment_status: "deployed",
+      ...deploymentOverrides,
+    },
   };
 }
 
@@ -952,26 +960,30 @@ describe("VersionsTab", () => {
   it("renders the release list and separate draft status on success", async () => {
     jest.mocked(getAgentReleases).mockResolvedValue([
       {
-        version: "1.2.0",
-        created_at: "2026-06-01T00:00:00Z",
-        created_by: "platform-team",
-        changelog: "Improved citation coverage.",
-        derived_from: "1.1.0",
-        content_hash: "sha256:abcdef1234567890",
-        model_version: "gpt-4o-2026-05-01",
-        capability_versions: { "web-search": "3.2.0" },
-        deployment_status: "deployed",
+        version_summary: {
+          version: "1.2.0",
+          created_at: "2026-06-01T00:00:00Z",
+          created_by: "platform-team",
+          changelog: "Improved citation coverage.",
+          derived_from: "1.1.0",
+          content_hash: "sha256:abcdef1234567890",
+          model_version: "gpt-4o-2026-05-01",
+          capability_versions: { "web-search": "3.2.0" },
+        },
+        deployment: { deployment_status: "deployed" },
       },
       {
-        version: "1.0.0",
-        created_at: "2026-01-01T00:00:00Z",
-        created_by: "platform-team",
-        changelog: "Initial release.",
-        derived_from: null,
-        content_hash: "sha256:0011223344556677",
-        model_version: "gpt-4o-2026-01-01",
-        capability_versions: {},
-        deployment_status: "rolled_back",
+        version_summary: {
+          version: "1.0.0",
+          created_at: "2026-01-01T00:00:00Z",
+          created_by: "platform-team",
+          changelog: "Initial release.",
+          derived_from: null,
+          content_hash: "sha256:0011223344556677",
+          model_version: "gpt-4o-2026-01-01",
+          capability_versions: {},
+        },
+        deployment: { deployment_status: "rolled_back" },
       },
     ]);
     jest.mocked(getAgentDraft).mockResolvedValue(draftView({ status: "evaluating" }));
@@ -1266,28 +1278,32 @@ describe("AgentWorkspaceView", () => {
   it("renders connections, capabilities, live model/status, and the read-only public web boundary for a discovered release", async () => {
     jest.mocked(getAgentReleases).mockResolvedValue([
       {
-        version: "1.0.0",
-        created_at: "2026-01-01T00:00:00Z",
-        created_by: "platform",
-        changelog: "Initial release.",
-        derived_from: null,
-        content_hash: "sha256:0000000000000000",
-        model_version: "gpt-5-fast",
-        capability_versions: {},
-        deployment_status: "deployed",
+        version_summary: {
+          version: "1.0.0",
+          created_at: "2026-01-01T00:00:00Z",
+          created_by: "platform",
+          changelog: "Initial release.",
+          derived_from: null,
+          content_hash: "sha256:0000000000000000",
+          model_version: "gpt-5-fast",
+          capability_versions: {},
+        },
+        deployment: { deployment_status: "deployed" },
       },
     ]);
     jest.mocked(getAgentRelease).mockResolvedValue({
       release: {
-        version: "1.0.0",
-        created_at: "2026-01-01T00:00:00Z",
-        created_by: "platform",
-        changelog: "Initial release.",
-        derived_from: null,
-        content_hash: "sha256:0000000000000000",
-        model_version: "gpt-5-fast",
-        capability_versions: {},
-        deployment_status: "deployed",
+        version_summary: {
+          version: "1.0.0",
+          created_at: "2026-01-01T00:00:00Z",
+          created_by: "platform",
+          changelog: "Initial release.",
+          derived_from: null,
+          content_hash: "sha256:0000000000000000",
+          model_version: "gpt-5-fast",
+          capability_versions: {},
+        },
+        deployment: { deployment_status: "deployed" },
       },
       contract: {
         ...emptyContract(),

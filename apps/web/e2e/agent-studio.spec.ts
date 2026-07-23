@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 
 import AxeBuilder from "@axe-core/playwright";
@@ -11,6 +12,16 @@ import { expect, test, type Page } from "@playwright/test";
 // asserted below are the genuine, honest response to a real 404 — exactly
 // the state a researcher will see today, and the state that will
 // automatically start showing real data once the backend ships.
+//
+// PRE-INTEGRATION NOTE: this file exercises the honest unavailable/error
+// states for endpoints the backend hasn't shipped yet (create, propose/apply
+// a builder proposal, fork, memory controls, deploy). That coverage is real
+// and valid today, but it cannot substantiate the real happy-path behavior
+// of those flows — it only proves the UI degrades honestly. Once the
+// `/api/agent-studio/...` endpoints land, this suite must be extended with
+// real happy-path specs for create/propose/apply/fork/memory/deploy; treat
+// the current 404/unavailable-state specs as pre-integration coverage, not
+// as a substitute for post-integration acceptance tests.
 
 async function waitForWorkspace(page: Page) {
   await page.goto("/");
@@ -464,14 +475,20 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
   test("capture Agent Studio surfaces at desktop, tablet, and mobile", async ({
     page,
   }) => {
-    const outputDirectory = process.env.UX_SCREENSHOT_DIR;
-    test.skip(!outputDirectory, "Screenshot directory not requested.");
+    // Mandatory release-gate artifact capture: the env var may redirect
+    // *where* the 18 screenshots land, but this test must never be
+    // silently skipped — a missing UX_SCREENSHOT_DIR falls back to a
+    // default in-repo test-results directory rather than skipping.
+    const outputDirectory =
+      process.env.UX_SCREENSHOT_DIR ??
+      path.join(process.cwd(), "test-results", "agent-studio-screenshots");
+    fs.mkdirSync(outputDirectory, { recursive: true });
 
     const capture = async (name: string) => {
       await page.evaluate(() => window.scrollTo(0, 0));
       await page.waitForTimeout(100);
       await page.screenshot({
-        path: path.join(outputDirectory!, name),
+        path: path.join(outputDirectory, name),
         fullPage: true,
       });
     };

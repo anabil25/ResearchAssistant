@@ -103,7 +103,7 @@ export type ResearchResult = Omit<
 // visibly `null`/"Not available yet".
 // ---------------------------------------------------------------------------
 
-/** Draft lifecycle only. Never applied to an immutable release row (see AgentReleaseSummary). */
+/** Draft lifecycle only. Never applied to an immutable version row (see AgentVersionSummary). */
 export type AgentDraftStatus =
   | "editing"
   | "validating"
@@ -563,8 +563,14 @@ export function derivePublicBoundaryFromWebAccess(
   };
 }
 
-/** Immutable release row. Never carries draft/evaluating/deploying mutable status — see AgentDraftView. */
-export interface AgentReleaseSummary {
+/**
+ * Purely immutable identity of one agent version — content-addressed hash,
+ * exact pinned model/capability versions, and creation lineage. Never
+ * carries deployment/environment/health state — see `DeploymentSummary`
+ * for that mutable, derived concern. A version row must never expose a
+ * field that can change after the fact.
+ */
+export interface AgentVersionSummary {
   version: string;
   created_at: string;
   created_by: string;
@@ -577,8 +583,27 @@ export interface AgentReleaseSummary {
   model_version: string;
   /** Exact capability instance versions bound at release time, by capability id. */
   capability_versions: Record<string, string>;
-  /** Where this specific immutable release currently sits — distinct from draft status. */
+}
+
+/**
+ * Mutable, derived environment binding for one immutable version — where it
+ * currently sits (active/deprecated/rolled back). Never persisted on the
+ * immutable version row itself (see `AgentVersionSummary`), and distinct
+ * from `AgentHealthSummary`: deployment status is a placement fact, not a
+ * health signal.
+ */
+export interface DeploymentSummary {
   deployment_status: AgentDeploymentStatus;
+}
+
+/**
+ * One row in the agent's version history: the immutable version identity
+ * plus its current (mutable) deployment binding, kept as clearly separate
+ * nested objects — never flattened into a single ambiguous "immutable" row.
+ */
+export interface AgentReleaseSummary {
+  version_summary: AgentVersionSummary;
+  deployment: DeploymentSummary;
 }
 
 export interface AgentUsageSummary {

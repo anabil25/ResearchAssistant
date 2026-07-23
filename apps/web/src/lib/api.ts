@@ -242,6 +242,31 @@ export async function uploadLibraryItem(
 //     for this namespace yet, and project-scoping/contract corrections are
 //     still in flight upstream — so every caller must keep treating these
 //     as real, possibly-404ing requests, never a fabricated success.
+//   Round 5 — split capability `maturity` (ga|preview|unknown) from a new,
+//     independent `lifecycle` (active|deprecated|retired) on
+//     `CapabilityInstance`. New attachment requires ga+active+ready;
+//     deprecated/retired instances stay visible (with a surfaced reason)
+//     but are never attachable — `retired` is a lifecycle state, not a
+//     maturity value.
+//   Round 6 — restructured the persisted `CapabilityBinding` from flat
+//     scalar ids/versions to typed ref objects (`descriptor`/`instance` as
+//     `{id, version[, fingerprint]}`, `configuration`/`connection`/`policy`
+//     as nullable `{ref}` objects) and added `provider_contract_version`
+//     (the upstream provider's own contract version — never an ambiguous
+//     `provider_version` alias) and `destination_constraints` (frozen at
+//     bind time, distinct from the live/volatile `CapabilityInstance.destination`).
+//   Round 7 — independent review of the Round 2 checkpoint (`7caafc0`)
+//     flagged that `AgentReleaseSummary` conflated immutable version
+//     identity (version/hash/lineage/model/capability pins) with a mutable
+//     `deployment_status` field on the same "immutable" row. Split into a
+//     purely immutable `AgentVersionSummary` and a separate, explicitly
+//     mutable/derived `DeploymentSummary`; `AgentReleaseSummary` is now
+//     `{version_summary, deployment}` — never a single flattened row. Note:
+//     most other Round-7 review findings (maturity/lifecycle split, the
+//     `/api/agent-studio` routing convention, typed-ref bindings,
+//     `AgentContractView`-only) were already addressed in Rounds 4-6 above;
+//     the review appears to have been run against the older `7caafc0`
+//     checkpoint rather than the current HEAD.
 //
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`

@@ -133,10 +133,10 @@ function useAgentContract(agentId: string) {
       .then((releases) => {
         const latest = releases[releases.length - 1];
         if (!latest) throw new Error("no releases yet");
-        return getAgentRelease(agentId, latest.version).then((result) => {
+        return getAgentRelease(agentId, latest.version_summary.version).then((result) => {
           if (cancelled) return;
           setContract(result.contract);
-          setReleaseVersion(latest.version);
+          setReleaseVersion(latest.version_summary.version);
           setStatus("ready");
         });
       })
@@ -760,21 +760,25 @@ export function VersionsTab({
       ) : releases && releases.length > 0 ? (
         <ul className="agent-version-list">
           {releases.map((release) => (
-            <li key={release.version}>
-              <strong>{release.version}</strong>
-              <span className="status-chip" data-tone={release.deployment_status}>
-                {release.deployment_status.replace("_", " ")}
+            <li key={release.version_summary.version}>
+              <strong>{release.version_summary.version}</strong>
+              <span
+                className="status-chip"
+                data-tone={release.deployment.deployment_status}
+              >
+                {release.deployment.deployment_status.replace("_", " ")}
               </span>
-              <span>{release.changelog}</span>
+              <span>{release.version_summary.changelog}</span>
               <small>
-                {release.created_by} · {formatTime(release.created_at)}
+                {release.version_summary.created_by} ·{" "}
+                {formatTime(release.version_summary.created_at)}
               </small>
               <small className="agent-version-lineage">
-                {release.derived_from
-                  ? `Forked from ${release.derived_from}`
+                {release.version_summary.derived_from
+                  ? `Forked from ${release.version_summary.derived_from}`
                   : "Original release"}{" "}
-                · model {release.model_version} · hash{" "}
-                {release.content_hash.slice(0, 12)}
+                · model {release.version_summary.model_version} · hash{" "}
+                {release.version_summary.content_hash.slice(0, 12)}
               </small>
             </li>
           ))}

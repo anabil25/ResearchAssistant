@@ -398,15 +398,17 @@ describe("AgentRegistryCard", () => {
     });
     jest.mocked(getAgentReleases).mockResolvedValue([
       {
-        version: "1.0.0",
-        created_at: "2026-07-01T12:00:00Z",
-        created_by: "platform",
-        changelog: "Initial release.",
-        derived_from: null,
-        content_hash: "sha256:0000000000000000",
-        model_version: "gpt-4o-2026-05-01",
-        capability_versions: {},
-        deployment_status: "deployed",
+        version_summary: {
+          version: "1.0.0",
+          created_at: "2026-07-01T12:00:00Z",
+          created_by: "platform",
+          changelog: "Initial release.",
+          derived_from: null,
+          content_hash: "sha256:0000000000000000",
+          model_version: "gpt-4o-2026-05-01",
+          capability_versions: {},
+        },
+        deployment: { deployment_status: "deployed" },
       },
     ]);
     render(
