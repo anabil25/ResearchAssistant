@@ -416,16 +416,38 @@ class CosmosAgentStudioStore(AgentStudioStore):
     def _release_id(release_id: str) -> str:
         return f"release::{release_id}"
 
+    def _query_releases_for_version(self, scope_key: str, version_id: str) -> list[dict[str, Any]]:
+        """Server-side filtered single-partition query for one version's releases.
+
+        Filters by ``payload.version_id`` directly in the Cosmos query
+        (``partition_key=`` still pins it to exactly one logical partition)
+        so a lookup for one version's release history never loads every
+        release ever created across the whole scope and filters
+        client-side (finding #9) -- a logical agent with a long release
+        history must not make every ``get_release``/``latest_release_for_version``
+        call proportional to that history's total size.
+        """
+        return list(
+            self._container.query_items(
+                query=("SELECT * FROM c WHERE c.documentType = @documentType AND c.payload.version_id = @versionId"),
+                parameters=[
+                    {"name": "@documentType", "value": "release"},
+                    {"name": "@versionId", "value": version_id},
+                ],
+                partition_key=scope_key,
+            )
+        )
+
     def create_release(self, scope: ScopeContext, release: AgentRelease) -> AgentRelease:
         super().create_release(scope, release)
         self._upsert(scope.scope_key, self._release_id(release.id), "release", release.model_dump(mode="json"))
         return release
 
     def _sync_releases(self, scope: ScopeContext, version_id: str) -> None:
-        documents = self._query_partition(scope.scope_key, "release")
+        documents = self._query_releases_for_version(scope.scope_key, version_id)
         for document in documents:
             release = AgentRelease.model_validate(document["payload"])
-            if release.version_id == version_id and release.id not in self._releases:
+            if release.id not in self._releases:
                 AgentStudioStore.create_release(self, scope, release)
 
     def get_release(self, scope: ScopeContext, release_id: str) -> AgentRelease | None:

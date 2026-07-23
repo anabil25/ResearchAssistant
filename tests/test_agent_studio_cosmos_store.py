@@ -360,11 +360,14 @@ class FakeContainer:
             }
         )
         document_type = values["@documentType"]
+        version_id = values.get("@versionId")
         with self._lock:
             return [
                 deepcopy(document)
                 for (scope_key, _), document in self.documents.items()
-                if scope_key == partition_key and document["documentType"] == document_type
+                if scope_key == partition_key
+                and document["documentType"] == document_type
+                and (version_id is None or document["payload"].get("version_id") == version_id)
             ]
 
     def replace_item(
@@ -1016,6 +1019,22 @@ def test_releases_round_trip_latest_and_scope_guards(
     assert reloaded.list_releases_for_version(SCOPE, "version-1") == (gated, active)
     assert reloaded.latest_release_for_version(SCOPE, "version-1") == active
     assert reloaded.latest_release_for_version(SCOPE, "missing-version") is None
+
+    # Finding #9 regression: the release lookup must filter by version_id
+    # *inside* the Cosmos query (server-side), never load every release
+    # ever created in scope and filter client-side. Assert the exact query
+    # shape sent to the container.
+    container_for_reloaded = _metadata_container(fake_client_factory)
+    assert any(
+        entry["partition_key"] == SCOPE.scope_key
+        and "c.payload.version_id = @versionId" in entry["query"]
+        and entry["parameters"]
+        == [
+            {"name": "@documentType", "value": "release"},
+            {"name": "@versionId", "value": "version-1"},
+        ]
+        for entry in container_for_reloaded.query_log
+    )
 
     getter = _new_store(fake_client_factory)
     assert getter.get_release(SCOPE, gated.id) == gated
