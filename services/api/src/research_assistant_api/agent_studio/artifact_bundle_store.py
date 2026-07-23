@@ -34,12 +34,13 @@ only ever be used by tests.
 
 from __future__ import annotations
 
+import contextlib
 from dataclasses import dataclass
 from hashlib import sha256
 from typing import Protocol
 
 from azure.core.credentials import TokenCredential
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
 
@@ -188,7 +189,17 @@ class AzureArtifactBundleStore:
         checksum = sha256(content).hexdigest()
         blob_name = _blob_path(tenant_id, project_id, logical_agent_id, checksum, version_label)
         blob = self._container.get_blob_client(blob_name)
-        if not blob.exists():
+        # No ``exists()`` pre-check: an exists-then-upload sequence is a
+        # classic TOCTOU race. Two concurrent uploads of identical content
+        # can both observe "absent" and both attempt
+        # ``upload_blob(overwrite=False)``; the loser must not surface that
+        # as a failure. Instead, attempt the conditional create directly
+        # (atomic server-side) and treat ``ResourceExistsError`` as success:
+        # the blob name is content-addressed (``.../{checksum}``), so a
+        # blob already present at this exact path is guaranteed
+        # byte-identical to ``content`` -- there is no real conflict to
+        # surface, only a redundant, idempotent write that lost the race.
+        with contextlib.suppress(ResourceExistsError):
             blob.upload_blob(
                 content,
                 overwrite=False,

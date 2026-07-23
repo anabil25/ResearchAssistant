@@ -4,7 +4,7 @@ from typing import TYPE_CHECKING, Any, cast
 
 import pytest
 import research_assistant_api.agent_studio.artifact_bundle_store as artifact_bundle_store
-from azure.core.exceptions import ResourceNotFoundError
+from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
 from research_assistant_api.agent_studio.artifact_bundle_store import (
     ArtifactBundleStoreError,
     AzureArtifactBundleStore,
@@ -191,11 +191,14 @@ class FakeBlobClient:
         self._name = name
         self.url = f"https://fake.blob.core.windows.net/container/{name}"
 
-    def exists(self) -> bool:
-        return self._name in self._registry
-
     def upload_blob(self, content: bytes, *, overwrite: bool, metadata: dict[str, str], content_settings: Any) -> None:
         assert overwrite is False
+        # Mirrors real Azure Blob Storage's conditional-create semantics for
+        # ``overwrite=False``: a blob already present at this exact name is
+        # rejected with ``ResourceExistsError`` rather than silently
+        # overwritten (or silently skipped) here.
+        if self._name in self._registry:
+            raise ResourceExistsError("blob already exists")
         self._registry[self._name] = content
 
     def download_blob(self) -> Any:
@@ -246,7 +249,10 @@ def test_azure_store_uploads_new_blob_and_skips_reupload(monkeypatch: pytest.Mon
     fake_container = cast(FakeContainerClient, store._container)
     assert len(fake_container.registry) == 1
 
-    # Uploading the same content again must not re-upload (idempotent put).
+    # Uploading the same content again is idempotent: the conditional-create
+    # attempt is rejected as an already-existing blob, but ``put`` still
+    # returns success with the same identity rather than surfacing that as
+    # an error.
     same = store.put(
         tenant_id="demo",
         project_id="proj-1",
@@ -256,6 +262,45 @@ def test_azure_store_uploads_new_blob_and_skips_reupload(monkeypatch: pytest.Mon
     )
     assert same.uri == bundle.uri
     assert len(fake_container.registry) == 1
+
+
+def test_azure_store_put_treats_concurrent_duplicate_upload_as_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finding (independent review of ec4d8f1): exists-then-upload TOCTOU.
+
+    Two concurrent uploads of identical content can both observe the blob
+    as absent and both attempt ``upload_blob(overwrite=False)``; the
+    "loser" of that race must not surface ``ResourceExistsError`` as a
+    failure -- the blob name is content-addressed, so an existing blob at
+    this exact path is guaranteed byte-identical, making this a successful
+    idempotent no-op rather than a real conflict. This test never calls
+    ``exists()`` at all, so it fails if a future regression reintroduces an
+    exists-then-upload race window rather than a single atomic
+    conditional-create attempt.
+    """
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+    fake_container = cast(FakeContainerClient, store._container)
+    # Simulate a concurrent winner: pre-populate the registry with the
+    # exact content this call is about to upload, at the exact path this
+    # call will compute, *before* this call ever checks anything.
+    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
+    fake_container.registry[blob_name] = b"racy-payload"
+
+    bundle = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"racy-payload",
+        version_label="version-race",
+    )
+
+    assert bundle.checksum == f"sha256:{checksum}"
+    assert fake_container.registry[blob_name] == b"racy-payload"
 
 
 def test_azure_store_put_accepts_explicit_version_label(monkeypatch: pytest.MonkeyPatch) -> None:
