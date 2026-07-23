@@ -64,33 +64,33 @@ describe("backend proxy allowlist", () => {
     expect(global.fetch).not.toHaveBeenCalled();
   }
 
-  it("forwards the exact v1/agent-studio namespace root", async () => {
-    const url = await expectAllowlisted(["v1", "agent-studio"]);
-    expect(url.toString()).toBe("http://127.0.0.1:8100/v1/agent-studio");
+  it("forwards the api/agent-studio namespace root via the existing api/ prefix", async () => {
+    const url = await expectAllowlisted(["api", "agent-studio"]);
+    expect(url.toString()).toBe("http://127.0.0.1:8100/api/agent-studio");
   });
 
-  it("forwards real v1/agent-studio subpaths", async () => {
+  it("forwards real api/agent-studio subpaths", async () => {
     const url = await expectAllowlisted([
-      "v1",
+      "api",
       "agent-studio",
       "agents",
       "lit-1",
       "draft",
     ]);
     expect(url.toString()).toBe(
-      "http://127.0.0.1:8100/v1/agent-studio/agents/lit-1/draft",
+      "http://127.0.0.1:8100/api/agent-studio/agents/lit-1/draft",
     );
   });
 
   it("preserves the query string when forwarding an allowlisted path", async () => {
     const url = await expectAllowlisted(
-      ["v1", "agent-studio", "agents", "lit-1", "fork"],
+      ["api", "agent-studio", "agents", "lit-1", "fork"],
       "?version=3",
     );
     expect(url.search).toBe("?version=3");
   });
 
-  it("continues to forward the existing api/ router prefix", async () => {
+  it("continues to forward the existing api/ router prefix for non-agent-studio features", async () => {
     const url = await expectAllowlisted(["api", "library"]);
     expect(url.toString()).toBe("http://127.0.0.1:8100/api/library");
   });
@@ -107,34 +107,39 @@ describe("backend proxy allowlist", () => {
     await expectDenied(["v1", "other"]);
   });
 
-  it("denies a same-prefix-collision sibling of the agent-studio namespace", async () => {
-    await expectDenied(["v1", "agent-studio-admin"]);
+  it("denies the retired v1/agent-studio mount point now that agent-studio is mounted under api/", async () => {
+    // Verified against the real backend (commit 5dab8b7): the agent-studio
+    // router's prefix is `/api/agent-studio`, not a standalone `/v1/...`
+    // mount. A stale `/v1/agent-studio` allowlist entry would keep open a
+    // route nothing serves, so it must be denied like any other unreviewed
+    // v1 path.
+    await expectDenied(["v1", "agent-studio", "agents"]);
   });
 
   it("denies a bare v1 segment with no namespace", async () => {
     await expectDenied(["v1"]);
   });
 
-  it("denies path traversal even when nested under the allowlisted namespace", async () => {
-    await expectDenied(["v1", "agent-studio", "..", "..", "etc", "passwd"]);
+  it("denies path traversal even when nested under an allowlisted prefix", async () => {
+    await expectDenied(["api", "agent-studio", "..", "..", "etc", "passwd"]);
   });
 
-  it("denies alternate casing of the allowlisted namespace (fails closed, not bypassed)", async () => {
-    await expectDenied(["V1", "Agent-Studio", "agents"]);
+  it("denies alternate casing of the allowlisted api/ prefix (fails closed, not bypassed)", async () => {
+    await expectDenied(["Api", "Agent-Studio", "agents"]);
   });
 
   it("denies an alternate-separator segment instead of silently normalizing it", async () => {
-    await expectDenied(["v1\\agent-studio"]);
+    await expectDenied(["api\\agent-studio"]);
   });
 
   it("forwards method, body, and content-type header on POST", async () => {
     const response = await POST(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/drafts", {
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/drafts", {
         method: "POST",
         body: JSON.stringify({ intent: "test" }),
         headers: { "Content-Type": "application/json" },
       }),
-      paramsFor(["v1", "agent-studio", "drafts"]),
+      paramsFor(["api", "agent-studio", "drafts"]),
     );
     expect(response.status).toBe(200);
     const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [
@@ -152,8 +157,8 @@ describe("backend proxy allowlist", () => {
       throw new Error("connection refused");
     }) as unknown as typeof fetch;
     const response = await GET(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/agents"),
-      paramsFor(["v1", "agent-studio", "agents"]),
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/agents"),
+      paramsFor(["api", "agent-studio", "agents"]),
     );
     expect(response.status).toBe(502);
     const body = await response.json();
@@ -162,12 +167,12 @@ describe("backend proxy allowlist", () => {
 
   it("returns 413 request_too_large when Content-Length exceeds the cap", async () => {
     const response = await POST(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/drafts", {
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/drafts", {
         method: "POST",
         body: "x",
         headers: { "Content-Length": "999999999" },
       }),
-      paramsFor(["v1", "agent-studio", "drafts"]),
+      paramsFor(["api", "agent-studio", "drafts"]),
     );
     expect(response.status).toBe(413);
     const body = await response.json();
@@ -201,7 +206,7 @@ describe("backend proxy allowlist", () => {
       },
     });
     const request = new NextRequest(
-      new URL("http://localhost:3000/api/backend/v1/agent-studio/drafts"),
+      new URL("http://localhost:3000/api/backend/api/agent-studio/drafts"),
       {
         method: "POST",
         body: stream,
@@ -210,7 +215,7 @@ describe("backend proxy allowlist", () => {
     );
     const response = await POST(
       request,
-      paramsFor(["v1", "agent-studio", "drafts"]),
+      paramsFor(["api", "agent-studio", "drafts"]),
     );
     expect(response.status).toBe(413);
     const body = await response.json();
@@ -219,31 +224,32 @@ describe("backend proxy allowlist", () => {
 
   it("also exposes the PUT export forwarding to the same allowlisted proxy", async () => {
     const response = await PUT(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/drafts/d-1", {
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/drafts/d-1", {
         method: "PUT",
         body: JSON.stringify({ ok: true }),
         headers: { "Content-Type": "application/json" },
       }),
-      paramsFor(["v1", "agent-studio", "drafts", "d-1"]),
+      paramsFor(["api", "agent-studio", "drafts", "d-1"]),
     );
     expect(response.status).toBe(200);
   });
 
   it("forwards a POST request that has no body", async () => {
     const response = await POST(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/agents/lit-1/deploy", {
-        method: "POST",
-      }),
-      paramsFor(["v1", "agent-studio", "agents", "lit-1", "deploy"]),
+      makeRequest(
+        "http://localhost:3000/api/backend/api/agent-studio/agents/lit-1/deploy",
+        { method: "POST" },
+      ),
+      paramsFor(["api", "agent-studio", "agents", "lit-1", "deploy"]),
     );
     expect(response.status).toBe(200);
   });
 
   it("falls back to the default internal API base when INTERNAL_API_URL is unset", async () => {
     delete process.env.INTERNAL_API_URL;
-    const url = await expectAllowlisted(["v1", "agent-studio", "agents"]);
+    const url = await expectAllowlisted(["api", "agent-studio", "agents"]);
     expect(url.toString()).toBe(
-      "http://127.0.0.1:8000/v1/agent-studio/agents",
+      "http://127.0.0.1:8000/api/agent-studio/agents",
     );
   });
 
@@ -252,10 +258,10 @@ describe("backend proxy allowlist", () => {
     try {
       await GET(
         makeRequest(
-          "http://localhost:3000/api/backend/v1/agent-studio/agents",
+          "http://localhost:3000/api/backend/api/agent-studio/agents",
           { headers: { "X-MS-CLIENT-PRINCIPAL": "trusted-principal" } },
         ),
-        paramsFor(["v1", "agent-studio", "agents"]),
+        paramsFor(["api", "agent-studio", "agents"]),
       );
       const [, init] = (global.fetch as jest.Mock).mock.calls[0] as [
         URL,
@@ -274,8 +280,8 @@ describe("backend proxy allowlist", () => {
       async () => new Response(new Uint8Array(Buffer.from("{}")), { status: 200 }),
     ) as unknown as typeof fetch;
     const response = await GET(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/agents"),
-      paramsFor(["v1", "agent-studio", "agents"]),
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/agents"),
+      paramsFor(["api", "agent-studio", "agents"]),
     );
     expect(response.headers.get("Content-Type")).toBe("application/json");
   });
@@ -286,8 +292,8 @@ describe("backend proxy allowlist", () => {
     }) as unknown as typeof fetch;
     const consoleSpy = jest.spyOn(console, "error").mockImplementation(() => {});
     const response = await GET(
-      makeRequest("http://localhost:3000/api/backend/v1/agent-studio/agents"),
-      paramsFor(["v1", "agent-studio", "agents"]),
+      makeRequest("http://localhost:3000/api/backend/api/agent-studio/agents"),
+      paramsFor(["api", "agent-studio", "agents"]),
     );
     expect(response.status).toBe(502);
     expect(consoleSpy).toHaveBeenCalledWith(

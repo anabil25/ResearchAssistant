@@ -107,7 +107,7 @@ interface AgentWorkspaceProps {
 /**
  * Loads the behavioral contract for one agent: the latest immutable release
  * if one exists, otherwise the current draft. Both calls hit
- * `/v1/agent-studio/...` and will genuinely 404 until the backend ships
+ * `/api/agent-studio/...` and will genuinely 404 until the backend ships
  * them — callers see an explicit `AsyncStateBanner`, never a fabricated
  * contract.
  */

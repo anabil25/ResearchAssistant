@@ -1,33 +1,30 @@
 import { NextRequest, NextResponse } from "next/server";
 
-// Only "api/" (every other feature router), the exact "v1/agent-studio"
-// namespace (verified against the real backend commit renaming its router
-// prefix to `/v1/agent-studio`, mounted at the FastAPI app root — see the
-// Round 8 history entry in `lib/api.ts`), and the two health-check paths
-// may reach the backend. A bare "v1/" prefix was too broad: it would also
-// forward any *other* future `/v1/...` router the backend adds before this
-// proxy is updated to know about it, which is a real security hardening
-// gap, not just a style nit — an allowlist proxy must allowlist the exact
-// namespace it was reviewed for, not a whole version segment.
+// Only "api/" (every feature router, including agent-studio — see below)
+// and the two health-check paths may reach the backend.
+//
+// The agent-studio router's mount point moved during Phase2: earlier
+// backend checkpoints (`d6df0fe`) mounted it at a standalone `/v1/agent-studio`
+// prefix, which is why an earlier round of this file carried a dedicated
+// `AGENT_STUDIO_PATH` allowlist entry alongside the generic "api/" prefix.
+// Verified directly against the current backend commit `5dab8b7`
+// (`services/api/src/research_assistant_api/agent_studio/router.py`):
+// `router = APIRouter(prefix="/api/agent-studio", ...)`, mounted via
+// `app.include_router(agent_studio_router)` with no extra prefix — so the
+// real, final mount point is `/api/agent-studio`, already inside the
+// existing "api/" prefix. The standalone `/v1/agent-studio` entry is now
+// removed: it is no longer a real backend route, and leaving it allowlisted
+// would keep open a namespace nothing serves. See the matching history
+// entry in `lib/api.ts` for the `AGENT_STUDIO_BASE` retarget.
 const EXACT_ALLOWED_PATHS = ["health", "ready"];
 const ALLOWED_PREFIXES = ["api/"];
-const AGENT_STUDIO_PATH = "v1/agent-studio";
 const MAX_PROXY_BODY_BYTES = 21_000_000;
 
 class PayloadTooLargeError extends Error {}
 
 function isAllowedPath(joined: string): boolean {
   if (EXACT_ALLOWED_PATHS.includes(joined)) return true;
-  if (ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix))) {
-    return true;
-  }
-  // Boundary-aware match: allow the exact namespace root and any real
-  // subpath under it, but not a same-prefix-collision sibling like
-  // "v1/agent-studio-admin" or an unrelated "v1/other" router.
-  return (
-    joined === AGENT_STUDIO_PATH ||
-    joined.startsWith(`${AGENT_STUDIO_PATH}/`)
-  );
+  return ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix));
 }
 
 function boundedBody(

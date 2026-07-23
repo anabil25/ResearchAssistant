@@ -29,14 +29,22 @@ import type {
 
 // The Next.js catch-all backend proxy (`src/app/api/backend/[...path]/route.ts`)
 // forwards anything matching its `ALLOWED_PREFIXES` allowlist straight through
-// to the FastAPI backend root. Pre-existing, non-Agent-Studio features are
-// all mounted under the backend's own `/api` router prefix, hence `API_BASE`
-// below. Agent Studio is mounted at the backend's root under `/v1/agent-studio`
-// (see `AGENT_STUDIO_BASE`) — a distinct prefix, not nested under `/api` — so
-// it gets its own base rather than reusing `API_BASE`.
+// to the FastAPI backend root. Every feature router, including Agent Studio,
+// is mounted under the backend's own `/api` router prefix, hence a single
+// `API_BASE` for both. Agent Studio previously had its own `AGENT_STUDIO_BASE`
+// pointed at a standalone `/v1/agent-studio` mount — see the Round 8/9 history
+// below for why that was believed to be the real mount point at the time.
+// Verified directly against the current backend commit `5dab8b7`
+// (`services/api/src/research_assistant_api/agent_studio/router.py`):
+// `router = APIRouter(prefix="/api/agent-studio", ...)`, mounted via
+// `app.include_router(agent_studio_router)` with no extra prefix — so
+// Agent Studio's real, final mount point is `/api/agent-studio`, nested
+// under the same `/api` prefix as every other feature router. There is no
+// longer a reason for a separate base; `AGENT_STUDIO_BASE` now just adds
+// the `/agent-studio` segment onto the shared `API_BASE`.
 const PROXY_BASE = "/api/backend";
 const API_BASE = `${PROXY_BASE}/api`;
-const AGENT_STUDIO_BASE = `${PROXY_BASE}/v1/agent-studio`;
+const AGENT_STUDIO_BASE = `${API_BASE}/agent-studio`;
 
 /**
  * Thrown by `apiFetch`/`backendFetch` for any non-2xx response. Carries the
@@ -393,6 +401,23 @@ export async function uploadLibraryItem(
 //     compare against, and reimplementing the backend's canonical-JSON
 //     digest algorithm in TS would be an invented, unverifiable duplicate;
 //     `version` comparison remains the UI's proxy signal for that case.
+//
+//   Round 11 — the sibling reported the earlier `/v1/agent-studio` mount
+//     point from Round 8 (`d6df0fe`) was itself a temporary Phase1
+//     checkpoint, and the current backend HEAD reverts to `/api/agent-studio`.
+//     Verified directly against the real commit (`5dab8b7`, on the sibling
+//     backend session's branch), not taken on the sibling's word alone:
+//     `services/api/src/research_assistant_api/agent_studio/router.py`
+//     defines `router = APIRouter(prefix="/api/agent-studio", ...)`, and
+//     `app.py` does `app.include_router(agent_studio_router)` with no
+//     additional prefix — so the final mount point is `/api/agent-studio`,
+//     nested under the same `/api` prefix as every other feature router.
+//     Retargeted `AGENT_STUDIO_BASE` to `${API_BASE}/agent-studio`, removing
+//     the separate `/v1/agent-studio` base entirely. The backend proxy's
+//     dedicated `v1/agent-studio` allowlist entry (added in the Round 8
+//     follow-up) is likewise removed — the namespace is now reachable via
+//     the existing generic `"api/"` prefix, and leaving the old entry in
+//     place would keep open a route nothing serves.
 //
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`

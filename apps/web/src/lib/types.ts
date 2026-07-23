@@ -77,8 +77,8 @@ export type ResearchResult = Omit<
 
 // ---------------------------------------------------------------------------
 // Agent Studio contract — PENDING BACKEND, canonical namespace
-// `/v1/agent-studio` (confirmed against the backend's actual committed
-// router prefix — see the Round 4/8 history below for the full flip-flop;
+// `/api/agent-studio` (confirmed against the backend's actual committed
+// router prefix — see the Round 4/8/11 history below for the full flip-flop;
 // not yet final since generated OpenAPI hasn't shipped — see `lib/api.ts`
 // for the single choke-point helper this is centralized behind).
 //
@@ -797,7 +797,7 @@ export interface AgentSummary {
   discovered_project_model: string | null;
   public_boundary: PublicBoundaryView;
   capability: CapabilityId | null;
-  /** `"legacy_agents_endpoint"` until `/v1/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
+  /** `"legacy_agents_endpoint"` until `/api/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
   source: "agent_studio" | "legacy_agents_endpoint";
 }
 
