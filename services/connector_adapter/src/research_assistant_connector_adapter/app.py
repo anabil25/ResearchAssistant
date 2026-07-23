@@ -83,8 +83,6 @@ def _search(
     registry = factory()
     try:
         result = registry.search(source.value, query, limit=limit)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
     except (
         httpx.HTTPError,
         HTTPError,
@@ -96,6 +94,8 @@ def _search(
     ) as exc:
         logger.warning("Connector %s failed: %s", source.value, exc)
         raise HTTPException(status_code=502, detail=f"Connector {source.value} is unavailable.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
     finally:
         registry.close()
     return ConnectorSearchResponse.model_validate(

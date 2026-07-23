@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import pytest
 from pydantic import HttpUrl, ValidationError
 from research_assistant_core.models import Capability, RunStatus
 from research_assistant_core.v3_contracts import (
@@ -11,6 +12,8 @@ from research_assistant_core.v3_contracts import (
     DatasetExecutionV3,
     EvidenceReferenceV3,
     EvidenceResolution,
+    InstitutionalAnswerV3,
+    LiteratureProtocolV3,
     MatchCandidateV3,
     MatchEntityType,
     MatchScoreComponentV3,
@@ -55,6 +58,42 @@ def test_verified_evidence_requires_resolved_provenance() -> None:
         assert "requires chunk, citation, quote, and checksum" in str(exc)
     else:
         raise AssertionError("Verified evidence without provenance must be rejected.")
+
+    evidence = EvidenceReferenceV3(
+        id="evidence-test-record",
+        source_id="source-1",
+        chunk_id="chunk-1",
+        citation_id="citation-1",
+        title="Test source",
+        resolution=EvidenceResolution.VERIFIED,
+        quote="Stored evidence",
+        checksum="sha256:test",
+    )
+    assert evidence.resolution == EvidenceResolution.VERIFIED
+
+
+def test_literature_protocol_requires_an_ordered_date_window() -> None:
+    protocol = LiteratureProtocolV3(
+        question="What changed?",
+        date_from=2020,
+        date_to=2026,
+        source_connector_ids=["pubmed"],
+        inclusion_criteria=["Primary research"],
+        exclusion_criteria=["Retracted"],
+        protocol_version="1.0",
+    )
+    assert protocol.date_to == 2026
+
+    with pytest.raises(ValidationError, match="start year must not exceed"):
+        LiteratureProtocolV3(
+            question="What changed?",
+            date_from=2026,
+            date_to=2020,
+            source_connector_ids=["pubmed"],
+            inclusion_criteria=["Primary research"],
+            exclusion_criteria=["Retracted"],
+            protocol_version="1.0",
+        )
 
 
 def test_active_connector_requires_immutable_gateway_bindings() -> None:
@@ -203,6 +242,135 @@ def test_matching_score_and_execution_credentials_are_deterministic() -> None:
     )
     assert execution.tool_name == "code_interpreter"
     assert execution.project_scoped_context is True
+
+    candidate = MatchCandidateV3(
+        id="person-1",
+        name="Researcher One",
+        entity_type=MatchEntityType.PERSON,
+        hard_filters_passed=True,
+        score=80,
+        components=[
+            MatchScoreComponentV3(
+                criterion_id="expertise",
+                label="Expertise",
+                weight=1,
+                match=0.8,
+                contribution=80,
+                evidence_ids=["evidence-person-1"],
+            )
+        ],
+        evidence_ids=["evidence-person-1"],
+        availability="unknown",
+    )
+    assert candidate.score == 80
+
+
+def test_institutional_answer_requires_explicit_abstention_semantics() -> None:
+    assert InstitutionalAnswerV3(
+        question="Unknown policy?",
+        answer_markdown=None,
+        abstained=True,
+    ).abstained
+    assert InstitutionalAnswerV3(
+        question="Known policy?",
+        answer_markdown="The stored policy applies.",
+        abstained=False,
+    ).answer_markdown
+
+    with pytest.raises(ValidationError, match="cannot include answer prose"):
+        InstitutionalAnswerV3(
+            question="Unknown policy?",
+            answer_markdown="An unsupported answer.",
+            abstained=True,
+        )
+    with pytest.raises(ValidationError, match="requires answer prose"):
+        InstitutionalAnswerV3(
+            question="Known policy?",
+            answer_markdown=None,
+            abstained=False,
+        )
+
+
+def test_workflow_contract_rejects_duplicate_and_dangling_graph_elements() -> None:
+    input_port = WorkflowPortV3(id="input", schema_ref="#/$defs/Input")
+    output_port = WorkflowPortV3(id="output", schema_ref="#/$defs/Output")
+    first = WorkflowNodeV3(
+        id="first",
+        label="First",
+        kind=WorkflowNodeKind.STUDIO,
+        inputs=[input_port],
+        outputs=[output_port],
+    )
+    second = WorkflowNodeV3(
+        id="second",
+        label="Second",
+        kind=WorkflowNodeKind.APPROVAL,
+        inputs=[input_port],
+        outputs=[output_port],
+    )
+
+    def definition(
+        nodes: list[WorkflowNodeV3],
+        edges: list[WorkflowEdgeV3],
+    ) -> WorkflowDefinitionV3:
+        return WorkflowDefinitionV3(
+            id="workflow-invalid-graph",
+            version="1.0.0",
+            name="Invalid graph",
+            trigger=WorkflowTriggerV3(kind="manual"),
+            nodes=nodes,
+            edges=edges,
+            execution_mode="agent_framework",
+        )
+
+    with pytest.raises(ValidationError, match="node IDs must be unique"):
+        definition([first, first], [])
+
+    duplicate_edge = WorkflowEdgeV3(
+        id="duplicate",
+        source_node_id="first",
+        source_port_id="output",
+        target_node_id="second",
+        target_port_id="input",
+    )
+    with pytest.raises(ValidationError, match="edge IDs must be unique"):
+        definition([first, second], [duplicate_edge, duplicate_edge])
+
+    invalid_edges = [
+        (
+            WorkflowEdgeV3(
+                id="missing-node",
+                source_node_id="missing",
+                source_port_id="output",
+                target_node_id="second",
+                target_port_id="input",
+            ),
+            "existing nodes",
+        ),
+        (
+            WorkflowEdgeV3(
+                id="missing-source-port",
+                source_node_id="first",
+                source_port_id="missing",
+                target_node_id="second",
+                target_port_id="input",
+            ),
+            "Unknown source port",
+        ),
+        (
+            WorkflowEdgeV3(
+                id="missing-target-port",
+                source_node_id="first",
+                source_port_id="output",
+                target_node_id="second",
+                target_port_id="missing",
+            ),
+            "Unknown target port",
+        ),
+    ]
+    for edge, message in invalid_edges:
+        with pytest.raises(ValidationError, match=message):
+            definition([first, second], [edge])
 
 
 def test_approval_and_run_contract_capture_exact_audit_boundary() -> None:

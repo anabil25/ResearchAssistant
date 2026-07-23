@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from research_assistant_core.chunking import chunk_text
+from research_assistant_core.chunking import TextChunk, chunk_text
 
 
 def test_structural_chunking_is_bounded_deterministic_and_complete() -> None:
@@ -31,6 +31,16 @@ def test_overlap_never_drops_oversized_unit_tail() -> None:
     chunks = chunk_text(text, max_chars=240, overlap_chars=80)
 
     assert "MISSING_MARKER" in "\n".join(chunk.content for chunk in chunks)
+
+
+def test_empty_content_produces_no_chunks() -> None:
+    assert chunk_text("\r\n\r\n") == []
+
+
+def test_single_paragraph_produces_one_complete_chunk() -> None:
+    assert chunk_text("Stored evidence.") == [
+        TextChunk(index=0, content="Stored evidence.")
+    ]
 
 
 @pytest.mark.parametrize(

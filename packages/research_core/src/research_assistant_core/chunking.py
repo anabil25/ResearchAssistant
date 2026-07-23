@@ -40,17 +40,15 @@ def chunk_text(
             remaining = remaining[boundary:].strip()
 
     base_chunks: list[str] = []
-    current = ""
-    for unit in units:
-        candidate = f"{current}\n\n{unit}".strip() if current else unit
+    current = units[0]
+    for unit in units[1:]:
+        candidate = f"{current}\n\n{unit}"
         if len(candidate) <= payload_limit:
             current = candidate
             continue
-        if current:
-            base_chunks.append(current)
-        current = unit
-    if current:
         base_chunks.append(current)
+        current = unit
+    base_chunks.append(current)
 
     chunks: list[TextChunk] = []
     for index, base in enumerate(base_chunks):

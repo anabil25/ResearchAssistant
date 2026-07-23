@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from research_assistant_core.dataset import DatasetProfileError, profile_csv
+from research_assistant_core.dataset import DatasetProfileError, _format_number, profile_csv
 from research_assistant_core.fixtures import SAMPLE_CSV
 
 
@@ -26,3 +26,8 @@ def test_invalid_or_empty_dataset_is_rejected(content: str) -> None:
 def test_inline_dataset_size_is_bounded() -> None:
     with pytest.raises(DatasetProfileError, match="at most 5 MB"):
         profile_csv("column\n" + ("x" * 5_000_001))
+
+
+def test_number_formatting_omits_missing_and_non_finite_values() -> None:
+    assert _format_number(None) is None
+    assert _format_number(float("nan")) is None

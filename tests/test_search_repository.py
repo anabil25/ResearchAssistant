@@ -194,6 +194,88 @@ def test_in_memory_repository_requires_groups_only_for_restricted_content() -> N
     assert [item.id for item in results] == ["internal"]
 
 
+def test_in_memory_repository_enforces_every_search_and_get_boundary() -> None:
+    def chunk(
+        chunk_id: str,
+        *,
+        tenant: str = "tenant",
+        project: str = "project",
+        group: str = "reviewers",
+        access: str = "internal",
+        year: int | None = 2026,
+        provider: str = "PubMed",
+    ) -> EvidenceChunk:
+        return EvidenceChunk(
+            id=chunk_id,
+            source_id=f"source-{chunk_id}",
+            source_kind=SourceKind.POLICY,
+            title=f"Policy {chunk_id}",
+            content="Policy evidence for retention",
+            section="Scope",
+            checksum=f"sha256:{chunk_id}",
+            allowed_tenants=[tenant],
+            allowed_projects=[project],
+            allowed_groups=[group],
+            access=access,
+            year=year,
+            metadata={"provider": provider},
+        )
+
+    repository = InMemoryEvidenceRepository(
+        [
+            chunk("allowed"),
+            chunk("wrong-tenant", tenant="other"),
+            chunk("wrong-project", project="other"),
+            chunk("wrong-group", access="restricted", group="other"),
+            chunk("wrong-year", year=None),
+            chunk("wrong-provider", provider="Europe PMC"),
+        ]
+    )
+
+    results = repository.search(
+        "retention",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+        kinds=[SourceKind.POLICY],
+        year_from=2025,
+        year_to=2027,
+        sources=["pubmed"],
+    )
+
+    assert [item.id for item in results] == ["allowed"]
+    assert repository.get(
+        "missing",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+    ) is None
+    assert repository.get(
+        "wrong-tenant",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+    ) is None
+    assert repository.get(
+        "wrong-project",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+    ) is None
+    assert repository.get(
+        "wrong-group",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+    ) is None
+    assert repository.get(
+        "allowed",
+        tenant_id="tenant",
+        project_id="project",
+        group_ids=["reviewers"],
+    ) is not None
+
+
 def test_search_repository_applies_protocol_year_and_provider_filters() -> None:
     client = FakeSearchClient()
     repository = AzureSearchEvidenceRepository(
