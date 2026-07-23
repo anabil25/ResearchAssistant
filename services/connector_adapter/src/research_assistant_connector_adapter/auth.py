@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from typing import Any, Protocol
 
 import jwt
 from jwt import PyJWKClient
@@ -10,13 +11,17 @@ class GatewayAuthorizationError(RuntimeError):
     pass
 
 
+class JwkClient(Protocol):
+    def get_signing_key_from_jwt(self, token: str) -> Any: ...
+
+
 class GatewayTokenValidator:
     def __init__(
         self,
         *,
         tenant_id: str,
         principal_id: str,
-        jwks: PyJWKClient | None = None,
+        jwks: JwkClient | None = None,
     ) -> None:
         self._tenant_id = tenant_id
         self._principal_id = principal_id

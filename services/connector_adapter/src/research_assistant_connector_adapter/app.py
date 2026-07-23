@@ -12,6 +12,7 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from research_assistant_connectors import ResearchConnectorRegistry, connector_catalog
+from research_assistant_connectors.providers import ProviderError, ProviderRegistry
 from research_assistant_core.connector_gateway import (
     ConnectorCatalogResponse,
     ConnectorDescriptor,
@@ -28,6 +29,13 @@ from research_assistant_connector_adapter.auth import (
     GatewayAuthorizationError,
     build_gateway_validator,
 )
+from research_assistant_connector_adapter.provider_api import (
+    ProviderService,
+    provider_error_response,
+)
+from research_assistant_connector_adapter.provider_api import (
+    router as provider_router,
+)
 
 logger = logging.getLogger(__name__)
 RegistryFactory = Callable[[], ResearchConnectorRegistry]
@@ -39,6 +47,16 @@ app = FastAPI(
 )
 app.state.registry_factory = ResearchConnectorRegistry
 app.state.gateway_validator = build_gateway_validator()
+app.state.provider_service = ProviderService(ProviderRegistry())
+app.include_router(provider_router, include_in_schema=False)
+
+
+@app.exception_handler(ProviderError)
+async def handle_provider_error(
+    _request: Request,
+    error: ProviderError,
+) -> JSONResponse:
+    return provider_error_response(error)
 
 
 @app.middleware("http")

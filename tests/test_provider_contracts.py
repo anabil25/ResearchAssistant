@@ -1,0 +1,498 @@
+from __future__ import annotations
+
+from dataclasses import FrozenInstanceError, replace
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
+from typing import Any
+
+import httpx
+import pytest
+from research_assistant_connectors.providers import (
+    AccessToken,
+    ApprovalPolicy,
+    AuthConfig,
+    AuthMode,
+    BlobConfig,
+    CapabilityDescriptor,
+    FoundryConfig,
+    FunctionPolicy,
+    FunctionsConfig,
+    GitHubConfig,
+    GraphConfig,
+    Idempotency,
+    InvocationContext,
+    InvocationRequest,
+    InvocationResult,
+    Maturity,
+    MCPConfig,
+    NeedsConsentError,
+    OpenAPIConfig,
+    OpenAPIOperationPolicy,
+    OperationDescriptor,
+    PolicyError,
+    ProviderDescriptor,
+    ProviderEnvironment,
+    ProviderFactory,
+    ProviderRegistry,
+    ProviderTimeoutError,
+    ProviderValidationError,
+    RateLimitError,
+    Readiness,
+    Risk,
+    SearchConfig,
+    UnauthorizedError,
+    UnavailableError,
+    UpstreamError,
+    WebhookConfig,
+)
+from research_assistant_connectors.providers._http import (
+    _retry_after,
+    auth_headers,
+    collection,
+    json_object,
+    request_signing_credential,
+    safe_url,
+    send,
+    signing_credential,
+    stable_resource_id,
+)
+from research_assistant_connectors.providers.contracts import audit_metadata, find_operation, validate_json
+
+
+class Credential:
+    def __init__(self, *, token: str = "token", secret: str = "secret") -> None:
+        self.token = token
+        self.secret = secret
+
+    def get_token(self, *scopes: str) -> AccessToken:
+        assert scopes
+        return AccessToken(self.token, 2_000_000_000)
+
+    def get_secret(self, name: str) -> str:
+        assert name
+        return self.secret
+
+    def sign(self, payload: bytes, *, algorithm: str) -> str:
+        return f"{algorithm}:{len(payload)}"
+
+    def authorization(
+        self,
+        *,
+        method: str,
+        url: str,
+        headers: dict[str, str],
+        content_length: int,
+    ) -> str:
+        return f"SharedKey {method}:{url}:{len(headers)}:{content_length}"
+
+
+def context(
+    handler: Any = None,
+    *,
+    credential: object | None = None,
+    tenant: str = "tenant",
+    approved: frozenset[str] = frozenset(),
+    sleep: Any = None,
+) -> InvocationContext:
+    transport = httpx.MockTransport(handler or (lambda _: httpx.Response(200, json={})))
+    return InvocationContext(
+        tenant,
+        "principal",
+        approved,
+        Credential() if credential is None else credential,
+        httpx.Client(transport=transport),
+        "correlation",
+        "trace",
+        sleep or (lambda _: None),
+    )
+
+
+def operation(
+    *,
+    operation_id: str = "operation",
+    maturity: Maturity = Maturity.GA,
+    approval: ApprovalPolicy = ApprovalPolicy.NEVER,
+    idempotency: Idempotency = Idempotency.INHERENT,
+) -> OperationDescriptor:
+    return OperationDescriptor(
+        operation_id,
+        maturity,
+        {
+            "type": "object",
+            "required": ["value"],
+            "properties": {"value": {"type": "string"}},
+            "additionalProperties": False,
+        },
+        {"type": "object"},
+        Risk.READ,
+        approval,
+        idempotency=idempotency,
+    )
+
+
+def capability(
+    *,
+    readiness: Readiness = Readiness.READY,
+    attachable: bool = True,
+    op: OperationDescriptor | None = None,
+) -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        "provider",
+        "capability",
+        "family",
+        "resource",
+        "Capability",
+        readiness,
+        attachable,
+        (AuthMode.NONE,),
+        "tenant",
+        "resource",
+        (op or operation(),),
+        ("https://example.test/docs",),
+        ("tested",),
+        unavailable_reason=None if readiness is Readiness.READY else "not ready",
+        metadata={"nested": {"items": [1, 2]}},
+    )
+
+
+def test_descriptor_contracts_are_deeply_immutable_and_validate_invariants() -> None:
+    descriptor = capability()
+    assert descriptor.metadata["nested"]["items"] == (1, 2)
+    with pytest.raises(TypeError):
+        descriptor.metadata["new"] = "value"  # type: ignore[index]
+    with pytest.raises(FrozenInstanceError):
+        descriptor.name = "changed"  # type: ignore[misc]
+    with pytest.raises(ValueError, match="Only ready GA"):
+        capability(op=operation(maturity=Maturity.PREVIEW))
+    with pytest.raises(ValueError, match="unavailable reason"):
+        replace(descriptor, readiness=Readiness.DEGRADED, attachable=False)
+    with pytest.raises(ValueError, match="Ready capabilities"):
+        replace(descriptor, unavailable_reason="bad")
+    with pytest.raises(ValueError, match="Capability identifiers"):
+        replace(descriptor, capability_id="")
+    with pytest.raises(ValueError, match="Operation identifiers"):
+        replace(operation(), timeout_seconds=0)
+    with pytest.raises(ValueError, match="Provider identity"):
+        ProviderDescriptor("", "family", "", "description", (), ())
+    with pytest.raises(ValueError, match="Provider capabilities"):
+        ProviderDescriptor("other", "family", "Name", "description", (), ("https://docs",), (descriptor,))
+    assert ProviderDescriptor("provider", "family", "Name", "description", (), ("https://docs",), (descriptor,))
+
+
+def test_invocation_contracts_and_json_schema_validation() -> None:
+    request = InvocationRequest("capability", "operation", {"value": "ok"})
+    assert request.arguments["value"] == "ok"
+    with pytest.raises(TypeError):
+        request.arguments["value"] = "changed"  # type: ignore[index]
+    with pytest.raises(ValueError, match="Capability and operation"):
+        InvocationRequest("", "operation", {})
+    with pytest.raises(ValueError, match="Idempotency keys"):
+        InvocationRequest("capability", "operation", {}, "bad key")
+    with pytest.raises(ValueError, match="Tenant"):
+        replace(context(), tenant_id="")
+    assert "ok" not in repr(request)
+    assert "token-value" not in repr(AccessToken("token-value", 1))
+    assert "Credential" not in repr(context())
+    assert "sensitive" not in repr(InvocationResult("p", "c", "o", 200, {"sensitive": True}, {}))
+
+    validate_json({"type": "array", "items": {"type": "integer"}}, [1, 2])
+    validate_json({"type": "number"}, 1.5)
+    validate_json({"type": "boolean"}, True)
+    validate_json({"type": "null"}, None)
+    validate_json({"enum": ["a"]}, "a")
+    for schema, value, message in (
+        ({"type": "array"}, "x", "must be array"),
+        ({"type": "integer"}, True, "must be integer"),
+        ({"type": "string"}, 1, "must be string"),
+        ({"enum": ["a"]}, "b", "declared values"),
+        ({"type": "object", "required": ["x"]}, {}, "is required"),
+        (
+            {"type": "object", "properties": {}, "additionalProperties": False},
+            {"x": 1},
+            "unsupported properties",
+        ),
+        (
+            {"type": "object", "properties": {"x": {"type": "string"}}},
+            {"x": 1},
+            "must be string",
+        ),
+        (
+            {"type": "array", "items": {"type": "string"}},
+            [1],
+            "must be string",
+        ),
+    ):
+        with pytest.raises(ValueError, match=message):
+            validate_json(schema, value)
+
+
+def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation() -> None:
+    ctx = context()
+    request = InvocationRequest("capability", "operation", {"value": "ok"})
+    cap, op = find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="tenant")
+    assert cap.capability_id == "capability"
+    assert op.operation_id == "operation"
+    with pytest.raises(PolicyError, match="tenant"):
+        find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="other")
+    with pytest.raises(UnavailableError, match="not present"):
+        find_operation(
+            (capability(),), replace(request, capability_id="missing"), ctx, provider_id="provider", tenant_id=None
+        )
+    with pytest.raises(UnavailableError, match="not ready"):
+        find_operation(
+            (capability(readiness=Readiness.DEGRADED, attachable=False),),
+            request,
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
+        )
+    with pytest.raises(ProviderValidationError, match="not declared"):
+        find_operation(
+            (capability(),), replace(request, operation_id="missing"), ctx, provider_id="provider", tenant_id=None
+        )
+    approval_cap = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
+    with pytest.raises(PolicyError, match="approval"):
+        find_operation((approval_cap,), request, ctx, provider_id="provider", tenant_id=None)
+    required = capability(op=operation(idempotency=Idempotency.REQUIRED))
+    with pytest.raises(PolicyError, match="idempotency"):
+        find_operation((required,), request, ctx, provider_id="provider", tenant_id=None)
+    with pytest.raises(ProviderValidationError, match="required"):
+        find_operation(
+            (capability(),),
+            replace(request, arguments={}),
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
+        )
+    approved = replace(ctx, approved_capability_ids=frozenset({"capability"}))
+    find_operation(
+        (required,),
+        replace(request, idempotency_key="key"),
+        approved,
+        provider_id="provider",
+        tenant_id=None,
+    )
+    audit = audit_metadata(
+        ctx,
+        provider_id="provider",
+        capability_id="capability",
+        operation_id="operation",
+        attempts=2,
+        response=httpx.Response(
+            200,
+            extensions={"provider_elapsed_ms": 1.5},
+        ),
+    )
+    assert audit["correlation_id"] == "correlation"
+    assert audit["attempts"] == 2
+    assert audit["status_code"] == 200
+    assert audit["latency_ms"] == 1.5
+
+
+def test_url_auth_and_collection_helpers() -> None:
+    assert safe_url("https://service.test/root", "/items") == "https://service.test/root/items"
+    assert safe_url("http://127.0.0.1:8000", "/mcp") == "http://127.0.0.1:8000/mcp"
+    assert stable_resource_id("prefix", "A Resource") == stable_resource_id("prefix", "A Resource")
+    for bad in ("ftp://service.test", "https://user:pass@service.test", "not-a-url"):
+        with pytest.raises(ValueError, match="valid HTTP"):
+            safe_url(bad, "/")
+    with pytest.raises(ValueError, match="traversal"):
+        safe_url("https://service.test", "../secret")
+    with pytest.raises(ValueError, match="override"):
+        safe_url("https://service.test/root", "/https://evil.test/secret")
+    with pytest.raises(ValueError, match="loopback"):
+        safe_url("http://service.test", "/")
+
+    ctx = context()
+    assert auth_headers(AuthConfig(AuthMode.NONE), ctx, provider_id="p") == {}
+    assert auth_headers(AuthConfig(AuthMode.OAUTH, "scope"), ctx, provider_id="p")["Authorization"] == "Bearer token"
+    assert auth_headers(AuthConfig(AuthMode.GITHUB_APP, "scope"), ctx, provider_id="p")["Authorization"].startswith(
+        "Bearer "
+    )
+    assert auth_headers(
+        AuthConfig(AuthMode.API_KEY, secret_name="key", header_name="x-key"),
+        ctx,
+        provider_id="p",
+    ) == {"x-key": "secret"}
+    assert signing_credential(ctx, provider_id="p").sign(b"x", algorithm="hmac") == "hmac:1"
+    assert (
+        request_signing_credential(ctx, provider_id="p")
+        .authorization(method="GET", url="https://x", headers={}, content_length=0)
+        .startswith("SharedKey")
+    )
+    for auth in (
+        AuthConfig(AuthMode.OAUTH),
+        AuthConfig(AuthMode.API_KEY, secret_name="x"),
+        AuthConfig(AuthMode.SIGNATURE),
+    ):
+        with pytest.raises(UnauthorizedError):
+            auth_headers(auth, replace(ctx, credential=object()), provider_id="p")
+    with pytest.raises(UnauthorizedError, match="empty token"):
+        auth_headers(AuthConfig(AuthMode.OAUTH, "scope"), context(credential=Credential(token="")), provider_id="p")
+    with pytest.raises(UnauthorizedError, match="empty value"):
+        auth_headers(
+            AuthConfig(AuthMode.API_KEY, secret_name="x", header_name="x"),
+            context(credential=Credential(secret="")),
+            provider_id="p",
+        )
+    with pytest.raises(UnauthorizedError):
+        signing_credential(replace(ctx, credential=object()), provider_id="p")
+    with pytest.raises(UnauthorizedError):
+        request_signing_credential(replace(ctx, credential=object()), provider_id="p")
+    assert collection({"value": [{"id": 1}, "bad"]}) == ({"id": 1},)
+    assert collection({"other": []}) == ()
+
+
+def test_http_helper_retries_timeouts_status_mapping_and_safe_json() -> None:
+    sleeps: list[float] = []
+    calls = 0
+
+    def retry_handler(_: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(503, headers={"Retry-After": "0"})
+        return httpx.Response(200, json={"ok": True})
+
+    response, attempts = send(
+        context(retry_handler, sleep=sleeps.append),
+        provider_id="p",
+        method="GET",
+        url="https://service.test",
+        idempotent=True,
+    )
+    assert response.json() == {"ok": True}
+    assert attempts == 2
+    assert sleeps == [0.0]
+
+    capped_sleeps: list[float] = []
+    capped_calls = 0
+
+    def capped_handler(_: httpx.Request) -> httpx.Response:
+        nonlocal capped_calls
+        capped_calls += 1
+        return (
+            httpx.Response(503, headers={"Retry-After": "999"})
+            if capped_calls == 1
+            else httpx.Response(200, json={})
+        )
+
+    send(
+        context(capped_handler, sleep=capped_sleeps.append),
+        provider_id="p",
+        method="GET",
+        url="https://service.test",
+        idempotent=True,
+    )
+    assert capped_sleeps == [30.0]
+
+    redirects = 0
+
+    def redirect_handler(_: httpx.Request) -> httpx.Response:
+        nonlocal redirects
+        redirects += 1
+        return httpx.Response(302, headers={"Location": "https://evil.test"})
+
+    with pytest.raises(UpstreamError, match="redirects"):
+        send(
+            context(redirect_handler),
+            provider_id="p",
+            method="GET",
+            url="https://service.test",
+            idempotent=True,
+        )
+    assert redirects == 1
+
+    timeout_calls = 0
+
+    def timeout_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal timeout_calls
+        timeout_calls += 1
+        raise httpx.ReadTimeout("timeout", request=request)
+
+    with pytest.raises(ProviderTimeoutError):
+        send(
+            context(timeout_handler),
+            provider_id="p",
+            method="POST",
+            url="https://service.test",
+            idempotent=False,
+        )
+    assert timeout_calls == 1
+    with pytest.raises(ProviderTimeoutError):
+        send(
+            context(timeout_handler),
+            provider_id="p",
+            method="GET",
+            url="https://service.test",
+            idempotent=True,
+            max_retries=1,
+        )
+    assert timeout_calls == 3
+
+    for status, error, consent, headers in (
+        (401, UnauthorizedError, False, {}),
+        (403, UnauthorizedError, False, {}),
+        (403, NeedsConsentError, True, {}),
+        (403, RateLimitError, True, {"X-RateLimit-Remaining": "0"}),
+        (429, RateLimitError, False, {"Retry-After": "2"}),
+        (500, UpstreamError, False, {}),
+    ):
+        with pytest.raises(error):
+            send(
+                context(lambda _, s=status, h=headers: httpx.Response(s, headers=h)),
+                provider_id="p",
+                method="POST",
+                url="https://service.test",
+                idempotent=False,
+                consent_on_forbidden=consent,
+            )
+
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "1.5"})) == 1.5
+    future = format_datetime(datetime.now(tz=UTC) + timedelta(seconds=10), usegmt=True)
+    assert (_retry_after(httpx.Response(429, headers={"Retry-After": future})) or 0) > 0
+    assert _retry_after(httpx.Response(429, headers={"Retry-After": "invalid"})) is None
+    reset = str(int(datetime.now(tz=UTC).timestamp()) + 10)
+    assert (_retry_after(httpx.Response(429, headers={"X-RateLimit-Reset": reset})) or 0) > 0
+    assert _retry_after(httpx.Response(429)) is None
+
+    assert json_object(httpx.Response(200, json={"ok": True}), provider_id="p") == {"ok": True}
+    with pytest.raises(UpstreamError, match="invalid JSON"):
+        json_object(httpx.Response(200, text="bad"), provider_id="p")
+    with pytest.raises(UpstreamError, match="non-object"):
+        json_object(httpx.Response(200, json=[]), provider_id="p")
+
+
+def test_factory_and_registry_cover_every_configuration_type() -> None:
+    auth = AuthConfig(AuthMode.NONE)
+    configs = (
+        FoundryConfig(None, "tenant"),
+        SearchConfig(None, "tenant"),
+        FunctionsConfig(None, "tenant", auth),
+        BlobConfig(None, "tenant"),
+        MCPConfig(None, "tenant"),
+        OpenAPIConfig(None, "tenant"),
+        WebhookConfig(None, "tenant", "send"),
+        GitHubConfig(None, "tenant", auth),
+        GraphConfig(None, "tenant"),
+    )
+    providers = tuple(ProviderFactory.create(config) for config in configs)
+    assert len({provider.descriptor.provider_id for provider in providers}) == len(providers)
+    registry = ProviderRegistry(providers)
+    assert registry.get("webhook").descriptor.name == "Webhook"
+    with pytest.raises(KeyError, match="Unknown provider"):
+        registry.get("missing")
+    with pytest.raises(ValueError, match="unique"):
+        ProviderRegistry((providers[0], providers[0]))
+    with pytest.raises(TypeError, match="Unsupported"):
+        ProviderFactory.create(object())  # type: ignore[arg-type]
+    environment = ProviderEnvironment("test", "tenant", configs)
+    assert len(ProviderRegistry.from_environment(environment).providers) == len(configs)
+    with pytest.raises(ValueError, match="name and tenant"):
+        ProviderEnvironment("", "tenant", ())
+    with pytest.raises(ValueError, match="environment tenant"):
+        ProviderEnvironment("test", "other", configs)
+    discovered = registry.discover_all(context())
+    assert set(discovered) == set(registry.providers)
+    assert FunctionPolicy("f").risk is Risk.EXTERNAL_SIDE_EFFECT
+    assert OpenAPIOperationPolicy("op", Risk.READ, ApprovalPolicy.NEVER).operation_id == "op"

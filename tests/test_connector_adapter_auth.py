@@ -5,17 +5,13 @@ from typing import Any
 
 import jwt
 import pytest
-from jwt import PyJWKClient
 from research_assistant_connector_adapter.auth import (
     GatewayAuthorizationError,
     GatewayTokenValidator,
 )
 
 
-class FakeJwks(PyJWKClient):
-    def __init__(self) -> None:
-        pass
-
+class FakeJwks:
     def get_signing_key_from_jwt(self, token: str) -> Any:
         assert token == "signed-token"
         return SimpleNamespace(key="public-key")
