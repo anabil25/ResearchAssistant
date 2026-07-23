@@ -492,11 +492,11 @@
             "title": "Bundle Uri"
           },
           "capability_versions": {
-            "additionalProperties": {
-              "type": "string"
+            "items": {
+              "$ref": "#/components/schemas/CapabilityVersionPin"
             },
             "title": "Capability Versions",
-            "type": "object"
+            "type": "array"
           },
           "created_at": {
             "format": "date-time",
@@ -1587,6 +1587,10 @@
             "title": "Attached By",
             "type": "string"
           },
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
           "config": {
             "additionalProperties": true,
             "title": "Config",
@@ -2408,6 +2412,61 @@
           "accent"
         ],
         "title": "CapabilitySpec",
+        "type": "object"
+      },
+      "CapabilityVersionPin": {
+        "description": "Full, non-lossy version-pin record for one attached ``CapabilityBinding``.\n\nReplaces a former ``dict[str, str]`` keyed only by ``descriptor_ref.id``\n(review finding #8): that shape silently collapsed multiple bindings\nof the same descriptor (different operations and/or instances) into a\nsingle overwritten entry, and discarded every pin except the\ndescriptor version string. This is copied verbatim from the manifest's\n``CapabilityBinding`` at cut time (see ``release_service.cut_version``)\nso a future workflow compiler, or any other downstream consumer of\n``AgentVersion.capability_versions`` / ``ResolvedAgentContract``, always\nreceives the exact ordered list of canonical pins for every binding \u2014\nnever a summarized map.",
+        "properties": {
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "configuration_ref": {
+            "$ref": "#/components/schemas/CapabilityConfigurationRef"
+          },
+          "connection_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityConnectionRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "descriptor_ref": {
+            "$ref": "#/components/schemas/CapabilityDescriptorRef"
+          },
+          "instance_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityInstanceRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_ref": {
+            "$ref": "#/components/schemas/CapabilityOperationRef"
+          },
+          "policy_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityPolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          }
+        },
+        "required": [
+          "binding_id",
+          "descriptor_ref",
+          "operation_ref"
+        ],
+        "title": "CapabilityVersionPin",
         "type": "object"
       },
       "Citation": {
@@ -3333,7 +3392,8 @@
           "policy",
           "approval",
           "security",
-          "smoke"
+          "smoke",
+          "binding"
         ],
         "title": "GateName",
         "type": "string"
@@ -4292,7 +4352,7 @@
         "type": "string"
       },
       "MemoryAuditRecord": {
-        "description": "Append-only audit trail for memory inspect/correct/forget/export.\n\nEvery governance action on a ``MemoryEntry`` (not ordinary ``remember``\nwrites from normal agent operation, which are already durable as the\nentry itself) is recorded here, independent of the entry's own lifecycle\n\u2014 a ``forget`` still leaves an audit record even though the entry content\nitself is no longer recallable.",
+        "description": "Append-only audit trail for memory inspect/correct/forget/export.\n\nEvery governance action on a ``MemoryEntry`` (not ordinary ``remember``\nwrites from normal agent operation, which are already durable as the\nentry itself) is recorded here, independent of the entry's own lifecycle\n\u2014 a ``forget`` still leaves an audit record even though the entry content\nitself is no longer recallable. ``logical_agent_id`` is required so audit\nlookups can be scoped/queried by the owning agent server-side, never by\n``entry_id`` alone \u2014 this is what prevents one agent's audit history\n(or another actor's private scope) from being enumerated through another\nagent's audit endpoint.",
         "properties": {
           "action": {
             "$ref": "#/components/schemas/MemoryAuditAction"
@@ -4321,6 +4381,12 @@
             "title": "Id",
             "type": "string"
           },
+          "logical_agent_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Logical Agent Id",
+            "type": "string"
+          },
           "project_id": {
             "maxLength": 200,
             "minLength": 1,
@@ -4338,6 +4404,7 @@
           "id",
           "tenant_id",
           "project_id",
+          "logical_agent_id",
           "entry_id",
           "action",
           "actor_id"
@@ -5126,6 +5193,7 @@
         "type": "object"
       },
       "ReleaseGateReport": {
+        "description": "The immutable, deterministic hard-gate result for one ``AgentVersion``.\n\n``tenant_id``/``project_id`` scope this report to the exact project that\nowns the underlying version (mirroring every other Agent Studio record).\nA gate report can contain sensitive detail (evidence summaries, security\nfindings) and previously had no owning scope at all -- it was persisted\nunder a single fixed, tenant/project-agnostic partition key, which made\nit a cross-tenant point-lookup-by-id target. It is now partitioned and\nqueried exactly like every other project-scoped document.",
         "properties": {
           "created_at": {
             "format": "date-time",
@@ -5143,12 +5211,24 @@
             "title": "Id",
             "type": "string"
           },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
           "results": {
             "items": {
               "$ref": "#/components/schemas/GateResult"
             },
             "title": "Results",
             "type": "array"
+          },
+          "tenant_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
           },
           "version_id": {
             "title": "Version Id",
@@ -5158,6 +5238,8 @@
         "required": [
           "id",
           "version_id",
+          "tenant_id",
+          "project_id",
           "results"
         ],
         "title": "ReleaseGateReport",
@@ -5363,11 +5445,11 @@
             "$ref": "#/components/schemas/ReleaseArtifactMetadata"
           },
           "capability_versions": {
-            "additionalProperties": {
-              "type": "string"
+            "items": {
+              "$ref": "#/components/schemas/CapabilityVersionPin"
             },
             "title": "Capability Versions",
-            "type": "object"
+            "type": "array"
           },
           "environment": {
             "$ref": "#/components/schemas/DeploymentEnvironment"
@@ -6751,6 +6833,17 @@
               "title": "Logical Agent Id",
               "type": "string"
             }
+          },
+          {
+            "description": "Expected current draft etag (optimistic concurrency).",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "Expected current draft etag (optimistic concurrency).",
+              "title": "If-Match",
+              "type": "string"
+            }
           }
         ],
         "requestBody": {
@@ -7340,7 +7433,7 @@
     },
     "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
       "get": {
-        "description": "Deletion/provenance audit trail for a single memory entry.",
+        "description": "Deletion/provenance audit trail for a single memory entry.\n\nRequires read/inspect ACL on the concrete entry (creator or ``read_acl``\nmember) and the enclosing scope's ``allow_user_inspect`` control; entries\nare resolved through the caller's own logical agent so no cross-agent or\ncross-scope audit history can be enumerated.",
         "operationId": "memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get",
         "parameters": [
           {

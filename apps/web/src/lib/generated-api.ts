@@ -216,6 +216,11 @@ export interface paths {
         /**
          * Memory Audit Trail
          * @description Deletion/provenance audit trail for a single memory entry.
+         *
+         *     Requires read/inspect ACL on the concrete entry (creator or ``read_acl``
+         *     member) and the enclosing scope's ``allow_user_inspect`` control; entries
+         *     are resolved through the caller's own logical agent so no cross-agent or
+         *     cross-scope audit history can be enumerated.
          */
         get: operations["memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get"];
         put?: never;
@@ -1274,9 +1279,7 @@ export interface components {
             /** Bundle Uri */
             bundle_uri?: string | null;
             /** Capability Versions */
-            capability_versions?: {
-                [key: string]: string;
-            };
+            capability_versions?: components["schemas"]["CapabilityVersionPin"][];
             /**
              * Created At
              * Format: date-time
@@ -1712,6 +1715,8 @@ export interface components {
             attached_at?: string;
             /** Attached By */
             attached_by: string;
+            /** Binding Id */
+            binding_id?: string;
             /** Config */
             config?: {
                 [key: string]: unknown;
@@ -2085,6 +2090,31 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * CapabilityVersionPin
+         * @description Full, non-lossy version-pin record for one attached ``CapabilityBinding``.
+         *
+         *     Replaces a former ``dict[str, str]`` keyed only by ``descriptor_ref.id``
+         *     (review finding #8): that shape silently collapsed multiple bindings
+         *     of the same descriptor (different operations and/or instances) into a
+         *     single overwritten entry, and discarded every pin except the
+         *     descriptor version string. This is copied verbatim from the manifest's
+         *     ``CapabilityBinding`` at cut time (see ``release_service.cut_version``)
+         *     so a future workflow compiler, or any other downstream consumer of
+         *     ``AgentVersion.capability_versions`` / ``ResolvedAgentContract``, always
+         *     receives the exact ordered list of canonical pins for every binding —
+         *     never a summarized map.
+         */
+        CapabilityVersionPin: {
+            /** Binding Id */
+            binding_id: string;
+            configuration_ref?: components["schemas"]["CapabilityConfigurationRef"];
+            connection_ref?: components["schemas"]["CapabilityConnectionRef"] | null;
+            descriptor_ref: components["schemas"]["CapabilityDescriptorRef"];
+            instance_ref?: components["schemas"]["CapabilityInstanceRef"] | null;
+            operation_ref: components["schemas"]["CapabilityOperationRef"];
+            policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
+        };
         /** Citation */
         Citation: {
             /** Canonical Url */
@@ -2440,7 +2470,7 @@ export interface components {
          * GateName
          * @enum {string}
          */
-        GateName: "schema" | "build" | "test" | "auth" | "policy" | "approval" | "security" | "smoke";
+        GateName: "schema" | "build" | "test" | "auth" | "policy" | "approval" | "security" | "smoke" | "binding";
         /** GateResult */
         GateResult: {
             /**
@@ -2778,7 +2808,11 @@ export interface components {
          *     writes from normal agent operation, which are already durable as the
          *     entry itself) is recorded here, independent of the entry's own lifecycle
          *     — a ``forget`` still leaves an audit record even though the entry content
-         *     itself is no longer recallable.
+         *     itself is no longer recallable. ``logical_agent_id`` is required so audit
+         *     lookups can be scoped/queried by the owning agent server-side, never by
+         *     ``entry_id`` alone — this is what prevents one agent's audit history
+         *     (or another actor's private scope) from being enumerated through another
+         *     agent's audit endpoint.
          */
         MemoryAuditRecord: {
             action: components["schemas"]["MemoryAuditAction"];
@@ -2798,6 +2832,8 @@ export interface components {
             entry_id: string;
             /** Id */
             id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
             /** Project Id */
             project_id: string;
             /** Tenant Id */
@@ -3204,7 +3240,18 @@ export interface components {
             /** Source Revision */
             source_revision?: string | null;
         };
-        /** ReleaseGateReport */
+        /**
+         * ReleaseGateReport
+         * @description The immutable, deterministic hard-gate result for one ``AgentVersion``.
+         *
+         *     ``tenant_id``/``project_id`` scope this report to the exact project that
+         *     owns the underlying version (mirroring every other Agent Studio record).
+         *     A gate report can contain sensitive detail (evidence summaries, security
+         *     findings) and previously had no owning scope at all -- it was persisted
+         *     under a single fixed, tenant/project-agnostic partition key, which made
+         *     it a cross-tenant point-lookup-by-id target. It is now partitioned and
+         *     queried exactly like every other project-scoped document.
+         */
         ReleaseGateReport: {
             /**
              * Created At
@@ -3215,8 +3262,12 @@ export interface components {
             evaluations?: components["schemas"]["EvaluationRecord"][];
             /** Id */
             id: string;
+            /** Project Id */
+            project_id: string;
             /** Results */
             results: components["schemas"]["GateResult"][];
+            /** Tenant Id */
+            tenant_id: string;
             /** Version Id */
             version_id: string;
         };
@@ -3311,9 +3362,7 @@ export interface components {
         ResolvedAgentContract: {
             artifact_metadata: components["schemas"]["ReleaseArtifactMetadata"];
             /** Capability Versions */
-            capability_versions?: {
-                [key: string]: string;
-            };
+            capability_versions?: components["schemas"]["CapabilityVersionPin"][];
             environment: components["schemas"]["DeploymentEnvironment"];
             input_schema_ref?: components["schemas"]["SchemaRef"] | null;
             /** Logical Agent Id */
@@ -3959,7 +4008,10 @@ export interface operations {
     update_draft_api_agent_studio_agents__logical_agent_id__draft_put: {
         parameters: {
             query?: never;
-            header?: never;
+            header: {
+                /** @description Expected current draft etag (optimistic concurrency). */
+                "If-Match": string;
+            };
             path: {
                 logical_agent_id: string;
             };
