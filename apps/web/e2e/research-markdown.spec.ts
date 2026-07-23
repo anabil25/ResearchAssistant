@@ -13,6 +13,8 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
     "",
     "[Jump to **Findings**](#findings)",
     "",
+    "[Broken destination]()",
+    "",
     "| Measure | Value |",
     "| --- | --- |",
     "| Coverage | 100% |",
@@ -116,6 +118,15 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
   await expect(hashLink).toHaveAttribute("href", "#findings");
   await expect(hashLink).toHaveAttribute("target", "_blank");
   await expect(hashLink).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(
+    markdown.getByRole("link", { name: /Broken destination/ }),
+  ).toHaveCount(0);
+  await expect(
+    markdown.locator("a", { hasText: "Broken destination" }),
+  ).toHaveCount(0);
+  await expect(
+    markdown.getByText("Broken destination [blocked]"),
+  ).toBeVisible();
   await expect(markdown.getByText("[code block truncated]")).toBeVisible();
   await expect(markdown.getByText("invented-source")).toBeVisible();
 
