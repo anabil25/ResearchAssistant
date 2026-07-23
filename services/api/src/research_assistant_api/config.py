@@ -4,8 +4,17 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator
+from pydantic import AliasChoices, Field, field_validator, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+#: Environment names (case-insensitive, whitespace-trimmed) in which the
+#: interactive local/dev "demo sandbox" identity (see
+#: ``research_assistant_api.identity.DEMO_SANDBOX_SOURCE``) may be enabled.
+#: Any other environment name -- including unrecognized ones -- is treated
+#: as production-like and refuses to start with demo identity enabled, so
+#: the bypass can never be silently carried into a production deployment
+#: through an unset or misconfigured ``RESEARCH_ALLOW_DEMO_IDENTITY``.
+DEMO_IDENTITY_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
 
 class Settings(BaseSettings):
@@ -174,6 +183,27 @@ class Settings(BaseSettings):
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Connector gateway URL must not contain credentials, query, or fragment")
         return value.rstrip("/")
+
+    @model_validator(mode="after")
+    def _forbid_demo_identity_outside_safe_environments(self) -> Settings:
+        """Fail closed at startup, not at request time.
+
+        ``allow_demo_identity`` issues a fixed, unauthenticated identity
+        (``research_assistant_api.identity.DEMO_SANDBOX_SOURCE``) with a
+        fabricated researcher/admin group membership. That bypass must be
+        an explicit, impossible-to-misconfigure-into-production test/dev
+        adapter: refuse to construct ``Settings`` at all if it is enabled
+        while ``environment`` is not one of the known-safe local/dev/test
+        names, rather than allowing a bad or missing ``RESEARCH_ENVIRONMENT``
+        to silently carry the bypass into a production deployment.
+        """
+        if self.allow_demo_identity and self.environment.strip().lower() not in DEMO_IDENTITY_SAFE_ENVIRONMENTS:
+            raise ValueError(
+                "RESEARCH_ALLOW_DEMO_IDENTITY may only be enabled when environment is one of "
+                f"{sorted(DEMO_IDENTITY_SAFE_ENVIRONMENTS)}; refusing to start with "
+                f"environment={self.environment!r} and demo identity enabled."
+            )
+        return self
 
 @lru_cache
 def get_settings() -> Settings:
