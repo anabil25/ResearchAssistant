@@ -27,7 +27,7 @@ from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import uuid4
 
-from research_assistant_api.agent_studio.artifact_bundle_store import ArtifactBundleStore
+from research_assistant_api.agent_studio.artifact_bundle_store import ArtifactBundleStore, draft_version_label
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
@@ -432,6 +432,7 @@ class BuilderService:
                 project_id=project_id,
                 logical_agent_id=logical_agent_id,
                 content=result.source_bundle_content,
+                version_label=draft_version_label(draft.etag),
             )
             source_bundle_ref = stored.uri
         capability_changes = diff_capability_bindings(draft.manifest, after_manifest)

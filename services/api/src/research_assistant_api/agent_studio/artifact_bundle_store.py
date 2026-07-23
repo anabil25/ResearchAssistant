@@ -9,13 +9,22 @@ different content always gets a different address. This mirrors
 storage for *release* bundles, distinct from source documents).
 
 Per Phase 2 tenant+project partitioning, every blob path/key is scoped to
-``{tenant_id}/{project_id}/{logical_agent_id}/{version_label}/{checksum}``
-(``version_label`` is the cut ``AgentVersion.id`` once a version exists, or
-the literal ``"unversioned"`` for a Builder proposal's pre-cut source
-snapshot) so a read is always authorized against an explicit
-``ScopeContext`` rather than a bare tenant id, and no path can collide
-across projects even for agents that happen to share a logical agent id
-across tenants/projects.
+``{tenant_id}/{project_id}/{logical_agent_id}/{version_label}/{checksum}``.
+``version_label`` has no default and no "unversioned" sentinel: callers must
+always pass an explicit, non-empty label so a read/write is always
+traceable to an exact draft revision or an exact immutable cut version, and
+so a future release-path caller can never *silently* fall back to a shared
+generic bucket by omission. Two label shapes are expected:
+
+- Draft (pre-cut-version) source snapshots use ``draft_version_label``,
+  which is scoped to the draft's current ``etag`` -- distinct draft
+  revisions of the same agent never collide.
+- Cut-version/release bundles use the exact immutable ``AgentVersion.id``
+  (or an equivalent content hash) directly as the label.
+
+so a read is always authorized against an explicit ``ScopeContext`` rather
+than a bare tenant id, and no path can collide across projects even for
+agents that happen to share a logical agent id across tenants/projects.
 
 Per the cloud-unavailable-paths requirement, when no storage endpoint is
 configured this store is explicitly unavailable in non-test code paths
@@ -37,16 +46,27 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
-#: Path segment used in place of a cut ``AgentVersion.id`` for bundles
-#: uploaded before any version exists (e.g. a Builder proposal's source
-#: snapshot). Never collides with a real version id, which is always a
-#: generated identifier from ``allocate_version``/``uuid4`` and never this
-#: literal string.
-UNVERSIONED = "unversioned"
-
 
 class ArtifactBundleStoreError(RuntimeError):
     pass
+
+
+def draft_version_label(etag: str) -> str:
+    """Path segment for a not-yet-cut draft's pre-version bundle uploads.
+
+    Scoped to the draft's current ``etag`` (rather than a fixed literal)
+    so source snapshots captured for different Builder proposals against
+    the same agent's draft never share a bucket, and the label always
+    traces back to the exact draft revision a proposal was generated
+    against. ``logical_agent_id`` is already a separate path segment in
+    ``_blob_path``, so this only needs etag-uniqueness within that agent's
+    draft lineage.
+    """
+    if not etag or not etag.strip():
+        raise ArtifactBundleStoreError(
+            "A draft bundle version label requires a non-empty draft etag; there is no default 'unversioned' fallback."
+        )
+    return f"draft:{etag}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -57,6 +77,11 @@ class StoredBundle:
 
 
 def _blob_path(tenant_id: str, project_id: str, logical_agent_id: str, checksum: str, version_label: str) -> str:
+    if not version_label or not version_label.strip():
+        raise ArtifactBundleStoreError(
+            "version_label must be a non-empty, explicit draft or release identifier; "
+            "there is no default 'unversioned' bucket for released artifacts."
+        )
     return f"{tenant_id}/{project_id}/{logical_agent_id}/{version_label}/{checksum}"
 
 
@@ -69,7 +94,7 @@ class ArtifactBundleStore(Protocol):
         logical_agent_id: str,
         content: bytes,
         content_type: str = "application/zip",
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> StoredBundle: ...
 
     def get(
@@ -78,7 +103,7 @@ class ArtifactBundleStore(Protocol):
         scope: ScopeContext,
         logical_agent_id: str,
         checksum: str,
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> bytes | None: ...
 
 
@@ -96,7 +121,7 @@ class InMemoryArtifactBundleStore:
         logical_agent_id: str,
         content: bytes,
         content_type: str = "application/zip",
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> StoredBundle:
         checksum = sha256(content).hexdigest()
         key = _blob_path(tenant_id, project_id, logical_agent_id, checksum, version_label)
@@ -109,7 +134,7 @@ class InMemoryArtifactBundleStore:
         scope: ScopeContext,
         logical_agent_id: str,
         checksum: str,
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> bytes | None:
         key = _blob_path(scope.tenant_id, scope.project_id, logical_agent_id, checksum, version_label)
         return self.items.get(key)
@@ -126,7 +151,7 @@ class UnavailableArtifactBundleStore:
         logical_agent_id: str,
         content: bytes,
         content_type: str = "application/zip",
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> StoredBundle:
         raise ArtifactBundleStoreError(
             "No Azure Storage Blob endpoint is configured; release bundle storage is unavailable."
@@ -138,7 +163,7 @@ class UnavailableArtifactBundleStore:
         scope: ScopeContext,
         logical_agent_id: str,
         checksum: str,
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> bytes | None:
         raise ArtifactBundleStoreError(
             "No Azure Storage Blob endpoint is configured; release bundle storage is unavailable."
@@ -158,7 +183,7 @@ class AzureArtifactBundleStore:
         logical_agent_id: str,
         content: bytes,
         content_type: str = "application/zip",
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> StoredBundle:
         checksum = sha256(content).hexdigest()
         blob_name = _blob_path(tenant_id, project_id, logical_agent_id, checksum, version_label)
@@ -184,7 +209,7 @@ class AzureArtifactBundleStore:
         scope: ScopeContext,
         logical_agent_id: str,
         checksum: str,
-        version_label: str = UNVERSIONED,
+        version_label: str,
     ) -> bytes | None:
         blob_name = _blob_path(scope.tenant_id, scope.project_id, logical_agent_id, checksum, version_label)
         blob = self._container.get_blob_client(blob_name)

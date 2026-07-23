@@ -6,12 +6,12 @@ import pytest
 import research_assistant_api.agent_studio.artifact_bundle_store as artifact_bundle_store
 from azure.core.exceptions import ResourceNotFoundError
 from research_assistant_api.agent_studio.artifact_bundle_store import (
-    UNVERSIONED,
     ArtifactBundleStoreError,
     AzureArtifactBundleStore,
     InMemoryArtifactBundleStore,
     UnavailableArtifactBundleStore,
     build_artifact_bundle_store,
+    draft_version_label,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
@@ -22,8 +22,20 @@ if TYPE_CHECKING:
 
 def test_in_memory_store_is_content_addressed_and_idempotent() -> None:
     store = InMemoryArtifactBundleStore()
-    first = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"bundle-bytes")
-    second = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"bundle-bytes")
+    first = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"bundle-bytes",
+        version_label="version-1",
+    )
+    second = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"bundle-bytes",
+        version_label="version-1",
+    )
     assert first == second
     assert first.checksum.startswith("sha256:")
     assert first.size_bytes == len(b"bundle-bytes")
@@ -32,8 +44,20 @@ def test_in_memory_store_is_content_addressed_and_idempotent() -> None:
 
 def test_in_memory_store_distinguishes_different_content() -> None:
     store = InMemoryArtifactBundleStore()
-    first = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"content-a")
-    second = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"content-b")
+    first = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"content-a",
+        version_label="version-1",
+    )
+    second = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"content-b",
+        version_label="version-1",
+    )
     assert first.checksum != second.checksum
     assert len(store.items) == 2
 
@@ -41,58 +65,123 @@ def test_in_memory_store_distinguishes_different_content() -> None:
 def test_in_memory_store_scopes_path_by_project_and_version_label() -> None:
     store = InMemoryArtifactBundleStore()
     proj_a = store.put(
-        tenant_id="demo", project_id="proj-a", logical_agent_id="agent-1", content=b"same-bytes"
-    )
-    proj_b = store.put(
-        tenant_id="demo", project_id="proj-b", logical_agent_id="agent-1", content=b"same-bytes"
-    )
-    # Same tenant/agent/content but different project: distinct blob keys (no cross-project collision).
-    assert proj_a.uri != proj_b.uri
-    assert len(store.items) == 2
-
-    versioned = store.put(
         tenant_id="demo",
         project_id="proj-a",
         logical_agent_id="agent-1",
         content=b"same-bytes",
         version_label="version-123",
     )
-    assert versioned.uri != proj_a.uri
+    proj_b = store.put(
+        tenant_id="demo",
+        project_id="proj-b",
+        logical_agent_id="agent-1",
+        content=b"same-bytes",
+        version_label="version-123",
+    )
+    # Same tenant/agent/content but different project: distinct blob keys (no cross-project collision).
+    assert proj_a.uri != proj_b.uri
+    assert len(store.items) == 2
+
+    other_version = store.put(
+        tenant_id="demo",
+        project_id="proj-a",
+        logical_agent_id="agent-1",
+        content=b"same-bytes",
+        version_label="version-456",
+    )
+    assert other_version.uri != proj_a.uri
     assert len(store.items) == 3
 
 
 def test_in_memory_store_get_returns_content_within_scope() -> None:
     store = InMemoryArtifactBundleStore()
-    stored = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"payload")
+    stored = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-1",
+    )
     checksum = stored.checksum.removeprefix("sha256:")
     scope = ScopeContext(tenant_id="demo", project_id="proj-1")
-    assert store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum) == b"payload"
+    assert (
+        store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum, version_label="version-1") == b"payload"
+    )
 
 
 def test_in_memory_store_get_returns_none_for_wrong_scope_or_missing_content() -> None:
     store = InMemoryArtifactBundleStore()
-    stored = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"payload")
+    stored = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-1",
+    )
     checksum = stored.checksum.removeprefix("sha256:")
 
     other_tenant = ScopeContext(tenant_id="other-tenant", project_id="proj-1")
-    assert store.get(scope=other_tenant, logical_agent_id="agent-1", checksum=checksum) is None
+    result = store.get(scope=other_tenant, logical_agent_id="agent-1", checksum=checksum, version_label="version-1")
+    assert result is None
 
     other_project = ScopeContext(tenant_id="demo", project_id="other-project")
-    assert store.get(scope=other_project, logical_agent_id="agent-1", checksum=checksum) is None
+    result = store.get(scope=other_project, logical_agent_id="agent-1", checksum=checksum, version_label="version-1")
+    assert result is None
 
     same_scope = ScopeContext(tenant_id="demo", project_id="proj-1")
-    assert store.get(scope=same_scope, logical_agent_id="agent-1", checksum="0" * 64) is None
+    result = store.get(scope=same_scope, logical_agent_id="agent-1", checksum="0" * 64, version_label="version-1")
+    assert result is None
+
+
+@pytest.mark.parametrize("bad_label", ["", "   "])
+def test_in_memory_store_fails_closed_on_blank_version_label(bad_label: str) -> None:
+    store = InMemoryArtifactBundleStore()
+    with pytest.raises(ArtifactBundleStoreError, match="non-empty"):
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"payload",
+            version_label=bad_label,
+        )
+    with pytest.raises(ArtifactBundleStoreError, match="non-empty"):
+        store.get(
+            scope=ScopeContext(tenant_id="demo", project_id="proj-1"),
+            logical_agent_id="agent-1",
+            checksum="0" * 64,
+            version_label=bad_label,
+        )
+
+
+@pytest.mark.parametrize("bad_etag", ["", "   "])
+def test_draft_version_label_fails_closed_on_blank_etag(bad_etag: str) -> None:
+    with pytest.raises(ArtifactBundleStoreError, match="non-empty"):
+        draft_version_label(bad_etag)
+
+
+def test_draft_version_label_is_distinct_per_etag() -> None:
+    first = draft_version_label("etag-1")
+    second = draft_version_label("etag-2")
+    assert first != second
+    assert first == draft_version_label("etag-1")
 
 
 def test_unavailable_store_raises_on_put_and_get() -> None:
     store = UnavailableArtifactBundleStore()
     with pytest.raises(ArtifactBundleStoreError, match="unavailable"):
-        store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"bundle-bytes")
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"bundle-bytes",
+            version_label="version-1",
+        )
     with pytest.raises(ArtifactBundleStoreError, match="unavailable"):
         store.get(
             scope=ScopeContext(tenant_id="demo", project_id="proj-1"),
             logical_agent_id="agent-1",
             checksum="0" * 64,
+            version_label="version-1",
         )
 
 
@@ -144,15 +233,27 @@ def test_azure_store_uploads_new_blob_and_skips_reupload(monkeypatch: pytest.Mon
     store = AzureArtifactBundleStore(
         "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
     )
-    bundle = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"payload")
+    bundle = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-abc",
+    )
     assert bundle.uri.startswith("https://fake.blob.core.windows.net/container/")
-    assert "demo/proj-1/agent-1/" + UNVERSIONED in bundle.uri
+    assert "demo/proj-1/agent-1/version-abc/" in bundle.uri
     assert bundle.checksum.startswith("sha256:")
     fake_container = cast(FakeContainerClient, store._container)
     assert len(fake_container.registry) == 1
 
     # Uploading the same content again must not re-upload (idempotent put).
-    same = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"payload")
+    same = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-abc",
+    )
     assert same.uri == bundle.uri
     assert len(fake_container.registry) == 1
 
@@ -167,9 +268,31 @@ def test_azure_store_put_accepts_explicit_version_label(monkeypatch: pytest.Monk
         project_id="proj-1",
         logical_agent_id="agent-1",
         content=b"payload",
-        version_label="version-abc",
+        version_label="version-xyz",
     )
-    assert "demo/proj-1/agent-1/version-abc/" in bundle.uri
+    assert "demo/proj-1/agent-1/version-xyz/" in bundle.uri
+
+
+def test_azure_store_fails_closed_on_blank_version_label(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+    with pytest.raises(ArtifactBundleStoreError, match="non-empty"):
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"payload",
+            version_label="",
+        )
+    with pytest.raises(ArtifactBundleStoreError, match="non-empty"):
+        store.get(
+            scope=ScopeContext(tenant_id="demo", project_id="proj-1"),
+            logical_agent_id="agent-1",
+            checksum="0" * 64,
+            version_label="",
+        )
 
 
 def test_azure_store_get_returns_uploaded_content_within_scope(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -177,10 +300,18 @@ def test_azure_store_get_returns_uploaded_content_within_scope(monkeypatch: pyte
     store = AzureArtifactBundleStore(
         "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
     )
-    stored = store.put(tenant_id="demo", project_id="proj-1", logical_agent_id="agent-1", content=b"payload")
+    stored = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-1",
+    )
     checksum = stored.checksum.removeprefix("sha256:")
     scope = ScopeContext(tenant_id="demo", project_id="proj-1")
-    assert store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum) == b"payload"
+    assert (
+        store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum, version_label="version-1") == b"payload"
+    )
 
 
 def test_azure_store_get_returns_none_when_blob_missing(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -189,7 +320,7 @@ def test_azure_store_get_returns_none_when_blob_missing(monkeypatch: pytest.Monk
         "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
     )
     scope = ScopeContext(tenant_id="demo", project_id="proj-1")
-    assert store.get(scope=scope, logical_agent_id="agent-1", checksum="0" * 64) is None
+    assert store.get(scope=scope, logical_agent_id="agent-1", checksum="0" * 64, version_label="version-1") is None
 
 
 def test_build_artifact_bundle_store_returns_unavailable_when_not_configured() -> None:
@@ -221,9 +352,7 @@ def test_build_artifact_bundle_store_uses_managed_identity_when_client_id_presen
             return FakeContainerClient()
 
     monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", _FakeBlobServiceClient)
-    monkeypatch.setattr(
-        artifact_bundle_store, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}"
-    )
+    monkeypatch.setattr(artifact_bundle_store, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}")
     settings = Settings(
         storage_blob_endpoint="https://storage.example.test",
         managed_identity_client_id="client-123",
