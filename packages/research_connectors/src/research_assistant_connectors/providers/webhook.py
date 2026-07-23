@@ -10,8 +10,10 @@ from .config import WebhookConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -26,12 +28,22 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    official_provenance,
+    operation_allows_retry,
     plain_json,
+    resolve_capability_target,
+    validation_for_target,
 )
 
 PROVIDER_ID = "webhook"
 DOCS = ("https://www.rfc-editor.org/rfc/rfc9110",)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="RFC 9110",
+    last_verified_at="2026-07-23T08:37:02Z",
+)
 
 
 class WebhookProvider:
@@ -45,6 +57,7 @@ class WebhookProvider:
             {},
             OperationClass.PRIVILEGED,
             ApprovalPolicy.REQUIRED,
+            external_side_effect=True,
             side_effect_destinations=(config.destination_url or "unconfigured:webhook-destination",),
             idempotency=Idempotency.REQUIRED,
             docs=DOCS,
@@ -55,7 +68,7 @@ class WebhookProvider:
             "Webhook",
             "Invokes one explicitly configured GA webhook operation at a fixed URL.",
             (AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY, AuthMode.SIGNATURE),
-            DOCS,
+            PROVENANCE,
             (
                 CapabilityDescriptor(
                     descriptor_id=f"webhook.{config.operation_id}",
@@ -64,7 +77,7 @@ class WebhookProvider:
                     name=config.operation_id,
                     auth_modes=(config.auth.mode,),
                     operations=(operation,),
-                    provenance=DOCS,
+                    provenance=PROVENANCE,
                 ),
             ),
         )
@@ -73,7 +86,7 @@ class WebhookProvider:
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.destination_url or not self._config.operation_id:
             return ValidationReport(Readiness.MISCONFIGURED, ("Webhook destination and operation ID are required.",))
         if not self._config.tenant_id:
@@ -93,8 +106,8 @@ class WebhookProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         operation = self._descriptor.capability_descriptors[0].operations[0]
         reason = None if validation.readiness is Readiness.READY else "; ".join(validation.reasons)
         return (
@@ -110,16 +123,33 @@ class WebhookProvider:
                 tenant_boundary="configured tenant",
                 data_boundary="single configured destination URL",
                 operations=(operation,),
-                provenance=DOCS,
+                provenance=PROVENANCE,
                 status_evidence=("Fixed destination and credential abstraction validated.",),
                 unavailable_reason=reason,
             ),
         )
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        validation = self.validate(context)
-        if validation.readiness is not Readiness.READY or self._config.health_method is None:
-            return HealthReport(validation.readiness, validation.reasons or ("No live health method configured.",))
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        if instance.readiness is not Readiness.READY or self._config.health_method is None:
+            return HealthReport(
+                instance.health or instance.readiness,
+                instance.status_evidence or ("No live health method configured.",),
+            )
         response, _ = send(
             context,
             provider_id=PROVIDER_ID,
@@ -156,7 +186,10 @@ class WebhookProvider:
             content=payload,
             timeout=operation.timeout_seconds,
             max_retries=operation.max_retries,
-            idempotent=True,
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
         )
         content_type = response.headers.get("content-type", "")
         output: Any = response.json() if "json" in content_type else response.text

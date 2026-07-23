@@ -9,13 +9,14 @@ from ._http import auth_headers, collection, json_object, require_endpoint, safe
 from .config import FunctionPolicy, FunctionsConfig
 from .contracts import (
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
-    Maturity,
     OperationDescriptor,
     ProviderDescriptor,
     Readiness,
@@ -23,13 +24,23 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    operation_allows_retry,
+    validation_for_target,
 )
 
 PROVIDER_ID = "azure_functions"
 DOCS = (
     "https://learn.microsoft.com/azure/azure-functions/functions-bindings-http-webhook-trigger",
     "https://learn.microsoft.com/azure/azure-functions/function-keys-how-to",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="Azure Functions HTTP trigger GA",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 
 
@@ -55,18 +66,19 @@ def _function_capability(
             OperationDescriptor(
                 operation_id="functions.http.invoke",
                 version="1.0.0",
-                maturity=Maturity.GA,
+                maturity=policy.maturity,
                 input_schema={"type": "object"},
                 output_schema={},
                 operation_class=policy.operation_class,
                 approval_policy=policy.approval_policy,
+                external_side_effect=True,
                 side_effect_destinations=(destination or "unconfigured:function-app",),
                 idempotency=policy.idempotency,
                 least_privilege_scopes=("Function App application scope",),
                 docs=DOCS,
             ),
         ),
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
         configuration={"function_name": name},
@@ -82,14 +94,14 @@ class AzureFunctionsProvider:
             "Azure Functions",
             "Discovers configured HTTP functions and invokes only fixed Function App routes.",
             (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
-            DOCS,
+            PROVENANCE,
         )
 
     @property
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint or not self._config.discovery_url:
             return ValidationReport(Readiness.MISCONFIGURED, ("Function endpoint and discovery URL are required.",))
         if not self._config.tenant_id:
@@ -119,10 +131,12 @@ class AzureFunctionsProvider:
     def _discovery_headers(self, context: InvocationContext) -> dict[str, str]:
         return auth_headers(self._config.discovery_auth or self._config.auth, context, provider_id=PROVIDER_ID)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         policies = self._policies()
         if validation.readiness is not Readiness.READY:
+            if not policies:
+                policies = {"unconfigured": FunctionPolicy("unconfigured")}
             return tuple(
                 _function_capability(
                     name,
@@ -166,11 +180,22 @@ class AzureFunctionsProvider:
             )
         return tuple(discovered)
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        validation = self.validate(context)
-        readiness = Readiness.READY if validation.readiness is Readiness.READY else validation.readiness
-        return HealthReport(readiness, (f"{len(capabilities)} function(s) discovered.",))
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         instance, operation = find_operation(
@@ -194,8 +219,10 @@ class AzureFunctionsProvider:
             json_body=dict(request.arguments),
             timeout=operation.timeout_seconds,
             max_retries=operation.max_retries,
-            idempotent=operation.idempotency is Idempotency.INHERENT
-            or (operation.idempotency is Idempotency.REQUIRED and request.idempotency_key is not None),
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
             consent_on_forbidden=True,
         )
         content_type = response.headers.get("content-type", "")

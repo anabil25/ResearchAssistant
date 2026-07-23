@@ -24,7 +24,9 @@ from .config import BlobConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -40,13 +42,22 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    official_provenance,
+    operation_allows_retry,
+    resolve_capability_target,
 )
 
 PROVIDER_ID = "azure_blob_storage"
 DOCS = (
     "https://learn.microsoft.com/rest/api/storageservices/blob-service-rest-api",
     "https://learn.microsoft.com/rest/api/storageservices/versioning-for-the-azure-storage-services",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="Blob service REST 2025-11-05",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 
 
@@ -63,9 +74,7 @@ def _operation(
         input_schema,
         {},
         operation_class,
-        ApprovalPolicy.REQUIRED
-        if operation_class is OperationClass.WRITE_IRREVERSIBLE
-        else ApprovalPolicy.NEVER,
+        ApprovalPolicy.REQUIRED if operation_class is OperationClass.WRITE_IRREVERSIBLE else ApprovalPolicy.NEVER,
         idempotency=idempotency,
         least_privilege_scopes=("https://storage.azure.com/.default",),
         least_privilege_roles=("Storage Blob Data Reader",)
@@ -130,12 +139,11 @@ def _container_capability(
             GET,
             replace(
                 PUT,
-                side_effect_destinations=(
-                    f"{endpoint.rstrip('/')}/{quote(name, safe='')}",
-                ),
+                external_side_effect=True,
+                side_effect_destinations=(f"{endpoint.rstrip('/')}/{quote(name, safe='')}",),
             ),
         ),
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
         configuration={"container": name},
@@ -151,7 +159,7 @@ class AzureBlobProvider:
             "Azure Blob Storage",
             "Discovers containers and performs bounded blob list, GET, and idempotent PUT operations.",
             (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.SHARED_KEY),
-            DOCS,
+            PROVENANCE,
         )
 
     @property
@@ -185,7 +193,7 @@ class AzureBlobProvider:
             headers.update(auth_headers(self._config.auth, context, provider_id=PROVIDER_ID))
         return headers
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("Blob endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -209,8 +217,8 @@ class AzureBlobProvider:
             raise ProviderValidationError("Storage returned invalid XML", provider_id=PROVIDER_ID) from exc
         return tuple(element.text for element in root.findall(f".//{tag}") if element.text)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return (
                 _container_capability(
@@ -245,13 +253,27 @@ class AzureBlobProvider:
             for name in self._xml_names(response.content, "Container/Name")
         )
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        ready = all(item.readiness is Readiness.READY for item in capabilities)
-        return HealthReport(
-            Readiness.READY if ready else capabilities[0].readiness,
-            (f"{len(capabilities)} container capability descriptor(s) discovered.",),
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return ValidationReport(
+            instance.readiness,
+            () if instance.readiness is Readiness.READY else (instance.unavailable_reason or "Not ready",),
         )
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return HealthReport(instance.health or instance.readiness, instance.status_evidence)
 
     @staticmethod
     def _blob_path(container: str, blob: str) -> str:
@@ -309,7 +331,10 @@ class AzureBlobProvider:
             content=content,
             timeout=operation.timeout_seconds,
             max_retries=operation.max_retries,
-            idempotent=True,
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
             consent_on_forbidden=True,
         )
         if operation.operation_id == "blob.blobs.list":

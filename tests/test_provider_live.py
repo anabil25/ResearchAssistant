@@ -137,7 +137,6 @@ def test_live_provider_discovery_and_health() -> None:
         context = InvocationContext(
             tenant_id=tenant_id,
             principal_id="provider-integration-test",
-            approved_instance_ids=frozenset(),
             credential=LiveCredential(
                 os.getenv("PROVIDER_INTEGRATION_TOKEN"),
                 os.getenv("PROVIDER_INTEGRATION_SECRET"),
@@ -147,9 +146,11 @@ def test_live_provider_discovery_and_health() -> None:
             trace_id="provider-integration-test",
             sleep=time.sleep,
         )
-        validation = provider.validate(context)
-        assert validation.readiness is Readiness.READY, validation.reasons
         capabilities = provider.discover(context)
-        health = provider.health(context)
+        assert capabilities.instances, "Live provider discovery returned no capability instances"
+        target = capabilities.instances[0]
+        validation = provider.validate(target, context)
+        assert validation.readiness is Readiness.READY, validation.reasons
+        health = provider.health(target, context)
     assert capabilities, "Live provider discovery returned no capability descriptors"
     assert health.readiness is Readiness.READY, health.evidence

@@ -17,19 +17,21 @@ from research_assistant_connector_adapter.provider_api import (
 )
 from research_assistant_connectors.providers import (
     AuthMode,
+    CapabilityBinding,
     InvocationContext,
     ProviderRegistry,
     RateLimitError,
     WebhookConfig,
     WebhookProvider,
+    approval_decision,
+    capability_instance_fingerprint,
 )
 
 
-def context(handler: Any, *, approved: frozenset[str] = frozenset()) -> InvocationContext:
+def context(handler: Any) -> InvocationContext:
     return InvocationContext(
         tenant_id="tenant",
         principal_id="principal",
-        approved_instance_ids=approved,
         credential=None,
         transport=httpx.Client(transport=httpx.MockTransport(handler)),
         correlation_id="correlation",
@@ -60,15 +62,42 @@ def client() -> Iterator[TestClient]:
         )
     )
     capability = provider.discover(base_context)[0]
+    operation = capability.descriptor.operations[0]
+    binding = CapabilityBinding(
+        binding_id="binding",
+        agent_id="agent",
+        instance_id=capability.instance_id,
+        descriptor_id=capability.descriptor.descriptor_id,
+        operation_id=operation.operation_id,
+        operation_version=operation.version,
+        instance_fingerprint=capability_instance_fingerprint(capability),
+    )
+    instance_decision = approval_decision(
+        base_context,
+        target=capability,
+        instance=capability,
+        operation=operation,
+        arguments={"event": "updated"},
+        decision_id="api-approval",
+        expires_at="2999-01-01T00:00:00Z",
+    )
+    binding_decision = approval_decision(
+        base_context,
+        target=binding,
+        instance=capability,
+        operation=operation,
+        arguments={"event": "updated"},
+        decision_id="api-binding-approval",
+        expires_at="2999-01-01T00:00:00Z",
+    )
     approved_context = replace(
         base_context,
-        approved_instance_ids=frozenset({capability.instance_id}),
+        approval_decisions=(instance_decision, binding_decision),
     )
     app.state.provider_service = ProviderService(
         ProviderRegistry((provider,)),
-        lambda provider_id, _request: (
-            approved_context if provider_id == "webhook" else base_context
-        ),
+        lambda provider_id, _request: approved_context if provider_id == "webhook" else base_context,
+        lambda _provider_id, _binding_id, _request: binding,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -80,10 +109,10 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
 ) -> None:
     catalog = client.get("/v1/providers")
     discovery = client.get("/v1/providers/webhook/capabilities")
-    validation = client.get("/v1/providers/webhook/validation")
-    health = client.get("/v1/providers/webhook/health")
     descriptor = discovery.json()["descriptors"][0]
     instance = discovery.json()["instances"][0]
+    validation = client.get(f"/v1/providers/webhook/instances/{instance['instance_id']}/validation")
+    health = client.get(f"/v1/providers/webhook/instances/{instance['instance_id']}/health")
     invoked = client.post(
         "/v1/providers/webhook/invoke",
         headers={"Idempotency-Key": "event-1"},
@@ -94,7 +123,7 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
         },
     )
 
-    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v2"
+    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v3"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
     assert instance["attachable_operation_ids"] == ["publish"]
     assert len(instance["instance_fingerprint"]) == 64
@@ -102,9 +131,7 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
     assert descriptor["operations"][0]["version"] == "1.0.0"
     assert descriptor["operations"][0]["operation_class"] == "privileged"
     assert descriptor["operations"][0]["approval_policy"] == "required"
-    assert descriptor["operations"][0]["side_effect_destinations"] == [
-        "https://hooks.test/events"
-    ]
+    assert descriptor["operations"][0]["side_effect_destinations"] == ["https://hooks.test/events"]
     assert validation.json()["readiness"] == "ready"
     assert health.json()["readiness"] == "ready"
     assert invoked.status_code == 200
@@ -112,25 +139,49 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
     assert invoked.json()["audit_metadata"]["principal_id"] == "principal"
 
 
+def test_provider_api_targets_trusted_capability_binding(client: TestClient) -> None:
+    validation = client.get(
+        "/v1/providers/webhook/instances/webhook.publish/validation",
+        params={"binding_id": "binding"},
+    )
+    health = client.get(
+        "/v1/providers/webhook/instances/webhook.publish/health",
+        params={"binding_id": "binding"},
+    )
+    invoked = client.post(
+        "/v1/providers/webhook/invoke",
+        headers={"Idempotency-Key": "binding-event-1"},
+        json={
+            "instance_id": "webhook.publish",
+            "binding_id": "binding",
+            "operation_id": "publish",
+            "arguments": {"event": "updated"},
+        },
+    )
+
+    assert validation.json()["binding_id"] == "binding"
+    assert validation.json()["readiness"] == "ready"
+    assert health.json()["binding_id"] == "binding"
+    assert health.json()["readiness"] == "ready"
+    assert invoked.status_code == 200
+    assert invoked.json()["audit_metadata"]["binding_id"] == "binding"
+
+
 def test_provider_openapi_contract_is_separate_from_agent_tool_import() -> None:
     root = Path(__file__).resolve().parents[1]
     committed = json.loads(
-        (root / "packages" / "contracts" / "provider-adapter-openapi.json").read_text(
-            encoding="utf-8"
-        )
+        (root / "packages" / "contracts" / "provider-adapter-openapi.json").read_text(encoding="utf-8")
     )
     assert committed == contract_app.openapi()
     operations = {
-        operation["operationId"]
-        for path_item in committed["paths"].values()
-        for operation in path_item.values()
+        operation["operationId"] for path_item in committed["paths"].values() for operation in path_item.values()
     }
     assert operations == {
         "discoverIntegrationCapabilities",
-        "healthIntegrationProvider",
+        "healthIntegrationCapabilityInstance",
         "invokeIntegrationCapability",
         "listIntegrationProviders",
-        "validateIntegrationProvider",
+        "validateIntegrationCapabilityInstance",
     }
 
 
@@ -138,6 +189,25 @@ def test_provider_api_rejects_unknown_runtime_and_model_supplied_approval(
     client: TestClient,
 ) -> None:
     unknown = client.get("/v1/providers/missing/capabilities")
+    unknown_instance = client.get("/v1/providers/webhook/instances/missing/validation")
+    mismatched_binding = client.get(
+        "/v1/providers/webhook/instances/missing/validation",
+        params={"binding_id": "binding"},
+    )
+    mismatched_operation = client.post(
+        "/v1/providers/webhook/invoke",
+        json={
+            "instance_id": "webhook.publish",
+            "binding_id": "binding",
+            "operation_id": "other",
+            "arguments": {},
+        },
+    )
+    non_finite_arguments = client.post(
+        "/v1/providers/webhook/invoke",
+        content=('{"instance_id":"webhook.publish","operation_id":"publish","arguments":{"event":NaN}}'),
+        headers={"content-type": "application/json"},
+    )
     injected_approval = client.post(
         "/v1/providers/webhook/invoke",
         json={
@@ -153,15 +223,23 @@ def test_provider_api_rejects_unknown_runtime_and_model_supplied_approval(
     app.state.provider_service = original
 
     assert unknown.status_code == 404
+    assert unknown_instance.status_code == 503
+    assert unknown_instance.json()["error"]["code"] == "unavailable"
+    assert mismatched_binding.status_code == 403
+    assert mismatched_binding.json()["error"]["code"] == "policy"
+    assert mismatched_operation.status_code == 422
+    assert mismatched_operation.json()["error"]["code"] == "validation"
+    assert non_finite_arguments.status_code == 422
+    assert non_finite_arguments.json()["error"]["code"] == "validation"
     assert injected_approval.status_code == 422
     assert unavailable.status_code == 503
 
 
 def test_provider_api_without_context_and_error_mapping() -> None:
     original = app.state.provider_service
-    app.state.provider_service = ProviderService(ProviderRegistry((WebhookProvider(
-        WebhookConfig("https://hooks.test", "tenant", "send")
-    ),)))
+    app.state.provider_service = ProviderService(
+        ProviderRegistry((WebhookProvider(WebhookConfig("https://hooks.test", "tenant", "send")),))
+    )
     app.state.gateway_validator = None
     with TestClient(app) as client:
         response = client.get("/v1/providers/webhook/capabilities")
@@ -179,3 +257,22 @@ def test_provider_api_without_context_and_error_mapping() -> None:
     assert error.headers["retry-after"] == "1"
     assert b"rate limited" in error.body
     assert AuthMode.NONE.value == "none"
+
+
+def test_provider_api_requires_server_side_binding_resolver() -> None:
+    original = app.state.provider_service
+    provider = WebhookProvider(WebhookConfig("https://hooks.test", "tenant", "send"))
+    app.state.provider_service = ProviderService(
+        ProviderRegistry((provider,)),
+        lambda _provider_id, _request: context(lambda _: httpx.Response(200)),
+    )
+    app.state.gateway_validator = None
+    with TestClient(app) as client:
+        response = client.get(
+            "/v1/providers/webhook/instances/webhook.send/validation",
+            params={"binding_id": "binding"},
+        )
+    app.state.provider_service = original
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "unavailable"

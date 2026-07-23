@@ -19,11 +19,13 @@ from .config import (
 )
 from .contracts import (
     AccessToken,
+    ApprovalDecision,
     ApprovalPolicy,
     AuthMode,
     CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -34,6 +36,7 @@ from .contracts import (
     OperationClass,
     OperationDescriptor,
     PolicyError,
+    ProvenanceRecord,
     ProviderDescriptor,
     ProviderError,
     ProviderTimeoutError,
@@ -46,7 +49,10 @@ from .contracts import (
     UnavailableError,
     UpstreamError,
     ValidationReport,
+    approval_decision,
+    canonical_json_hash,
     capability_instance_fingerprint,
+    operation_allows_retry,
     validate_binding,
 )
 from .foundry import FoundryProvider
@@ -61,6 +67,7 @@ from .webhook import WebhookProvider
 
 __all__ = [
     "AccessToken",
+    "ApprovalDecision",
     "ApprovalPolicy",
     "AuthConfig",
     "AuthMode",
@@ -71,6 +78,7 @@ __all__ = [
     "CapabilityBinding",
     "CapabilityDescriptor",
     "CapabilityInstance",
+    "DiscoveryResult",
     "FoundryConfig",
     "FoundryProvider",
     "FunctionPolicy",
@@ -95,6 +103,7 @@ __all__ = [
     "OperationClass",
     "OperationDescriptor",
     "PolicyError",
+    "ProvenanceRecord",
     "ProviderDescriptor",
     "ProviderEnvironment",
     "ProviderError",
@@ -113,6 +122,9 @@ __all__ = [
     "ValidationReport",
     "WebhookConfig",
     "WebhookProvider",
+    "approval_decision",
+    "canonical_json_hash",
     "capability_instance_fingerprint",
+    "operation_allows_retry",
     "validate_binding",
 ]

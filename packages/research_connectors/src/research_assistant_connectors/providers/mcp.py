@@ -13,9 +13,10 @@ from .config import MCPConfig, MCPToolPolicy
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
-    Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
@@ -29,11 +30,21 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    operation_allows_retry,
+    validation_for_target,
 )
 
 PROVIDER_ID = "mcp_streamable_http"
 DOCS = ("https://modelcontextprotocol.io/specification/2025-06-18/basic/transports#streamable-http",)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="MCP 2025-06-18",
+    last_verified_at="2026-07-23T08:37:02Z",
+)
 
 
 def _safe_input_schema(value: Any) -> dict[str, Any]:
@@ -74,17 +85,18 @@ def _tool_capability(
             OperationDescriptor(
                 "mcp.tools.call",
                 "1.0.0",
-                Maturity.GA,
+                policy.maturity,
                 schema,
                 {},
                 policy.operation_class,
                 policy.approval_policy,
+                external_side_effect=policy.operation_class not in {OperationClass.PURE, OperationClass.READ},
                 side_effect_destinations=(destination,),
                 idempotency=policy.idempotency,
                 docs=DOCS,
             ),
         ),
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=("Tool returned by a protocol-valid tools/list response.",),
         configuration={"tool_name": name, "untrusted_tool_metadata": metadata},
     )
@@ -102,14 +114,14 @@ class MCPStreamableHTTPProvider:
             "MCP Streamable HTTP",
             "Negotiates MCP sessions and invokes discovered tools under trusted local policy.",
             (AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
-            DOCS,
+            PROVENANCE,
         )
 
     @property
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("MCP endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -234,17 +246,18 @@ class MCPStreamableHTTPProvider:
             raise UpstreamError("MCP initialized notification was not accepted", provider_id=PROVIDER_ID)
         self._initialized.add(session_key)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
                 "mcp.tools.call",
                 "1.0.0",
-                Maturity.GA,
+                Maturity.UNKNOWN,
                 {"type": "object"},
                 {},
                 OperationClass.PRIVILEGED,
                 ApprovalPolicy.REQUIRED,
+                external_side_effect=True,
                 side_effect_destinations=(self._config.endpoint or "unconfigured:mcp-endpoint",),
                 docs=DOCS,
             )
@@ -260,7 +273,7 @@ class MCPStreamableHTTPProvider:
                     tenant_boundary="configured tenant",
                     data_boundary="configured MCP endpoint",
                     operations=(operation,),
-                    provenance=DOCS,
+                    provenance=PROVENANCE,
                     status_evidence=("No MCP initialization request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
@@ -293,13 +306,22 @@ class MCPStreamableHTTPProvider:
             )
         return tuple(capabilities)
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        ready = all(item.readiness is Readiness.READY for item in capabilities)
-        return HealthReport(
-            Readiness.READY if ready else capabilities[0].readiness,
-            (f"Protocol-valid tools/list returned {len(capabilities)} tool(s).",),
-        )
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         instance, operation = find_operation(
@@ -314,7 +336,10 @@ class MCPStreamableHTTPProvider:
             "tools/call",
             {"name": tool_name, "arguments": dict(request.arguments)},
             context,
-            idempotent=operation.idempotency is Idempotency.INHERENT,
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
         )
         if result.get("isError") is True:
             raise UpstreamError("MCP tool reported an execution error", provider_id=PROVIDER_ID)

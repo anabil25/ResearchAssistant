@@ -9,6 +9,7 @@ from fastapi import APIRouter, FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from research_assistant_connectors.providers import (
+    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
     HealthReport,
@@ -16,21 +17,26 @@ from research_assistant_connectors.providers import (
     InvocationRequest,
     InvocationResult,
     OperationDescriptor,
+    PolicyError,
     ProviderDescriptor,
     ProviderError,
     ProviderRegistry,
+    ProviderValidationError,
+    UnavailableError,
     ValidationReport,
     capability_instance_fingerprint,
 )
-from research_assistant_connectors.providers.contracts import plain_json
+from research_assistant_connectors.providers.contracts import Provider, plain_json
 
 ProviderContextFactory = Callable[[str, Request], InvocationContext]
+ProviderBindingResolver = Callable[[str, str, Request], CapabilityBinding]
 
 
 class ProviderInvokePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     instance_id: str = Field(min_length=1, max_length=512)
+    binding_id: str | None = Field(default=None, min_length=1, max_length=512)
     operation_id: str = Field(min_length=1, max_length=512)
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -44,6 +50,7 @@ def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
         "output_schema": plain_json(operation.output_schema),
         "operation_class": operation.operation_class.value,
         "approval_policy": operation.approval_policy.value,
+        "external_side_effect": operation.external_side_effect,
         "side_effect_destinations": list(operation.side_effect_destinations),
         "timeout_seconds": operation.timeout_seconds,
         "max_retries": operation.max_retries,
@@ -63,7 +70,14 @@ def _capability_json(capability: CapabilityDescriptor) -> dict[str, Any]:
         "name": capability.name,
         "auth_modes": [mode.value for mode in capability.auth_modes],
         "operations": [_operation_json(operation) for operation in capability.operations],
-        "provenance": list(capability.provenance),
+        "provenance": [
+            {
+                "official_url": record.official_url,
+                "source_version": record.source_version,
+                "last_verified_at": record.last_verified_at,
+            }
+            for record in capability.provenance
+        ],
         "observability": list(capability.observability),
         "audit": list(capability.audit),
         "metadata": plain_json(capability.metadata),
@@ -78,10 +92,15 @@ def _instance_json(instance: CapabilityInstance) -> dict[str, Any]:
         "instance_fingerprint": capability_instance_fingerprint(instance),
         "name": instance.name,
         "readiness": instance.readiness.value,
+        "health": instance.health.value if instance.health else None,
         "attachable_operation_ids": list(instance.attachable_operation_ids),
-        "tenant_boundary": instance.tenant_boundary,
+        "tenant_scope": instance.tenant_scope,
         "data_boundary": instance.data_boundary,
+        "resource_id": instance.resource_id,
+        "connection_id": instance.connection_id,
+        "discovered_version": instance.discovered_version,
         "configuration": plain_json(instance.configuration),
+        "configuration_fingerprint": instance.configuration_fingerprint,
         "status_evidence": list(instance.status_evidence),
         "unavailable_reason": instance.unavailable_reason,
     }
@@ -94,11 +113,15 @@ def _provider_json(provider: ProviderDescriptor) -> dict[str, Any]:
         "name": provider.name,
         "description": provider.description,
         "auth_modes": [mode.value for mode in provider.auth_modes],
-        "provenance": list(provider.provenance),
-        "capability_descriptors": [
-            _capability_json(capability)
-            for capability in provider.capability_descriptors
+        "provenance": [
+            {
+                "official_url": record.official_url,
+                "source_version": record.source_version,
+                "last_verified_at": record.last_verified_at,
+            }
+            for record in provider.provenance
         ],
+        "capability_descriptors": [_capability_json(capability) for capability in provider.capability_descriptors],
     }
 
 
@@ -108,14 +131,17 @@ def _report_json(report: ValidationReport | HealthReport) -> dict[str, Any]:
     return {"readiness": report.readiness.value, "evidence": list(report.evidence)}
 
 
-def _result_json(result: InvocationResult) -> dict[str, Any]:
+def _result_json(result: InvocationResult, binding_id: str | None = None) -> dict[str, Any]:
+    audit_metadata = dict(plain_json(result.audit_metadata))
+    if binding_id is not None:
+        audit_metadata["binding_id"] = binding_id
     return {
         "provider_id": result.provider_id,
         "instance_id": result.instance_id,
         "operation_id": result.operation_id,
         "status_code": result.status_code,
         "output": plain_json(result.output),
-        "audit_metadata": plain_json(result.audit_metadata),
+        "audit_metadata": audit_metadata,
     }
 
 
@@ -124,24 +150,23 @@ class ProviderService:
         self,
         registry: ProviderRegistry,
         context_factory: ProviderContextFactory | None = None,
+        binding_resolver: ProviderBindingResolver | None = None,
     ) -> None:
         self._registry = registry
         self._context_factory = context_factory
+        self._binding_resolver = binding_resolver
 
     def catalog(self) -> dict[str, Any]:
         return {
-            "schema_version": "research-assistant.integration-provider.v2",
-            "providers": [
-                _provider_json(provider.descriptor)
-                for provider in self._registry.providers.values()
-            ],
+            "schema_version": "research-assistant.integration-provider.v3",
+            "providers": [_provider_json(provider.descriptor) for provider in self._registry.providers.values()],
         }
 
     def _provider_context(
         self,
         provider_id: str,
         request: Request,
-    ) -> tuple[Any, InvocationContext]:
+    ) -> tuple[Provider, InvocationContext]:
         try:
             provider = self._registry.get(provider_id)
         except KeyError as exc:
@@ -155,27 +180,90 @@ class ProviderService:
 
     def discover(self, provider_id: str, request: Request) -> dict[str, Any]:
         provider, context = self._provider_context(provider_id, request)
-        instances = provider.discover(context)
-        descriptors = {
-            instance.descriptor.descriptor_id: instance.descriptor
-            for instance in instances
-        }
+        result = provider.discover(context)
         return {
             "provider_id": provider_id,
-            "descriptors": [
-                _capability_json(descriptor)
-                for descriptor in descriptors.values()
-            ],
-            "instances": [_instance_json(instance) for instance in instances],
+            "descriptors": [_capability_json(descriptor) for descriptor in result.descriptors],
+            "instances": [_instance_json(instance) for instance in result.instances],
+            "warnings": list(result.warnings),
+            "refreshed_at": result.refreshed_at,
         }
 
-    def validate(self, provider_id: str, request: Request) -> dict[str, Any]:
-        provider, context = self._provider_context(provider_id, request)
-        return {"provider_id": provider_id, **_report_json(provider.validate(context))}
+    @staticmethod
+    def _instance(
+        provider: Provider,
+        context: InvocationContext,
+        instance_id: str,
+    ) -> CapabilityInstance:
+        result = provider.discover(context)
+        instance = next(
+            (candidate for candidate in result.instances if candidate.instance_id == instance_id),
+            None,
+        )
+        if instance is None:
+            raise UnavailableError(
+                "Capability instance is not present in current provider discovery",
+                provider_id=provider.descriptor.provider_id,
+                instance_id=instance_id,
+            )
+        return instance
 
-    def health(self, provider_id: str, request: Request) -> dict[str, Any]:
+    def _target(
+        self,
+        provider: Provider,
+        context: InvocationContext,
+        instance_id: str,
+        binding_id: str | None,
+        request: Request,
+    ) -> CapabilityInstance | CapabilityBinding:
+        if binding_id is None:
+            return self._instance(provider, context, instance_id)
+        if self._binding_resolver is None:
+            raise UnavailableError(
+                "Capability binding runtime is not configured",
+                provider_id=provider.descriptor.provider_id,
+                instance_id=instance_id,
+            )
+        binding = self._binding_resolver(provider.descriptor.provider_id, binding_id, request)
+        if binding.binding_id != binding_id or binding.instance_id != instance_id:
+            raise PolicyError(
+                "Resolved capability binding does not match the requested target",
+                provider_id=provider.descriptor.provider_id,
+                instance_id=instance_id,
+            )
+        return binding
+
+    def validate(
+        self,
+        provider_id: str,
+        instance_id: str,
+        request: Request,
+        binding_id: str | None = None,
+    ) -> dict[str, Any]:
         provider, context = self._provider_context(provider_id, request)
-        return {"provider_id": provider_id, **_report_json(provider.health(context))}
+        target = self._target(provider, context, instance_id, binding_id, request)
+        return {
+            "provider_id": provider_id,
+            "instance_id": target.instance_id,
+            "binding_id": binding_id,
+            **_report_json(provider.validate(target, context)),
+        }
+
+    def health(
+        self,
+        provider_id: str,
+        instance_id: str,
+        request: Request,
+        binding_id: str | None = None,
+    ) -> dict[str, Any]:
+        provider, context = self._provider_context(provider_id, request)
+        target = self._target(provider, context, instance_id, binding_id, request)
+        return {
+            "provider_id": provider_id,
+            "instance_id": target.instance_id,
+            "binding_id": binding_id,
+            **_report_json(provider.health(target, context)),
+        }
 
     def invoke(
         self,
@@ -185,16 +273,25 @@ class ProviderService:
         idempotency_key: str | None,
     ) -> dict[str, Any]:
         provider, context = self._provider_context(provider_id, request)
-        result = provider.invoke(
-            InvocationRequest(
-                instance_id=payload.instance_id,
+        target = self._target(provider, context, payload.instance_id, payload.binding_id, request)
+        try:
+            invocation = InvocationRequest(
+                target=target,
                 operation_id=payload.operation_id,
                 arguments=payload.arguments,
                 idempotency_key=idempotency_key,
-            ),
+            )
+        except ValueError as exc:
+            raise ProviderValidationError(
+                str(exc),
+                provider_id=provider_id,
+                instance_id=payload.instance_id,
+            ) from exc
+        result = provider.invoke(
+            invocation,
             context,
         )
-        return _result_json(result)
+        return _result_json(result, payload.binding_id)
 
 
 def provider_service(request: Request) -> ProviderService:
@@ -220,14 +317,30 @@ def discover_capabilities(provider_id: str, request: Request) -> Mapping[str, An
     return provider_service(request).discover(provider_id, request)
 
 
-@router.get("/{provider_id}/validation", operation_id="validateIntegrationProvider")
-def validate_provider(provider_id: str, request: Request) -> Mapping[str, Any]:
-    return provider_service(request).validate(provider_id, request)
+@router.get(
+    "/{provider_id}/instances/{instance_id}/validation",
+    operation_id="validateIntegrationCapabilityInstance",
+)
+def validate_provider(
+    provider_id: str,
+    instance_id: str,
+    request: Request,
+    binding_id: str | None = None,
+) -> Mapping[str, Any]:
+    return provider_service(request).validate(provider_id, instance_id, request, binding_id)
 
 
-@router.get("/{provider_id}/health", operation_id="healthIntegrationProvider")
-def provider_health(provider_id: str, request: Request) -> Mapping[str, Any]:
-    return provider_service(request).health(provider_id, request)
+@router.get(
+    "/{provider_id}/instances/{instance_id}/health",
+    operation_id="healthIntegrationCapabilityInstance",
+)
+def provider_health(
+    provider_id: str,
+    instance_id: str,
+    request: Request,
+    binding_id: str | None = None,
+) -> Mapping[str, Any]:
+    return provider_service(request).health(provider_id, instance_id, request, binding_id)
 
 
 @router.post("/{provider_id}/invoke", operation_id="invokeIntegrationCapability")
@@ -266,11 +379,7 @@ def provider_error_response(error: ProviderError) -> JSONResponse:
             "instance_id": error.instance_id,
         }
     }
-    headers = (
-        {"Retry-After": str(max(0, int(error.retry_after)))}
-        if error.retry_after is not None
-        else None
-    )
+    headers = {"Retry-After": str(max(0, int(error.retry_after)))} if error.retry_after is not None else None
     return JSONResponse(
         status_code=PROVIDER_ERROR_STATUS.get(error.code, 500),
         content=content,
@@ -288,6 +397,7 @@ contract_app.include_router(router)
 
 
 __all__ = [
+    "ProviderBindingResolver",
     "ProviderContextFactory",
     "ProviderInvokePayload",
     "ProviderService",

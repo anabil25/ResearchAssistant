@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts import ApprovalPolicy, AuthMode, Idempotency, OperationClass
+from .contracts import ApprovalPolicy, AuthMode, Idempotency, Maturity, OperationClass
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,6 +44,7 @@ class FunctionPolicy:
     operation_class: OperationClass = OperationClass.PRIVILEGED
     approval_policy: ApprovalPolicy = ApprovalPolicy.REQUIRED
     idempotency: Idempotency = Idempotency.NONE
+    maturity: Maturity = Maturity.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,6 +73,7 @@ class MCPToolPolicy:
     operation_class: OperationClass = OperationClass.PRIVILEGED
     approval_policy: ApprovalPolicy = ApprovalPolicy.REQUIRED
     idempotency: Idempotency = Idempotency.NONE
+    maturity: Maturity = Maturity.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)
@@ -100,6 +102,7 @@ class OpenAPIOperationPolicy:
     operation_class: OperationClass
     approval_policy: ApprovalPolicy
     idempotency: Idempotency | None = None
+    maturity: Maturity = Maturity.UNKNOWN
 
 
 @dataclass(frozen=True, slots=True)

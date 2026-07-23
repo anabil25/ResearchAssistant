@@ -5,8 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 import math
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field
+from datetime import UTC, datetime
 from enum import StrEnum
 from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
@@ -18,6 +19,7 @@ JsonSchema = Mapping[str, Any]
 
 
 class Maturity(StrEnum):
+    UNKNOWN = "unknown"
     GA = "ga"
     PREVIEW = "preview"
     RETIRED = "retired"
@@ -100,6 +102,59 @@ def _validate_json_value(value: Any, *, path: str) -> None:
     raise ValueError(f"{path} contains a non-JSON value")
 
 
+def canonical_json_hash(value: Any) -> str:
+    _validate_json_value(value, path="hash_input")
+    encoded = json.dumps(
+        plain_json(value),
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+        allow_nan=False,
+    ).encode()
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _validate_utc_timestamp(value: str, *, path: str) -> None:
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(f"{path} must be an ISO 8601 timestamp") from exc
+    if parsed.tzinfo is None or parsed.utcoffset() != UTC.utcoffset(parsed):
+        raise ValueError(f"{path} must be a UTC timestamp")
+
+
+def utc_now() -> str:
+    return datetime.now(UTC).isoformat().replace("+00:00", "Z")
+
+
+@dataclass(frozen=True, slots=True)
+class ProvenanceRecord:
+    official_url: str
+    source_version: str
+    last_verified_at: str
+
+    def __post_init__(self) -> None:
+        if not self.official_url.startswith("https://") or not self.source_version:
+            raise ValueError("Provenance requires an official HTTPS URL and source version")
+        _validate_utc_timestamp(self.last_verified_at, path="provenance.last_verified_at")
+
+
+def official_provenance(
+    urls: tuple[str, ...],
+    *,
+    source_version: str,
+    last_verified_at: str,
+) -> tuple[ProvenanceRecord, ...]:
+    return tuple(
+        ProvenanceRecord(
+            official_url=url,
+            source_version=source_version,
+            last_verified_at=last_verified_at,
+        )
+        for url in urls
+    )
+
+
 @dataclass(frozen=True, slots=True)
 class OperationDescriptor:
     operation_id: str
@@ -109,6 +164,7 @@ class OperationDescriptor:
     output_schema: JsonSchema
     operation_class: OperationClass
     approval_policy: ApprovalPolicy
+    external_side_effect: bool = False
     side_effect_destinations: tuple[str, ...] = ()
     timeout_seconds: float = 20.0
     max_retries: int = 2
@@ -139,13 +195,19 @@ class CapabilityDescriptor:
     name: str
     auth_modes: tuple[AuthMode, ...]
     operations: tuple[OperationDescriptor, ...]
-    provenance: tuple[str, ...]
+    provenance: tuple[ProvenanceRecord, ...]
     observability: tuple[str, ...] = ("correlation_id", "trace_id", "latency_ms", "status")
     audit: tuple[str, ...] = ("principal_id", "tenant_id", "provider_id", "instance_id", "operation_id")
     metadata: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        if not self.descriptor_id or not self.family or not self.resource_kind or not self.operations:
+        if (
+            not self.descriptor_id
+            or not self.family
+            or not self.resource_kind
+            or not self.operations
+            or not self.provenance
+        ):
             raise ValueError("Capability descriptor identity and operations are required")
         _validate_json_value(self.metadata, path="descriptor.metadata")
         object.__setattr__(self, "metadata", _freeze(self.metadata))
@@ -158,9 +220,14 @@ class CapabilityInstance:
     descriptor: CapabilityDescriptor
     name: str
     readiness: Readiness
-    tenant_boundary: str
+    tenant_scope: str
     data_boundary: str
+    resource_id: str | None = None
+    connection_id: str | None = None
+    health: Readiness | None = None
+    discovered_version: str | None = None
     configuration: Mapping[str, Any] = field(default_factory=dict)
+    configuration_fingerprint: str = ""
     status_evidence: tuple[str, ...] = ()
     unavailable_reason: str | None = None
 
@@ -173,16 +240,72 @@ class CapabilityInstance:
             raise ValueError("Non-ready capability instances require an unavailable reason")
         _validate_json_value(self.configuration, path="instance.configuration")
         object.__setattr__(self, "configuration", _freeze(self.configuration))
+        fingerprint = canonical_json_hash(self.configuration)
+        if self.configuration_fingerprint and self.configuration_fingerprint != fingerprint:
+            raise ValueError("Capability instance configuration fingerprint does not match configuration")
+        object.__setattr__(self, "configuration_fingerprint", fingerprint)
+        object.__setattr__(self, "health", self.health or self.readiness)
+        if self.discovered_version is None:
+            versions = {operation.version for operation in self.descriptor.operations}
+            object.__setattr__(
+                self,
+                "discovered_version",
+                versions.pop() if len(versions) == 1 else "multiple",
+            )
 
     @property
     def attachable_operation_ids(self) -> tuple[str, ...]:
         if self.readiness is not Readiness.READY:
             return ()
         return tuple(
-            operation.operation_id
-            for operation in self.descriptor.operations
-            if operation.maturity is Maturity.GA
+            operation.operation_id for operation in self.descriptor.operations if operation.maturity is Maturity.GA
         )
+
+
+@dataclass(frozen=True, slots=True)
+class DiscoveryResult:
+    descriptors: tuple[CapabilityDescriptor, ...]
+    instances: tuple[CapabilityInstance, ...]
+    warnings: tuple[str, ...]
+    refreshed_at: str
+
+    def __post_init__(self) -> None:
+        _validate_utc_timestamp(self.refreshed_at, path="discovery.refreshed_at")
+        descriptor_ids = {descriptor.descriptor_id for descriptor in self.descriptors}
+        if len(descriptor_ids) != len(self.descriptors):
+            raise ValueError("Discovery descriptor identities must be unique")
+        if len({instance.instance_id for instance in self.instances}) != len(self.instances):
+            raise ValueError("Discovery instance identities must be unique")
+        if any(instance.descriptor.descriptor_id not in descriptor_ids for instance in self.instances):
+            raise ValueError("Every discovered instance must reference a returned descriptor")
+        if any(not warning for warning in self.warnings):
+            raise ValueError("Discovery warnings cannot be empty")
+
+    def __iter__(self) -> Iterator[CapabilityInstance]:
+        return iter(self.instances)
+
+    def __len__(self) -> int:
+        return len(self.instances)
+
+    def __getitem__(self, index: int) -> CapabilityInstance:
+        return self.instances[index]
+
+
+def discovery_result(
+    instances: Sequence[CapabilityInstance],
+    *,
+    warnings: tuple[str, ...] = (),
+    refreshed_at: str | None = None,
+) -> DiscoveryResult:
+    canonical_instances = tuple(instances)
+    descriptors_by_id = {instance.descriptor.descriptor_id: instance.descriptor for instance in canonical_instances}
+    return DiscoveryResult(
+        descriptors=tuple(descriptors_by_id.values()),
+        instances=canonical_instances,
+        warnings=warnings,
+        refreshed_at=refreshed_at or utc_now(),
+    )
+
 
 def capability_instance(
     *,
@@ -196,12 +319,16 @@ def capability_instance(
     tenant_boundary: str,
     data_boundary: str,
     operations: tuple[OperationDescriptor, ...],
-    provenance: tuple[str, ...],
+    provenance: tuple[ProvenanceRecord, ...],
     status_evidence: tuple[str, ...],
     unavailable_reason: str | None = None,
     configuration: Mapping[str, Any] | None = None,
     descriptor_id: str | None = None,
     descriptor_metadata: Mapping[str, Any] | None = None,
+    resource_id: str | None = None,
+    connection_id: str | None = None,
+    health: Readiness | None = None,
+    discovered_version: str | None = None,
 ) -> CapabilityInstance:
     descriptor = CapabilityDescriptor(
         descriptor_id=descriptor_id or instance_id,
@@ -219,8 +346,12 @@ def capability_instance(
         descriptor=descriptor,
         name=name,
         readiness=readiness,
-        tenant_boundary=tenant_boundary,
+        tenant_scope=tenant_boundary,
         data_boundary=data_boundary,
+        resource_id=resource_id or instance_id,
+        connection_id=connection_id,
+        health=health,
+        discovered_version=discovered_version,
         configuration=configuration or {},
         status_evidence=status_evidence,
         unavailable_reason=unavailable_reason,
@@ -247,6 +378,7 @@ def capability_instance_fingerprint(instance: CapabilityInstance) -> str:
                     "output_schema": plain_json(operation.output_schema),
                     "operation_class": operation.operation_class.value,
                     "approval_policy": operation.approval_policy.value,
+                    "external_side_effect": operation.external_side_effect,
                     "side_effect_destinations": list(operation.side_effect_destinations),
                     "timeout_seconds": operation.timeout_seconds,
                     "max_retries": operation.max_retries,
@@ -258,8 +390,11 @@ def capability_instance_fingerprint(instance: CapabilityInstance) -> str:
             ],
             "metadata": plain_json(descriptor.metadata),
         },
-        "tenant_boundary": instance.tenant_boundary,
+        "tenant_scope": instance.tenant_scope,
         "data_boundary": instance.data_boundary,
+        "resource_id": instance.resource_id,
+        "connection_id": instance.connection_id,
+        "discovered_version": instance.discovered_version,
         "configuration": plain_json(instance.configuration),
     }
     encoded = json.dumps(
@@ -296,9 +431,8 @@ class CapabilityBinding:
             )
         ):
             raise ValueError("Capability binding identifiers and operation version are required")
-        if (
-            len(self.instance_fingerprint) != 64
-            or any(character not in "0123456789abcdef" for character in self.instance_fingerprint)
+        if len(self.instance_fingerprint) != 64 or any(
+            character not in "0123456789abcdef" for character in self.instance_fingerprint
         ):
             raise ValueError("Capability binding instance fingerprint must be lowercase SHA-256")
         _validate_json_value(self.configuration, path="binding.configuration")
@@ -334,7 +468,7 @@ class ProviderDescriptor:
     name: str
     description: str
     auth_modes: tuple[AuthMode, ...]
-    provenance: tuple[str, ...]
+    provenance: tuple[ProvenanceRecord, ...]
     capability_descriptors: tuple[CapabilityDescriptor, ...] = ()
 
     def __post_init__(self) -> None:
@@ -376,37 +510,89 @@ class RequestSigningCredential(Protocol):
 
 
 @dataclass(frozen=True, slots=True)
+class ApprovalDecision:
+    decision_id: str
+    approved: bool
+    tenant_id: str
+    principal_id: str
+    instance_id: str
+    descriptor_id: str
+    operation_id: str
+    operation_version: str
+    arguments_hash: str
+    destination_hash: str
+    expires_at: str
+    policy_release: str
+    binding_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if not all(
+            (
+                self.decision_id,
+                self.tenant_id,
+                self.principal_id,
+                self.instance_id,
+                self.descriptor_id,
+                self.operation_id,
+                self.operation_version,
+                self.policy_release,
+            )
+        ):
+            raise ValueError("Approval decision identity and policy bindings are required")
+        for field_name, value in (
+            ("arguments_hash", self.arguments_hash),
+            ("destination_hash", self.destination_hash),
+        ):
+            if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+                raise ValueError(f"Approval decision {field_name} must be lowercase SHA-256")
+        _validate_utc_timestamp(self.expires_at, path="approval.expires_at")
+
+
+@dataclass(frozen=True, slots=True)
 class InvocationContext:
     tenant_id: str
     principal_id: str
-    approved_instance_ids: frozenset[str]
     credential: object | None = field(repr=False)
     transport: httpx.Client
     correlation_id: str
     trace_id: str
     sleep: Callable[[float], None]
+    approval_decisions: tuple[ApprovalDecision, ...] = ()
+    policy_release: str = "agent-studio-v1"
 
     def __post_init__(self) -> None:
-        if not all((self.tenant_id, self.principal_id, self.correlation_id, self.trace_id)):
-            raise ValueError("Tenant, principal, correlation, and trace identifiers are required")
+        if not all(
+            (
+                self.tenant_id,
+                self.principal_id,
+                self.correlation_id,
+                self.trace_id,
+                self.policy_release,
+            )
+        ):
+            raise ValueError("Tenant, principal, correlation, trace, and policy release identifiers are required")
 
 
 @dataclass(frozen=True, slots=True)
 class InvocationRequest:
-    instance_id: str
+    target: CapabilityInstance | CapabilityBinding = field(repr=False)
     operation_id: str
     arguments: Mapping[str, Any] = field(repr=False)
     idempotency_key: str | None = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
-        if not self.instance_id or not self.operation_id:
+        if not isinstance(self.target, CapabilityInstance | CapabilityBinding) or not self.operation_id:
             raise ValueError("Capability instance and operation identifiers are required")
+        if isinstance(self.target, CapabilityBinding) and self.target.operation_id != self.operation_id:
+            raise ValueError("Invocation operation must match the capability binding")
         if self.idempotency_key is not None and (
             not 1 <= len(self.idempotency_key) <= 256
             or any(ord(character) < 0x21 or ord(character) > 0x7E for character in self.idempotency_key)
         ):
             raise ValueError("Idempotency keys must contain 1-256 visible ASCII characters")
+        _validate_json_value(self.arguments, path="invocation.arguments")
         object.__setattr__(self, "arguments", _freeze(self.arguments))
+
 
 @dataclass(frozen=True, slots=True)
 class InvocationResult:
@@ -420,6 +606,7 @@ class InvocationResult:
     def __post_init__(self) -> None:
         object.__setattr__(self, "output", _freeze(self.output))
         object.__setattr__(self, "audit_metadata", _freeze(self.audit_metadata))
+
 
 @dataclass(frozen=True, slots=True)
 class ValidationReport:
@@ -437,11 +624,19 @@ class Provider(Protocol):
     @property
     def descriptor(self) -> ProviderDescriptor: ...
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]: ...
+    def discover(self, context: InvocationContext) -> DiscoveryResult: ...
 
-    def validate(self, context: InvocationContext) -> ValidationReport: ...
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport: ...
 
-    def health(self, context: InvocationContext) -> HealthReport: ...
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport: ...
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult: ...
 
@@ -555,8 +750,7 @@ def validate_binding(
         (
             item
             for item in instance.descriptor.operations
-            if item.operation_id == binding.operation_id
-            and item.version == binding.operation_version
+            if item.operation_id == binding.operation_id and item.version == binding.operation_version
         ),
         None,
     )
@@ -567,8 +761,136 @@ def validate_binding(
     return operation
 
 
+def resolve_capability_target(
+    discovery: DiscoveryResult,
+    target: CapabilityInstance | CapabilityBinding,
+    *,
+    provider_id: str,
+) -> tuple[CapabilityInstance, CapabilityBinding | None]:
+    current = next(
+        (instance for instance in discovery.instances if instance.instance_id == target.instance_id),
+        None,
+    )
+    if current is None:
+        raise UnavailableError(
+            "Capability instance is not present in current provider discovery",
+            provider_id=provider_id,
+            instance_id=target.instance_id,
+        )
+    if isinstance(target, CapabilityBinding):
+        try:
+            validate_binding(current, target)
+        except ValueError as exc:
+            raise PolicyError(
+                str(exc),
+                provider_id=provider_id,
+                instance_id=current.instance_id,
+            ) from exc
+        return current, target
+    if capability_instance_fingerprint(current) != capability_instance_fingerprint(target):
+        raise PolicyError(
+            "Capability instance changed since it was selected",
+            provider_id=provider_id,
+            instance_id=current.instance_id,
+        )
+    return current, None
+
+
+def validation_for_target(
+    discovery: DiscoveryResult,
+    target: CapabilityInstance | CapabilityBinding,
+    *,
+    provider_id: str,
+) -> ValidationReport:
+    instance, _ = resolve_capability_target(discovery, target, provider_id=provider_id)
+    return ValidationReport(
+        instance.readiness,
+        () if instance.readiness is Readiness.READY else (instance.unavailable_reason or "Not ready",),
+    )
+
+
+def health_for_target(
+    discovery: DiscoveryResult,
+    target: CapabilityInstance | CapabilityBinding,
+    *,
+    provider_id: str,
+) -> HealthReport:
+    instance, _ = resolve_capability_target(discovery, target, provider_id=provider_id)
+    return HealthReport(instance.health or instance.readiness, instance.status_evidence)
+
+
+def approval_decision(
+    context: InvocationContext,
+    *,
+    target: CapabilityInstance | CapabilityBinding,
+    instance: CapabilityInstance,
+    operation: OperationDescriptor,
+    arguments: Mapping[str, Any],
+    decision_id: str,
+    expires_at: str,
+    approved: bool = True,
+) -> ApprovalDecision:
+    return ApprovalDecision(
+        decision_id=decision_id,
+        approved=approved,
+        tenant_id=context.tenant_id,
+        principal_id=context.principal_id,
+        instance_id=instance.instance_id,
+        descriptor_id=instance.descriptor.descriptor_id,
+        operation_id=operation.operation_id,
+        operation_version=operation.version,
+        arguments_hash=canonical_json_hash(arguments),
+        destination_hash=canonical_json_hash(operation.side_effect_destinations),
+        expires_at=expires_at,
+        policy_release=context.policy_release,
+        binding_id=target.binding_id if isinstance(target, CapabilityBinding) else None,
+    )
+
+
+def operation_allows_retry(
+    operation: OperationDescriptor,
+    *,
+    idempotency_key: str | None,
+    stream_started: bool = False,
+) -> bool:
+    if stream_started or operation.operation_class is OperationClass.WRITE_IRREVERSIBLE:
+        return False
+    if operation.operation_class in {
+        OperationClass.WRITE_REVERSIBLE,
+        OperationClass.PRIVILEGED,
+    }:
+        return operation.idempotency is not Idempotency.NONE and idempotency_key is not None
+    return operation.idempotency is not Idempotency.NONE
+
+
+def _approval_matches(
+    decision: ApprovalDecision,
+    *,
+    context: InvocationContext,
+    instance: CapabilityInstance,
+    operation: OperationDescriptor,
+    request: InvocationRequest,
+    binding: CapabilityBinding | None,
+) -> bool:
+    expires_at = datetime.fromisoformat(decision.expires_at.replace("Z", "+00:00"))
+    return (
+        decision.approved
+        and decision.tenant_id == context.tenant_id
+        and decision.principal_id == context.principal_id
+        and decision.instance_id == instance.instance_id
+        and decision.descriptor_id == instance.descriptor.descriptor_id
+        and decision.operation_id == operation.operation_id
+        and decision.operation_version == operation.version
+        and decision.arguments_hash == canonical_json_hash(request.arguments)
+        and decision.destination_hash == canonical_json_hash(operation.side_effect_destinations)
+        and decision.policy_release == context.policy_release
+        and decision.binding_id == (binding.binding_id if binding else None)
+        and expires_at > datetime.now(UTC)
+    )
+
+
 def find_operation(
-    instances: tuple[CapabilityInstance, ...],
+    discovery: DiscoveryResult,
     request: InvocationRequest,
     context: InvocationContext,
     *,
@@ -577,13 +899,11 @@ def find_operation(
 ) -> tuple[CapabilityInstance, OperationDescriptor]:
     if tenant_id is not None and context.tenant_id != tenant_id:
         raise PolicyError("Invocation tenant is outside the configured boundary", provider_id=provider_id)
-    instance = next((item for item in instances if item.instance_id == request.instance_id), None)
-    if instance is None:
-        raise UnavailableError(
-            "Capability instance is not present in current provider discovery",
-            provider_id=provider_id,
-            instance_id=request.instance_id,
-        )
+    instance, binding = resolve_capability_target(
+        discovery,
+        request.target,
+        provider_id=provider_id,
+    )
     if instance.readiness is not Readiness.READY:
         raise UnavailableError(
             instance.unavailable_reason or "Capability instance is not ready",
@@ -606,12 +926,27 @@ def find_operation(
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )
-    if (
-        operation.approval_policy is ApprovalPolicy.REQUIRED
-        and instance.instance_id not in context.approved_instance_ids
+    try:
+        validate_json(operation.input_schema, request.arguments)
+    except ValueError as exc:
+        raise ProviderValidationError(
+            str(exc),
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        ) from exc
+    if operation.approval_policy is ApprovalPolicy.REQUIRED and not any(
+        _approval_matches(
+            decision,
+            context=context,
+            instance=instance,
+            operation=operation,
+            request=request,
+            binding=binding,
+        )
+        for decision in context.approval_decisions
     ):
         raise PolicyError(
-            "Explicit capability instance approval is required",
+            "A current approval decision bound to this invocation is required",
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )
@@ -621,14 +956,6 @@ def find_operation(
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )
-    try:
-        validate_json(operation.input_schema, request.arguments)
-    except ValueError as exc:
-        raise ProviderValidationError(
-            str(exc),
-            provider_id=provider_id,
-            instance_id=instance.instance_id,
-        ) from exc
     return instance, operation
 
 

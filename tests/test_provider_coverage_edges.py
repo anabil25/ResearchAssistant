@@ -25,8 +25,10 @@ from research_assistant_connectors.providers import (
     Idempotency,
     InvocationContext,
     InvocationRequest,
+    Maturity,
     MCPConfig,
     MCPStreamableHTTPProvider,
+    MCPToolPolicy,
     MicrosoftGraphProvider,
     OpenAPIConfig,
     OpenAPIOperationPolicy,
@@ -38,6 +40,7 @@ from research_assistant_connectors.providers import (
     UpstreamError,
     WebhookConfig,
     WebhookProvider,
+    approval_decision,
     capability_instance_fingerprint,
 )
 from research_assistant_connectors.providers._http import require_endpoint
@@ -53,14 +56,36 @@ class Token:
 
 def ctx(handler: Any, *, credential: object | None = None) -> InvocationContext:
     return InvocationContext(
-        "tenant",
-        "principal",
-        frozenset(),
-        Token() if credential is None else credential,
-        httpx.Client(transport=httpx.MockTransport(handler)),
-        "correlation",
-        "trace",
-        lambda _: None,
+        tenant_id="tenant",
+        principal_id="principal",
+        credential=Token() if credential is None else credential,
+        transport=httpx.Client(transport=httpx.MockTransport(handler)),
+        correlation_id="correlation",
+        trace_id="trace",
+        sleep=lambda _: None,
+    )
+
+
+def approve(
+    context: InvocationContext,
+    target: Any,
+    operation_id: str,
+    arguments: dict[str, Any],
+) -> InvocationContext:
+    operation = next(item for item in target.descriptor.operations if item.operation_id == operation_id)
+    return replace(
+        context,
+        approval_decisions=(
+            approval_decision(
+                context,
+                target=target,
+                instance=target,
+                operation=operation,
+                arguments=arguments,
+                decision_id=f"approve:{target.instance_id}:{operation_id}",
+                expires_at="2999-01-01T00:00:00Z",
+            ),
+        ),
     )
 
 
@@ -126,7 +151,11 @@ def test_remaining_provider_validation_edges() -> None:
         ),
     )
     for provider in providers:
-        assert provider.validate(no_credential).readiness in {Readiness.MISCONFIGURED, Readiness.UNAUTHORIZED}
+        target = provider.discover(no_credential)[-1]
+        assert provider.validate(target, no_credential).readiness in {
+            Readiness.MISCONFIGURED,
+            Readiness.UNAUTHORIZED,
+        }
     missing_tenants = (
         FoundryProvider(FoundryConfig("https://foundry.test", None, models_path="/models")),
         AzureAISearchProvider(SearchConfig("https://search.test", None)),
@@ -150,7 +179,10 @@ def test_remaining_provider_validation_edges() -> None:
         ),
         WebhookProvider(WebhookConfig("https://hooks.test", None, "send")),
     )
-    assert all(provider.validate(context).readiness is Readiness.MISCONFIGURED for provider in missing_tenants)
+    assert all(
+        provider.validate(provider.discover(context)[-1], context).readiness is Readiness.MISCONFIGURED
+        for provider in missing_tenants
+    )
 
 
 def test_foundry_unavailable_response_and_no_response_success() -> None:
@@ -169,19 +201,14 @@ def test_foundry_unavailable_response_and_no_response_success() -> None:
             vector_stores_path="/vector-stores",
         )
     )
-    vector_context = ctx(
-        lambda _: httpx.Response(200, json={"data": [{"id": "vector-1"}]})
-    )
+    vector_context = ctx(lambda _: httpx.Response(200, json={"data": [{"id": "vector-1"}]}))
     vector_resource = next(
         capability
         for capability in vector_only.discover(vector_context)
         if capability.configuration.get("resource_id") == "vector-1"
     )
     assert vector_resource.descriptor.resource_kind == "vector_store"
-    assert (
-        vector_resource.descriptor.operations[0].operation_id
-        == "foundry.vector_stores.observe"
-    )
+    assert vector_resource.descriptor.operations[0].operation_id == "foundry.vector_stores.observe"
 
     knowledge_without_models = FoundryProvider(
         FoundryConfig(
@@ -198,10 +225,7 @@ def test_foundry_unavailable_response_and_no_response_success() -> None:
     )
     assert knowledge_resource.readiness is Readiness.DEGRADED
     assert knowledge_resource.attachable_operation_ids == ()
-    assert (
-        "enum"
-        not in knowledge_resource.descriptor.operations[0].input_schema["properties"]["model"]
-    )
+    assert "enum" not in knowledge_resource.descriptor.operations[0].input_schema["properties"]["model"]
     responses = next(
         capability
         for capability in knowledge_without_models.discover(vector_context)
@@ -224,15 +248,20 @@ def test_function_without_idempotency_key_and_github_issue_list() -> None:
             "tenant",
             AuthConfig(AuthMode.NONE),
             "https://functions.test/functions",
-            function_policies=(FunctionPolicy("Read", OperationClass.READ),),
+            function_policies=(
+                FunctionPolicy(
+                    "Read",
+                    OperationClass.READ,
+                    maturity=Maturity.GA,
+                ),
+            ),
         )
     )
     context = ctx(function_handler)
     capability = function.discover(context)[0]
-    approved = replace(context, approved_instance_ids=frozenset({capability.instance_id}))
     assert function.invoke(
-        InvocationRequest(capability.instance_id, "functions.http.invoke", {}),
-        approved,
+        InvocationRequest(capability, "functions.http.invoke", {}),
+        approve(context, capability, "functions.http.invoke", {}),
     ).output["ok"]
 
     def github_handler(request: httpx.Request) -> httpx.Response:
@@ -246,7 +275,7 @@ def test_function_without_idempotency_key_and_github_issue_list() -> None:
     read = github.discover(github_context)[0]
     assert (
         github.invoke(
-            InvocationRequest(read.instance_id, "github.issues.list", {"state": "all"}),
+            InvocationRequest(read, "github.issues.list", {"state": "all"}),
             github_context,
         ).status_code
         == 200
@@ -264,28 +293,19 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
         assert "idempotency-key" not in request.headers
         return httpx.Response(503)
 
-    provider = GitHubProvider(
-        GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.NONE))
-    )
+    provider = GitHubProvider(GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.NONE)))
     context = ctx(handler)
-    write = next(
-        capability
-        for capability in provider.discover(context)
-        if capability.name.endswith("issues-write")
-    )
-    approved = replace(
-        context,
-        approved_instance_ids=frozenset({write.instance_id}),
-    )
+    write = next(capability for capability in provider.discover(context) if capability.name.endswith("issues-write"))
+    arguments = {"title": "No duplicate"}
     with pytest.raises(UpstreamError):
         provider.invoke(
             InvocationRequest(
-                write.instance_id,
+                write,
                 "github.issues.create",
-                {"title": "No duplicate"},
+                arguments,
                 "unsupported-key",
             ),
-            approved,
+            approve(context, write, "github.issues.create", arguments),
         )
     assert calls == 1
 
@@ -304,7 +324,7 @@ def test_blob_list_without_prefix() -> None:
     capability = provider.discover(context)[0]
     assert (
         provider.invoke(
-            InvocationRequest(capability.instance_id, "blob.blobs.list", {}),
+            InvocationRequest(capability, "blob.blobs.list", {}),
             context,
         ).output["blobs"]
         == ()
@@ -315,53 +335,40 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
     containers = b"<R><Containers><Container><Name>c</Name></Container></Containers></R>"
     blob_context = ctx(lambda _: httpx.Response(200, content=containers))
     blob_instances = (
-        AzureBlobProvider(BlobConfig("https://one.blob.test", "tenant")).discover(
-            blob_context
-        )[0],
-        AzureBlobProvider(BlobConfig("https://two.blob.test", "tenant")).discover(
-            blob_context
-        )[0],
+        AzureBlobProvider(BlobConfig("https://one.blob.test", "tenant")).discover(blob_context)[0],
+        AzureBlobProvider(BlobConfig("https://two.blob.test", "tenant")).discover(blob_context)[0],
     )
 
-    github_context = ctx(
-        lambda _: httpx.Response(200, json=[{"full_name": "owner/repo"}])
-    )
+    github_context = ctx(lambda _: httpx.Response(200, json=[{"full_name": "owner/repo"}]))
     github_instances = tuple(
         next(
             instance
-            for instance in GitHubProvider(
-                GitHubConfig(endpoint, "tenant", AuthConfig(AuthMode.NONE))
-            ).discover(github_context)
+            for instance in GitHubProvider(GitHubConfig(endpoint, "tenant", AuthConfig(AuthMode.NONE))).discover(
+                github_context
+            )
             if instance.name.endswith("issues-write")
         )
         for endpoint in ("https://one.github.test", "https://two.github.test")
     )
 
     def graph_handler(request: httpx.Request) -> httpx.Response:
-        payload = (
-            {"value": [{"id": "site"}]}
-            if request.url.path.endswith("/sites")
-            else {"value": [{"id": "drive"}]}
-        )
+        payload = {"value": [{"id": "site"}]} if request.url.path.endswith("/sites") else {"value": [{"id": "drive"}]}
         return httpx.Response(200, json=payload)
 
     graph_context = ctx(graph_handler)
     graph_instances = tuple(
         next(
             instance
-            for instance in MicrosoftGraphProvider(
-                GraphConfig(endpoint, "tenant", discover_items=False)
-            ).discover(graph_context)
-            if instance.descriptor.operations[0].operation_id
-            == "graph.drive.content.put"
+            for instance in MicrosoftGraphProvider(GraphConfig(endpoint, "tenant", discover_items=False)).discover(
+                graph_context
+            )
+            if instance.descriptor.operations[0].operation_id == "graph.drive.content.put"
         )
         for endpoint in ("https://one.graph.test/v1.0", "https://two.graph.test/v1.0")
     )
 
     for instances in (blob_instances, github_instances, graph_instances):
-        assert capability_instance_fingerprint(
-            instances[0]
-        ) != capability_instance_fingerprint(instances[1])
+        assert capability_instance_fingerprint(instances[0]) != capability_instance_fingerprint(instances[1])
 
 
 def _mcp_response(request: httpx.Request, *, version: str = "2025-06-18", session: str | None = None) -> httpx.Response:
@@ -437,17 +444,30 @@ def test_mcp_tools_shape_long_name_and_tool_error() -> None:
             json={"jsonrpc": "2.0", "id": body["id"], "result": {"isError": True}},
         )
 
-    provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    provider = MCPStreamableHTTPProvider(
+        MCPConfig(
+            "https://mcp.test",
+            "tenant",
+            tool_policies=(
+                MCPToolPolicy(
+                    "tool",
+                    OperationClass.PRIVILEGED,
+                    ApprovalPolicy.REQUIRED,
+                    Idempotency.NONE,
+                    Maturity.GA,
+                ),
+            ),
+        )
+    )
     context = ctx(handler)
     with pytest.raises(UpstreamError, match="tools array"):
         provider.discover(context)
     mode = "tools"
     capability = provider.discover(context)[0]
-    approved = replace(context, approved_instance_ids=frozenset({capability.instance_id}))
     with pytest.raises(UpstreamError, match="execution error"):
         provider.invoke(
-            InvocationRequest(capability.instance_id, "mcp.tools.call", {}, "key"),
-            approved,
+            InvocationRequest(capability, "mcp.tools.call", {}, "key"),
+            approve(context, capability, "mcp.tools.call", {}),
         )
 
 
@@ -511,16 +531,16 @@ def test_openapi_and_unsigned_webhook_idempotency_header() -> None:
                     OperationClass.PRIVILEGED,
                     ApprovalPolicy.REQUIRED,
                     Idempotency.REQUIRED,
+                    Maturity.GA,
                 ),
             ),
         )
     )
     context = ctx(api_handler)
     capability = provider.discover(context)[0]
-    approved = replace(context, approved_instance_ids=frozenset({capability.instance_id}))
     assert provider.invoke(
-        InvocationRequest(capability.instance_id, "publish", {}, "key"),
-        approved,
+        InvocationRequest(capability, "publish", {}, "key"),
+        approve(context, capability, "publish", {}),
     ).output["ok"]
 
     def webhook_handler(request: httpx.Request) -> httpx.Response:
@@ -531,14 +551,10 @@ def test_openapi_and_unsigned_webhook_idempotency_header() -> None:
     webhook = WebhookProvider(WebhookConfig("https://hooks.test", "tenant", "send", health_method=None))
     webhook_context = ctx(webhook_handler)
     webhook_capability = webhook.discover(webhook_context)[0]
-    webhook_approved = replace(
-        webhook_context,
-        approved_instance_ids=frozenset({webhook_capability.instance_id}),
-    )
     assert (
         webhook.invoke(
-            InvocationRequest(webhook_capability.instance_id, "send", {}, "key"),
-            webhook_approved,
+            InvocationRequest(webhook_capability, "send", {}, "key"),
+            approve(webhook_context, webhook_capability, "send", {}),
         ).status_code
         == 204
     )

@@ -9,7 +9,9 @@ from .config import SearchConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -24,13 +26,22 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    validation_for_target,
 )
 
 PROVIDER_ID = "azure_ai_search"
 DOCS = (
     "https://learn.microsoft.com/rest/api/searchservice/indexes/list",
     "https://learn.microsoft.com/rest/api/searchservice/documents/search-post",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="Azure AI Search REST 2024-07-01",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 SEARCH_INPUT = {
     "type": "object",
@@ -79,7 +90,7 @@ def _search_capability(
                 docs=DOCS,
             ),
         ),
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
         configuration={"index_name": index_name} if index_name else {},
@@ -95,14 +106,14 @@ class AzureAISearchProvider:
             "Azure AI Search",
             "Discovers indexes and executes bounded document search requests.",
             (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
-            DOCS,
+            PROVENANCE,
         )
 
     @property
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("Search endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -118,8 +129,8 @@ class AzureAISearchProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return (
                 _search_capability(
@@ -155,14 +166,22 @@ class AzureAISearchProvider:
             if (name := str(item.get("name") or ""))
         )
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        return HealthReport(
-            Readiness.READY
-            if capabilities and all(item.readiness is Readiness.READY for item in capabilities)
-            else Readiness.DEGRADED,
-            (f"{len(capabilities)} index capability descriptor(s) discovered.",),
-        )
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         instance, operation = find_operation(

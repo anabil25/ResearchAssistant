@@ -12,7 +12,9 @@ from .config import GitHubConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -28,13 +30,22 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    validation_for_target,
 )
 
 PROVIDER_ID = "github_rest"
 DOCS = (
     "https://docs.github.com/apps/creating-github-apps/authenticating-with-a-github-app/generating-an-installation-access-token-for-a-github-app",
     "https://docs.github.com/rest/using-the-rest-api/best-practices-for-using-the-rest-api",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="GitHub REST 2022-11-28",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 
 
@@ -53,9 +64,7 @@ def _operation(
         schema,
         {},
         operation_class,
-        ApprovalPolicy.NEVER
-        if operation_class is OperationClass.READ
-        else ApprovalPolicy.REQUIRED,
+        ApprovalPolicy.NEVER if operation_class is OperationClass.READ else ApprovalPolicy.REQUIRED,
         idempotency=idempotency,
         least_privilege_scopes=permissions,
         least_privilege_roles=permissions,
@@ -117,7 +126,7 @@ def _repo_capability(
 ) -> CapabilityInstance:
     destination = f"{endpoint.rstrip('/')}/repos/{full_name}/issues"
     bound_operations = tuple(
-        replace(operation, side_effect_destinations=(destination,))
+        replace(operation, external_side_effect=True, side_effect_destinations=(destination,))
         if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
         else operation
         for operation in operations
@@ -133,7 +142,7 @@ def _repo_capability(
         tenant_boundary="configured organization/account and application installation",
         data_boundary=f"repository {full_name}",
         operations=bound_operations,
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=("Repository returned by an authenticated GitHub REST discovery request.",),
         configuration={"full_name": full_name},
     )
@@ -148,14 +157,14 @@ class GitHubProvider:
             "GitHub REST",
             "Discovers repositories and exposes selected GA repository and issue operations.",
             (AuthMode.OAUTH, AuthMode.GITHUB_APP),
-            DOCS,
+            PROVENANCE,
         )
 
     @property
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("GitHub endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -181,8 +190,8 @@ class GitHubProvider:
         )
         return headers
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = READ_OPERATIONS[0]
             return (
@@ -197,7 +206,7 @@ class GitHubProvider:
                     tenant_boundary="configured account",
                     data_boundary="configured GitHub endpoint",
                     operations=(operation,),
-                    provenance=DOCS,
+                    provenance=PROVENANCE,
                     status_evidence=("No repository discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
@@ -244,13 +253,22 @@ class GitHubProvider:
             )
         return tuple(capabilities)
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        ready = all(item.readiness is Readiness.READY for item in capabilities)
-        return HealthReport(
-            Readiness.READY if ready else capabilities[0].readiness,
-            (f"{len(capabilities) // 2} repository resource(s) discovered.",),
-        )
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         instance, operation = find_operation(

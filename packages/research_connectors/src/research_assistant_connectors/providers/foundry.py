@@ -10,7 +10,9 @@ from .config import FoundryConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -26,7 +28,12 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    operation_allows_retry,
+    validation_for_target,
 )
 
 PROVIDER_ID = "microsoft_foundry"
@@ -35,6 +42,11 @@ DOCS = (
     "https://learn.microsoft.com/azure/foundry/agents/concepts/tool-catalog",
     "https://learn.microsoft.com/azure/foundry/agents/how-to/tools/file-search",
     "https://learn.microsoft.com/azure/foundry/how-to/connections-add",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="Foundry project REST 2025-05-01",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 OBJECT_SCHEMA: dict[str, Any] = {"type": "object"}
 RESPONSES_INPUT: dict[str, Any] = {
@@ -77,15 +89,12 @@ def _operation(
         output_schema=OBJECT_SCHEMA,
         operation_class=operation_class,
         approval_policy=approval_policy,
+        external_side_effect=bool(side_effect_destinations),
         side_effect_destinations=side_effect_destinations,
-        idempotency=Idempotency.OPTIONAL
-        if operation_class is OperationClass.PRIVILEGED
-        else Idempotency.INHERENT,
+        idempotency=Idempotency.OPTIONAL if operation_class is OperationClass.PRIVILEGED else Idempotency.INHERENT,
         least_privilege_scopes=("https://ai.azure.com/.default",),
         least_privilege_roles=(
-            ("Foundry Agent Consumer",)
-            if operation_class is OperationClass.PRIVILEGED
-            else ("Reader",)
+            ("Foundry Agent Consumer",) if operation_class is OperationClass.PRIVILEGED else ("Reader",)
         ),
         docs=DOCS,
     )
@@ -115,7 +124,7 @@ def _capability(
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary=data_boundary,
         operations=(operation,),
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
         configuration=metadata or {},
@@ -146,7 +155,7 @@ class FoundryProvider:
             name="Microsoft Foundry project",
             description="Project-scoped Foundry deployments, agents, connections, and Responses operations.",
             auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
-            provenance=DOCS,
+            provenance=PROVENANCE,
             capability_descriptors=(self._memory.descriptor,),
         )
 
@@ -154,7 +163,7 @@ class FoundryProvider:
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("Foundry endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -218,8 +227,8 @@ class FoundryProvider:
             )
         return tuple(capabilities)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             return self._unavailable(validation.readiness, "; ".join(validation.reasons))
         endpoint = require_endpoint(self._config.endpoint)
@@ -276,9 +285,7 @@ class FoundryProvider:
             successful += 1
             if kind == "deployments":
                 deployment_ids.update(
-                    resource_id
-                    for item in items
-                    if (resource_id := str(item.get("id") or item.get("name") or ""))
+                    resource_id for item in items if (resource_id := str(item.get("id") or item.get("name") or ""))
                 )
             capabilities.append(
                 _capability(
@@ -331,11 +338,7 @@ class FoundryProvider:
                         )
                     )
         if self._config.responses_path:
-            ready = (
-                Readiness.READY
-                if successful and deployment_ids
-                else Readiness.DEGRADED
-            )
+            ready = Readiness.READY if successful and deployment_ids else Readiness.DEGRADED
             responses_schema = dict(RESPONSES_INPUT)
             responses_schema["properties"] = dict(RESPONSES_INPUT["properties"])
             if deployment_ids:
@@ -366,11 +369,22 @@ class FoundryProvider:
             )
         return tuple(capabilities)
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        ready = sum(capability.readiness is Readiness.READY for capability in capabilities)
-        readiness = Readiness.READY if ready else self.validate(context).readiness
-        return HealthReport(readiness, (f"{ready} capability descriptor(s) are ready.",))
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         capabilities = self.discover(context)
@@ -387,9 +401,7 @@ class FoundryProvider:
             path = self._config.responses_path
             method = "POST"
             body = {
-                key: request.arguments[key]
-                for key in ("model", "input", "conversation")
-                if key in request.arguments
+                key: request.arguments[key] for key in ("model", "input", "conversation") if key in request.arguments
             }
         elif operation.operation_id == "foundry.file_search.query":
             path = self._config.responses_path
@@ -401,9 +413,7 @@ class FoundryProvider:
             if "max_num_results" in request.arguments:
                 tool["max_num_results"] = request.arguments["max_num_results"]
             body = {
-                key: request.arguments[key]
-                for key in ("model", "input", "conversation")
-                if key in request.arguments
+                key: request.arguments[key] for key in ("model", "input", "conversation") if key in request.arguments
             }
             body["tools"] = [tool]
         else:
@@ -424,7 +434,10 @@ class FoundryProvider:
             json_body=body,
             timeout=operation.timeout_seconds,
             max_retries=operation.max_retries,
-            idempotent=method == "GET" or request.idempotency_key is not None,
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
         )
         output = json_object(response, provider_id=PROVIDER_ID)
         return InvocationResult(

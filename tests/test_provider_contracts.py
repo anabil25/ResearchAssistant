@@ -17,6 +17,7 @@ from research_assistant_connectors.providers import (
     CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
+    DiscoveryResult,
     FoundryConfig,
     FunctionPolicy,
     FunctionsConfig,
@@ -34,6 +35,7 @@ from research_assistant_connectors.providers import (
     OperationClass,
     OperationDescriptor,
     PolicyError,
+    ProvenanceRecord,
     ProviderDescriptor,
     ProviderEnvironment,
     ProviderFactory,
@@ -48,7 +50,9 @@ from research_assistant_connectors.providers import (
     UnavailableError,
     UpstreamError,
     WebhookConfig,
+    approval_decision,
     capability_instance_fingerprint,
+    operation_allows_retry,
 )
 from research_assistant_connectors.providers._http import (
     _retry_after,
@@ -63,7 +67,10 @@ from research_assistant_connectors.providers._http import (
 )
 from research_assistant_connectors.providers.contracts import (
     audit_metadata,
+    discovery_result,
     find_operation,
+    official_provenance,
+    resolve_capability_target,
     validate_binding,
     validate_json,
 )
@@ -101,19 +108,17 @@ def context(
     *,
     credential: object | None = None,
     tenant: str = "tenant",
-    approved: frozenset[str] = frozenset(),
     sleep: Any = None,
 ) -> InvocationContext:
     transport = httpx.MockTransport(handler or (lambda _: httpx.Response(200, json={})))
     return InvocationContext(
-        tenant,
-        "principal",
-        approved,
-        Credential() if credential is None else credential,
-        httpx.Client(transport=transport),
-        "correlation",
-        "trace",
-        sleep or (lambda _: None),
+        tenant_id=tenant,
+        principal_id="principal",
+        credential=Credential() if credential is None else credential,
+        transport=httpx.Client(transport=transport),
+        correlation_id="correlation",
+        trace_id="trace",
+        sleep=sleep or (lambda _: None),
     )
 
 
@@ -153,7 +158,11 @@ def capability(
         "Capability type",
         (AuthMode.NONE,),
         (op or operation(),),
-        ("https://example.test/docs",),
+        official_provenance(
+            ("https://example.test/docs",),
+            source_version="test-v1",
+            last_verified_at="2026-07-23T08:37:02Z",
+        ),
         metadata={"nested": {"items": [1, 2]}},
     )
     return CapabilityInstance(
@@ -162,10 +171,10 @@ def capability(
         descriptor,
         "Capability",
         readiness,
-        "tenant",
-        "resource",
-        {"nested": {"items": [1, 2]}},
-        ("tested",),
+        tenant_scope="tenant",
+        data_boundary="resource",
+        configuration={"nested": {"items": [1, 2]}},
+        status_evidence=("tested",),
         unavailable_reason=None if readiness is Readiness.READY else "not ready",
     )
 
@@ -214,7 +223,84 @@ def test_descriptor_contracts_are_deeply_immutable_and_validate_invariants() -> 
         replace(instance, configuration={"bad": object()})
     with pytest.raises(ValueError, match="Provider identity"):
         ProviderDescriptor("", "family", "", "description", (), ())
-    assert ProviderDescriptor("provider", "family", "Name", "description", (), ("https://docs",), (descriptor,))
+    provenance = official_provenance(
+        ("https://example.test/docs",),
+        source_version="test-v1",
+        last_verified_at="2026-07-23T08:37:02Z",
+    )
+    assert ProviderDescriptor("provider", "family", "Name", "description", (), provenance, (descriptor,))
+
+
+def test_discovery_provenance_and_instance_state_invariants() -> None:
+    instance = capability()
+    assert instance.health is Readiness.READY
+    assert len(instance.configuration_fingerprint) == 64
+    assert instance.discovered_version == "1.0.0"
+    assert capability(op=operation(maturity=Maturity.UNKNOWN)).attachable_operation_ids == ()
+
+    result = discovery_result(
+        (instance,),
+        warnings=("One malformed upstream resource was ignored.",),
+        refreshed_at="2026-07-23T08:37:02Z",
+    )
+    assert result.descriptors == (instance.descriptor,)
+    assert result.instances[0] is instance
+    assert result.warnings
+    assert len(result) == 1
+
+    with pytest.raises(ValueError, match="configuration fingerprint"):
+        replace(
+            instance,
+            configuration={"changed": True},
+            configuration_fingerprint=instance.configuration_fingerprint,
+        )
+    multi_version = replace(
+        instance,
+        descriptor=replace(
+            instance.descriptor,
+            operations=(
+                instance.descriptor.operations[0],
+                replace(instance.descriptor.operations[0], operation_id="other", version="2.0.0"),
+            ),
+        ),
+        discovered_version=None,
+    )
+    assert multi_version.discovered_version == "multiple"
+
+    with pytest.raises(ValueError, match="official HTTPS"):
+        ProvenanceRecord("http://example.test", "v1", "2026-07-23T08:37:02Z")
+    with pytest.raises(ValueError, match="ISO 8601"):
+        ProvenanceRecord("https://example.test", "v1", "not-a-time")
+    with pytest.raises(ValueError, match="UTC"):
+        ProvenanceRecord("https://example.test", "v1", "2026-07-23T08:37:02")
+    with pytest.raises(ValueError, match="descriptor identities"):
+        DiscoveryResult(
+            (instance.descriptor, instance.descriptor),
+            (instance,),
+            (),
+            "2026-07-23T08:37:02Z",
+        )
+    with pytest.raises(ValueError, match="instance identities"):
+        DiscoveryResult(
+            (instance.descriptor,),
+            (instance, instance),
+            (),
+            "2026-07-23T08:37:02Z",
+        )
+    with pytest.raises(ValueError, match="reference a returned descriptor"):
+        DiscoveryResult(
+            (replace(instance.descriptor, descriptor_id="other"),),
+            (instance,),
+            (),
+            "2026-07-23T08:37:02Z",
+        )
+    with pytest.raises(ValueError, match="warnings"):
+        DiscoveryResult(
+            (instance.descriptor,),
+            (instance,),
+            ("",),
+            "2026-07-23T08:37:02Z",
+        )
 
 
 def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
@@ -289,14 +375,14 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
 
 
 def test_invocation_contracts_and_json_schema_validation() -> None:
-    request = InvocationRequest("capability", "operation", {"value": "ok"})
+    request = InvocationRequest(capability(), "operation", {"value": "ok"})
     assert request.arguments["value"] == "ok"
     with pytest.raises(TypeError):
         request.arguments["value"] = "changed"  # type: ignore[index]
     with pytest.raises(ValueError, match="instance and operation"):
-        InvocationRequest("", "operation", {})
+        InvocationRequest("", "operation", {})  # type: ignore[arg-type]
     with pytest.raises(ValueError, match="Idempotency keys"):
-        InvocationRequest("capability", "operation", {}, "bad key")
+        InvocationRequest(capability(), "operation", {}, "bad key")
     with pytest.raises(ValueError, match="Tenant"):
         replace(context(), tenant_id="")
     assert "ok" not in repr(request)
@@ -337,54 +423,107 @@ def test_invocation_contracts_and_json_schema_validation() -> None:
 
 def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation() -> None:
     ctx = context()
-    request = InvocationRequest("capability", "operation", {"value": "ok"})
-    instance, op = find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="tenant")
+    ready = capability()
+    request = InvocationRequest(ready, "operation", {"value": "ok"})
+    instance, op = find_operation(
+        discovery_result((ready,)),
+        request,
+        ctx,
+        provider_id="provider",
+        tenant_id="tenant",
+    )
     assert instance.instance_id == "capability"
     assert op.operation_id == "operation"
     with pytest.raises(PolicyError, match="tenant"):
-        find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="other")
+        find_operation(
+            discovery_result((ready,)),
+            request,
+            ctx,
+            provider_id="provider",
+            tenant_id="other",
+        )
     with pytest.raises(UnavailableError, match="not present"):
         find_operation(
-            (capability(),), replace(request, instance_id="missing"), ctx, provider_id="provider", tenant_id=None
+            discovery_result((ready,)),
+            replace(request, target=replace(ready, instance_id="missing")),
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
         )
+    degraded = capability(readiness=Readiness.DEGRADED)
     with pytest.raises(UnavailableError, match="not ready"):
         find_operation(
-            (capability(readiness=Readiness.DEGRADED),),
-            request,
+            discovery_result((degraded,)),
+            replace(request, target=degraded),
             ctx,
             provider_id="provider",
             tenant_id=None,
         )
     with pytest.raises(ProviderValidationError, match="not declared"):
         find_operation(
-            (capability(),), replace(request, operation_id="missing"), ctx, provider_id="provider", tenant_id=None
+            discovery_result((ready,)),
+            replace(request, operation_id="missing"),
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
         )
+    preview = capability(op=operation(maturity=Maturity.PREVIEW))
     with pytest.raises(UnavailableError, match="Only GA"):
         find_operation(
-            (capability(op=operation(maturity=Maturity.PREVIEW)),),
-            request,
+            discovery_result((preview,)),
+            replace(request, target=preview),
             ctx,
             provider_id="provider",
             tenant_id=None,
         )
     approval_cap = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
+    approval_request = replace(request, target=approval_cap)
     with pytest.raises(PolicyError, match="approval"):
-        find_operation((approval_cap,), request, ctx, provider_id="provider", tenant_id=None)
+        find_operation(
+            discovery_result((approval_cap,)),
+            approval_request,
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
+        )
     required = capability(op=operation(idempotency=Idempotency.REQUIRED))
+    required_request = replace(request, target=required)
     with pytest.raises(PolicyError, match="idempotency"):
-        find_operation((required,), request, ctx, provider_id="provider", tenant_id=None)
+        find_operation(
+            discovery_result((required,)),
+            required_request,
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
+        )
     with pytest.raises(ProviderValidationError, match="required"):
         find_operation(
-            (capability(),),
+            discovery_result((ready,)),
             replace(request, arguments={}),
             ctx,
             provider_id="provider",
             tenant_id=None,
         )
-    approved = replace(ctx, approved_instance_ids=frozenset({"capability"}))
     find_operation(
-        (required,),
-        replace(request, idempotency_key="key"),
+        discovery_result((required,)),
+        replace(required_request, idempotency_key="key"),
+        ctx,
+        provider_id="provider",
+        tenant_id=None,
+    )
+    decision = approval_decision(
+        ctx,
+        target=approval_cap,
+        instance=approval_cap,
+        operation=approval_cap.descriptor.operations[0],
+        arguments=approval_request.arguments,
+        decision_id="decision",
+        expires_at="2999-01-01T00:00:00Z",
+    )
+    approved = replace(ctx, approval_decisions=(decision,))
+    find_operation(
+        discovery_result((approval_cap,)),
+        approval_request,
         approved,
         provider_id="provider",
         tenant_id=None,
@@ -404,6 +543,103 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
     assert audit["attempts"] == 2
     assert audit["status_code"] == 200
     assert audit["latency_ms"] == 1.5
+
+
+def test_approval_decisions_bind_every_authorization_dimension() -> None:
+    ctx = context()
+    instance = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
+    operation_descriptor = instance.descriptor.operations[0]
+    binding = CapabilityBinding(
+        "binding",
+        "agent",
+        instance.instance_id,
+        instance.descriptor.descriptor_id,
+        operation_descriptor.operation_id,
+        operation_descriptor.version,
+        capability_instance_fingerprint(instance),
+    )
+    request = InvocationRequest(binding, operation_descriptor.operation_id, {"value": "ok"})
+    decision = approval_decision(
+        ctx,
+        target=binding,
+        instance=instance,
+        operation=operation_descriptor,
+        arguments=request.arguments,
+        decision_id="decision",
+        expires_at="2999-01-01T00:00:00Z",
+    )
+    approved = replace(ctx, approval_decisions=(decision,))
+    found, found_operation = find_operation(
+        discovery_result((instance,)),
+        request,
+        approved,
+        provider_id="provider",
+        tenant_id="tenant",
+    )
+    assert found is instance
+    assert found_operation is operation_descriptor
+
+    for tampered in (
+        replace(decision, approved=False),
+        replace(decision, tenant_id="other"),
+        replace(decision, principal_id="other"),
+        replace(decision, instance_id="other"),
+        replace(decision, descriptor_id="other"),
+        replace(decision, operation_id="other"),
+        replace(decision, operation_version="2.0.0"),
+        replace(decision, arguments_hash="0" * 64),
+        replace(decision, destination_hash="0" * 64),
+        replace(decision, policy_release="other"),
+        replace(decision, binding_id="other"),
+        replace(decision, expires_at="2000-01-01T00:00:00Z"),
+    ):
+        with pytest.raises(PolicyError, match="approval decision"):
+            find_operation(
+                discovery_result((instance,)),
+                request,
+                replace(ctx, approval_decisions=(tampered,)),
+                provider_id="provider",
+                tenant_id="tenant",
+            )
+
+    with pytest.raises(ValueError, match="identity"):
+        replace(decision, decision_id="")
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        replace(decision, arguments_hash="bad")
+    with pytest.raises(ValueError, match="match the capability binding"):
+        replace(request, operation_id="other")
+    stale = replace(instance, configuration={"changed": True}, configuration_fingerprint="")
+    with pytest.raises(PolicyError, match="changed"):
+        resolve_capability_target(
+            discovery_result((stale,)),
+            instance,
+            provider_id="provider",
+        )
+    with pytest.raises(PolicyError, match="changed instance configuration"):
+        resolve_capability_target(
+            discovery_result((stale,)),
+            binding,
+            provider_id="provider",
+        )
+
+
+def test_retry_policy_never_replays_streams_or_irreversible_writes() -> None:
+    read = operation()
+    reversible = replace(
+        read,
+        operation_class=OperationClass.WRITE_REVERSIBLE,
+        idempotency=Idempotency.REQUIRED,
+    )
+    irreversible = replace(
+        read,
+        operation_class=OperationClass.WRITE_IRREVERSIBLE,
+        idempotency=Idempotency.INHERENT,
+    )
+    assert operation_allows_retry(read, idempotency_key=None)
+    assert not operation_allows_retry(read, idempotency_key=None, stream_started=True)
+    assert not operation_allows_retry(reversible, idempotency_key=None)
+    assert operation_allows_retry(reversible, idempotency_key="key")
+    assert not operation_allows_retry(irreversible, idempotency_key="key")
 
 
 def test_url_auth_and_collection_helpers() -> None:
@@ -489,9 +725,7 @@ def test_http_helper_retries_timeouts_status_mapping_and_safe_json() -> None:
         nonlocal capped_calls
         capped_calls += 1
         return (
-            httpx.Response(503, headers={"Retry-After": "999"})
-            if capped_calls == 1
-            else httpx.Response(200, json={})
+            httpx.Response(503, headers={"Retry-After": "999"}) if capped_calls == 1 else httpx.Response(200, json={})
         )
 
     send(
@@ -612,7 +846,4 @@ def test_factory_and_registry_cover_every_configuration_type() -> None:
     discovered = registry.discover_all(context())
     assert set(discovered) == set(registry.providers)
     assert FunctionPolicy("f").operation_class is OperationClass.PRIVILEGED
-    assert (
-        OpenAPIOperationPolicy("op", OperationClass.READ, ApprovalPolicy.NEVER).operation_id
-        == "op"
-    )
+    assert OpenAPIOperationPolicy("op", OperationClass.READ, ApprovalPolicy.NEVER).operation_id == "op"

@@ -13,7 +13,9 @@ from .config import GraphConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
+    CapabilityBinding,
     CapabilityInstance,
+    DiscoveryResult,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -29,13 +31,23 @@ from .contracts import (
     ValidationReport,
     audit_metadata,
     capability_instance,
+    discovery_result,
     find_operation,
+    health_for_target,
+    official_provenance,
+    operation_allows_retry,
+    validation_for_target,
 )
 
 PROVIDER_ID = "microsoft_graph"
 DOCS = (
     "https://learn.microsoft.com/graph/api/driveitem-list-children?view=graph-rest-1.0",
     "https://learn.microsoft.com/graph/permissions-selected-overview",
+)
+PROVENANCE = official_provenance(
+    DOCS,
+    source_version="Microsoft Graph v1.0",
+    last_verified_at="2026-07-23T08:37:02Z",
 )
 
 SITE_GET = OperationDescriptor(
@@ -120,9 +132,8 @@ def _capability(
     bound_operations = tuple(
         replace(
             operation,
-            side_effect_destinations=(
-                f"{endpoint.rstrip('/')}/drives/{quote(str(drive_id), safe='')}/root",
-            ),
+            external_side_effect=True,
+            side_effect_destinations=(f"{endpoint.rstrip('/')}/drives/{quote(str(drive_id), safe='')}/root",),
         )
         if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
         else operation
@@ -139,7 +150,7 @@ def _capability(
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="discovered Graph site/drive/item",
         operations=bound_operations,
-        provenance=DOCS,
+        provenance=PROVENANCE,
         status_evidence=("Resource returned by a successful Microsoft Graph v1.0 request.",),
         configuration=metadata,
     )
@@ -159,7 +170,11 @@ class MicrosoftGraphProvider:
             tenant_boundary="configured Microsoft Entra tenant",
             data_boundary="preview service",
             operations=(WORK_IQ,),
-            provenance=WORK_IQ.docs,
+            provenance=official_provenance(
+                WORK_IQ.docs,
+                source_version="Work IQ preview",
+                last_verified_at="2026-07-23T08:37:02Z",
+            ),
             status_evidence=("Service status: preview; provider policy blocks attachment.",),
             unavailable_reason="Work IQ is preview and is not attachable",
         )
@@ -169,7 +184,7 @@ class MicrosoftGraphProvider:
             "Microsoft Graph",
             "Discovers SharePoint sites, drives, and items through Microsoft Graph v1.0.",
             (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
-            DOCS,
+            PROVENANCE,
             (self._work_iq.descriptor,),
         )
 
@@ -177,7 +192,7 @@ class MicrosoftGraphProvider:
     def descriptor(self) -> ProviderDescriptor:
         return self._descriptor
 
-    def validate(self, context: InvocationContext) -> ValidationReport:
+    def _validate_configuration(self, context: InvocationContext) -> ValidationReport:
         if not self._config.endpoint:
             return ValidationReport(Readiness.MISCONFIGURED, ("Microsoft Graph endpoint is not configured.",))
         if not self._config.tenant_id:
@@ -205,8 +220,8 @@ class MicrosoftGraphProvider:
         )
         return json_object(response, provider_id=PROVIDER_ID)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
-        validation = self.validate(context)
+    def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
+        validation = self._validate_configuration(context)
         if validation.readiness is not Readiness.READY:
             operation = SITE_GET
             return (
@@ -222,7 +237,7 @@ class MicrosoftGraphProvider:
                     tenant_boundary="configured Microsoft Entra tenant",
                     data_boundary="Microsoft Graph v1.0",
                     operations=(operation,),
-                    provenance=DOCS,
+                    provenance=PROVENANCE,
                     status_evidence=("No Microsoft Graph discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
@@ -286,11 +301,22 @@ class MicrosoftGraphProvider:
                         )
         return tuple(capabilities)
 
-    def health(self, context: InvocationContext) -> HealthReport:
-        capabilities = self.discover(context)
-        ready = sum(item.readiness is Readiness.READY for item in capabilities)
-        readiness = Readiness.READY if ready else self.validate(context).readiness
-        return HealthReport(readiness, (f"{ready} GA Graph capability descriptor(s) are ready.",))
+    def discover(self, context: InvocationContext) -> DiscoveryResult:
+        return discovery_result(self._discover_instances(context))
+
+    def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport:
+        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+
+    def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport:
+        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
 
     @staticmethod
     def _safe_drive_path(path: str) -> str:
@@ -335,7 +361,10 @@ class MicrosoftGraphProvider:
             content=content,
             timeout=operation.timeout_seconds,
             max_retries=operation.max_retries,
-            idempotent=True,
+            idempotent=operation_allows_retry(
+                operation,
+                idempotency_key=request.idempotency_key,
+            ),
             consent_on_forbidden=True,
         )
         return InvocationResult(

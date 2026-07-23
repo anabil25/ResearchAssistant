@@ -17,6 +17,7 @@ from research_assistant_connectors.providers import (
     Idempotency,
     InvocationContext,
     InvocationRequest,
+    Maturity,
     MCPConfig,
     MCPStreamableHTTPProvider,
     MCPToolPolicy,
@@ -26,6 +27,7 @@ from research_assistant_connectors.providers import (
     OperationClass,
     WebhookConfig,
     WebhookProvider,
+    approval_decision,
 )
 
 
@@ -153,14 +155,13 @@ def local_protocol_server() -> Any:
 
 def invocation_context(client: httpx.Client) -> InvocationContext:
     return InvocationContext(
-        "tenant",
-        "principal",
-        frozenset(),
-        None,
-        client,
-        "correlation",
-        "trace",
-        lambda _: None,
+        tenant_id="tenant",
+        principal_id="principal",
+        credential=None,
+        transport=client,
+        correlation_id="correlation",
+        trace_id="trace",
+        sleep=lambda _: None,
     )
 
 
@@ -178,6 +179,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                         OperationClass.READ,
                         ApprovalPolicy.NEVER,
                         Idempotency.NONE,
+                        Maturity.GA,
                     ),
                 ),
             )
@@ -185,7 +187,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         mcp_capability = mcp.discover(context)[0]
         mcp_result = mcp.invoke(
             InvocationRequest(
-                mcp_capability.instance_id,
+                mcp_capability,
                 "mcp.tools.call",
                 {"value": "network"},
             ),
@@ -202,13 +204,14 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                         "ping",
                         OperationClass.READ,
                         ApprovalPolicy.NEVER,
+                        maturity=Maturity.GA,
                     ),
                 ),
             )
         )
         openapi_capability = openapi.discover(context)[0]
         openapi_result = openapi.invoke(
-            InvocationRequest(openapi_capability.instance_id, "ping", {}),
+            InvocationRequest(openapi_capability, "ping", {}),
             context,
         )
 
@@ -221,15 +224,27 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
             )
         )
         webhook_capability = webhook.discover(context)[0]
+        webhook_arguments = {"value": "network"}
+        operation = webhook_capability.descriptor.operations[0]
         approved = replace(
             context,
-            approved_instance_ids=frozenset({webhook_capability.instance_id}),
+            approval_decisions=(
+                approval_decision(
+                    context,
+                    target=webhook_capability,
+                    instance=webhook_capability,
+                    operation=operation,
+                    arguments=webhook_arguments,
+                    decision_id="local-webhook",
+                    expires_at="2999-01-01T00:00:00Z",
+                ),
+            ),
         )
         webhook_result = webhook.invoke(
             InvocationRequest(
-                webhook_capability.instance_id,
+                webhook_capability,
                 "publish",
-                {"value": "network"},
+                webhook_arguments,
                 "local-event",
             ),
             approved,
@@ -243,13 +258,11 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
             )
         )
         github_capability = next(
-            capability
-            for capability in github.discover(context)
-            if capability.name.endswith("read")
+            capability for capability in github.discover(context) if capability.name.endswith("read")
         )
         github_result = github.invoke(
             InvocationRequest(
-                github_capability.instance_id,
+                github_capability,
                 "github.repository.get",
                 {},
             ),

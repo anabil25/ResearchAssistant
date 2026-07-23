@@ -22,6 +22,19 @@
             "title": "Arguments",
             "type": "object"
           },
+          "binding_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
           "instance_id": {
             "maxLength": 512,
             "minLength": 1,
@@ -158,9 +171,9 @@
         ]
       }
     },
-    "/v1/providers/{provider_id}/health": {
+    "/v1/providers/{provider_id}/instances/{instance_id}/health": {
       "get": {
-        "operationId": "healthIntegrationProvider",
+        "operationId": "healthIntegrationCapabilityInstance",
         "parameters": [
           {
             "in": "path",
@@ -170,6 +183,31 @@
               "title": "Provider Id",
               "type": "string"
             }
+          },
+          {
+            "in": "path",
+            "name": "instance_id",
+            "required": true,
+            "schema": {
+              "title": "Instance Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
           }
         ],
         "responses": {
@@ -178,7 +216,7 @@
               "application/json": {
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Healthintegrationprovider",
+                  "title": "Response Healthintegrationcapabilityinstance",
                   "type": "object"
                 }
               }
@@ -197,6 +235,75 @@
           }
         },
         "summary": "Provider Health",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}/instances/{instance_id}/validation": {
+      "get": {
+        "operationId": "validateIntegrationCapabilityInstance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "instance_id",
+            "required": true,
+            "schema": {
+              "title": "Instance Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Validateintegrationcapabilityinstance",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Validate Provider",
         "tags": [
           "integration providers"
         ]
@@ -267,50 +374,6 @@
           }
         },
         "summary": "Invoke Provider",
-        "tags": [
-          "integration providers"
-        ]
-      }
-    },
-    "/v1/providers/{provider_id}/validation": {
-      "get": {
-        "operationId": "validateIntegrationProvider",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "provider_id",
-            "required": true,
-            "schema": {
-              "title": "Provider Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Validateintegrationprovider",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Validate Provider",
         "tags": [
           "integration providers"
         ]
