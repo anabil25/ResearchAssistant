@@ -57,6 +57,7 @@ from research_assistant_api.agent_studio.release_attestation import StoreBackedR
 from research_assistant_api.agent_studio.release_service import ReleaseService
 from research_assistant_api.agent_studio.router import router as agent_studio_router
 from research_assistant_api.agent_studio.store import AgentStudioStoreError
+from research_assistant_api.agent_studio.template_catalog import default_template_catalog
 from research_assistant_api.blob_sources import (
     SourceBlobStore,
     build_source_blob_store,
@@ -167,6 +168,10 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     application.state.agent_studio_membership_resolver = ClaimsGroupMembershipResolver()
     model_discovery = build_model_discovery(settings)
     application.state.agent_studio_model_discovery = model_discovery
+    # Platform-owned governed template catalog (see ``template_catalog``
+    # module docstring for why a built-in seed is legitimate here, unlike
+    # the capability registry above).
+    application.state.agent_studio_template_catalog = default_template_catalog()
     try:
         store = build_agent_studio_store(settings)
     except AgentStudioStoreError as exc:

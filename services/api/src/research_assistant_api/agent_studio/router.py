@@ -74,6 +74,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentSummary,
+    AgentTemplate,
     AgentVersion,
     AgentWorkspaceView,
     ApprovalKind,
@@ -97,6 +98,8 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     ResolvedAgentContract,
     StudioApprovalRecord,
+    TemplateListResponse,
+    TemplateReadiness,
     ToolRegistrationSpec,
     role_at_least,
 )
@@ -149,6 +152,7 @@ from research_assistant_api.agent_studio.store import (
     IdempotencyConcurrencyError,
     IdempotencyNotFoundError,
 )
+from research_assistant_api.agent_studio.template_catalog import TemplateCatalog
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
     DEMO_SANDBOX_SOURCE,
@@ -199,6 +203,10 @@ def _deployment_service(request: Request) -> DeploymentService:
 
 def _model_discovery(request: Request) -> ModelDiscovery:
     return cast(ModelDiscovery, request.app.state.agent_studio_model_discovery)
+
+
+def _template_catalog(request: Request) -> TemplateCatalog:
+    return cast(TemplateCatalog, request.app.state.agent_studio_template_catalog)
 
 
 def _memory_service(request: Request) -> MemoryService:
@@ -675,6 +683,66 @@ def list_agents(
     total = len(summaries)
     page = summaries[offset : offset + limit]
     return AgentListResponse(items=tuple(page), total=total, limit=limit, offset=offset)
+
+
+@router.get("/templates", response_model=TemplateListResponse)
+def list_templates(
+    request: Request,
+    category: str | None = None,
+    readiness: TemplateReadiness | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> TemplateListResponse:
+    """Governed task template catalog listing, used by create-from-template.
+
+    Templates are tenant/project-neutral platform reference content (see
+    ``template_catalog`` module docstring), so this only requires a valid
+    identity -- no ``project_id``/scope -- matching the
+    ``/capabilities/descriptors`` catalog-read convention. Readiness is
+    never used to hide entries: ``PREVIEW``/``DEPRECATED`` templates remain
+    listed with their honest ``readiness`` label unless the caller
+    explicitly filters them out via the ``readiness`` query parameter.
+    """
+    if not 1 <= limit <= 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 200."
+        )
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="offset must be >= 0.")
+    _identity(request)
+    needle = q.strip().lower() if q else None
+    templates = [
+        template
+        for template in _template_catalog(request).list_templates()
+        if (category is None or template.category == category)
+        and (readiness is None or template.readiness == readiness)
+        and (needle is None or needle in template.display_name.lower())
+    ]
+    # Deterministic ordering: ascending template_id, then descending version
+    # so the newest version of a given template_id sorts first within it.
+    templates.sort(key=lambda template: template.version, reverse=True)
+    templates.sort(key=lambda template: template.template_id)
+    total = len(templates)
+    page = templates[offset : offset + limit]
+    return TemplateListResponse(items=tuple(page), total=total, limit=limit, offset=offset)
+
+
+@router.get("/templates/{template_id}", response_model=AgentTemplate)
+def get_template(request: Request, template_id: str, version: str | None = None) -> AgentTemplate:
+    """Fetch one governed template's full ``seed`` content by id.
+
+    ``version`` pins an exact version; omitted, this returns the
+    highest-versioned entry for ``template_id`` (see
+    ``StaticTemplateCatalog.get_template``). 404s rather than falling back
+    to a different template if the requested id/version pair does not
+    exist -- consistent with every other exact-pin lookup in this module.
+    """
+    _identity(request)
+    template = _template_catalog(request).get_template(template_id, version)
+    if template is None:
+        raise _not_found(f"Template {template_id!r} (version={version!r}) was not found.")
+    return template
 
 
 @router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraftView)

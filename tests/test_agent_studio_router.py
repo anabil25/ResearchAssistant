@@ -71,6 +71,7 @@ from research_assistant_api.agent_studio.router import router as agent_studio_ro
 from research_assistant_api.agent_studio.schemas import ClaimIdempotencyRequest
 from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
+from research_assistant_api.agent_studio.template_catalog import default_template_catalog
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import project_group_name
 
@@ -214,6 +215,7 @@ def _build_app(
     app.state.agent_studio_release_attestation_port = (
         StoreBackedReleaseAttestationPort(store) if store is not None else None
     )
+    app.state.agent_studio_template_catalog = default_template_catalog()
     return app
 
 
@@ -1273,6 +1275,116 @@ def test_list_agents_enforces_project_membership(client: TestClient) -> None:
         headers=non_member_headers,
     )
     assert response.status_code == 403
+
+
+def test_list_templates_returns_built_in_catalog_ordered_by_id_then_version(client: TestClient) -> None:
+    response = client.get("/v1/agent-studio/templates", headers=USER_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == len(body["items"]) == 3
+    ids = [item["template_id"] for item in body["items"]]
+    assert ids == sorted(ids)
+    readiness_by_id = {item["template_id"]: item["readiness"] for item in body["items"]}
+    assert readiness_by_id["template-research-qa"] == "ga"
+    # Preview templates are never hidden -- only honestly labeled.
+    assert readiness_by_id["template-custom-hosted-starter"] == "preview"
+    first = body["items"][0]
+    assert first["seed"]["instructions"]
+
+
+def test_list_templates_filters_by_category(client: TestClient) -> None:
+    response = client.get(
+        "/v1/agent-studio/templates",
+        params={"category": "research"},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["template_id"] == "template-research-qa"
+
+
+def test_list_templates_filters_by_readiness(client: TestClient) -> None:
+    response = client.get(
+        "/v1/agent-studio/templates",
+        params={"readiness": "preview"},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["template_id"] == "template-custom-hosted-starter"
+
+
+def test_list_templates_filters_by_display_name_query(client: TestClient) -> None:
+    response = client.get(
+        "/v1/agent-studio/templates",
+        params={"q": "SUMMARIZER"},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["template_id"] == "template-doc-summarizer"
+
+
+def test_list_templates_paginates(client: TestClient) -> None:
+    page = client.get(
+        "/v1/agent-studio/templates",
+        params={"limit": 2, "offset": 0},
+        headers=USER_HEADERS,
+    )
+    assert page.status_code == 200
+    body = page.json()
+    assert body["total"] == 3
+    assert len(body["items"]) == 2
+
+    remainder = client.get(
+        "/v1/agent-studio/templates",
+        params={"limit": 2, "offset": 2},
+        headers=USER_HEADERS,
+    )
+    assert remainder.status_code == 200
+    assert len(remainder.json()["items"]) == 1
+
+
+def test_list_templates_rejects_invalid_limit_and_offset(client: TestClient) -> None:
+    too_low = client.get("/v1/agent-studio/templates", params={"limit": 0}, headers=USER_HEADERS)
+    assert too_low.status_code == 422
+
+    too_high = client.get("/v1/agent-studio/templates", params={"limit": 201}, headers=USER_HEADERS)
+    assert too_high.status_code == 422
+
+    negative_offset = client.get("/v1/agent-studio/templates", params={"offset": -1}, headers=USER_HEADERS)
+    assert negative_offset.status_code == 422
+
+
+def test_get_template_returns_latest_version_by_default_and_exact_version_when_pinned(
+    client: TestClient,
+) -> None:
+    latest = client.get("/v1/agent-studio/templates/template-research-qa", headers=USER_HEADERS)
+    assert latest.status_code == 200
+    assert latest.json()["version"] == "v1"
+
+    pinned = client.get(
+        "/v1/agent-studio/templates/template-research-qa",
+        params={"version": "v1"},
+        headers=USER_HEADERS,
+    )
+    assert pinned.status_code == 200
+    assert pinned.json()["template_id"] == "template-research-qa"
+
+
+def test_get_template_returns_404_for_unknown_id_or_version(client: TestClient) -> None:
+    unknown_id = client.get("/v1/agent-studio/templates/template-does-not-exist", headers=USER_HEADERS)
+    assert unknown_id.status_code == 404
+
+    unknown_version = client.get(
+        "/v1/agent-studio/templates/template-research-qa",
+        params={"version": "v999"},
+        headers=USER_HEADERS,
+    )
+    assert unknown_version.status_code == 404
 
 
 def test_draft_routes_cover_get_update_and_missing_paths(

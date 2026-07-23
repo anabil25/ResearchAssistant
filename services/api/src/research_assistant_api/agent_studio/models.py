@@ -2190,3 +2190,89 @@ class AgentListResponse(BaseModel):
     total: int = Field(ge=0)
     limit: int = Field(ge=1, le=200)
     offset: int = Field(ge=0)
+
+
+class TemplateReadiness(StrEnum):
+    """Honest readiness label for a governed task template.
+
+    Mirrors the ``OperationMaturity`` GA/PREVIEW/UNAVAILABLE honesty
+    convention used for capability operations: a preview or deprecated
+    template must never be hidden or silently relabeled as GA. Unlike
+    capability maturity, template readiness never gates anything -- a
+    template is inert prefill content, not an executable operation --
+    but the UI must still be able to show the true label so authors can
+    make an informed choice (e.g. avoid starting new work from a
+    ``DEPRECATED`` template).
+    """
+
+    GA = "ga"
+    PREVIEW = "preview"
+    DEPRECATED = "deprecated"
+
+
+class AgentTemplateSeed(BaseModel):
+    """The manifest content a template pre-fills for create-from-template.
+
+    Deliberately excludes anything tenant/project-scoped or live
+    (``capabilities``, ``model_deployment``, ``workspace_connections``):
+    those require a real project's discovered instances/deployments and
+    can never be safely baked into a tenant-neutral, versioned template.
+    A template only seeds runtime-neutral authoring content; the caller
+    composes the rest via the existing ``create_agent`` /
+    ``update_draft`` calls (see ``AgentTemplate`` docstring).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    instructions: str = Field(default="", max_length=40000)
+    runtime_requirements: RuntimeRequirements = Field(default_factory=RuntimeRequirements)
+    memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
+    citation_policy: CitationPolicy = Field(default_factory=CitationPolicy)
+    artifact_contract: ArtifactContract = Field(default_factory=ArtifactContract)
+    tags: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class AgentTemplate(BaseModel):
+    """A governed, versioned, platform-curated starting point for
+    create-from-template.
+
+    Templates are authored and versioned by platform owners (the same
+    governance role that versions system agents), and are tenant/project
+    neutral. There is intentionally no dedicated "create from template"
+    mutation endpoint: the UI composes exact existing calls --
+    ``GET /templates/{template_id}`` to fetch ``seed``, then
+    ``POST /agents`` (``create_agent``) followed by
+    ``PUT /agents/{id}/draft`` (``update_draft``) with a manifest built
+    from ``seed`` and ``AgentManifest.template_provenance`` stamped with
+    this template's ``template_id``/``version`` -- rather than a second,
+    parallel manifest-construction code path.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    template_id: str = Field(pattern=r"^template-[a-z0-9-]{3,80}$")
+    version: str = Field(min_length=1, max_length=40)
+    readiness: TemplateReadiness
+    display_name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    category: str = Field(default="general", max_length=80)
+    tags: tuple[str, ...] = Field(default_factory=tuple)
+    seed: AgentTemplateSeed = Field(default_factory=AgentTemplateSeed)
+    source_url: str | None = None
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+
+
+class TemplateListResponse(BaseModel):
+    """Paginated envelope for ``GET /templates``.
+
+    ``total`` is the pre-pagination count of templates matching the
+    requested filters, matching the ``AgentListResponse`` convention.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: tuple[AgentTemplate, ...] = Field(default_factory=tuple)
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    offset: int = Field(ge=0)
