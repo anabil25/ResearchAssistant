@@ -62,8 +62,11 @@ def test_connector_adapter_is_internal_and_wired_through_apim() -> None:
     postprovision = (ROOT / "scripts" / "postprovision.py").read_text(
         encoding="utf-8"
     )
-    assert "configure_internal_container_app_dns" in postprovision
-    assert "internal.{domain}" in postprovision
+    assert "configure_connector_adapter_identity" in postprovision
+    assert "RESEARCH_APIM_PRINCIPAL_ID" in postprovision
+    assert "authentication-managed-identity" in (
+        ROOT / "infra" / "modules" / "api-management.bicep"
+    ).read_text(encoding="utf-8")
 
 
 def test_static_connector_openapi_is_bounded_for_apim_import() -> None:
