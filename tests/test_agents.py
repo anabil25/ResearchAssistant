@@ -9,7 +9,9 @@ import httpx
 import pytest
 import yaml
 from openai import APIStatusError
+from shared.errors import ConfigurationError
 from shared.profiles import get_profile, list_profiles
+from shared.settings import HarnessSettings
 from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
 
 ROOT = Path(__file__).parents[1]
@@ -29,29 +31,76 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
         "grant_online",
         "matching_online",
     }
-    for profile in profiles:
+    for profile in list_profiles():
         assert "Evidence over fluency" in profile.instructions
         assert "untrusted data" in profile.instructions
         assert profile.workflow_steps
         assert profile.output_contract.endswith("V2")
-        expected_tools = 1 if profile.id == "coordinator" else 0
-        assert len(tools_for_profile(profile)) == expected_tools
+        assert profile.schema_version == "2.0"
+        assert profile.behavior_version == "3.0.0"
+        expected_model = "gpt-5.6-sol" if profile.id in {"literature", "grant"} else "gpt-5.4-mini"
+        assert profile.model_policy.deployment_name == expected_model
+        assert profile.model_policy.pinned_model_version
+        assert profile.runtime_requirements.selected_runtime == "custom"
+        assert profile.knowledge_bindings
+        assert profile.evidence_policy.output_schema == profile.output_schema
+        assert profile.artifact_policy.output_schema == profile.output_schema
+        assert profile.artifact_policy.provenance_required is True
+        for binding in profile.capability_bindings:
+            assert binding.operation_id
+            assert binding.instance_ref
+            assert len(binding.instance_fingerprint) == 64
+            assert binding.instance_fingerprint == binding.instance_fingerprint.lower()
+            assert binding.pinned_provider_version
+            assert binding.input_schema_digest
+            assert binding.output_schema_digest
+            assert binding.connection_ref
+            assert binding.policy_ref
+        if any(
+            binding.operation_id.startswith("foundry.toolbox.")
+            for binding in profile.capability_bindings
+        ):
+            with pytest.raises(ConfigurationError, match="Toolbox"):
+                tools_for_profile(profile)
+        else:
+            assert tools_for_profile(profile) == []
     assert len({profile.output_contract for profile in profiles}) == len(profiles)
     assert len({profile.workflow_steps for profile in profiles}) == len(profiles)
+    coordinator = get_profile("coordinator")
+    assert coordinator.specialist_policy is not None
+    assert len(coordinator.specialist_policy.specialists) == 8
 
 
-def test_web_search_is_enabled_only_for_current_source_agents() -> None:
+def test_missing_toolbox_never_falls_back_to_web_search() -> None:
     class FakeClient:
         def get_web_search_tool(self, **kwargs: Any) -> dict[str, Any]:
             return {"kind": "web_search", **kwargs}
 
-    enabled = {"literature_online", "grant_online", "matching_online"}
     for profile in list_profiles():
-        tools = tools_for_profile(profile, FakeClient())
-        has_web = any(isinstance(item, dict) and item.get("kind") == "web_search" for item in tools)
-        assert has_web is (profile.id in enabled)
-        expected_count = 1 if profile.id == "coordinator" or profile.id in enabled else 0
-        assert len(tools) == expected_count
+        requires_toolbox = any(
+            binding.operation_id.startswith("foundry.toolbox.")
+            for binding in profile.capability_bindings
+        )
+        if requires_toolbox:
+            with pytest.raises(ConfigurationError, match="Toolbox"):
+                tools_for_profile(profile, FakeClient())
+        else:
+            assert tools_for_profile(profile, FakeClient()) == []
+
+
+def test_toolbox_bindings_match_deployed_operation_names() -> None:
+    expected = {
+        "dataset": {"code_interpreter"},
+        "literature_online": {"web_search", "searchLiteratureMetadata"},
+        "grant_online": {"web_search", "searchGrantOpportunities"},
+        "matching_online": {"web_search", "searchMatchingMetadata"},
+    }
+    for profile_id, tool_names in expected.items():
+        manifest = get_profile(profile_id)
+        assert {
+            binding.operation_id.rsplit(".", 1)[-1]
+            for binding in manifest.capability_bindings
+        } == tool_names
 
 
 def test_coordinator_routes_public_only_to_online_specialists() -> None:
@@ -75,16 +124,10 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
         entry_point = ROOT / "agents" / config["codeConfiguration"]["entryPoint"]
         source = entry_point.read_text(encoding="utf-8")
         assert "sys.path.insert" in source, name
-        assert source.index("sys.path.insert") < source.index(
-            "from shared.runtime import run_profile"
-        ), name
+        assert source.index("sys.path.insert") < source.index("factory import run"), name
     toolbox_variables = {
         name: next(
-            (
-                item["value"]
-                for item in config["environmentVariables"]
-                if item["name"] == "TOOLBOX_ENDPOINT"
-            ),
+            (item["value"] for item in config["environmentVariables"] if item["name"] == "TOOLBOX_ENDPOINT"),
             None,
         )
         for name, config in agent_services.items()
@@ -96,18 +139,36 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
         "matching-online-agent": "${TOOLBOX_MATCHING_MCP_ENDPOINT}",
         "dataset-agent": "${TOOLBOX_DATASET_MCP_ENDPOINT}",
     }
+    deployed_versions = {
+        deployment["name"]: deployment["model"]["version"] for deployment in services["ai-project"]["deployments"]
+    }
+    service_by_agent_name = {config["name"]: config for config in agent_services.values()}
+    for profile in list_profiles():
+        service = service_by_agent_name[profile.name]
+        selected_model = next(
+            item["value"]
+            for item in service["environmentVariables"]
+            if item["name"] == "AZURE_AI_MODEL_DEPLOYMENT_NAME"
+        )
+        assert profile.model_policy.deployment_name == selected_model
+        assert profile.model_policy.pinned_model_version == deployed_versions[selected_model]
 
 
 def test_online_agents_use_foundry_toolbox_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker = object()
-    monkeypatch.setenv("TOOLBOX_ENDPOINT", "https://foundry.example/toolboxes/test/mcp?api-version=v1")
-    monkeypatch.setattr("shared.tools.get_credential", lambda: object())
-    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda _credential: marker)
-
-    assert tools_for_profile(get_profile("grant_online")) is marker
-    assert tools_for_profile(get_profile("dataset")) is marker
+    monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
+    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: marker)
+    settings = HarnessSettings.model_validate(
+        {
+            "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/p",
+            "model_deployment_name": "gpt-5.4-mini",
+            "toolbox_endpoint": "https://foundry.example/toolboxes/test/mcp?api-version=v1",
+        }
+    )
+    assert tools_for_profile(get_profile("grant_online"), settings=settings) is marker
+    assert tools_for_profile(get_profile("dataset"), settings=settings) is marker
 
 
 def test_bicep_model_parameters_match_azure_manifest() -> None:
@@ -141,15 +202,13 @@ def test_accelerator_private_data_and_ci_principal_contracts() -> None:
 
 
 def test_preprovision_checks_requested_model_capacity() -> None:
-    powershell = (ROOT / "scripts" / "preprovision.ps1").read_text(
-        encoding="utf-8"
-    )
+    powershell = (ROOT / "scripts" / "preprovision.ps1").read_text(encoding="utf-8")
     posix = (ROOT / "scripts" / "preprovision.sh").read_text(encoding="utf-8")
 
     assert "cognitiveservices usage list" in powershell
     assert "deployment.sku.capacity" in powershell
     assert "cognitiveservices usage list" in posix
-    assert "needed=\"$capacity\"" in posix
+    assert 'needed="$capacity"' in posix
     assert "azd env set AZURE_PRINCIPAL_ID" in powershell
     assert "azd env set AZURE_PRINCIPAL_TYPE" in powershell
     assert "azd env set AZURE_PRINCIPAL_ID" in posix
@@ -190,10 +249,17 @@ def test_coordinator_specialist_invocation_retries_transient_shapes(
                 return SimpleNamespace(output_text=" ")
             return SimpleNamespace(output_text="Bounded specialist analysis")
 
-    monkeypatch.setattr("shared.tools.time.sleep", sleeps.append)
+    class Client:
+        responses = Responses()
+
+        def with_options(self, *, max_retries: int) -> Client:
+            assert max_retries == 0
+            return self
+
+    monkeypatch.setattr("shared.invocation.time.sleep", sleeps.append)
 
     output = _invoke_specialist(
-        SimpleNamespace(responses=Responses()),
+        Client(),
         "Analyze supplied evidence.",
         "literature-agent",
     )

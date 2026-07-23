@@ -157,6 +157,7 @@ ONLINE_ALLOWED = {
     Capability.MATCHING,
 }
 
+
 @app.middleware("http")
 async def add_request_context(
     request: Request,
@@ -619,11 +620,7 @@ async def test_connector(connector_id: str, request: Request) -> ConnectorSettin
     if connector is None:
         raise HTTPException(status_code=404, detail="Connector not found.")
     capability = next(
-        (
-            Capability(agent)
-            for agent in connector.assigned_agents
-            if agent in {item.value for item in ONLINE_ALLOWED}
-        ),
+        (Capability(agent) for agent in connector.assigned_agents if agent in {item.value for item in ONLINE_ALLOWED}),
         Capability.LITERATURE,
     )
     status_result = await _probe_connector(
@@ -695,7 +692,7 @@ def _online_policy(capability: Capability, payload: StudioRunRequest) -> None:
         )
 
 
-def _agent_message(
+def _agent_prompt(
     capability: Capability,
     payload: StudioRunRequest,
     generic: ResearchResult,
@@ -727,11 +724,7 @@ def _agent_message(
     if capability == Capability.DATASET:
         dataset_text = str(payload.inputs.get("csv_text", ""))[:100_000]
         dataset_material = (
-            dataset_text
-            if dataset_text
-            else json.dumps(generic.metadata.get("profile"), ensure_ascii=True)[
-                :100_000
-            ]
+            dataset_text if dataset_text else json.dumps(generic.metadata.get("profile"), ensure_ascii=True)[:100_000]
         )
         return (
             f"Workflow: {blueprint.title}\n"
@@ -758,6 +751,76 @@ def _agent_message(
     )
 
 
+def _agent_message(
+    capability: Capability,
+    payload: StudioRunRequest,
+    generic: ResearchResult,
+    public_metadata: list[dict[str, Any]] | None = None,
+    *,
+    principal_id: str = "research-assistant-api",
+) -> str:
+    query = _agent_prompt(capability, payload, generic, public_metadata)
+    if len(query) > 40_000:
+        suffix = "\n[INPUT TRUNCATED TO HOSTED CONTRACT LIMIT]"
+        query = f"{query[: 40_000 - len(suffix)]}{suffix}"
+    envelope: dict[str, Any] = {
+        "query": query,
+        "tenant_id": generic.run.tenant_id,
+        "principal_id": principal_id,
+        "session_id": generic.run.id,
+        "sensitivity": "public" if payload.online_research else "internal",
+        "evidence": (
+            []
+            if payload.online_research
+            else [
+                {
+                    "evidence_id": citation.source_id,
+                    "source_uri": (str(citation.canonical_url) if citation.canonical_url else None),
+                    "title": citation.title,
+                    "version": citation.checksum,
+                }
+                for citation in generic.citations
+            ]
+        ),
+    }
+    if capability == Capability.DATASET:
+        envelope.update(
+            {
+                "dataset_id": str(payload.inputs.get("filename") or generic.run.id),
+                "approved_compute": False,
+                "idempotency_key": (
+                    payload.inputs.get("idempotency_key")
+                    if isinstance(payload.inputs.get("idempotency_key"), str)
+                    else None
+                ),
+            }
+        )
+    elif capability == Capability.LITERATURE and not payload.online_research:
+        envelope["review_question"] = payload.objective
+    elif capability == Capability.GRANT and not payload.online_research:
+        envelope["opportunity_id"] = payload.inputs.get("opportunity_id")
+    elif capability == Capability.MATCHING and not payload.online_research:
+        facets = payload.inputs.get("required_facets", [])
+        envelope["required_facets"] = facets if isinstance(facets, list) else []
+    elif capability == Capability.INSTITUTIONAL_QA:
+        envelope["policy_scope"] = payload.inputs.get("policy_scope")
+    elif capability == Capability.ORCHESTRATION:
+        requested = payload.inputs.get("requested_capabilities")
+        allowed = {
+            Capability.LITERATURE.value,
+            Capability.GRANT.value,
+            Capability.MATCHING.value,
+            Capability.DATASET.value,
+            Capability.INSTITUTIONAL_QA.value,
+        }
+        if not isinstance(requested, list) or not requested or any(item not in allowed for item in requested):
+            raise ValueError("Orchestration requires a non-empty allowlisted requested_capabilities list.")
+        envelope["requested_capabilities"] = requested
+        specialist_inputs = payload.inputs.get("specialist_inputs", {})
+        envelope["specialist_inputs"] = specialist_inputs if isinstance(specialist_inputs, dict) else {}
+    return json.dumps(envelope, ensure_ascii=True)
+
+
 def _record_studio_result(
     result: STUDIO_RESULT,
     store: WorkspaceStore,
@@ -767,11 +830,7 @@ def _record_studio_result(
 ) -> None:
     blueprint = WORKFLOW_BLUEPRINTS[result.run.capability]
     current_index = next(
-        (
-            index
-            for index, stage in enumerate(blueprint.stages)
-            if stage.label == result.run.current_stage
-        ),
+        (index for index, stage in enumerate(blueprint.stages) if stage.label == result.run.current_stage),
         len(blueprint.stages) - 1,
     )
     stages = [
@@ -782,11 +841,9 @@ def _record_studio_result(
                 "completed"
                 if result.run.progress == 100 or index < current_index
                 else "waiting_for_approval"
-                if index == current_index
-                and result.run.status == RunStatus.WAITING_FOR_APPROVAL
+                if index == current_index and result.run.status == RunStatus.WAITING_FOR_APPROVAL
                 else "failed"
-                if index == current_index
-                and result.run.status in {RunStatus.BLOCKED, RunStatus.FAILED}
+                if index == current_index and result.run.status in {RunStatus.BLOCKED, RunStatus.FAILED}
                 else "running"
                 if index == current_index
                 else "planned"
@@ -912,6 +969,7 @@ async def run_studio(
                     payload,
                     generic,
                     public_metadata,
+                    principal_id=identity.user_id,
                 ),
                 agent_name=(
                     CAPABILITY_ONLINE_AGENTS[capability] if payload.online_research else CAPABILITY_AGENTS[capability]
@@ -924,6 +982,8 @@ async def run_studio(
             raise HTTPException(status_code=503, detail=str(exc)) from exc
         except HostedAgentInvocationError as exc:
             raise HTTPException(status_code=502, detail=str(exc)) from exc
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
         hosted_content = reply.content
         hosted_agent_name = reply.agent_name
 
@@ -1063,6 +1123,7 @@ async def run_capability(
                 studio_request,
                 result,
                 public_metadata,
+                principal_id=identity.user_id,
             ),
             agent_name=(CAPABILITY_ONLINE_AGENTS[capability] if online else CAPABILITY_AGENTS[capability]),
             allow_tools=online,
@@ -1073,6 +1134,8 @@ async def run_capability(
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except HostedAgentInvocationError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     insight = validate_agent_insight(
         agent_name=reply.agent_name,

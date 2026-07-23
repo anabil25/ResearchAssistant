@@ -1,0 +1,551 @@
+from __future__ import annotations
+
+import json
+import time
+from collections.abc import AsyncIterator, Awaitable, Callable, Sequence
+from typing import Any, cast
+from urllib.parse import urlsplit
+
+from agent_framework import (
+    AgentContext,
+    AgentMiddleware,
+    AgentResponse,
+    AgentResponseUpdate,
+    Annotation,
+    Content,
+    FunctionInvocationContext,
+    FunctionMiddleware,
+    Message,
+    ResponseStream,
+)
+from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError
+
+from .capabilities import (
+    CapabilityBinding,
+    CapabilityDescriptor,
+    CapabilityExecutor,
+    CapabilityRegistry,
+    InvocationContext,
+    ToolRegistration,
+    resolved_instance_fingerprint,
+)
+from .contracts import (
+    AgentManifest,
+    CoordinatorResponse,
+    DatasetRequest,
+    EvidenceRef,
+    ResearchRequest,
+    ResearchResponse,
+    bind_contracts,
+    canonical_digest,
+    resolve_authorized_evidence,
+)
+from .errors import AuthorizationError, ConfigurationError, ContractError
+from .settings import HarnessSettings
+
+_GOVERNANCE_CONTEXT_KEY = "governance_context"
+_TOOL_EVIDENCE_KEY = "authorized_tool_evidence"
+_CONNECTOR_OPERATIONS = frozenset(
+    {
+        "searchLiteratureMetadata",
+        "searchGrantOpportunities",
+        "searchMatchingMetadata",
+    }
+)
+
+
+class _ConnectorToolResult(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    source: str
+    query: str
+    records: list[dict[str, Any]]
+    terms_url: HttpUrl
+    retrieved_from: HttpUrl
+    warnings: list[str]
+    notice: str
+
+
+class ContractMiddleware(AgentMiddleware):
+    def __init__(
+        self,
+        manifest: AgentManifest,
+        settings: HarnessSettings | None,
+        *,
+        monotonic: Callable[[], float] = time.monotonic,
+    ) -> None:
+        self._manifest = manifest
+        self._contracts = bind_contracts(manifest)
+        self._settings = settings
+        self._monotonic = monotonic
+
+    async def process(
+        self,
+        context: AgentContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        request = self._validate(context.messages)
+        tool_evidence: list[EvidenceRef] = []
+        context.messages = [
+            *context.messages[:-1],
+            Message(role="user", contents=[self._model_input(request)]),
+        ]
+        context.function_invocation_kwargs[_GOVERNANCE_CONTEXT_KEY] = self._invocation_context(request).model_dump(
+            mode="json"
+        )
+        context.function_invocation_kwargs[_TOOL_EVIDENCE_KEY] = tool_evidence
+        await call_next()
+        if context.stream:
+            if not isinstance(context.result, ResponseStream):
+                raise ContractError("Streaming agent invocation did not return a response stream")
+            context.result = self._buffered_governed_stream(
+                context.result,
+                request.evidence,
+                tool_evidence,
+            )
+        elif isinstance(context.result, AgentResponse):
+            context.result = self._normalize_response(
+                context.result,
+                request.evidence,
+                tool_evidence,
+            )
+
+    def _validate(self, messages: list[Message]) -> ResearchRequest:
+        if not messages or messages[-1].role != "user":
+            raise ContractError("Hosted invocation requires a final user request envelope")
+        try:
+            return self._contracts.input_model.model_validate_json(messages[-1].text)
+        except ValidationError as exc:
+            raise ContractError(
+                "Hosted invocation does not match the agent input contract",
+                context={"contract": self._manifest.input_contract},
+            ) from exc
+
+    @staticmethod
+    def _model_input(request: ResearchRequest) -> str:
+        excluded = {
+            "tenant_id",
+            "principal_id",
+            "session_id",
+            "approved_compute",
+            "idempotency_key",
+        }
+        return request.model_dump_json(exclude=excluded)
+
+    def _normalize_response(
+        self,
+        response: AgentResponse[Any],
+        request_evidence: tuple[EvidenceRef, ...],
+        tool_evidence: list[EvidenceRef],
+    ) -> AgentResponse[Any]:
+        raw = response.value
+        if raw is None:
+            raw = self._contracts.output_model.model_validate_json(response.text)
+        typed = self._contracts.output_model.model_validate(raw)
+        authorized_evidence = self._merge_authorized_evidence(
+            request_evidence,
+            tool_evidence,
+            typed,
+        )
+        normalized = resolve_authorized_evidence(
+            typed,
+            authorized_evidence,
+        )
+        messages = list(response.messages)
+        replacement = Message(
+            role="assistant",
+            contents=[normalized.model_dump_json()],
+        )
+        for index in range(len(messages) - 1, -1, -1):
+            if messages[index].role == "assistant":
+                original = messages[index]
+                messages[index] = Message(
+                    role=original.role,
+                    contents=[normalized.model_dump_json()],
+                    author_name=original.author_name,
+                    message_id=original.message_id,
+                    additional_properties=original.additional_properties,
+                    raw_representation=original.raw_representation,
+                )
+                break
+        else:
+            messages.append(replacement)
+        return AgentResponse(
+            messages=messages,
+            response_id=response.response_id,
+            agent_id=response.agent_id,
+            created_at=response.created_at,
+            finish_reason=response.finish_reason,
+            usage_details=response.usage_details,
+            value=normalized,
+            response_format=self._contracts.output_model,
+            continuation_token=response.continuation_token,
+            raw_representation=response.raw_representation,
+            additional_properties=response.additional_properties,
+        )
+
+    def _buffered_governed_stream(
+        self,
+        source: ResponseStream[AgentResponseUpdate, AgentResponse[Any]],
+        request_evidence: tuple[EvidenceRef, ...],
+        tool_evidence: list[EvidenceRef],
+    ) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
+        async def governed_updates() -> AsyncIterator[AgentResponseUpdate]:
+            async for _ in source:
+                pass
+            normalized = self._normalize_response(
+                await source.get_final_response(),
+                request_evidence,
+                tool_evidence,
+            )
+            value = cast(ResearchResponse, normalized.value)
+            yield AgentResponseUpdate(
+                contents=[Content.from_text(text=value.model_dump_json())],
+                role="assistant",
+                agent_id=normalized.agent_id,
+                response_id=normalized.response_id,
+                finish_reason=normalized.finish_reason,
+            )
+
+        return ResponseStream[AgentResponseUpdate, AgentResponse[Any]](
+            governed_updates(),
+            finalizer=self._finalize_governed_updates,
+        )
+
+    def _finalize_governed_updates(
+        self,
+        updates: Sequence[AgentResponseUpdate],
+    ) -> AgentResponse[Any]:
+        return AgentResponse.from_updates(
+            updates,
+            output_format_type=self._contracts.output_model,
+        )
+
+    def _merge_authorized_evidence(
+        self,
+        request_evidence: tuple[EvidenceRef, ...],
+        tool_evidence: list[EvidenceRef],
+        response: ResearchResponse,
+    ) -> tuple[EvidenceRef, ...]:
+        merged = {item.evidence_id: item for item in request_evidence}
+        for item in tool_evidence:
+            merged.setdefault(item.evidence_id, item)
+        if self._manifest.id == "coordinator" and isinstance(response, CoordinatorResponse):
+            for result in response.specialist_results:
+                if result.response is not None:
+                    for item in result.response.evidence:
+                        merged.setdefault(item.evidence_id, item)
+        return tuple(merged.values())
+
+    def _invocation_context(self, request: ResearchRequest) -> InvocationContext:
+        scopes: set[str] = set()
+        idempotency_key: str | None = None
+        if self._manifest.online:
+            scopes.add("research.public.read")
+        if isinstance(request, DatasetRequest):
+            idempotency_key = request.idempotency_key
+        destination = None
+        if self._settings is not None and self._settings.toolbox_endpoint is not None:
+            destination = urlsplit(str(self._settings.toolbox_endpoint)).hostname
+        timeout_seconds = self._settings.default_timeout_seconds if self._settings is not None else 60
+        return InvocationContext(
+            tenant_id=request.tenant_id,
+            principal_id=request.principal_id,
+            scopes=frozenset(scopes),
+            destination=destination,
+            approved_capabilities=frozenset(),
+            idempotency_key=idempotency_key,
+            deadline_monotonic=self._monotonic() + timeout_seconds,
+        )
+
+
+class GovernedFunctionMiddleware(FunctionMiddleware):
+    def __init__(
+        self,
+        capability: CapabilityDescriptor,
+        bindings: CapabilityBinding | tuple[CapabilityBinding, ...],
+        *,
+        current_instance_fingerprints: str | tuple[str, ...],
+        allowed_connector_sources: frozenset[str] = frozenset(),
+    ) -> None:
+        self._capability = capability
+        self._allowed_connector_sources = allowed_connector_sources
+        normalized_bindings = (bindings,) if isinstance(bindings, CapabilityBinding) else bindings
+        normalized_fingerprints = (
+            (current_instance_fingerprints,)
+            if isinstance(current_instance_fingerprints, str)
+            else current_instance_fingerprints
+        )
+        if len(normalized_bindings) != len(normalized_fingerprints):
+            raise ValueError("Every capability binding requires a runtime fingerprint")
+        registry = CapabilityRegistry()
+        registry.add_descriptor(capability)
+        for binding, fingerprint in zip(
+            normalized_bindings,
+            normalized_fingerprints,
+            strict=True,
+        ):
+            registry.register_tool(
+                ToolRegistration(
+                    binding=binding,
+                    tool_name=binding.operation_id.rsplit(".", 1)[-1],
+                    handler=self._invoke_framework_function,
+                    current_instance_fingerprint=fingerprint,
+                )
+            )
+        self._executor = CapabilityExecutor(registry)
+
+    async def process(
+        self,
+        context: FunctionInvocationContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        raw_governance = context.kwargs.get(_GOVERNANCE_CONTEXT_KEY)
+        if not isinstance(raw_governance, dict):
+            raise AuthorizationError("Tool invocation is missing validated governance context")
+        try:
+            governance = InvocationContext.model_validate(raw_governance)
+        except ValidationError as exc:
+            raise AuthorizationError("Tool governance context is invalid") from exc
+        if governance.idempotency_key is not None:
+            arguments = (
+                context.arguments.model_dump(mode="json")
+                if isinstance(context.arguments, BaseModel)
+                else dict(context.arguments)
+            )
+            governance = governance.model_copy(
+                update={
+                    "operation_fingerprint": canonical_digest(
+                        {
+                            "function": context.function.name,
+                            "arguments": arguments,
+                        }
+                    )
+                }
+            )
+        result = await self._executor.invoke_operation(
+            context.function.name,
+            {"context": context, "call_next": call_next},
+            governance,
+        )
+        context.result = result["value"]
+        collector = context.kwargs.get(_TOOL_EVIDENCE_KEY)
+        if not isinstance(collector, list):
+            raise ContractError("Tool invocation is missing its trusted evidence collector")
+        evidence = self._evidence_from_tool_result(
+            context.function.name,
+            context.result,
+        )
+        collector.extend(evidence)
+        context.result = self._expose_authorized_evidence(context.result, evidence)
+
+    @staticmethod
+    async def _invoke_framework_function(payload: dict[str, Any]) -> dict[str, Any]:
+        context = payload["context"]
+        call_next = payload["call_next"]
+        if not isinstance(context, FunctionInvocationContext) or not callable(call_next):
+            raise ContractError("Framework function invocation payload is invalid")
+        await call_next()
+        return {"value": context.result}
+
+    def _evidence_from_tool_result(
+        self,
+        tool_name: str,
+        result: Any,
+    ) -> tuple[EvidenceRef, ...]:
+        if tool_name == "web_search":
+            return self._evidence_from_web_search(result)
+        if tool_name in _CONNECTOR_OPERATIONS:
+            return self._evidence_from_connector_result(result)
+        return ()
+
+    def _evidence_from_web_search(self, result: Any) -> tuple[EvidenceRef, ...]:
+        if isinstance(result, Content):
+            annotated = self._evidence_from_annotations(result.annotations)
+            if result.type == "mcp_server_tool_result":
+                return (*annotated, *self._evidence_from_web_search(result.output))
+            if result.type == "function_result":
+                return (*annotated, *self._evidence_from_web_search(result.result))
+            if result.items is not None:
+                return (*annotated, *self._evidence_from_web_search(result.items))
+            return annotated
+        if isinstance(result, (list, tuple)):
+            return tuple(
+                evidence
+                for item in result
+                for evidence in self._evidence_from_web_search(item)
+            )
+        return ()
+
+    @staticmethod
+    def _evidence_from_annotations(
+        annotations: Sequence[Annotation] | None,
+    ) -> tuple[EvidenceRef, ...]:
+        if annotations is None:
+            return ()
+        evidence: list[EvidenceRef] = []
+        for annotation in annotations:
+            if annotation.get("type") != "citation":
+                continue
+            source_uri = annotation.get("url")
+            if not isinstance(source_uri, str) or not source_uri:
+                continue
+            title = annotation.get("title")
+            evidence.append(
+                EvidenceRef(
+                    evidence_id=f"web:{canonical_digest({'url': source_uri, 'title': title})}",
+                    source_uri=source_uri,
+                    title=title[:512] if isinstance(title, str) else None,
+                )
+            )
+        return tuple(evidence)
+
+    def _evidence_from_connector_result(
+        self,
+        result: Any,
+    ) -> tuple[EvidenceRef, ...]:
+        payloads = self._dict_payloads(result)
+        try:
+            connector_result = next(
+                _ConnectorToolResult.model_validate(payload)
+                for payload in payloads
+                if payload.get("source") in self._allowed_connector_sources
+            )
+        except (StopIteration, ValidationError) as exc:
+            raise ContractError(
+                "Connector tool output does not match its governed response contract"
+            ) from exc
+        evidence: list[EvidenceRef] = []
+        for record in connector_result.records:
+            record_uri = record.get("url")
+            source_uri = (
+                record_uri
+                if isinstance(record_uri, str) and record_uri
+                else str(connector_result.retrieved_from)
+            )
+            title = record.get("title")
+            evidence.append(
+                EvidenceRef(
+                    evidence_id=(
+                        f"connector:{connector_result.source}:"
+                        f"{canonical_digest(record)}"
+                    ),
+                    source_uri=source_uri,
+                    title=title[:512] if isinstance(title, str) else None,
+                )
+            )
+        return tuple(evidence)
+
+    @classmethod
+    def _dict_payloads(cls, result: Any) -> tuple[dict[str, Any], ...]:
+        if isinstance(result, Content):
+            nested: list[Any] = []
+            if result.type == "mcp_server_tool_result":
+                nested.append(result.output)
+            elif result.type == "function_result":
+                nested.append(result.result)
+            elif result.items is not None:
+                nested.extend(result.items)
+            elif result.text is not None:
+                nested.append(result.text)
+            return tuple(
+                payload
+                for item in nested
+                for payload in cls._dict_payloads(item)
+            )
+        if isinstance(result, (list, tuple)):
+            return tuple(
+                payload
+                for item in result
+                for payload in cls._dict_payloads(item)
+            )
+        if isinstance(result, str):
+            try:
+                return cls._dict_payloads(json.loads(result))
+            except json.JSONDecodeError:
+                return ()
+        if isinstance(result, BaseModel):
+            return (result.model_dump(mode="json"),)
+        if isinstance(result, dict):
+            return (result,)
+        return ()
+
+    @staticmethod
+    def _expose_authorized_evidence(
+        result: Any,
+        evidence: tuple[EvidenceRef, ...],
+    ) -> Any:
+        if not evidence:
+            return result
+        serialized = [item.model_dump(mode="json") for item in evidence]
+        if isinstance(result, BaseModel):
+            return {
+                **result.model_dump(mode="json"),
+                "authorized_evidence": serialized,
+            }
+        if isinstance(result, dict):
+            return {**result, "authorized_evidence": serialized}
+        governed_content = Content.from_text(
+            text=json.dumps(
+                {"authorized_evidence": serialized},
+                sort_keys=True,
+                separators=(",", ":"),
+            )
+        )
+        if isinstance(result, list):
+            return [*result, governed_content]
+        if isinstance(result, tuple):
+            return (*result, governed_content)
+        if isinstance(result, Content):
+            return [result, governed_content]
+        if isinstance(result, str):
+            return f"{result}\n{governed_content.text}"
+        return {
+            "tool_output": result,
+            "authorized_evidence": serialized,
+        }
+
+
+def middleware_for_manifest(
+    manifest: AgentManifest,
+    settings: HarnessSettings | None,
+    capabilities: tuple[CapabilityDescriptor, ...],
+) -> list[AgentMiddleware | FunctionMiddleware]:
+    middleware: list[AgentMiddleware | FunctionMiddleware] = [ContractMiddleware(manifest, settings)]
+    bindings = {
+        capability.id: tuple(
+            binding
+            for binding in manifest.capability_bindings
+            if binding.capability_id == capability.id
+        )
+        for capability in capabilities
+    }
+    if capabilities:
+        if settings is None:
+            raise ConfigurationError(
+                "Capability middleware requires resolved runtime settings",
+                context={"agent": manifest.id},
+            )
+        middleware.extend(
+            GovernedFunctionMiddleware(
+                capability,
+                bindings[capability.id],
+                current_instance_fingerprints=tuple(
+                    resolved_instance_fingerprint(
+                        binding,
+                        capability,
+                        project_endpoint=str(settings.foundry_project_endpoint),
+                        destination_endpoint=(
+                            str(settings.toolbox_endpoint)
+                            if binding.operation_id.startswith("foundry.toolbox.")
+                            and settings.toolbox_endpoint is not None
+                            else None
+                        ),
+                    )
+                    for binding in bindings[capability.id]
+                ),
+                allowed_connector_sources=frozenset(manifest.connector_sources),
+            )
+            for capability in capabilities
+        )
+    return middleware

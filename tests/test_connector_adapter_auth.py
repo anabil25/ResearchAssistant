@@ -16,7 +16,7 @@ class FakeJwks(PyJWKClient):
     def __init__(self) -> None:
         pass
 
-    def get_signing_key_from_jwt(self, token: str) -> Any:
+    def get_signing_key_from_jwt(self, token: str | bytes) -> Any:
         assert token == "signed-token"
         return SimpleNamespace(key="public-key")
 

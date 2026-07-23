@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from types import SimpleNamespace
 from typing import Any
 
@@ -87,10 +88,90 @@ def test_public_online_agent_message_excludes_internal_objective_and_evidence() 
     )
 
     message = _agent_message(Capability.LITERATURE, payload, generic)
+    envelope = json.loads(message)
 
     assert "current public reproducibility guidance" in message
     assert "Confidential project objective" not in message
     assert generic.citations[0].quote not in message
+    assert envelope["evidence"] == []
+
+
+def test_agent_message_maps_dataset_approval_and_coordinator_routes() -> None:
+    service = ResearchService()
+    dataset = service.run(
+        Capability.DATASET,
+        ResearchRequest(
+            query="Profile approved data",
+            context={"csv_text": "value\n1\n"},
+        ),
+    )
+    dataset_message = json.loads(
+        _agent_message(
+            Capability.DATASET,
+            StudioRunRequest(
+                objective="Profile approved data",
+                inputs={
+                    "filename": "approved.csv",
+                    "analysis_approved": True,
+                },
+            ),
+            dataset,
+        )
+    )
+    assert dataset_message["approved_compute"] is False
+    assert dataset_message["idempotency_key"] is None
+
+    orchestration = service.run(
+        Capability.ORCHESTRATION,
+        ResearchRequest(query="Coordinate a literature and grant review"),
+    )
+    coordinator_message = json.loads(
+        _agent_message(
+            Capability.ORCHESTRATION,
+            StudioRunRequest(
+                objective="Coordinate a literature and grant review",
+                inputs={"requested_capabilities": ["literature", "grant"]},
+            ),
+            orchestration,
+        )
+    )
+    assert coordinator_message["requested_capabilities"] == [
+        "literature",
+        "grant",
+    ]
+    with pytest.raises(ValueError, match="requested_capabilities"):
+        _agent_message(
+            Capability.ORCHESTRATION,
+            StudioRunRequest(objective="Invalid orchestration", inputs={}),
+            orchestration,
+        )
+
+
+def test_dataset_hosted_envelope_is_bounded_and_uses_stable_caller_key() -> None:
+    service = ResearchService()
+    result = service.run(
+        Capability.DATASET,
+        ResearchRequest(query="Profile bounded data"),
+    )
+    envelope = json.loads(
+        _agent_message(
+            Capability.DATASET,
+            StudioRunRequest(
+                objective="Profile bounded data",
+                inputs={
+                    "filename": "large.csv",
+                    "csv_text": "x" * 50_000,
+                    "analysis_approved": True,
+                    "idempotency_key": "dataset-operation-1",
+                },
+            ),
+            result,
+        )
+    )
+    assert len(envelope["query"]) == 40_000
+    assert envelope["query"].endswith("[INPUT TRUNCATED TO HOSTED CONTRACT LIMIT]")
+    assert envelope["approved_compute"] is False
+    assert envelope["idempotency_key"] == "dataset-operation-1"
 
 
 def test_gateway_retries_documented_session_not_ready_sequence(
