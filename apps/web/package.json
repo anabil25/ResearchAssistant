@@ -9,10 +9,11 @@
     "lint": "eslint . --max-warnings=0",
     "typecheck": "tsc --noEmit",
     "test": "jest --runInBand",
+    "test:coverage": "jest --runInBand --coverage",
     "test:watch": "jest --watch",
     "test:e2e": "npm run build && playwright test",
     "generate:contracts": "openapi-typescript ../../packages/contracts/openapi.json -o src/lib/generated-api.ts",
-    "ci": "npm run typecheck && npm run lint && npm test && npm run build"
+    "ci": "npm run typecheck && npm run lint && npm run test:coverage && npm run build"
   },
   "dependencies": {
     "@fluentui/react-components": "9.74.4",

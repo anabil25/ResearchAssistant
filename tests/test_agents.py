@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,6 +10,7 @@ import httpx
 import pytest
 import yaml
 from openai import APIStatusError
+from shared import credentials, runtime
 from shared.profiles import get_profile, list_profiles
 from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
 
@@ -206,6 +208,125 @@ def test_coordinator_specialist_invocation_retries_transient_shapes(
 def test_coordinator_and_specialist_names_are_stable() -> None:
     assert get_profile("coordinator").name == "research-coordinator"
     assert get_profile("literature").name == "literature-agent"
+
+
+def test_unknown_agent_profile_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unknown research agent profile"):
+        get_profile("not-a-profile")
+
+
+def test_agent_credential_selection_is_environment_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed_calls: list[str | None] = []
+    managed = object()
+    default = object()
+
+    def build_managed_credential(*, client_id: str | None) -> object:
+        managed_calls.append(client_id)
+        return managed
+
+    monkeypatch.setattr(
+        credentials,
+        "ManagedIdentityCredential",
+        build_managed_credential,
+    )
+    monkeypatch.setattr(credentials, "DefaultAzureCredential", lambda: default)
+    for name in ("AZURE_CLIENT_ID", "IDENTITY_ENDPOINT", "MSI_ENDPOINT"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert credentials.get_credential() is default
+
+    monkeypatch.setenv("AZURE_CLIENT_ID", "managed-client")
+    assert credentials.get_credential() is managed
+    assert managed_calls == ["managed-client"]
+
+    monkeypatch.delenv("AZURE_CLIENT_ID")
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://identity.test")
+    assert credentials.get_credential() is managed
+    assert managed_calls[-1] is None
+
+
+def test_agent_runtime_builds_and_hosts_the_selected_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[bool] = []
+    hosted: list[object] = []
+    built_agents: list[dict[str, Any]] = []
+    client = object()
+    tool = object()
+    profile = get_profile("dataset")
+    monkeypatch.setattr(runtime, "load_dotenv", lambda *, override: loaded.append(override))
+    monkeypatch.setattr(runtime, "tools_for_profile", lambda selected, selected_client: [tool])
+    def build_fake_agent(**kwargs: Any) -> object:
+        built_agents.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(runtime, "Agent", build_fake_agent)
+
+    runtime.build_agent("dataset", client=client)
+
+    assert loaded == [False]
+    assert built_agents == [
+        {
+            "client": client,
+            "name": profile.name,
+            "instructions": profile.instructions,
+            "tools": [tool],
+            "default_options": {"store": False},
+        }
+    ]
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test")
+    monkeypatch.setenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "test-model")
+    credential = object()
+    monkeypatch.setattr(runtime, "get_credential", lambda: credential)
+    monkeypatch.setattr(
+        runtime,
+        "FoundryChatClient",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    built_client = runtime._build_foundry_client()
+    assert built_client.project_endpoint == "https://foundry.example.test"
+    assert built_client.model == "test-model"
+    assert built_client.credential is credential
+
+    monkeypatch.setattr(runtime, "build_agent", lambda profile_id: profile_id)
+    monkeypatch.setattr(
+        runtime,
+        "ResponsesHostServer",
+        lambda selected: SimpleNamespace(run=lambda: hosted.append(selected)),
+    )
+    runtime.run_profile("dataset")
+    assert hosted == ["dataset"]
+    assert runtime.describe_profile("dataset") is profile
+
+
+def test_hosted_agent_entrypoints_are_import_safe_and_dispatch_exact_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_profiles = [
+        "coordinator",
+        "dataset",
+        "grant",
+        "grant_online",
+        "institution",
+        "literature",
+        "literature_online",
+        "matching",
+        "matching_online",
+    ]
+    dispatched: list[str] = []
+    monkeypatch.setattr(runtime, "run_profile", dispatched.append)
+
+    for profile_id in expected_profiles:
+        entrypoint = ROOT / "agents" / profile_id / "main.py"
+        dispatch_count = len(dispatched)
+        runpy.run_path(str(entrypoint), run_name=f"coverage.{profile_id}")
+        assert len(dispatched) == dispatch_count
+        runpy.run_path(str(entrypoint), run_name="__main__")
+
+    assert dispatched == expected_profiles
 
 
 def test_each_hosted_agent_has_a_smoke_evaluation_dataset() -> None:

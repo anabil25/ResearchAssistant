@@ -26,6 +26,26 @@ export interface InteractionContract {
   testIds: readonly string[];
 }
 
+export type CoverageViewport = "desktop" | "tablet" | "mobile";
+export type CoverageStateKind =
+  | "behavior"
+  | "async"
+  | "empty"
+  | "error"
+  | "auth";
+
+export interface UiCoverageContract extends InteractionContract {
+  route: string;
+  viewports: readonly CoverageViewport[];
+  rtlTestIds: readonly string[];
+  playwrightTestIds: readonly string[];
+  screenshotIds: readonly string[];
+  classifiedStates: readonly {
+    name: string;
+    kind: CoverageStateKind;
+  }[];
+}
+
 const STANDARD_STATES = [
   "ready",
   "keyboard",
@@ -803,3 +823,154 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
 export const INTERACTION_GAPS = INTERACTION_MANIFEST.filter(
   (item) => item.baseline === "unwired" || item.baseline === "missing",
 );
+
+const ALL_VIEWPORTS = ["desktop", "tablet", "mobile"] as const;
+
+export const CORE_SCREENSHOT_CONTRACTS = [
+  {
+    id: "visual.core.overview",
+    route: "/",
+    heading: "Move from question to defensible evidence.",
+  },
+  {
+    id: "visual.core.literature",
+    route: "/?view=literature",
+    heading: "Literature Studio",
+  },
+  {
+    id: "visual.core.grant",
+    route: "/?view=grant",
+    heading: "Grant Studio",
+  },
+  {
+    id: "visual.core.matching",
+    route: "/?view=matching",
+    heading: "Matching Explorer",
+  },
+  {
+    id: "visual.core.dataset",
+    route: "/?view=dataset",
+    heading: "Dataset Lab",
+  },
+  {
+    id: "visual.core.institutional",
+    route: "/?view=institutional_qa",
+    heading: "Institutional Q&A",
+  },
+  {
+    id: "visual.core.workflow",
+    route: "/?view=orchestration",
+    heading: "Workflow Automation",
+  },
+  {
+    id: "visual.core.library",
+    route: "/?view=library",
+    heading: "Library",
+  },
+  {
+    id: "visual.core.runs",
+    route: "/?view=runs",
+    heading: "Runs & Approvals",
+  },
+  {
+    id: "visual.core.settings",
+    route: "/?view=settings",
+    heading: "Project Settings",
+  },
+] as const;
+
+export const STATE_SCREENSHOT_IDS = [
+  "visual.state.empty",
+  "visual.state.loading",
+  "visual.state.error",
+] as const;
+
+const SURFACE_ROUTES: Readonly<Record<string, string>> = {
+  Approvals: "/?view=runs",
+  Dataset: "/?view=dataset",
+  Grant: "/?view=grant",
+  Institutional: "/?view=institutional_qa",
+  Library: "/?view=library",
+  Literature: "/?view=literature",
+  Matching: "/?view=matching",
+  Overview: "/",
+  Runs: "/?view=runs",
+  Settings: "/?view=settings",
+  Shell: "/",
+  Workflow: "/?view=orchestration",
+};
+
+const SURFACE_SCREENSHOTS: Readonly<Record<string, readonly string[]>> = {
+  Approvals: ["visual.core.runs"],
+  Dataset: ["visual.core.dataset"],
+  Grant: ["visual.core.grant"],
+  Institutional: ["visual.core.institutional"],
+  Library: ["visual.core.library"],
+  Literature: [
+    "visual.core.literature",
+    "visual.state.empty",
+    "visual.state.loading",
+    "visual.state.error",
+  ],
+  Matching: ["visual.core.matching"],
+  Overview: ["visual.core.overview"],
+  Runs: ["visual.core.runs"],
+  Settings: ["visual.core.settings"],
+  Shell: ["visual.core.overview"],
+  Workflow: ["visual.core.workflow"],
+};
+
+export const DECLARED_SCREENSHOT_IDS: ReadonlySet<string> = new Set([
+  ...CORE_SCREENSHOT_CONTRACTS.map((contract) => contract.id),
+  ...STATE_SCREENSHOT_IDS,
+]);
+
+const ASYNC_STATES = new Set([
+  "loading",
+  "running",
+  "retrying",
+  "saving",
+  "submitting",
+  "testing",
+  "uploading",
+  "validating",
+]);
+const EMPTY_STATES = new Set(["empty", "none", "no-results"]);
+const ERROR_STATES = new Set([
+  "blocked",
+  "error",
+  "failed",
+  "invalid",
+  "rejected",
+  "unavailable",
+]);
+const AUTH_STATES = new Set([
+  "admin-consent-required",
+  "consent-required",
+  "locked",
+  "permission-denied",
+  "unauthorized",
+  "user-consent-required",
+]);
+
+function classifyState(name: string): CoverageStateKind {
+  if (ASYNC_STATES.has(name)) return "async";
+  if (EMPTY_STATES.has(name)) return "empty";
+  if (ERROR_STATES.has(name)) return "error";
+  if (AUTH_STATES.has(name)) return "auth";
+  return "behavior";
+}
+
+export const UI_COVERAGE_MANIFEST: readonly UiCoverageContract[] =
+  INTERACTION_MANIFEST.map((interaction) => ({
+    ...interaction,
+    route: SURFACE_ROUTES[interaction.surface],
+    viewports: ALL_VIEWPORTS,
+    rtlTestIds: interaction.testIds.filter((id) => id.startsWith("jest.")),
+    playwrightTestIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
+    screenshotIds: SURFACE_SCREENSHOTS[interaction.surface],
+    classifiedStates: interaction.states.map((name) => ({
+      name,
+      kind: classifyState(name),
+    })),
+  }));

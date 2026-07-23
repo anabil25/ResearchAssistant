@@ -4,10 +4,14 @@ const deployedBaseUrl = process.env.PLAYWRIGHT_BASE_URL;
 
 export default defineConfig({
   testDir: "./e2e",
+  outputDir: "./test-results",
   fullyParallel: true,
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
-  reporter: "list",
+  reporter: [
+    ["list"],
+    ["html", { open: "never", outputFolder: "playwright-report" }],
+  ],
   timeout: deployedBaseUrl ? 300_000 : 30_000,
   expect: {
     timeout: deployedBaseUrl ? 240_000 : 5_000,
@@ -46,7 +50,26 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 1440, height: 1000 },
+      },
+    },
+    {
+      name: "tablet-chromium",
+      testMatch: /visual-coverage\.spec\.ts/,
+      use: {
+        ...devices["Desktop Chrome"],
+        viewport: { width: 834, height: 1112 },
+      },
+    },
+    {
+      name: "mobile-chromium",
+      testMatch: /visual-coverage\.spec\.ts/,
+      use: {
+        ...devices["Pixel 5"],
+        viewport: { width: 390, height: 844 },
+      },
     },
   ],
 });

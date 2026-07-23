@@ -142,7 +142,7 @@ chunk is accepted.
 ```powershell
 uv run ruff check packages services agents scripts tests
 uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
-uv run pytest -q
+uv run pytest -q --cov --cov-report=term-missing --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
 uv run pip-audit
 az bicep build --file infra\main.bicep --stdout
 
@@ -152,9 +152,11 @@ npm run test:e2e
 npm audit --audit-level=moderate
 ```
 
-The Playwright configuration starts both the API and the Next.js app and tests
-all six studios, Library ingestion, Runs/Approvals, connector settings, and
-mobile navigation through the BFF.
+The Python and Jest coverage commands enforce 100% line and branch coverage;
+Jest also enforces 100% statements and functions. The Playwright configuration
+starts both backend services and the Next.js app, retains behavioral and WCAG
+assertions, and writes desktop, tablet, and mobile screenshots for the core,
+loading, empty, and error states under `apps/web/test-results`.
 
 ## Azure deployment
 

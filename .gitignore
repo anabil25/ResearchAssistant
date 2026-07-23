@@ -19,6 +19,7 @@ agents/.foundry/
 .mypy_cache/
 .ruff_cache/
 .coverage
+coverage/
 htmlcov/
 dist/
 build/

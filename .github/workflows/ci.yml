@@ -26,12 +26,27 @@ jobs:
       - name: Restore Python environment
         run: uv sync --all-packages --group dev --frozen
 
-      - name: Lint, type-check, test, and audit Python
+      - name: Lint and type-check Python
         run: |
           uv run ruff check packages services agents scripts tests
           uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
-          uv run pytest -q
-          uv run pip-audit
+
+      - name: Enforce 100% Python line and branch coverage
+        id: python_coverage
+        continue-on-error: true
+        run: |
+          mkdir -p coverage/python
+          uv run pytest -q --cov --cov-report=term-missing --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
+
+      - name: Upload Python coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage/python
+
+      - name: Audit Python dependencies
+        run: uv run pip-audit
 
       - name: Export OpenAPI contract
         run: uv run python scripts/export_contracts.py
@@ -46,12 +61,31 @@ jobs:
         working-directory: apps/web
         run: npm ci
 
-      - name: Validate and audit web
+      - name: Validate web contracts and static quality
         working-directory: apps/web
         run: |
           npm run generate:contracts
-          npm run ci
+          npm run typecheck
+          npm run lint
+
+      - name: Enforce 100% Jest coverage
+        id: jest_coverage
+        continue-on-error: true
+        working-directory: apps/web
+        run: npm run test:coverage
+
+      - name: Build and audit web
+        working-directory: apps/web
+        run: |
+          npm run build
           npm audit --audit-level=moderate
+
+      - name: Upload Jest coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jest-coverage
+          path: apps/web/coverage
 
       - name: Verify generated contracts are current
         run: git diff --exit-code -- packages/contracts/openapi.json apps/web/src/lib/generated-api.ts
@@ -64,5 +98,23 @@ jobs:
         working-directory: apps/web
         run: npm run test:e2e
 
+      - name: Upload Playwright report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-results
+          path: |
+            apps/web/playwright-report
+            apps/web/test-results
+
       - name: Compile Bicep
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+      - name: Enforce coverage outcomes
+        if: always()
+        env:
+          PYTHON_COVERAGE: ${{ steps.python_coverage.outcome }}
+          JEST_COVERAGE: ${{ steps.jest_coverage.outcome }}
+        run: |
+          test "$PYTHON_COVERAGE" = "success"
+          test "$JEST_COVERAGE" = "success"

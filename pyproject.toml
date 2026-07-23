@@ -34,6 +34,40 @@ addopts = "-ra --strict-markers"
 testpaths = ["tests"]
 pythonpath = [".", "agents"]
 
+[tool.coverage.run]
+branch = true
+relative_files = true
+source_dirs = [
+    "packages/research_core/src/research_assistant_core",
+    "packages/research_connectors/src/research_assistant_connectors",
+    "services/api/src/research_assistant_api",
+    "services/connector_adapter/src/research_assistant_connector_adapter",
+    "services/worker/src/research_assistant_worker",
+    "agents/shared",
+    "agents/coordinator",
+    "agents/dataset",
+    "agents/grant",
+    "agents/grant_online",
+    "agents/institution",
+    "agents/literature",
+    "agents/literature_online",
+    "agents/matching",
+    "agents/matching_online",
+]
+
+[tool.coverage.report]
+fail_under = 100
+precision = 2
+show_missing = true
+skip_empty = true
+
+[tool.coverage.json]
+output = "coverage/python/coverage.json"
+pretty_print = true
+
+[tool.coverage.xml]
+output = "coverage/python/coverage.xml"
+
 [tool.ruff]
 target-version = "py312"
 line-length = 120

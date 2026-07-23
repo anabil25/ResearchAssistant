@@ -643,7 +643,13 @@ button {
 .secondary-button:disabled,
 .danger-button:disabled {
   cursor: wait;
-  opacity: 0.62;
+  opacity: 1;
+}
+
+.primary-button:disabled {
+  color: #ffffff;
+  background: #41564a;
+  border-color: #41564a;
 }
 
 .full-button {
