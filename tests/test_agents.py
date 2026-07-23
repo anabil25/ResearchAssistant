@@ -51,7 +51,12 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
             assert binding.instance_ref
             assert len(binding.instance_ref.fingerprint) == 64
             assert binding.instance_ref.fingerprint == binding.instance_ref.fingerprint.lower()
-            assert binding.instance_ref.discovered_version
+            assert binding.instance_ref.discovered_provider_version
+            assert binding.instance_ref.discovered_resource_version
+            assert (
+                binding.instance_ref.discovered_provider_version
+                != binding.instance_ref.discovered_resource_version
+            )
             assert binding.operation_ref.input_schema_digest
             assert binding.operation_ref.output_schema_digest
             assert binding.connection_ref.id

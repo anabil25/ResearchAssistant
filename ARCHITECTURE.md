@@ -64,6 +64,11 @@ flowchart LR
   consume an exact-bound one-time `approval_decision_id`, persist the receipt,
   and only then resolve the runtime handler. Client booleans are never
   authorization.
+- Provider attachments require the exact
+  `research-assistant.integration-provider.v6` wire contract and canonical
+  OpenAPI SHA-256. The harness retains its runtime-neutral typed references,
+  independently revalidates binding/resource/schema/policy/configuration pins,
+  and resolves non-serialized handlers only after GA + ACTIVE attestation.
 - Governance telemetry emits hashed tenant, actor, approval, and idempotency
   identifiers plus release/capability/outcome metadata. Payloads, queries,
   credentials, evidence content, and raw decision references are excluded.

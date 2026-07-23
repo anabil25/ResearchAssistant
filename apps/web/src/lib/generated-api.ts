@@ -140,40 +140,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/datasets/execute": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Execute Dataset */
-        post: operations["execute_dataset_api_datasets_execute_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/datasets/plan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Plan Dataset */
-        post: operations["plan_dataset_api_datasets_plan_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/library": {
         parameters: {
             query?: never;
@@ -700,54 +666,6 @@ export interface components {
             assigned_agents: string[];
             /** Enabled */
             enabled: boolean;
-        };
-        /** CopilotPlanRequest */
-        CopilotPlanRequest: {
-            /** Objective */
-            objective: string;
-            /**
-             * Schema Summary
-             * @default
-             */
-            schema_summary: string;
-        };
-        /** CopilotPlanResponse */
-        CopilotPlanResponse: {
-            /**
-             * Executed
-             * @default false
-             */
-            executed: boolean;
-            /** Plan */
-            plan: string;
-        };
-        /** DatasetExecutionRequest */
-        DatasetExecutionRequest: {
-            /**
-             * Analysis Code
-             * @default summary = df.describe(include='all').fillna('').to_dict()
-             *     print(summary)
-             */
-            analysis_code: string;
-            /** Approval Acknowledged */
-            approval_acknowledged: boolean;
-            /** Csv Text */
-            csv_text: string;
-            /** Filename */
-            filename: string;
-        };
-        /** DatasetExecutionResult */
-        DatasetExecutionResult: {
-            /** Result */
-            result: {
-                [key: string]: unknown;
-            };
-            /** Session Id */
-            session_id: string;
-            /** Status */
-            status: string;
-        } & {
-            [key: string]: unknown;
         };
         /** DatasetFieldProfile */
         DatasetFieldProfile: {
@@ -1672,72 +1590,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectorSetting"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    execute_dataset_api_datasets_execute_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DatasetExecutionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DatasetExecutionResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    plan_dataset_api_datasets_plan_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CopilotPlanRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopilotPlanResponse"];
                 };
             };
             /** @description Validation Error */

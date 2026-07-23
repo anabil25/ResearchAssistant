@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Literal
 
 from .capabilities import (
+    PROVIDER_CONTRACT_SCHEMA_DIGEST,
+    PROVIDER_CONTRACT_VERSION,
     CapabilityBinding,
     ConfigurationReference,
     ConnectionReference,
@@ -132,7 +134,7 @@ def _toolbox_binding(
         descriptor_id=capability_id,
         operation_id=f"foundry.toolbox.{tool_name}",
         instance_ref=f"foundry://project/toolboxes/{capability_id}",
-        discovered_version="mcp-v1",
+        discovered_resource_version="mcp-v1",
         input_contract=input_contract,
         output_contract=output_contract,
         config_ref=f"app://config/capabilities/{capability_id}",
@@ -146,7 +148,7 @@ def _capability_binding(
     descriptor_id: str,
     operation_id: str,
     instance_ref: str,
-    discovered_version: str,
+    discovered_resource_version: str,
     input_contract: str,
     output_contract: str,
     config_ref: str,
@@ -157,11 +159,6 @@ def _capability_binding(
     output_schema_digest = SCHEMA_REFERENCES[output_contract].sha256
     provider_id = (
         "microsoft-foundry-toolbox" if operation_id.startswith("foundry.toolbox.") else "microsoft-foundry-hosted-agent"
-    )
-    provider_contract_version = (
-        "foundry-toolbox.mcp-v1"
-        if operation_id.startswith("foundry.toolbox.")
-        else "foundry-hosted-agent.responses-2.0.0"
     )
     descriptor_ref = DescriptorReference(
         id=descriptor_id,
@@ -175,14 +172,25 @@ def _capability_binding(
         output_schema_digest=output_schema_digest,
     )
     instance_id = f"{descriptor_id}:{operation_id.rsplit('.', 1)[-1]}"
+    binding_id = f"{descriptor_id}.{operation_id.rsplit('.', 1)[-1]}"
+    configuration: dict[str, object] = {}
     configuration_ref = ConfigurationReference(
         id=config_ref,
-        digest=canonical_digest({}),
+        canonical_json="{}",
+        digest=canonical_digest(configuration),
     )
+    connection_scopes = ("https://ai.azure.com/.default",)
     connection = ConnectionReference(
         id=connection_ref,
         auth_mode="managed_identity",
-        authorization_digest=canonical_digest({"id": connection_ref, "auth_mode": "managed_identity"}),
+        scopes=connection_scopes,
+        authorization_digest=canonical_digest(
+            {
+                "id": connection_ref,
+                "auth_mode": "managed_identity",
+                "scopes": connection_scopes,
+            }
+        ),
     )
     policy = PolicyReference(
         id=policy_ref,
@@ -194,13 +202,18 @@ def _capability_binding(
         digest=canonical_digest((instance_ref,)),
     )
     binding = CapabilityBinding(
-        provider_contract_version=provider_contract_version,
+        binding_id=binding_id,
+        provider_contract_version=PROVIDER_CONTRACT_VERSION,
+        provider_contract_schema_digest=PROVIDER_CONTRACT_SCHEMA_DIGEST,
         descriptor_ref=descriptor_ref,
+        operations_digest=canonical_digest((operation_ref.model_dump(mode="json"),)),
         operation_ref=operation_ref,
         instance_ref=InstanceReference(
             provider_id=provider_id,
             instance_id=instance_id,
-            discovered_version=discovered_version,
+            provider_resource_id=instance_ref,
+            discovered_provider_version=PROVIDER_CONTRACT_VERSION,
+            discovered_resource_version=discovered_resource_version,
             fingerprint="0" * 64,
         ),
         configuration_ref=configuration_ref,
@@ -319,7 +332,7 @@ _MANIFESTS: dict[str, AgentManifest] = {
                 descriptor_id="specialist.delegate",
                 operation_id="foundry.hosted_agent.responses.invoke",
                 instance_ref="foundry://project/agents/pinned-specialists",
-                discovered_version="responses-2.0.0",
+                discovered_resource_version="responses-2.0.0",
                 input_contract="SpecialistRequestV2",
                 output_contract="SpecialistResultV2",
                 config_ref="app://config/capabilities/specialist.delegate",

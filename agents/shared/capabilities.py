@@ -45,6 +45,7 @@ from .errors import (
     IdempotencyResultMismatchError,
     IdempotencyStoreUnavailableError,
     InvocationError,
+    IsolationError,
     StaleCapabilityBindingError,
 )
 from .idempotency import (
@@ -67,6 +68,11 @@ CapabilityHandlerResolver = Callable[
 ]
 _PROVIDER_ATTESTATION = object()
 _RUNTIME_ATTESTATION = object()
+PROVIDER_CONTRACT_VERSION = "research-assistant.integration-provider.v6"
+PROVIDER_CONTRACT_SCHEMA_DIGEST = (
+    "354716da381fbb0d71ee58fbfccbc737066debaf238403964f28112898cdb24c"
+)
+PROVIDER_CONTRACT_ARTIFACT_DIGEST = PROVIDER_CONTRACT_SCHEMA_DIGEST
 
 
 class OperationClass(StrEnum):
@@ -164,7 +170,13 @@ class InstanceReference(BaseModel):
 
     provider_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
     instance_id: str = Field(min_length=1, max_length=256)
-    discovered_version: str = Field(min_length=1, max_length=128)
+    provider_resource_id: str = Field(min_length=1, max_length=2048)
+    discovered_provider_version: str = Field(min_length=1, max_length=128)
+    discovered_resource_version: str | None = Field(
+        default=None,
+        min_length=1,
+        max_length=128,
+    )
     fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
@@ -172,7 +184,20 @@ class ConfigurationReference(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str | None = Field(default=None, min_length=1, max_length=512)
+    canonical_json: str = Field(min_length=2)
     digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def digest_matches_canonical_configuration(self) -> ConfigurationReference:
+        try:
+            configuration = json.loads(self.canonical_json)
+        except json.JSONDecodeError as exc:
+            raise ValueError("capability configuration must be canonical JSON") from exc
+        if self.canonical_json != _canonical_json(configuration):
+            raise ValueError("capability configuration JSON is not canonical")
+        if self.digest != _canonical_digest(configuration):
+            raise ValueError("capability configuration digest does not match")
+        return self
 
 
 class ConnectionReference(BaseModel):
@@ -180,7 +205,25 @@ class ConnectionReference(BaseModel):
 
     id: str = Field(min_length=1, max_length=512)
     auth_mode: str = Field(min_length=1, max_length=128)
+    scopes: tuple[str, ...]
     authorization_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def authorization_is_canonical(self) -> ConnectionReference:
+        if self.scopes != tuple(sorted(set(self.scopes))) or any(
+            not scope for scope in self.scopes
+        ):
+            raise ValueError("connection scopes must be non-empty, sorted, and unique")
+        expected = _canonical_digest(
+            {
+                "id": self.id,
+                "auth_mode": self.auth_mode,
+                "scopes": self.scopes,
+            }
+        )
+        if self.authorization_digest != expected:
+            raise ValueError("connection authorization digest does not match")
+        return self
 
 
 class PolicyReference(BaseModel):
@@ -207,8 +250,11 @@ class DestinationConstraints(BaseModel):
 class CapabilityBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    binding_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
     provider_contract_version: str = Field(min_length=1, max_length=128)
+    provider_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     descriptor_ref: DescriptorReference
+    operations_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     operation_ref: OperationReference
     instance_ref: InstanceReference
     configuration_ref: ConfigurationReference
@@ -218,6 +264,14 @@ class CapabilityBinding(BaseModel):
     tenant_scope: str = Field(min_length=1, max_length=256)
     project_scope: str = Field(min_length=1, max_length=512)
 
+    @model_validator(mode="after")
+    def provider_contract_is_exact(self) -> CapabilityBinding:
+        if self.provider_contract_version != PROVIDER_CONTRACT_VERSION:
+            raise ValueError("capability binding requires the canonical provider v6 contract")
+        if self.provider_contract_schema_digest != PROVIDER_CONTRACT_SCHEMA_DIGEST:
+            raise ValueError("capability binding provider schema digest does not match v6")
+        return self
+
 
 def template_instance_fingerprint(binding: CapabilityBinding) -> str:
     payload = binding.model_dump(mode="json")
@@ -226,14 +280,17 @@ def template_instance_fingerprint(binding: CapabilityBinding) -> str:
 
 
 def _canonical_digest(payload: object) -> str:
-    encoded = json.dumps(
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()
+
+
+def _canonical_json(payload: object) -> str:
+    return json.dumps(
         payload,
         sort_keys=True,
         separators=(",", ":"),
         ensure_ascii=True,
         allow_nan=False,
-    ).encode("utf-8")
-    return hashlib.sha256(encoded).hexdigest()
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -258,8 +315,11 @@ class ToolRegistration:
 class ProviderInstanceAttestation(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
+    binding_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
     provider_contract_version: str
+    provider_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     descriptor_ref: DescriptorReference
+    operations_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     operation_ref: OperationReference
     instance_ref: InstanceReference
     configuration_ref: ConfigurationReference
@@ -268,8 +328,24 @@ class ProviderInstanceAttestation(BaseModel):
     allowed_destinations: DestinationConstraints
     tenant_id: str
     project_id: str
-    readiness: str
+    readiness: Literal[
+        "READY",
+        "UNAVAILABLE",
+        "UNAUTHORIZED",
+        "NEEDS_CONSENT",
+        "MISCONFIGURED",
+        "DEGRADED",
+    ]
+    health: Literal[
+        "READY",
+        "UNAVAILABLE",
+        "UNAUTHORIZED",
+        "NEEDS_CONSENT",
+        "MISCONFIGURED",
+        "DEGRADED",
+    ]
     auth_ready: bool
+    configuration_validated: bool
     maturity: Literal["GA", "PREVIEW", "UNKNOWN"]
     lifecycle: Literal["ACTIVE", "DEPRECATED", "RETIRED"]
     approval_expires_at: datetime | None = None
@@ -277,7 +353,7 @@ class ProviderInstanceAttestation(BaseModel):
 
 class ProviderContractAdapter(Protocol):
     contract_version: str
-    trusted_legacy_derivation: bool
+    contract_schema_digest: str
 
     def discover_instance(
         self,
@@ -302,14 +378,34 @@ def attach_provider_binding(
     now: datetime | None = None,
     handler_resolver: CapabilityHandlerResolver | None = None,
 ) -> ToolRegistration:
+    try:
+        binding = CapabilityBinding.model_validate(binding.model_dump(mode="json"))
+    except ValidationError as exc:
+        raise ConfigurationError(
+            "Capability binding is not a valid canonical provider v6 binding",
+        ) from exc
+    if (
+        adapter.contract_version != PROVIDER_CONTRACT_VERSION
+        or adapter.contract_schema_digest != PROVIDER_CONTRACT_ARTIFACT_DIGEST
+    ):
+        raise ConfigurationError(
+            "Provider adapter does not match the pinned provider v6 artifact",
+            context={
+                "expected_contract": PROVIDER_CONTRACT_VERSION,
+                "expected_artifact_digest": PROVIDER_CONTRACT_ARTIFACT_DIGEST,
+            },
+        )
     attestation = adapter.discover_instance(
         binding.instance_ref.provider_id,
         binding.instance_ref.instance_id,
     )
     expected = {
+        "binding_id": binding.binding_id,
         "provider_contract_version": binding.provider_contract_version,
+        "provider_contract_schema_digest": binding.provider_contract_schema_digest,
         "instance_ref": binding.instance_ref,
         "descriptor_ref": binding.descriptor_ref,
+        "operations_digest": binding.operations_digest,
         "operation_ref": binding.operation_ref,
         "configuration_ref": binding.configuration_ref,
         "connection_ref": binding.connection_ref,
@@ -319,8 +415,6 @@ def attach_provider_binding(
     mismatches = sorted(
         field for field, expected_value in expected.items() if getattr(attestation, field) != expected_value
     )
-    if adapter.contract_version != binding.provider_contract_version:
-        mismatches.append("adapter_contract")
     if mismatches:
         if "instance_ref" in mismatches:
             raise StaleCapabilityBindingError(
@@ -338,14 +432,6 @@ def attach_provider_binding(
                 "capability": binding.descriptor_ref.id,
                 "mismatches": ",".join(sorted(set(mismatches))),
             },
-        )
-    if (
-        binding.provider_contract_version.startswith("integration-provider.v1")
-        and not adapter.trusted_legacy_derivation
-    ):
-        raise ConfigurationError(
-            "Legacy provider instances are not attachable without trusted pin attestation",
-            context={"capability": binding.descriptor_ref.id},
         )
     for schema_digest in (
         binding.operation_ref.input_schema_digest,
@@ -374,13 +460,19 @@ def attach_provider_binding(
             "Provider instance authentication is not ready",
             context={"capability": binding.descriptor_ref.id},
         )
-    if attestation.readiness != "available":
+    if attestation.readiness != "READY" or attestation.health != "READY":
         raise ConfigurationError(
-            "Provider instance is not available",
+            "Provider instance is not ready and healthy",
             context={
                 "capability": binding.descriptor_ref.id,
                 "readiness": attestation.readiness,
+                "health": attestation.health,
             },
+        )
+    if not attestation.configuration_validated:
+        raise ConfigurationError(
+            "Provider instance configuration is not validated",
+            context={"capability": binding.descriptor_ref.id},
         )
     if attestation.maturity != "GA" or attestation.lifecycle != "ACTIVE":
         raise ConfigurationError(
@@ -452,6 +544,7 @@ class InvocationContext(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1)
     principal_id: str = Field(min_length=1)
     scopes: frozenset[str] = frozenset()
     destination: str | None = None
@@ -665,6 +758,14 @@ class CapabilityExecutor:
         payload: dict[str, Any],
         context: InvocationContext,
     ) -> dict[str, Any]:
+        if (
+            context.tenant_id != registration.binding.tenant_scope
+            or context.project_id != registration.binding.project_scope
+        ):
+            raise IsolationError(
+                "Authenticated invocation scope does not match the capability binding",
+                context={"capability": capability.id},
+            )
         self._policy.authorize(capability, context)
         if self._has_external_effect(capability) or capability.approval != ApprovalMode.NEVER:
             return await self._invoke_durable(
@@ -739,7 +840,7 @@ class CapabilityExecutor:
         destination = cast(str, context.destination)
         key = IdempotencyKey(
             tenant_id=context.tenant_id,
-            project_id=registration.binding.project_scope,
+            project_id=context.project_id,
             binding_digest=_canonical_digest(registration.binding.model_dump(mode="json")),
             operation_id=registration.binding.operation_ref.id,
             destination=destination,
@@ -810,21 +911,51 @@ class CapabilityExecutor:
                 irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
                 approval=approval,
             )
-        except HarnessError:
+            self._validate_transition(
+                capability,
+                claim.record,
+                started,
+                expected_state="in_progress",
+                irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+                approval=approval,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._fail_durable(
+                    store,
+                    claim.record,
+                    claim_token,
+                    "start_transition_cancelled",
+                    suppress_store_error=True,
+                )
+            )
+            raise
+        except HarnessError as exc:
+            try:
+                await self._fail_durable(
+                    store,
+                    claim.record,
+                    claim_token,
+                    exc.code,
+                )
+            except IdempotencyReconciliationRequiredError as reconciliation:
+                raise reconciliation from exc
             raise
         except Exception as exc:
-            raise IdempotencyStoreUnavailableError(
+            start_error = IdempotencyStoreUnavailableError(
                 "Durable idempotency start transition failed closed",
                 context={"capability": capability.id},
-            ) from exc
-        self._validate_transition(
-            capability,
-            claim.record,
-            started,
-            expected_state="in_progress",
-            irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
-            approval=approval,
-        )
+            )
+            try:
+                await self._fail_durable(
+                    store,
+                    claim.record,
+                    claim_token,
+                    start_error.code,
+                )
+            except IdempotencyReconciliationRequiredError as reconciliation:
+                raise reconciliation from start_error
+            raise start_error from exc
         try:
             timeout = self._remaining_timeout(capability, context)
             async with asyncio.timeout(timeout):
@@ -1096,8 +1227,9 @@ class CapabilityExecutor:
     ) -> IdempotencyApprovalProvenance:
         request = ApprovalConsumptionRequest(
             approval_decision_id=cast(str, context.approval_decision_id),
+            binding_id=registration.binding.binding_id,
             tenant_id=context.tenant_id,
-            project_id=registration.binding.project_scope,
+            project_id=context.project_id,
             actor_id=context.principal_id,
             scopes=tuple(sorted(context.scopes)),
             binding_digest=key.binding_digest,

@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, cast
 
 from agent_framework import Agent
 from agent_framework.foundry import FoundryChatClient
@@ -44,6 +44,12 @@ class PreparedAgent:
     registrations: tuple[ToolRegistration, ...]
 
 
+@dataclass(frozen=True, slots=True)
+class RuntimeBootstrap:
+    prepared: PreparedAgent
+    release: ReleaseMetadata
+
+
 class GovernedAgentFactory:
     def __init__(self, manifest: AgentManifest) -> None:
         self.manifest = manifest
@@ -54,6 +60,8 @@ class GovernedAgentFactory:
         client: Any | None = None,
         settings: HarnessSettings | None = None,
         provider_adapter: ProviderContractAdapter | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
         idempotency_store: IdempotencyStore | None = None,
         approval_adapter: ApprovalConsumptionAdapter | None = None,
         release_attestor: ReleaseAttestor | None = None,
@@ -72,57 +80,24 @@ class GovernedAgentFactory:
                 context={"agent": self.manifest.id},
             )
         self._validate_model_policy(effective_settings)
-        if client is None:
-            client = _build_foundry_client(effective_settings)
-        if _requires_toolbox(self.manifest) and (
-            effective_settings is None or effective_settings.toolbox_endpoint is None
-        ):
-            raise ConfigurationError(
-                "Manifest requires a configured Foundry Toolbox endpoint",
-                context={"agent": self.manifest.id},
-            )
-        prepared = self.prepare(
+        bootstrap = self.bootstrap_runtime(
             effective_settings,
             provider_adapter=provider_adapter,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
+            idempotency_store=idempotency_store,
+            approval_adapter=approval_adapter,
+            release_attestor=release_attestor,
+            conversation_store=conversation_store,
+            long_term_memory_store=long_term_memory_store,
+            allow_test_idempotency_store=allow_test_idempotency_store,
+            allow_test_approval_adapter=allow_test_approval_adapter,
+            allow_test_release_attestor=allow_test_release_attestor,
         )
-        if _requires_durable_idempotency(prepared.capabilities) and (
-            idempotency_store is None
-            or (
-                not getattr(idempotency_store, "is_durable", False)
-                and not allow_test_idempotency_store
-            )
-        ):
-            raise ConfigurationError(
-                "Write-capable Hosted Agents require an app-owned durable idempotency store",
-                context={"agent": self.manifest.id},
-            )
-        if _requires_durable_approval(prepared.capabilities) and (
-            approval_adapter is None
-            or (
-                not getattr(approval_adapter, "is_durable", False)
-                and not allow_test_approval_adapter
-            )
-        ):
-            raise ConfigurationError(
-                "Approval-gated Hosted Agents require an app-owned durable approval adapter",
-                context={"agent": self.manifest.id},
-            )
-        validate_persistent_memory_providers(
-            prepared.manifest,
-            conversation_store,
-            long_term_memory_store,
-        )
-        release = build_release_metadata(
-            prepared.manifest,
-            model_deployment=effective_settings.model_deployment_name,
-            registrations=prepared.registrations,
-        )
-        validate_release_attestation(
-            release,
-            prepared.manifest,
-            release_attestor,
-            allow_test_attestor=allow_test_release_attestor,
-        )
+        prepared = bootstrap.prepared
+        release = bootstrap.release
+        if client is None:
+            client = _build_foundry_client(effective_settings)
         contracts = bind_contracts(prepared.manifest)
         return Agent(
             client=client,
@@ -145,6 +120,8 @@ class GovernedAgentFactory:
                 allow_test_approval_adapter=allow_test_approval_adapter,
                 conversation_store=conversation_store,
                 audit_sink=audit_sink,
+                trusted_tenant_id=trusted_tenant_id,
+                trusted_project_id=trusted_project_id,
             ),
         )
 
@@ -159,10 +136,14 @@ class GovernedAgentFactory:
         settings: HarnessSettings,
         *,
         provider_adapter: ProviderContractAdapter | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
     ) -> ReleaseMetadata:
         prepared = self.prepare(
             settings,
             provider_adapter=provider_adapter,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
         )
         return build_release_metadata(
             prepared.manifest,
@@ -175,6 +156,8 @@ class GovernedAgentFactory:
         settings: HarnessSettings,
         *,
         provider_adapter: ProviderContractAdapter | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
         idempotency_store: IdempotencyStore | None = None,
         approval_adapter: ApprovalConsumptionAdapter | None = None,
         release_attestor: ReleaseAttestor | None = None,
@@ -186,6 +169,8 @@ class GovernedAgentFactory:
             prepared = self.prepare(
                 settings,
                 provider_adapter=provider_adapter,
+                trusted_tenant_id=trusted_tenant_id,
+                trusted_project_id=trusted_project_id,
             )
         except HarnessError:
             readiness["ready"] = False
@@ -244,10 +229,14 @@ class GovernedAgentFactory:
         settings: HarnessSettings,
         *,
         provider_adapter: ProviderContractAdapter | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
     ) -> AgentManifest:
         return self.prepare(
             settings,
             provider_adapter=provider_adapter,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
         ).manifest
 
     def prepare(
@@ -256,6 +245,8 @@ class GovernedAgentFactory:
         *,
         provider_adapter: ProviderContractAdapter | None = None,
         handler_resolver: CapabilityHandlerResolver | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
     ) -> PreparedAgent:
         self._validate_model_policy(settings)
         capabilities = capabilities_for_manifest(self.manifest, settings)
@@ -264,13 +255,20 @@ class GovernedAgentFactory:
                 "Capability bindings require an attested provider adapter",
                 context={"agent": self.manifest.id},
             )
+        if self.manifest.capability_bindings and (
+            trusted_tenant_id is None or trusted_project_id is None
+        ):
+            raise ConfigurationError(
+                "Capability bindings require a trusted tenant and project scope",
+                context={"agent": self.manifest.id},
+            )
         registrations = (
             tuple(
                 runtime_attested_registration(
                     binding,
                     provider_adapter,
-                    tenant_id=binding.tenant_scope,
-                    project_id=binding.project_scope,
+                    tenant_id=cast(str, trusted_tenant_id),
+                    project_id=cast(str, trusted_project_id),
                     handler_resolver=handler_resolver,
                 )
                 for binding in self.manifest.capability_bindings
@@ -283,6 +281,75 @@ class GovernedAgentFactory:
             capabilities=capabilities,
             registrations=registrations,
         )
+
+    def bootstrap_runtime(
+        self,
+        settings: HarnessSettings,
+        *,
+        provider_adapter: ProviderContractAdapter | None = None,
+        handler_resolver: CapabilityHandlerResolver | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
+        idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
+        release_attestor: ReleaseAttestor | None = None,
+        conversation_store: ConversationStore | None = None,
+        long_term_memory_store: LongTermMemoryStore | None = None,
+        allow_test_idempotency_store: bool = False,
+        allow_test_approval_adapter: bool = False,
+        allow_test_release_attestor: bool = False,
+    ) -> RuntimeBootstrap:
+        if _requires_toolbox(self.manifest) and settings.toolbox_endpoint is None:
+            raise ConfigurationError(
+                "Manifest requires a configured Foundry Toolbox endpoint",
+                context={"agent": self.manifest.id},
+            )
+        prepared = self.prepare(
+            settings,
+            provider_adapter=provider_adapter,
+            handler_resolver=handler_resolver,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
+        )
+        if _requires_durable_idempotency(prepared.capabilities) and (
+            idempotency_store is None
+            or (
+                not getattr(idempotency_store, "is_durable", False)
+                and not allow_test_idempotency_store
+            )
+        ):
+            raise ConfigurationError(
+                "Write-capable Hosted Agents require an app-owned durable idempotency store",
+                context={"agent": self.manifest.id},
+            )
+        if _requires_durable_approval(prepared.capabilities) and (
+            approval_adapter is None
+            or (
+                not getattr(approval_adapter, "is_durable", False)
+                and not allow_test_approval_adapter
+            )
+        ):
+            raise ConfigurationError(
+                "Approval-gated Hosted Agents require an app-owned durable approval adapter",
+                context={"agent": self.manifest.id},
+            )
+        validate_persistent_memory_providers(
+            prepared.manifest,
+            conversation_store,
+            long_term_memory_store,
+        )
+        release = build_release_metadata(
+            prepared.manifest,
+            model_deployment=settings.model_deployment_name,
+            registrations=prepared.registrations,
+        )
+        validate_release_attestation(
+            release,
+            prepared.manifest,
+            release_attestor,
+            allow_test_attestor=allow_test_release_attestor,
+        )
+        return RuntimeBootstrap(prepared=prepared, release=release)
 
     def _validate_model_policy(self, settings: HarnessSettings) -> None:
         if settings.model_deployment_name != self.manifest.model_policy.deployment_name:

@@ -44,6 +44,7 @@ from .errors import (
     AuthorizationError,
     ConfigurationError,
     ContractError,
+    IsolationError,
     error_from_exception,
 )
 from .idempotency import IdempotencyStore
@@ -94,6 +95,8 @@ class ContractMiddleware(AgentMiddleware):
         release_id: str | None = None,
         audit_sink: GovernanceAuditSink | None = None,
         conversation_store: ConversationStore | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
     ) -> None:
         self._manifest = manifest
         self._contracts = bind_contracts(manifest)
@@ -102,11 +105,15 @@ class ContractMiddleware(AgentMiddleware):
         self._release_id = release_id
         self._audit_sink = audit_sink
         self._conversation_store = conversation_store
+        self._trusted_tenant_id = trusted_tenant_id
+        self._trusted_project_id = trusted_project_id
         self._persistent_conversation = manifest.memory.for_scope(
             MemoryScope.CONVERSATION
         ).persistent
         if audit_sink is not None and release_id is None:
             raise ValueError("governance audit requires immutable release provenance")
+        if (trusted_tenant_id is None) != (trusted_project_id is None):
+            raise ValueError("trusted invocation tenant and project scopes must be supplied together")
 
     async def process(
         self,
@@ -298,6 +305,13 @@ class ContractMiddleware(AgentMiddleware):
         return tuple(merged.values())
 
     def _invocation_context(self, request: ResearchRequest) -> InvocationContext:
+        tenant_id = self._trusted_tenant_id or request.tenant_id
+        project_id = self._trusted_project_id or request.project_id
+        if request.tenant_id != tenant_id or request.project_id != project_id:
+            raise IsolationError(
+                "Request scope does not match the authenticated Hosted Agent scope",
+                context={"agent": self._manifest.id},
+            )
         scopes: set[str] = set()
         approval_decision_id: str | None = None
         invocation_id: str | None = None
@@ -313,7 +327,8 @@ class ContractMiddleware(AgentMiddleware):
             destination = urlsplit(str(self._settings.toolbox_endpoint)).hostname
         timeout_seconds = self._settings.default_timeout_seconds if self._settings is not None else 60
         return InvocationContext(
-            tenant_id=request.tenant_id,
+            tenant_id=tenant_id,
+            project_id=project_id,
             principal_id=request.principal_id,
             scopes=frozenset(scopes),
             destination=destination,
@@ -710,6 +725,8 @@ def middleware_for_manifest(
     allow_test_approval_adapter: bool = False,
     audit_sink: GovernanceAuditSink | None = None,
     conversation_store: ConversationStore | None = None,
+    trusted_tenant_id: str | None = None,
+    trusted_project_id: str | None = None,
 ) -> list[AgentMiddleware | FunctionMiddleware]:
     effective_audit_sink = audit_sink or (
         OpenTelemetryGovernanceAuditSink() if release_id is not None else None
@@ -721,6 +738,8 @@ def middleware_for_manifest(
             release_id=release_id,
             audit_sink=effective_audit_sink,
             conversation_store=conversation_store,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
         )
     ]
     if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
@@ -735,6 +754,11 @@ def middleware_for_manifest(
         for capability in capabilities
     }
     if capabilities:
+        if trusted_tenant_id is None or trusted_project_id is None:
+            raise ConfigurationError(
+                "Capability middleware requires an authenticated tenant and project scope",
+                context={"agent": manifest.id},
+            )
         if settings is None:
             raise ConfigurationError(
                 "Capability middleware requires resolved runtime settings",

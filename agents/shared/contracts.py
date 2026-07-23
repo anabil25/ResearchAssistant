@@ -55,6 +55,7 @@ class ResearchRequest(BaseModel):
 
     query: str = Field(min_length=1, max_length=40_000)
     tenant_id: str = Field(min_length=1, max_length=128)
+    project_id: str = Field(min_length=1, max_length=256)
     principal_id: str = Field(min_length=1, max_length=256)
     session_id: str = Field(min_length=1, max_length=256)
     sensitivity: Sensitivity

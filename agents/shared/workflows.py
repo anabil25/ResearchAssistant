@@ -215,6 +215,7 @@ def build_coordinator_workflow(
                     {"request": request},
                     InvocationContext(
                         tenant_id=request.request.tenant_id,
+                        project_id=request.request.project_id,
                         principal_id=request.request.principal_id,
                         scopes=frozenset({"research.specialist.invoke"}),
                         destination=request.target_agent,
@@ -323,6 +324,7 @@ class FoundrySpecialistInvoker:
             self._delegate,
             InvocationContext(
                 tenant_id=request.request.tenant_id,
+                project_id=request.request.project_id,
                 principal_id=request.request.principal_id,
                 scopes=frozenset({"research.specialist.invoke"}),
                 destination=request.target_agent,
@@ -374,7 +376,5 @@ def _specialist_manifest(request: SpecialistRequest) -> AgentManifest:
 
 
 def _specialist_payload(request: SpecialistRequest, profile_id: str) -> dict[str, Any]:
-    payload = request.request.model_dump(mode="json")
-    if profile_id == "dataset":
-        payload["approved_compute"] = False
-    return payload
+    excluded = {"approved_compute"} if profile_id == "dataset" else None
+    return request.request.model_dump(mode="json", exclude=excluded)

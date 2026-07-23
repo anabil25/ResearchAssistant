@@ -8,6 +8,10 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import HttpUrl
 from research_assistant_api.app import app
+from research_assistant_api.approval_context import (
+    ApprovalContextRequest,
+    ResolvedApprovalContext,
+)
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import DisabledConnectorGateway
 from research_assistant_api.studios import validate_agent_insight
@@ -35,6 +39,18 @@ def _principal(tenant_id: str, groups: list[str]) -> str:
         ],
     }
     return base64.b64encode(json.dumps(payload).encode()).decode()
+
+
+class TrustedDatasetApprovalResolver:
+    async def resolve(
+        self,
+        request: ApprovalContextRequest,
+    ) -> ResolvedApprovalContext:
+        return ResolvedApprovalContext(
+            request_digest=request.digest,
+            approval_decision_id="approval-inline-1",
+            invocation_id="invocation-inline-1",
+        )
 
 
 def test_demo_identity_uses_the_configured_workspace_tenant() -> None:
@@ -427,6 +443,7 @@ def test_large_unresolved_dataset_returns_estimate_without_fixture_profile(
 def test_inline_computed_dataset_does_not_default_to_scale_out(
     client: TestClient,
 ) -> None:
+    app.state.approval_context_resolver = TrustedDatasetApprovalResolver()
     response = client.post(
         "/api/studios/dataset/run",
         json={
@@ -434,7 +451,8 @@ def test_inline_computed_dataset_does_not_default_to_scale_out(
             "inputs": {
                 "filename": "inline.csv",
                 "csv_text": "group,score\ncontrol,10\nintervention,12\n",
-                "analysis_approved": True,
+                "approval_reference": "approval-request-inline-1",
+                "idempotency_key": "dataset-inline-1",
             },
         },
     )
@@ -448,7 +466,7 @@ def test_inline_computed_dataset_does_not_default_to_scale_out(
     assert result["compute_proposal"]["approval_required"] is False
 
 
-def test_inline_dataset_analysis_requires_explicit_approval(
+def test_inline_dataset_analysis_is_unavailable_without_trusted_resolver(
     client: TestClient,
 ) -> None:
     response = client.post(
@@ -462,7 +480,7 @@ def test_inline_dataset_analysis_requires_explicit_approval(
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 503
     assert "approval" in response.json()["detail"].lower()
 
 

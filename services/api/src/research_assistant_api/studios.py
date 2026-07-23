@@ -86,6 +86,7 @@ class StudioService:
         hosted_content: str | None = None,
         hosted_agent_name: str | None = None,
         generic: ResearchResult | None = None,
+        dataset_compute_authorized: bool = False,
     ) -> (
         LiteratureStudioResult
         | GrantStudioResult
@@ -121,7 +122,13 @@ class StudioService:
         if capability == Capability.MATCHING:
             return self._matching(generic, request, owner, insight)
         if capability == Capability.DATASET:
-            return self._dataset(generic, request, owner, insight)
+            return self._dataset(
+                generic,
+                request,
+                owner,
+                insight,
+                compute_authorized=dataset_compute_authorized,
+            )
         if capability == Capability.INSTITUTIONAL_QA:
             return self._institutional(generic, request, owner, insight)
         return self._automation(generic, request, owner, insight)
@@ -379,9 +386,11 @@ class StudioService:
         request: StudioRunRequest,
         owner: str,
         insight: AgentInsight | None,
+        *,
+        compute_authorized: bool,
     ) -> DatasetStudioResult:
-        if request.inputs.get("csv_text") and request.inputs.get("analysis_approved") is not True:
-            raise ValueError("Explicit dataset analysis approval is required.")
+        if request.inputs.get("csv_text") and not compute_authorized:
+            raise ValueError("Trusted dataset compute approval context is required.")
         profile = generic.metadata["profile"]
         estimated_bytes = int(request.inputs.get("estimated_bytes", 0))
         requires_scale_out = estimated_bytes > 5_000_000

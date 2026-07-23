@@ -8,7 +8,7 @@ import time
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, cast
+from typing import Any, TypedDict, cast
 
 import httpx
 import pytest
@@ -37,6 +37,9 @@ from shared.approvals import (
     approval_contract_schema_digest,
 )
 from shared.capabilities import (
+    PROVIDER_CONTRACT_ARTIFACT_DIGEST,
+    PROVIDER_CONTRACT_SCHEMA_DIGEST,
+    PROVIDER_CONTRACT_VERSION,
     ApprovalMode,
     CapabilityBinding,
     CapabilityDescriptor,
@@ -186,6 +189,7 @@ def _request(**overrides: Any) -> dict[str, Any]:
     payload: dict[str, Any] = {
         "query": "Compare supplied evidence",
         "tenant_id": "tenant-a",
+        "project_id": "project-a",
         "principal_id": "principal-a",
         "session_id": "session-a",
         "sensitivity": "internal",
@@ -228,35 +232,67 @@ def _release_attestor(manifest: AgentManifest) -> _DurableTestReleaseAttestor:
     return _DurableTestReleaseAttestor(manifest.evaluation.objective_hard_gates)
 
 
+class _TrustedScope(TypedDict, total=False):
+    trusted_tenant_id: str
+    trusted_project_id: str
+
+
+def _trusted_scope(manifest: AgentManifest) -> _TrustedScope:
+    tenant_ids = {binding.tenant_scope for binding in manifest.capability_bindings}
+    project_ids = {binding.project_scope for binding in manifest.capability_bindings}
+    if len(tenant_ids) != 1 or len(project_ids) != 1:
+        raise ValueError("Test manifests must have one capability tenant and project scope")
+    return {
+        "trusted_tenant_id": tenant_ids.pop(),
+        "trusted_project_id": project_ids.pop(),
+    }
+
+
 def _binding(capability_id: str) -> CapabilityBinding:
     destinations = ("app://tests/local",)
+    operation_ref = OperationReference(
+        id=f"local.{capability_id}",
+        version="1.0.0",
+        input_schema_digest=SCHEMA_REFERENCES["LiteratureRequestV2"].sha256,
+        output_schema_digest=SCHEMA_REFERENCES["LiteratureSynthesisV2"].sha256,
+    )
+    configuration = {"mode": "test"}
+    connection_scopes = ("https://ai.azure.com/.default",)
     return CapabilityBinding(
-        provider_contract_version="test-provider.v2",
+        binding_id=f"{capability_id}.local",
+        provider_contract_version=PROVIDER_CONTRACT_VERSION,
+        provider_contract_schema_digest=PROVIDER_CONTRACT_SCHEMA_DIGEST,
         descriptor_ref=DescriptorReference(
             id=capability_id,
             version="1.0.0",
             digest=canonical_digest({"id": capability_id, "version": "1.0.0"}),
         ),
-        operation_ref=OperationReference(
-            id=f"local.{capability_id}",
-            version="1.0.0",
-            input_schema_digest=SCHEMA_REFERENCES["LiteratureRequestV2"].sha256,
-            output_schema_digest=SCHEMA_REFERENCES["LiteratureSynthesisV2"].sha256,
-        ),
+        operations_digest=canonical_digest((operation_ref.model_dump(mode="json"),)),
+        operation_ref=operation_ref,
         instance_ref=InstanceReference(
             provider_id="test-provider",
             instance_id=f"test:{capability_id}",
-            discovered_version="1.0.0",
+            provider_resource_id=f"app://tests/providers/{capability_id}",
+            discovered_provider_version=PROVIDER_CONTRACT_VERSION,
+            discovered_resource_version="1.0.0",
             fingerprint="1" * 64,
         ),
         configuration_ref=ConfigurationReference(
             id="app://config/tests",
-            digest=canonical_digest({"mode": "test"}),
+            canonical_json=json.dumps(configuration, sort_keys=True, separators=(",", ":")),
+            digest=canonical_digest(configuration),
         ),
         connection_ref=ConnectionReference(
             id="app://connections/tests",
             auth_mode="managed_identity",
-            authorization_digest="2" * 64,
+            scopes=connection_scopes,
+            authorization_digest=canonical_digest(
+                {
+                    "id": "app://connections/tests",
+                    "auth_mode": "managed_identity",
+                    "scopes": connection_scopes,
+                }
+            ),
         ),
         policy_ref=PolicyReference(
             id="app://policy/tests",
@@ -273,20 +309,22 @@ def _binding(capability_id: str) -> CapabilityBinding:
 
 
 class _ManifestProviderAdapter:
-    trusted_legacy_derivation = False
-
     def __init__(self, bindings: tuple[CapabilityBinding, ...]) -> None:
         versions = {binding.provider_contract_version for binding in bindings}
         if len(versions) != 1:
             raise ValueError("Test adapter requires one provider contract version")
         self.contract_version = versions.pop()
+        self.contract_schema_digest = PROVIDER_CONTRACT_SCHEMA_DIGEST
         self.attestations = {
             (
                 binding.instance_ref.provider_id,
                 binding.instance_ref.instance_id,
             ): ProviderInstanceAttestation(
+                binding_id=binding.binding_id,
                 provider_contract_version=binding.provider_contract_version,
+                provider_contract_schema_digest=binding.provider_contract_schema_digest,
                 descriptor_ref=binding.descriptor_ref,
+                operations_digest=binding.operations_digest,
                 operation_ref=binding.operation_ref,
                 instance_ref=binding.instance_ref,
                 configuration_ref=binding.configuration_ref,
@@ -295,8 +333,10 @@ class _ManifestProviderAdapter:
                 allowed_destinations=binding.allowed_destinations,
                 tenant_id=binding.tenant_scope,
                 project_id=binding.project_scope,
-                readiness="available",
+                readiness="READY",
+                health="READY",
                 auth_ready=True,
+                configuration_validated=True,
                 maturity="GA",
                 lifecycle="ACTIVE",
                 approval_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
@@ -358,6 +398,7 @@ def _coordinator_registration(invoker: Any) -> ToolRegistration:
             _settings(),
             provider_adapter=_ManifestProviderAdapter(manifest.capability_bindings),
             handler_resolver=specialist_handler_resolver(invoker),
+            **_trusted_scope(manifest),
         )
         .registrations[0]
     )
@@ -866,6 +907,46 @@ def test_retry_and_write_capability_contract_validation() -> None:
             constraints=("app://allowed",),
             digest="0" * 64,
         )
+    with pytest.raises(ValidationError, match="canonical JSON"):
+        ConfigurationReference(
+            canonical_json="{]",
+            digest=canonical_digest({}),
+        )
+    with pytest.raises(ValidationError, match="not canonical"):
+        ConfigurationReference(
+            canonical_json='{"mode": "test" }',
+            digest=canonical_digest({"mode": "test"}),
+        )
+    with pytest.raises(ValidationError, match="digest does not match"):
+        ConfigurationReference(
+            canonical_json="{}",
+            digest="0" * 64,
+        )
+    connection = binding.connection_ref.model_dump()
+    with pytest.raises(ValidationError, match="sorted, and unique"):
+        ConnectionReference.model_validate(
+            {**connection, "scopes": ("scope-b", "scope-a")}
+        )
+    with pytest.raises(ValidationError, match="sorted, and unique"):
+        ConnectionReference.model_validate({**connection, "scopes": ("",)})
+    with pytest.raises(ValidationError, match="authorization digest"):
+        ConnectionReference.model_validate(
+            {**connection, "authorization_digest": "0" * 64}
+        )
+    with pytest.raises(ValidationError, match="canonical provider v6"):
+        CapabilityBinding.model_validate(
+            {
+                **binding.model_dump(),
+                "provider_contract_version": "research-assistant.integration-provider.v3",
+            }
+        )
+    with pytest.raises(ValidationError, match="schema digest does not match"):
+        CapabilityBinding.model_validate(
+            {
+                **binding.model_dump(),
+                "provider_contract_schema_digest": "0" * 64,
+            }
+        )
 
 
 def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
@@ -881,6 +962,7 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
     policy = CapabilityPolicy()
     base = {
         "tenant_id": "tenant",
+        "project_id": "project-a",
         "principal_id": "principal",
         "scopes": frozenset({"write"}),
         "destination": "approved.example",
@@ -929,7 +1011,11 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
     with pytest.raises(ApprovalRequiredError):
         policy.authorize(
             always,
-            InvocationContext(tenant_id="tenant", principal_id="principal"),
+            InvocationContext(
+                tenant_id="tenant",
+                project_id="project-a",
+                principal_id="principal",
+            ),
         )
 
 
@@ -1030,8 +1116,11 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         },
     )
     valid = ProviderInstanceAttestation(
+        binding_id=binding.binding_id,
         provider_contract_version=binding.provider_contract_version,
+        provider_contract_schema_digest=binding.provider_contract_schema_digest,
         descriptor_ref=binding.descriptor_ref,
+        operations_digest=binding.operations_digest,
         operation_ref=binding.operation_ref,
         instance_ref=binding.instance_ref,
         configuration_ref=binding.configuration_ref,
@@ -1040,8 +1129,10 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         allowed_destinations=binding.allowed_destinations,
         tenant_id="tenant-a",
         project_id="project-a",
-        readiness="available",
+        readiness="READY",
+        health="READY",
         auth_ready=True,
+        configuration_validated=True,
         maturity="GA",
         lifecycle="ACTIVE",
         approval_expires_at=datetime(2026, 7, 24, tzinfo=UTC),
@@ -1049,8 +1140,7 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
 
     class Adapter:
         contract_version = binding.provider_contract_version
-        contract_version = binding.provider_contract_version
-        trusted_legacy_derivation = False
+        contract_schema_digest = binding.provider_contract_schema_digest
 
         def __init__(self, attestation: ProviderInstanceAttestation) -> None:
             self.attestation = attestation
@@ -1087,6 +1177,52 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
     assert registration.current_instance_fingerprint == binding.instance_ref.fingerprint
     assert adapter.handler_resolutions == 1
 
+    legacy_binding = binding.model_copy(
+        update={
+            "provider_contract_version": "research-assistant.integration-provider.v3",
+            "provider_contract_schema_digest": "9" * 64,
+        }
+    )
+
+    class LegacyAdapter:
+        contract_version = "research-assistant.integration-provider.v3"
+        contract_schema_digest = "9" * 64
+
+        def __init__(self) -> None:
+            self.discoveries = 0
+            self.handler_resolutions = 0
+
+        def discover_instance(
+            self,
+            _provider_id: str,
+            _instance_id: str,
+        ) -> ProviderInstanceAttestation:
+            self.discoveries += 1
+            return valid.model_copy(
+                update={
+                    "provider_contract_version": self.contract_version,
+                    "provider_contract_schema_digest": self.contract_schema_digest,
+                }
+            )
+
+        def resolve_handler(self, _attestation: ProviderInstanceAttestation) -> Any:
+            self.handler_resolutions += 1
+            return lambda payload: payload
+
+        def load_schema(self, _schema_digest: str) -> dict[str, Any]:
+            raise AssertionError("Legacy provider schemas must not be loaded")
+
+    legacy_adapter = LegacyAdapter()
+    with pytest.raises(ConfigurationError, match="canonical provider v6 binding"):
+        attach_provider_binding(
+            legacy_binding,
+            legacy_adapter,
+            tenant_id="tenant-a",
+            project_id="project-a",
+        )
+    assert legacy_adapter.discoveries == 0
+    assert legacy_adapter.handler_resolutions == 0
+
     failures = (
         (
             valid.model_copy(
@@ -1095,14 +1231,68 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             ConfigurationError,
         ),
         (
+            valid.model_copy(
+                update={"provider_contract_version": "research-assistant.integration-provider.v3"}
+            ),
+            ConfigurationError,
+        ),
+        (
+            valid.model_copy(update={"provider_contract_schema_digest": "4" * 64}),
+            ConfigurationError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "descriptor_ref": valid.descriptor_ref.model_copy(
+                        update={"digest": "4" * 64}
+                    )
+                }
+            ),
+            ConfigurationError,
+        ),
+        (
             valid.model_copy(update={"instance_ref": valid.instance_ref.model_copy(update={"fingerprint": "5" * 64})}),
+            StaleCapabilityBindingError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "instance_ref": valid.instance_ref.model_copy(
+                        update={"provider_resource_id": "app://tests/providers/other"}
+                    )
+                }
+            ),
+            StaleCapabilityBindingError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "instance_ref": valid.instance_ref.model_copy(
+                        update={"discovered_provider_version": "2.0.0"}
+                    )
+                }
+            ),
+            StaleCapabilityBindingError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "instance_ref": valid.instance_ref.model_copy(
+                        update={"discovered_resource_version": "2.0.0"}
+                    )
+                }
+            ),
             StaleCapabilityBindingError,
         ),
         (valid.model_copy(update={"tenant_id": "other-tenant"}), AuthorizationError),
         (valid.model_copy(update={"project_id": "other-project"}), AuthorizationError),
-        (valid.model_copy(update={"readiness": "degraded"}), ConfigurationError),
-        (valid.model_copy(update={"readiness": "unavailable"}), ConfigurationError),
+        (valid.model_copy(update={"binding_id": "read.other"}), ConfigurationError),
+        (valid.model_copy(update={"operations_digest": "4" * 64}), ConfigurationError),
+        (valid.model_copy(update={"readiness": "DEGRADED"}), ConfigurationError),
+        (valid.model_copy(update={"readiness": "UNAVAILABLE"}), ConfigurationError),
+        (valid.model_copy(update={"health": "DEGRADED"}), ConfigurationError),
         (valid.model_copy(update={"auth_ready": False}), AuthorizationError),
+        (valid.model_copy(update={"configuration_validated": False}), ConfigurationError),
         (valid.model_copy(update={"maturity": "UNKNOWN"}), ConfigurationError),
         (valid.model_copy(update={"maturity": "PREVIEW"}), ConfigurationError),
         (valid.model_copy(update={"maturity": "bogus"}), ConfigurationError),
@@ -1124,6 +1314,26 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         (
             valid.model_copy(
                 update={"connection_ref": valid.connection_ref.model_copy(update={"id": "app://connections/other"})}
+            ),
+            ConfigurationError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "connection_ref": valid.connection_ref.model_copy(
+                        update={"auth_mode": "api_key"}
+                    )
+                }
+            ),
+            ConfigurationError,
+        ),
+        (
+            valid.model_copy(
+                update={
+                    "connection_ref": valid.connection_ref.model_copy(
+                        update={"scopes": ("https://graph.microsoft.com/.default",)}
+                    )
+                }
             ),
             ConfigurationError,
         ),
@@ -1163,7 +1373,7 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
 
     digest_mismatch = Adapter(valid)
     digest_mismatch.contract_version = "provider.v999"
-    with pytest.raises(ConfigurationError, match="pinned capability binding"):
+    with pytest.raises(ConfigurationError, match="pinned provider v6 artifact"):
         attach_provider_binding(
             binding,
             digest_mismatch,
@@ -1171,6 +1381,17 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             project_id="project-a",
         )
     assert digest_mismatch.handler_resolutions == 0
+
+    schema_pin_mismatch = Adapter(valid)
+    schema_pin_mismatch.contract_schema_digest = "9" * 64
+    with pytest.raises(ConfigurationError, match="pinned provider v6 artifact"):
+        attach_provider_binding(
+            binding,
+            schema_pin_mismatch,
+            tenant_id="tenant-a",
+            project_id="project-a",
+        )
+    assert schema_pin_mismatch.handler_resolutions == 0
 
     class BadSchemaAdapter(Adapter):
         def load_schema(self, _schema_digest: str) -> dict[str, Any]:
@@ -1187,9 +1408,8 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
     assert schema_mismatch.handler_resolutions == 0
 
     legacy_binding = binding.model_copy(update={"provider_contract_version": "integration-provider.v1"})
-    legacy = Adapter(valid.model_copy(update={"provider_contract_version": "integration-provider.v1"}))
-    legacy.contract_version = "integration-provider.v1"
-    with pytest.raises(ConfigurationError, match="Legacy provider"):
+    legacy = Adapter(valid)
+    with pytest.raises(ConfigurationError, match="canonical provider v6 binding"):
         attach_provider_binding(
             legacy_binding,
             legacy,
@@ -1197,6 +1417,18 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             project_id="project-a",
         )
     assert legacy.handler_resolutions == 0
+    with pytest.raises(ValidationError):
+        ProviderInstanceAttestation.model_validate(
+            {**valid.model_dump(), "readiness": "ready"}
+        )
+    with pytest.raises(ValidationError):
+        ProviderInstanceAttestation.model_validate(
+            {**valid.model_dump(), "maturity": "ga"}
+        )
+    with pytest.raises(ValidationError):
+        ProviderInstanceAttestation.model_validate(
+            {**valid.model_dump(), "lifecycle": "active"}
+        )
 
 
 @pytest.mark.asyncio
@@ -1293,7 +1525,8 @@ async def test_capability_executor_retries_caches_and_isolates_idempotency() -> 
 
     executor = CapabilityExecutor(registry, sleep=sleep)
     context = InvocationContext(
-        tenant_id="tenant",
+        tenant_id="tenant-a",
+        project_id="project-a",
         principal_id="principal",
         idempotency_key="same",
         operation_fingerprint="a" * 64,
@@ -1306,9 +1539,12 @@ async def test_capability_executor_retries_caches_and_isolates_idempotency() -> 
     assert attempts == 2
     assert sleeps == [0.25]
     other_tenant = context.model_copy(update={"tenant_id": "other"})
-    assert await executor.invoke("read.action", {"value": 3}, other_tenant) == {"value": 3}
-    assert attempts == 3
-    assert await executor.invoke_operation("action", {"value": 4}, other_tenant) == {"value": 3}
+    with pytest.raises(IsolationError):
+        await executor.invoke("read.action", {"value": 3}, other_tenant)
+    other_project = context.model_copy(update={"project_id": "other"})
+    with pytest.raises(IsolationError):
+        await executor.invoke_operation("action", {"value": 4}, other_project)
+    assert attempts == 2
 
 
 @pytest.mark.asyncio
@@ -1331,7 +1567,8 @@ async def test_capability_cache_is_bounded() -> None:
         CapabilityExecutor(registry, max_cached_results=0)
     executor = CapabilityExecutor(registry, max_cached_results=1)
     base = InvocationContext(
-        tenant_id="tenant",
+        tenant_id="tenant-a",
+        project_id="project-a",
         principal_id="principal",
         idempotency_key="key",
         operation_fingerprint="a" * 64,
@@ -1352,7 +1589,11 @@ async def test_capability_executor_sync_no_cache_and_failure_paths() -> None:
         lambda payload: payload,
     )
     executor = CapabilityExecutor(registry)
-    context = InvocationContext(tenant_id="tenant", principal_id="principal")
+    context = InvocationContext(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        principal_id="principal",
+    )
     assert await executor.invoke("read.sync", {"ok": True}, context) == {"ok": True}
 
     expired = context.model_copy(update={"deadline_monotonic": 1.0})
@@ -1427,7 +1668,7 @@ async def test_capability_executor_timeout_and_cancellation() -> None:
         await CapabilityExecutor(timeout_registry).invoke(
             "read.slow",
             {},
-            InvocationContext(tenant_id="t", principal_id="p"),
+            InvocationContext(tenant_id="tenant-a", project_id="project-a", principal_id="p"),
         )
     blocking_registry = CapabilityRegistry()
 
@@ -1448,7 +1689,7 @@ async def test_capability_executor_timeout_and_cancellation() -> None:
         await CapabilityExecutor(blocking_registry).invoke(
             "read.blocking",
             {},
-            InvocationContext(tenant_id="t", principal_id="p"),
+            InvocationContext(tenant_id="tenant-a", project_id="project-a", principal_id="p"),
         )
 
     cancelled_registry = CapabilityRegistry()
@@ -1465,7 +1706,7 @@ async def test_capability_executor_timeout_and_cancellation() -> None:
         await CapabilityExecutor(cancelled_registry).invoke(
             "read.cancel",
             {},
-            InvocationContext(tenant_id="t", principal_id="p"),
+            InvocationContext(tenant_id="tenant-a", project_id="project-a", principal_id="p"),
         )
 
 
@@ -1515,6 +1756,7 @@ def _external_registry(
 def _external_context(**updates: Any) -> InvocationContext:
     values: dict[str, Any] = {
         "tenant_id": "tenant-a",
+        "project_id": "project-a",
         "principal_id": "actor-a",
         "scopes": frozenset({"write"}),
         "destination": "destination-a",
@@ -1536,7 +1778,7 @@ def _durable_key(
     assert context.operation_fingerprint is not None
     return IdempotencyKey(
         tenant_id=context.tenant_id,
-        project_id=binding.project_scope,
+        project_id=context.project_id,
         binding_digest=canonical_digest(binding.model_dump(mode="json")),
         operation_id=binding.operation_ref.id,
         destination=context.destination,
@@ -1555,6 +1797,7 @@ def _approval_request(
     assert context.invocation_id is not None
     return ApprovalConsumptionRequest(
         approval_decision_id=context.approval_decision_id,
+        binding_id=binding.binding_id,
         tenant_id=context.tenant_id,
         project_id=binding.project_scope,
         actor_id=context.principal_id,
@@ -1810,6 +2053,10 @@ async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
     assert (await first.consume(missing)).disposition == ApprovalConsumptionDisposition.NOT_FOUND
     mismatched = request.model_copy(update={"actor_id": "other-actor"})
     assert (await first.consume(mismatched)).disposition == ApprovalConsumptionDisposition.MISMATCH
+    binding_scoped = request.model_copy(update={"approval_decision_id": "binding-scoped"})
+    await first.issue(_approval_grant(binding_scoped))
+    wrong_binding = binding_scoped.model_copy(update={"binding_id": "write.other"})
+    assert (await first.consume(wrong_binding)).disposition == ApprovalConsumptionDisposition.MISMATCH
 
     denied = request.model_copy(update={"approval_decision_id": "denied"})
     await first.issue(
@@ -2406,7 +2653,9 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
             "invocation_id": "invocation-tenant-b",
         }
     )
-    assert await second.invoke(capability.id, {"value": 2}, other_tenant) == {"value": 2}
+    with pytest.raises(IsolationError):
+        await second.invoke(capability.id, {"value": 2}, other_tenant)
+    assert len(calls) == 1
     other_argument = context.model_copy(
         update={
             "operation_fingerprint": "b" * 64,
@@ -2431,8 +2680,17 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
         release_id=f"sha256:{'1' * 64}",
         allow_test_idempotency_store=True,
     )
-    assert await project_executor.invoke(capability.id, {"value": 5}, context) == {"value": 5}
-    assert len(calls) == 5
+    with pytest.raises(IsolationError):
+        await project_executor.invoke(capability.id, {"value": 5}, context)
+    project_context = context.model_copy(
+        update={
+            "project_id": "project-b",
+            "approval_decision_id": "approval-project-b",
+            "invocation_id": "invocation-project-b",
+        }
+    )
+    assert await project_executor.invoke(capability.id, {"value": 5}, project_context) == {"value": 5}
+    assert len(calls) == 4
 
 
 @pytest.mark.asyncio
@@ -2546,13 +2804,22 @@ async def test_external_execution_requires_durable_available_store_and_release()
         async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
             raise RuntimeError("unavailable")
 
+    start_store = StartUnavailableStore()
+    start_approval = _AutoApprovalAdapter()
+    start_executor = CapabilityExecutor(
+        registry,
+        idempotency_store=start_store,
+        approval_adapter=start_approval,
+        release_id=f"sha256:{'3' * 64}",
+    )
     with pytest.raises(IdempotencyStoreUnavailableError, match="start"):
-        await CapabilityExecutor(
-            registry,
-            idempotency_store=StartUnavailableStore(),
-            approval_adapter=_AutoApprovalAdapter(),
-            release_id=f"sha256:{'3' * 64}",
-        ).invoke(capability.id, {}, context)
+        await start_executor.invoke(capability.id, {}, context)
+    start_record = next(iter(start_store._backend.records.values()))
+    assert start_record.state == IdempotencyState.FAILED
+    assert start_record.failure_code == "idempotency_store_unavailable"
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await start_executor.invoke(capability.id, {}, context)
+    assert start_approval.calls == 1
     assert handler_calls == 0
 
 
@@ -2602,13 +2869,92 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
             raise IdempotencyConcurrencyError("start conflict")
 
+    start_conflict_store = StartConflictStore()
     with pytest.raises(IdempotencyConcurrencyError):
         await CapabilityExecutor(
             registry,
-            idempotency_store=StartConflictStore(),
+            idempotency_store=start_conflict_store,
             approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
+    assert next(iter(start_conflict_store._backend.records.values())).state == IdempotencyState.FAILED
+
+    class StartAndFailureConflictStore(StartConflictStore):
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise IdempotencyConcurrencyError("failure conflict")
+
+    with pytest.raises(IdempotencyReconciliationRequiredError) as unresolved:
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=StartAndFailureConflictStore(),
+            approval_adapter=_AutoApprovalAdapter(),
+            release_id=release_id,
+        ).invoke(
+            capability.id,
+            {},
+            context.model_copy(update={"idempotency_key": "start-fail-conflict"}),
+        )
+    assert isinstance(unresolved.value.__cause__, IdempotencyConcurrencyError)
+
+    class StartUnavailableAndFailureConflictStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def mark_in_progress(
+            self,
+            *args: Any,
+            **kwargs: Any,
+        ) -> IdempotencyRecord:
+            raise RuntimeError("unavailable")
+
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise IdempotencyConcurrencyError("failure conflict")
+
+    with pytest.raises(IdempotencyReconciliationRequiredError) as unavailable:
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=StartUnavailableAndFailureConflictStore(),
+            approval_adapter=_AutoApprovalAdapter(),
+            release_id=release_id,
+        ).invoke(
+            capability.id,
+            {},
+            context.model_copy(update={"idempotency_key": "start-unavailable-fail-conflict"}),
+        )
+    assert isinstance(unavailable.value.__cause__, IdempotencyStoreUnavailableError)
+
+    class CancelledStartStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(self) -> None:
+            super().__init__()
+            self.entered = asyncio.Event()
+
+        async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            self.entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    cancelled_start_store = CancelledStartStore()
+    cancelled_start_executor = CapabilityExecutor(
+        registry,
+        idempotency_store=cancelled_start_store,
+        approval_adapter=_AutoApprovalAdapter(),
+        release_id=release_id,
+    )
+    cancelled_start = asyncio.create_task(
+        cancelled_start_executor.invoke(
+            capability.id,
+            {},
+            context.model_copy(update={"idempotency_key": "cancelled-start"}),
+        )
+    )
+    await cancelled_start_store.entered.wait()
+    cancelled_start.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled_start
+    cancelled_start_record = next(iter(cancelled_start_store._backend.records.values()))
+    assert cancelled_start_record.state == IdempotencyState.FAILED
+    assert cancelled_start_record.failure_code == "start_transition_cancelled"
 
     timeout_capability = _external_capability(timeout_seconds=0.001)
 
@@ -2789,7 +3135,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             await super().mark_in_progress(*args, **kwargs)
             return cast(IdempotencyRecord, {})
 
-    with pytest.raises(IdempotencyReconciliationRequiredError, match="transition contract"):
+    with pytest.raises(IdempotencyReconciliationRequiredError) as invalid_start:
         await CapabilityExecutor(
             registry,
             idempotency_store=InvalidStartStore(clock=lambda: now),
@@ -2797,6 +3143,8 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             release_id=release_id,
             utcnow=lambda: now,
         ).invoke(capability.id, {}, context)
+    assert isinstance(invalid_start.value.__cause__, IdempotencyReconciliationRequiredError)
+    assert "transition contract" in str(invalid_start.value.__cause__)
 
     for start_updates in (
         {"actor_id": "actor-b"},
@@ -3751,6 +4099,7 @@ async def test_governance_audit_emits_only_hashed_structured_metadata() -> None:
     )
     governance = InvocationContext(
         tenant_id="tenant-a",
+        project_id="project-a",
         principal_id="principal-a",
     )
     function_context = FunctionInvocationContext(
@@ -3800,6 +4149,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         .prepare(
             _settings(),
             provider_adapter=provider_adapter,
+            **_trusted_scope(manifest),
         )
         .registrations
     )
@@ -3846,7 +4196,15 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert release.provider_contracts == (
         (
             "microsoft-foundry-toolbox",
-            "foundry-toolbox.mcp-v1",
+            PROVIDER_CONTRACT_VERSION,
+            PROVIDER_CONTRACT_SCHEMA_DIGEST,
+        ),
+    )
+    assert release.provider_artifacts == (
+        (
+            "microsoft-foundry-toolbox",
+            PROVIDER_CONTRACT_VERSION,
+            PROVIDER_CONTRACT_ARTIFACT_DIGEST,
         ),
     )
     assert release.knowledge_versions == (("dataset.knowledge", "evidence-v2"),)
@@ -3959,7 +4317,17 @@ def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
         type(valid).model_validate(
             {
                 **valid_payload,
-                "provider_contracts": (("z", "1"), ("a", "1")),
+                "provider_contracts": (("z", "1", "4" * 64), ("a", "1", "5" * 64)),
+            }
+        )
+    with pytest.raises(ValidationError, match="provider artifacts"):
+        type(valid).model_validate(
+            {
+                **valid_payload,
+                "provider_artifacts": (
+                    ("z", "1", "4" * 64),
+                    ("a", "1", "5" * 64),
+                ),
             }
         )
     with pytest.raises(ValidationError, match="timezone-aware"):
@@ -3998,7 +4366,14 @@ def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
         valid.model_copy(update={"source_bundle_hash": "0" * 64}),
         valid.model_copy(update={"model_deployment_ref": "app://model/other"}),
         valid.model_copy(update={"model_version": "other"}),
-        valid.model_copy(update={"provider_contracts": (("other", "v1"),)}),
+        valid.model_copy(update={"provider_contracts": (("other", "v1", "6" * 64),)}),
+        valid.model_copy(
+            update={
+                "provider_artifacts": (
+                    ("other", "provider-v2", "7" * 64),
+                )
+            }
+        ),
         valid.model_copy(update={"objective_gates": ()}),
     )
     for mismatch in mismatches:
@@ -4067,11 +4442,24 @@ def test_factory_requires_current_provider_attestation() -> None:
     assert factory.readiness(settings)["ready"] is False
 
     adapter = _ManifestProviderAdapter(factory.manifest.capability_bindings)
-    prepared = factory.prepare(settings, provider_adapter=adapter)
+    with pytest.raises(ConfigurationError, match="trusted tenant and project"):
+        factory.prepare(settings, provider_adapter=adapter)
+    prepared = factory.prepare(
+        settings,
+        provider_adapter=adapter,
+        **_trusted_scope(factory.manifest),
+    )
     assert prepared.manifest is factory.manifest
     assert all(registration.runtime_attested for registration in prepared.registrations)
     assert adapter.handler_resolutions == len(factory.manifest.capability_bindings)
-    assert factory.readiness(settings, provider_adapter=adapter)["ready"] is False
+    assert (
+        factory.readiness(
+            settings,
+            provider_adapter=adapter,
+            **_trusted_scope(factory.manifest),
+        )["ready"]
+        is False
+    )
 
     class DurableStore(InMemoryIdempotencyStore):
         is_durable = True
@@ -4080,6 +4468,7 @@ def test_factory_requires_current_provider_attestation() -> None:
         factory.readiness(
             settings,
             provider_adapter=adapter,
+            **_trusted_scope(factory.manifest),
             idempotency_store=DurableStore(),
             approval_adapter=_AutoApprovalAdapter(),
             release_attestor=_release_attestor(factory.manifest),
@@ -4091,12 +4480,14 @@ def test_factory_requires_current_provider_attestation() -> None:
             client=_FakeChatClient(),
             settings=settings,
             provider_adapter=adapter,
+            **_trusted_scope(factory.manifest),
         )
     with pytest.raises(ConfigurationError, match="app-owned durable approval adapter"):
         factory.build(
             client=_FakeChatClient(),
             settings=settings,
             provider_adapter=adapter,
+            **_trusted_scope(factory.manifest),
             idempotency_store=DurableStore(),
         )
 
@@ -4106,7 +4497,11 @@ def test_factory_requires_current_provider_attestation() -> None:
         update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": "f" * 64})}
     )
     with pytest.raises(StaleCapabilityBindingError):
-        factory.resolved_manifest(settings, provider_adapter=adapter)
+        factory.resolved_manifest(
+            settings,
+            provider_adapter=adapter,
+            **_trusted_scope(factory.manifest),
+        )
 
 
 class _FakeChatClient:
@@ -4263,6 +4658,8 @@ def test_runtime_adapter_builds_describes_and_runs_host(
             "client": "client",
             "settings": None,
             "provider_adapter": None,
+            "trusted_tenant_id": None,
+            "trusted_project_id": None,
             "idempotency_store": None,
             "approval_adapter": None,
             "release_attestor": None,
@@ -4334,6 +4731,7 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
         dataset_factory.readiness(
             _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
             provider_adapter=dataset_adapter,
+            **_trusted_scope(dataset_factory.manifest),
             idempotency_store=type(
                 "DurableStore",
                 (InMemoryIdempotencyStore,),
@@ -4544,6 +4942,24 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
     )._invocation_context(unapproved)
     assert unapproved_context.approval_decision_id is None
     assert unapproved_context.invocation_id is None
+    with pytest.raises(ValueError, match="supplied together"):
+        ContractMiddleware(
+            get_manifest("literature"),
+            None,
+            trusted_tenant_id="tenant-a",
+        )
+    scoped = ContractMiddleware(
+        get_manifest("literature"),
+        None,
+        trusted_tenant_id="tenant-a",
+        trusted_project_id="project-a",
+    )
+    with pytest.raises(IsolationError, match="authenticated Hosted Agent scope"):
+        scoped._invocation_context(
+            LiteratureRequest.model_validate(
+                _request(tenant_id="tenant-b", project_id="project-a")
+            )
+        )
 
 
 @pytest.mark.asyncio
@@ -4843,6 +5259,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     )
     governance = InvocationContext(
         tenant_id="tenant-a",
+        project_id="project-a",
         principal_id="principal-a",
         scopes=frozenset({"research.public.read"}),
         destination="toolbox.example",
@@ -4895,6 +5312,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     online_prepared = GovernedAgentFactory(online_manifest).prepare(
         _settings(),
         provider_adapter=online_adapter,
+        **_trusted_scope(online_manifest),
     )
     assert (
         len(
@@ -4903,10 +5321,18 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
                 _settings(),
                 online_prepared.capabilities,
                 online_prepared.registrations,
+                **_trusted_scope(online_manifest),
             )
         )
         == 2
     )
+    with pytest.raises(ConfigurationError, match="authenticated tenant and project"):
+        middleware_for_manifest(
+            online_manifest,
+            _settings(),
+            online_prepared.capabilities,
+            online_prepared.registrations,
+        )
     with pytest.raises(ConfigurationError, match="exactly match"):
         middleware_for_manifest(
             online_manifest,
@@ -5140,6 +5566,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
             None,
             online_prepared.capabilities,
             online_prepared.registrations,
+            **_trusted_scope(online_manifest),
         )
 
     write_capability = CapabilityDescriptor(
@@ -5166,6 +5593,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     )
     write_governance = InvocationContext(
         tenant_id="tenant-a",
+        project_id="project-a",
         principal_id="principal-a",
         scopes=frozenset({"research.dataset.compute"}),
         destination="toolbox.example",
@@ -5242,6 +5670,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         .prepare(
             _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
             provider_adapter=_ManifestProviderAdapter(dataset.capability_bindings),
+            **_trusted_scope(dataset),
         )
         .registrations
     )
@@ -5299,7 +5728,14 @@ def test_coordinator_policy_is_required_and_budget_is_enforced(
     assert policy is not None
     bounded = policy.model_copy(update={"budget_units": 1})
     router = CoordinatorRouter(specialist_policy=bounded)
-    request = CoordinatorRequest.model_validate(_request(requested_capabilities=["literature", "grant"]))
+    coordinator_binding = manifest.capability_bindings[0]
+    request = CoordinatorRequest.model_validate(
+        _request(
+            tenant_id=coordinator_binding.tenant_scope,
+            project_id=coordinator_binding.project_scope,
+            requested_capabilities=["literature", "grant"],
+        )
+    )
     with pytest.raises(ContractError, match="budget"):
         router.route(request)
 
@@ -5344,7 +5780,13 @@ async def test_agent_framework_coordinator_workflow_preserves_typed_evidence() -
         build_coordinator_workflow(mismatched_registration)
 
     workflow = build_coordinator_workflow(_coordinator_registration(invoke))
-    request = CoordinatorRequest.model_validate(_request(requested_capabilities=["literature", "grant"]))
+    request = CoordinatorRequest.model_validate(
+        _request(
+            tenant_id=coordinator_binding.tenant_scope,
+            project_id=coordinator_binding.project_scope,
+            requested_capabilities=["literature", "grant"],
+        )
+    )
     events = await workflow.run(request)
     outputs = events.get_outputs()
     assert len(outputs) == 1
@@ -5380,7 +5822,14 @@ async def test_coordinator_workflow_validates_hosted_message_envelope() -> None:
     with pytest.raises(ContractError, match="invalid"):
         await workflow.run([Message(role="user", contents=["{}"])])
 
-    request = CoordinatorRequest.model_validate(_request(requested_capabilities=["literature"]))
+    binding = manifest.capability_bindings[0]
+    request = CoordinatorRequest.model_validate(
+        _request(
+            tenant_id=binding.tenant_scope,
+            project_id=binding.project_scope,
+            requested_capabilities=["literature"],
+        )
+    )
     response = await workflow.run([Message(role="user", contents=[request.model_dump_json()])])
     parsed = CoordinatorResponse.model_validate_json(response.get_outputs()[0])
     assert parsed.specialist_results[0].error_code == "not_configured"
@@ -5569,7 +6018,7 @@ def test_specialist_manifest_selection_and_payload_are_deterministic() -> None:
     dataset = _specialist_request(SpecialistCapability.DATASET)
     payload = _specialist_payload(dataset, "dataset")
     assert payload["dataset_id"] == "dataset.csv"
-    assert payload["approved_compute"] is False
+    assert "approved_compute" not in payload
     assert payload["idempotency_key"] is None
     assert "requested_capabilities" not in payload
 
@@ -5603,6 +6052,11 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
                 if module.MANIFEST.capability_bindings
                 else None
             ),
+            **(
+                _trusted_scope(module.MANIFEST)
+                if module.MANIFEST.capability_bindings
+                else {}
+            ),
             idempotency_store=InMemoryIdempotencyStore(),
             approval_adapter=_AutoApprovalAdapter(),
             release_attestor=_release_attestor(module.MANIFEST),
@@ -5625,9 +6079,65 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
         settings=_settings(),
         invoker=invoke,
         provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+        **_trusted_scope(coordinator.MANIFEST),
         release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     assert ResponsesHostServer(coordinator_agent) is not None
+
+
+def test_coordinator_factory_fails_closed_for_future_privileged_toolbox_capability(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    coordinator = importlib.import_module("coordinator.factory")
+    coordinator_manifest = get_manifest("coordinator")
+    dataset_binding = get_manifest("dataset").capability_bindings[0]
+    mutated_manifest = coordinator_manifest.model_copy(
+        update={
+            "capability_bindings": (
+                *coordinator_manifest.capability_bindings,
+                dataset_binding,
+            )
+        }
+    )
+    mutated_factory = GovernedAgentFactory(mutated_manifest)
+    monkeypatch.setattr(coordinator, "FACTORY", mutated_factory)
+    adapter = _ManifestProviderAdapter(mutated_manifest.capability_bindings)
+
+    async def invoke(request: SpecialistRequest) -> SpecialistResult:
+        return SpecialistResult(
+            request_id=request.request_id,
+            capability=request.capability,
+            agent_name=request.target_agent,
+            error_code="not_configured",
+        )
+
+    trusted_scope = _trusted_scope(mutated_manifest)
+    with pytest.raises(ConfigurationError, match="Toolbox endpoint"):
+        coordinator.build_agent(
+            settings=_settings(),
+            invoker=invoke,
+            provider_adapter=adapter,
+            **trusted_scope,
+        )
+    toolbox_settings = _settings(
+        toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
+    )
+    with pytest.raises(ConfigurationError, match="durable idempotency store"):
+        coordinator.build_agent(
+            settings=toolbox_settings,
+            invoker=invoke,
+            provider_adapter=adapter,
+            **trusted_scope,
+        )
+    with pytest.raises(ConfigurationError, match="durable approval adapter"):
+        coordinator.build_agent(
+            settings=toolbox_settings,
+            invoker=invoke,
+            provider_adapter=adapter,
+            **trusted_scope,
+            idempotency_store=InMemoryIdempotencyStore(),
+            allow_test_idempotency_store=True,
+        )
 
 
 def test_all_nine_agent_specific_factories_are_first_class(
@@ -5664,6 +6174,11 @@ def test_all_nine_agent_specific_factories_are_first_class(
                     toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
                 ),
                 provider_adapter=provider_adapter,
+                **(
+                    _trusted_scope(module.MANIFEST)
+                    if module.MANIFEST.capability_bindings
+                    else {}
+                ),
                 idempotency_store=InMemoryIdempotencyStore(),
                 approval_adapter=_AutoApprovalAdapter(),
                 release_attestor=_release_attestor(module.MANIFEST),
@@ -5692,6 +6207,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
         settings=_settings(),
         invoker=invoke,
         provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+        **_trusted_scope(coordinator.MANIFEST),
         release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     assert isinstance(coordinator_agent, WorkflowAgent)

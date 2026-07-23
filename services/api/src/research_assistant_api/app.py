@@ -30,6 +30,16 @@ from research_assistant_core.studio_models import (
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_api.approval_context import (
+    CLIENT_AUTHORITY_FIELDS,
+    ApprovalContextRejectedError,
+    ApprovalContextRequest,
+    ApprovalContextResolver,
+    ApprovalContextUnavailableError,
+    ClientApprovalAuthorityError,
+    ResolvedApprovalContext,
+    resolve_approval_context,
+)
 from research_assistant_api.blob_sources import (
     SourceBlobStore,
     build_source_blob_store,
@@ -101,6 +111,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
+    application.state.approval_context_resolver = None
     _reconcile_pending_runs(
         application.state.workspace,
         application.state.scheduler,
@@ -758,6 +769,7 @@ def _agent_message(
     public_metadata: list[dict[str, Any]] | None = None,
     *,
     principal_id: str = "research-assistant-api",
+    approval_context: ResolvedApprovalContext | None = None,
 ) -> str:
     query = _agent_prompt(capability, payload, generic, public_metadata)
     if len(query) > 40_000:
@@ -766,6 +778,7 @@ def _agent_message(
     envelope: dict[str, Any] = {
         "query": query,
         "tenant_id": generic.run.tenant_id,
+        "project_id": generic.run.project_id,
         "principal_id": principal_id,
         "session_id": generic.run.id,
         "sensitivity": "public" if payload.online_research else "internal",
@@ -784,17 +797,15 @@ def _agent_message(
         ),
     }
     if capability == Capability.DATASET:
-        envelope.update(
-            {
-                "dataset_id": str(payload.inputs.get("filename") or generic.run.id),
-                "approved_compute": False,
-                "idempotency_key": (
-                    payload.inputs.get("idempotency_key")
-                    if isinstance(payload.inputs.get("idempotency_key"), str)
-                    else None
-                ),
-            }
-        )
+        envelope["dataset_id"] = str(payload.inputs.get("filename") or generic.run.id)
+        if approval_context is not None:
+            envelope.update(
+                {
+                    "approval_decision_id": approval_context.approval_decision_id,
+                    "invocation_id": approval_context.invocation_id,
+                    "idempotency_key": payload.inputs["idempotency_key"],
+                }
+            )
     elif capability == Capability.LITERATURE and not payload.online_research:
         envelope["review_question"] = payload.objective
     elif capability == Capability.GRANT and not payload.online_research:
@@ -819,6 +830,54 @@ def _agent_message(
         specialist_inputs = payload.inputs.get("specialist_inputs", {})
         envelope["specialist_inputs"] = specialist_inputs if isinstance(specialist_inputs, dict) else {}
     return json.dumps(envelope, ensure_ascii=True)
+
+
+async def _dataset_approval_context(
+    *,
+    capability: Capability,
+    inputs: dict[str, Any],
+    current: Settings,
+    request: Request,
+    identity: IdentityContext,
+    project_id: str,
+) -> ResolvedApprovalContext | None:
+    if capability != Capability.DATASET:
+        return None
+    requires_compute = current.execution_mode == "hosted" or bool(inputs.get("csv_text"))
+    if not requires_compute:
+        forbidden = CLIENT_AUTHORITY_FIELDS.intersection(inputs)
+        if forbidden:
+            names = ", ".join(sorted(forbidden))
+            raise HTTPException(
+                status_code=422,
+                detail=f"Client-supplied approval authority fields are forbidden: {names}.",
+            )
+        return None
+    try:
+        resolver = cast(
+            ApprovalContextResolver | None,
+            request.app.state.approval_context_resolver,
+        )
+        if resolver is None:
+            raise ApprovalContextUnavailableError(
+                "Dataset compute is unavailable because no trusted approval context resolver is configured."
+            )
+        approval_request = ApprovalContextRequest.from_inputs(
+            tenant_id=identity.tenant_id,
+            project_id=project_id,
+            actor_id=identity.user_id,
+            inputs=inputs,
+        )
+        return await resolve_approval_context(resolver, approval_request)
+    except ClientApprovalAuthorityError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    except ApprovalContextUnavailableError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ApprovalContextRejectedError as exc:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Dataset compute approval was rejected ({exc.code}).",
+        ) from exc
 
 
 def _record_studio_result(
@@ -926,6 +985,14 @@ async def run_studio(
     current = cast(Settings, request.app.state.settings)
     store, identity = _workspace_access(request)
     _online_policy(capability, payload)
+    approval_context = await _dataset_approval_context(
+        capability=capability,
+        inputs=payload.inputs,
+        current=current,
+        request=request,
+        identity=identity,
+        project_id=store.project_id,
+    )
 
     research = cast(ResearchService, request.app.state.research)
     try:
@@ -970,6 +1037,7 @@ async def run_studio(
                     generic,
                     public_metadata,
                     principal_id=identity.user_id,
+                    approval_context=approval_context,
                 ),
                 agent_name=(
                     CAPABILITY_ONLINE_AGENTS[capability] if payload.online_research else CAPABILITY_AGENTS[capability]
@@ -999,6 +1067,7 @@ async def run_studio(
             hosted_content=hosted_content,
             hosted_agent_name=hosted_agent_name,
             generic=generic,
+            dataset_compute_authorized=approval_context is not None,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -1067,6 +1136,14 @@ async def run_capability(
             status_code=403,
             detail="Request project is not authorized for this workspace.",
         )
+    approval_context = await _dataset_approval_context(
+        capability=capability,
+        inputs=payload.context,
+        current=current,
+        request=request,
+        identity=identity,
+        project_id=store.project_id,
+    )
     online = bool(payload.context.get("online_research", False))
     _online_policy(
         capability,
@@ -1124,6 +1201,7 @@ async def run_capability(
                 result,
                 public_metadata,
                 principal_id=identity.user_id,
+                approval_context=approval_context,
             ),
             agent_name=(CAPABILITY_ONLINE_AGENTS[capability] if online else CAPABILITY_AGENTS[capability]),
             allow_tools=online,

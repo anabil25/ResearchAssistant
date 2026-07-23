@@ -10,7 +10,7 @@ from typing import Literal, Protocol
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .approvals import approval_contract_schema_digest
-from .capabilities import ToolRegistration
+from .capabilities import PROVIDER_CONTRACT_ARTIFACT_DIGEST, ToolRegistration
 from .contracts import AgentManifest, ObjectiveGate, canonical_digest
 from .errors import ConfigurationError, HarnessError, ReleaseAttestationError
 from .idempotency import idempotency_contract_schema_digest
@@ -56,7 +56,8 @@ class ReleaseAttestation(BaseModel):
     source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     model_deployment_ref: str = Field(min_length=1, max_length=2048)
     model_version: str = Field(min_length=1, max_length=128)
-    provider_contracts: tuple[tuple[str, str], ...]
+    provider_contracts: tuple[tuple[str, str, str], ...]
+    provider_artifacts: tuple[tuple[str, str, str], ...]
     objective_gates: tuple[ObjectiveGateAttestation, ...]
     status: ReleaseAttestationStatus = ReleaseAttestationStatus.ACTIVE
     issued_at: datetime
@@ -69,6 +70,8 @@ class ReleaseAttestation(BaseModel):
             raise ValueError("objective gate attestations must be sorted and unique")
         if self.provider_contracts != tuple(sorted(set(self.provider_contracts))):
             raise ValueError("provider contracts must be sorted and unique")
+        if self.provider_artifacts != tuple(sorted(set(self.provider_artifacts))):
+            raise ValueError("provider artifacts must be sorted and unique")
         if self.issued_at.tzinfo is None or self.expires_at.tzinfo is None:
             raise ValueError("release attestation timestamps must be timezone-aware")
         if self.issued_at > self.expires_at:
@@ -118,7 +121,8 @@ class ReleaseMetadata(BaseModel):
     idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     release_attestation_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    provider_contracts: tuple[tuple[str, str], ...]
+    provider_contracts: tuple[tuple[str, str, str], ...]
+    provider_artifacts: tuple[tuple[str, str, str], ...]
 
 
 def manifest_digest(manifest: AgentManifest) -> str:
@@ -239,8 +243,21 @@ def build_release_metadata(
                 (
                     binding.instance_ref.provider_id,
                     binding.provider_contract_version,
+                    binding.provider_contract_schema_digest,
                 )
                 for binding in manifest.capability_bindings
+            }
+        )
+    )
+    provider_artifacts = tuple(
+        sorted(
+            {
+                (
+                    registration.binding.instance_ref.provider_id,
+                    registration.binding.instance_ref.discovered_provider_version,
+                    PROVIDER_CONTRACT_ARTIFACT_DIGEST,
+                )
+                for registration in registrations
             }
         )
     )
@@ -270,6 +287,7 @@ def build_release_metadata(
         "approval_contract_schema_digest": approval_schema_hash,
         "release_attestation_contract_schema_digest": release_attestation_schema_hash,
         "provider_contracts": provider_contracts,
+        "provider_artifacts": provider_artifacts,
     }
     return ReleaseMetadata(
         agent_id=manifest.id,
@@ -298,6 +316,7 @@ def build_release_metadata(
         approval_contract_schema_digest=approval_schema_hash,
         release_attestation_contract_schema_digest=release_attestation_schema_hash,
         provider_contracts=provider_contracts,
+        provider_artifacts=provider_artifacts,
     )
 
 
@@ -344,6 +363,7 @@ def validate_release_attestation(
         or attestation.model_deployment_ref != release.model_deployment_ref
         or attestation.model_version != release.model_version
         or attestation.provider_contracts != release.provider_contracts
+        or attestation.provider_artifacts != release.provider_artifacts
         or actual_gates != expected_gates
     ):
         raise ReleaseAttestationError(
@@ -390,6 +410,7 @@ class InMemoryReleaseAttestor:
             model_deployment_ref=release.model_deployment_ref,
             model_version=release.model_version,
             provider_contracts=release.provider_contracts,
+            provider_artifacts=release.provider_artifacts,
             objective_gates=tuple(
                 ObjectiveGateAttestation(
                     gate=gate,

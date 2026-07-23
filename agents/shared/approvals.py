@@ -34,6 +34,7 @@ class ApprovalConsumptionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     approval_decision_id: str = Field(min_length=1, max_length=512)
+    binding_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
     tenant_id: str = Field(min_length=1, max_length=256)
     project_id: str = Field(min_length=1, max_length=512)
     actor_id: str = Field(min_length=1, max_length=512)
