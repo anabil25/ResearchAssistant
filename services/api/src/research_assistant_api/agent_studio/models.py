@@ -150,8 +150,8 @@ class OperationLifecycle(StrEnum):
     can still be ``DEPRECATED`` (still working, scheduled for removal) or
     ``RETIRED`` (withdrawn, kept only for historical/audit visibility) —
     both make the operation permanently non-attachable regardless of its
-    maturity value. ``bindable`` requires ``OperationMaturity.GA`` **and**
-    ``OperationLifecycle.ACTIVE`` (see ``CapabilityOperation.is_bindable``).
+    maturity value.     Catalog eligibility requires ``OperationMaturity.GA`` **and**
+    ``OperationLifecycle.ACTIVE`` (see ``CapabilityOperation.is_catalog_eligible``).
     """
 
     ACTIVE = "active"
@@ -220,7 +220,7 @@ class CapabilityOperation(BaseModel):
     ``CapabilityBinding.operation_ref.version`` pins it at attach time so a later
     per-operation version bump is independently detectable from a descriptor
     content/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,
-    independent of ``maturity`` — see ``is_bindable``.
+    independent of ``maturity`` — see ``is_catalog_eligible``.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -247,15 +247,25 @@ class CapabilityOperation(BaseModel):
     least_privilege_roles: tuple[str, ...] = Field(default_factory=tuple)
 
     @property
-    def is_bindable(self) -> bool:
-        """Whether this operation is eligible for attachment.
+    def is_catalog_eligible(self) -> bool:
+        """Whether this operation is *catalog-eligible* for attachment.
 
         Requires both ``OperationMaturity.GA`` (the operation's own maturity
         claim) and ``OperationLifecycle.ACTIVE`` (the provider still offers
         it) — a GA operation that has been ``deprecated``/``retired`` is no
-        longer bindable even though its maturity claim is unchanged. This is
-        the single source of truth consulted by attach-time validation, the
-        release policy gate, and deterministic runtime selection.
+        longer catalog-eligible even though its maturity claim is unchanged.
+
+        This is only *one* axis of full bindability, not the single source
+        of truth for whether a binding may be attached/released/dispatched:
+        it says nothing about a specific tenant/project's discovered
+        instance readiness/health, connection auth/consent/scopes, policy/
+        approval satisfiability, or destination-constraint drift. Those are
+        evaluated together as a ``BindabilityDecision`` (see
+        ``CapabilityRegistry.evaluate_bindability``); this property is one
+        required input to that decision, checked in isolation by
+        ``CapabilityRegistry.validate_attachment``/``check_binding_freshness``
+        and by deterministic runtime selection (which has no tenant/instance
+        context and only needs the catalog-level fact).
         """
 
         return self.maturity == OperationMaturity.GA and self.lifecycle == OperationLifecycle.ACTIVE
@@ -386,9 +396,62 @@ class CapabilityInstance(BaseModel):
         ``UNAVAILABLE``) fails closed. A degraded-but-technically-reachable
         instance is deliberately *not* bindable: attach/gate/deploy must
         never silently pin a binding to an instance whose health is already
-        in question.
+        in question. This is one axis feeding ``BindabilityDecision`` below,
+        not the whole decision by itself.
         """
         return self.readiness == InstanceReadiness.READY
+
+
+class BindabilityDecision(BaseModel):
+    """The full, multi-axis attach/release/runtime bindability decision.
+
+    Neither ``CapabilityOperation.is_catalog_eligible`` (GA+ACTIVE only) nor
+    ``CapabilityInstance.is_bindable`` (readiness only) is, by itself, the
+    single source of truth for whether a capability may be attached,
+    survive a release gate, or be dispatched at runtime — each is exactly
+    one required axis. This type aggregates every axis so a caller gets one
+    fail-closed answer plus every disqualifying reason (not just the
+    first), mirroring the collect-all-reasons pattern already used by
+    ``runtime_selection.select_runtime``:
+
+    * ``catalog_eligible`` — the operation's own ``GA``+``ACTIVE`` claim.
+    * ``instance_scope_valid``/``instance_ready`` — when an instance is
+      attached, whether it belongs to the requesting tenant/project and is
+      ``InstanceReadiness.READY``; ``None`` when no instance applies (an
+      operation that does not require a discovered resource).
+    * ``descriptor_fresh``/``operation_version_fresh``/
+      ``destination_constraints_fresh`` — descriptor content digest,
+      operation version, and declared side-effect destinations all still
+      match what was true when checked.
+    * ``connection_satisfied`` — every ``auth_requirements`` entry the
+      descriptor declares (e.g. a required workspace connection) is met.
+    * ``policy_satisfied``/``approval_satisfied`` — when the operation
+      ``requires_approval``, a policy reference is identified
+      (``policy_satisfied``) and, when approval records are supplied for
+      evaluation, a currently valid (approved/unexpired/unrevoked) record
+      exists (``approval_satisfied``); both are ``None`` when approval does
+      not apply.
+
+    A field left ``None`` because a check could not be *performed* (as
+    opposed to *not applicable*) must never be silently treated as passing:
+    ``bindable`` is only ``True`` when every applicable axis is
+    affirmatively ``True`` and ``reasons`` is empty — there is no
+    "assume-OK" default for an unevaluated axis.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    bindable: bool
+    reasons: tuple[str, ...] = Field(default_factory=tuple)
+    catalog_eligible: bool
+    instance_scope_valid: bool | None = None
+    instance_ready: bool | None = None
+    descriptor_fresh: bool
+    operation_version_fresh: bool
+    destination_constraints_fresh: bool
+    connection_satisfied: bool
+    policy_satisfied: bool
+    approval_satisfied: bool | None = None
 
 
 class CapabilityDescriptorRef(BaseModel):
@@ -519,7 +582,15 @@ class CapabilityBinding(BaseModel):
     single value. Freshness checks reject drift on any ref field the same
     way they reject a ``descriptor_ref.digest``/``instance_ref.fingerprint``
     mismatch, and also reject a binding whose resolved operation is no
-    longer ``is_bindable`` (moved to non-``GA``/non-``ACTIVE``) since attach.
+    longer catalog-eligible (moved to non-``GA``/non-``ACTIVE``) since
+    attach. ``descriptor_ref.digest``/``operation_ref.version``/
+    ``instance_ref.fingerprint`` (when an instance is attached) may be
+    ``None`` only on an incomplete, never-cut draft binding constructed
+    directly rather than via ``CapabilityRegistry.attach`` — a resolved
+    instance or any binding reachable from a released ``AgentVersion`` must
+    carry non-``None`` exact pins. ``check_binding_freshness`` fails closed
+    (rejects, never silently skips the comparison) on a missing pin, so an
+    unpinned binding can never coast through cut/gate/deploy as "fresh".
     """
 
     model_config = ConfigDict(extra="forbid")

@@ -159,7 +159,7 @@ def _policy_gate(
             violations.append(f"capability '{instance.descriptor_ref.id}' is not in the capability catalog")
             continue
         operation = descriptor.operation(instance.operation_ref.id)
-        if operation is None or not operation.is_bindable:
+        if operation is None or not operation.is_catalog_eligible:
             violations.append(
                 f"capability '{instance.descriptor_ref.id}.{instance.operation_ref.id}' is not a GA operation "
                 "and cannot be released"

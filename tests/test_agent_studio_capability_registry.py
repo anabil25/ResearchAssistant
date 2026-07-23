@@ -794,11 +794,13 @@ def test_check_binding_freshness_detects_instance_fingerprint_drift() -> None:
     assert "reconfigured since attach" in reason
 
 
-def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() -> None:
+def test_check_binding_freshness_rejects_bindings_created_without_digest_pins() -> None:
     """A binding constructed directly (not via ``attach``) with no digest/
-    fingerprint pins has nothing to compare against, so it is trivially
-    reported fresh — the absence of a pin is a caller-authoring choice, not
-    something this check can retroactively invent evidence for."""
+    fingerprint pins fails closed rather than being trivially treated as
+    fresh: only ``attach`` produces a fully-pinned binding, so a missing pin
+    can only mean a hand-constructed/client-submitted binding that never
+    went through attach-time validation, and that must never coast through
+    cut/gate/deploy unchecked."""
     registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="unpinned", descriptor_id="foundry.azure_ai_search")
@@ -811,7 +813,45 @@ def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() 
         attached_by="user-1",
     )
 
-    assert registry.check_binding_freshness(binding) is None
+    reason = registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "no descriptor_ref.digest pinned" in reason
+
+
+def test_check_binding_freshness_rejects_binding_with_no_operation_version_pin() -> None:
+    """Same fail-closed rule for a binding that pins the descriptor digest
+    but omits ``operation_ref.version``."""
+    registry = seeded_test_registry()
+    binding = registry.attach(descriptor_id="foundry.azure_ai_search", operation="search", attached_by="user-1")
+    unpinned = binding.model_copy(
+        update={"operation_ref": binding.operation_ref.model_copy(update={"version": None})}
+    )
+
+    reason = registry.check_binding_freshness(unpinned)
+    assert reason is not None
+    assert "no operation_ref.version pinned" in reason
+
+
+def test_check_binding_freshness_rejects_binding_with_no_instance_fingerprint_pin() -> None:
+    """Same fail-closed rule for a binding that attaches an instance but
+    omits ``instance_ref.fingerprint``."""
+    registry = seeded_test_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="unpinned-fp", descriptor_id="foundry.azure_ai_search")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+    unpinned = binding.model_copy(
+        update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": None})}
+    )
+
+    reason = registry.check_binding_freshness(unpinned)
+    assert reason is not None
+    assert "no instance_ref.fingerprint pinned" in reason
 
 
 def test_attach_pins_destination_constraints_from_resolved_operation() -> None:

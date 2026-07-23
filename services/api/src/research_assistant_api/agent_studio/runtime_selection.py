@@ -32,8 +32,14 @@ def select_runtime(
     * the manifest only uses project-deployed models;
     * every attached capability resolves to a catalog descriptor that is
       marked ``managed_foundry_native`` *and* whose specific attached
-      operation ``is_bindable`` (``OperationMaturity.GA`` **and**
-      ``OperationLifecycle.ACTIVE``).
+      operation is catalog-eligible (``OperationMaturity.GA`` **and**
+      ``OperationLifecycle.ACTIVE``). Runtime selection is a pure function
+      of manifest + catalog with no tenant/instance/connection/policy
+      context, so it deliberately checks only this one catalog-level axis
+      (not the full ``BindabilityDecision`` a live attach/release/deploy
+      check would need) — a capability that is catalog-eligible here can
+      still fail full bindability at attach/gate/deploy time for reasons
+      (instance readiness, connection, approval) this function cannot see.
 
     Any violation of the above appends a disqualifying reason and forces
     ``RuntimeTarget.CUSTOM_HOSTED``.
@@ -68,7 +74,7 @@ def select_runtime(
                 f"Capability '{instance.descriptor_ref.id}' operation '{instance.operation_ref.id}' is not declared."
             )
             continue
-        if not operation.is_bindable:
+        if not operation.is_catalog_eligible:
             disqualifiers.append(
                 f"Capability '{instance.descriptor_ref.id}' operation '{instance.operation_ref.id}' is "
                 f"{operation.maturity.value} maturity ({operation.lifecycle.value} lifecycle), "

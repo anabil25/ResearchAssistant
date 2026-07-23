@@ -241,8 +241,8 @@ def _retired(
     ``maturity`` defaults to ``GA`` — a retired operation typically *was* GA
     before withdrawal, and its maturity claim does not change on retirement.
     ``lifecycle=RETIRED`` is what actually fails it closed:
-    ``CapabilityOperation.is_bindable`` requires both ``GA`` maturity **and**
-    ``ACTIVE`` lifecycle, so a retired operation is never attachable
+    ``CapabilityOperation.is_catalog_eligible`` requires both ``GA`` maturity
+    **and** ``ACTIVE`` lifecycle, so a retired operation is never attachable
     regardless of its (possibly still-``GA``) maturity value.
     """
     return CapabilityOperation(
@@ -713,10 +713,10 @@ class CapabilityRegistry:
 
         Returns the resolved ``CapabilityOperation`` on success; raises
         ``CapabilityAttachmentError`` with an honest reason otherwise.
-        Bindability requires ``CapabilityOperation.is_bindable`` (both
-        ``OperationMaturity.GA`` and ``OperationLifecycle.ACTIVE`` — a GA
-        operation that has been deprecated/retired is rejected the same as
-        a non-GA one). When the operation ``requires_approval``, its
+        Bindability requires ``CapabilityOperation.is_catalog_eligible``
+        (both ``OperationMaturity.GA`` and ``OperationLifecycle.ACTIVE`` — a
+        GA operation that has been deprecated/retired is rejected the same
+        as a non-GA one). When the operation ``requires_approval``, its
         declared ``approval_policy_ref`` must be present — an operation
         flagged as approval-gated with no governing policy reference is an
         unsatisfiable, catalog-authoring inconsistency and must never be
@@ -728,7 +728,7 @@ class CapabilityRegistry:
         resolved = descriptor.operation(operation)
         if resolved is None:
             raise CapabilityAttachmentError(f"Capability '{descriptor_id}' has no operation '{operation}'.")
-        if not resolved.is_bindable:
+        if not resolved.is_catalog_eligible:
             if resolved.maturity != OperationMaturity.GA:
                 default_reason = f"Operation '{operation}' is {resolved.maturity.value}."
             else:
@@ -838,6 +838,15 @@ class CapabilityRegistry:
         fingerprints. A release/invoke path must call this and hard-fail on
         a non-``None`` result — a binding whose pinned descriptor/instance no
         longer matches the live catalog must never be silently honored.
+
+        A missing ``descriptor_ref.digest``/``operation_ref.version``/
+        ``instance_ref.fingerprint`` (when an instance is attached) is
+        itself a failure, not something to skip: only ``CapabilityRegistry
+        .attach`` produces a fully-pinned binding, so an unpinned binding
+        reaching this check can only be a hand-constructed/client-submitted
+        one that never went through attach-time validation. Treating a
+        missing pin as "nothing to compare, so trivially fresh" would let
+        such a binding coast through cut/gate/deploy unchecked forever.
         """
         descriptor_id = binding.descriptor_ref.id
         operation_id = binding.operation_ref.id
@@ -845,10 +854,12 @@ class CapabilityRegistry:
         if descriptor is None:
             return f"Descriptor '{descriptor_id}' is no longer in the catalog."
         current_descriptor_digest = compute_descriptor_digest(descriptor)
-        if (
-            binding.descriptor_ref.digest is not None
-            and current_descriptor_digest != binding.descriptor_ref.digest
-        ):
+        if binding.descriptor_ref.digest is None:
+            return (
+                f"Capability binding for '{descriptor_id}.{operation_id}' has no descriptor_ref.digest "
+                "pinned — an unpinned descriptor digest cannot be verified as fresh and is rejected."
+            )
+        if current_descriptor_digest != binding.descriptor_ref.digest:
             return (
                 f"Descriptor '{descriptor_id}' content has changed since attach "
                 "(descriptor_ref.digest mismatch)."
@@ -856,16 +867,18 @@ class CapabilityRegistry:
         current_operation = descriptor.operation(operation_id)
         if current_operation is None:
             return f"Operation '{operation_id}' no longer exists on descriptor '{descriptor_id}'."
-        if not current_operation.is_bindable:
+        if not current_operation.is_catalog_eligible:
             return (
                 f"Operation '{descriptor_id}.{operation_id}' is no longer bindable "
                 f"({current_operation.maturity.value} maturity / {current_operation.lifecycle.value} "
                 "lifecycle) — rebind and re-review before release/invoke."
             )
-        if (
-            binding.operation_ref.version is not None
-            and current_operation.version != binding.operation_ref.version
-        ):
+        if binding.operation_ref.version is None:
+            return (
+                f"Capability binding for '{descriptor_id}.{operation_id}' has no operation_ref.version "
+                "pinned — an unpinned operation version cannot be verified as fresh and is rejected."
+            )
+        if current_operation.version != binding.operation_ref.version:
             return (
                 f"Operation '{descriptor_id}.{operation_id}' version has changed since attach "
                 f"(operation_ref.version mismatch: pinned '{binding.operation_ref.version}', now "
@@ -891,15 +904,20 @@ class CapabilityRegistry:
                     f"{instance.unavailable_reason or 'no reason supplied'} — rebind and re-review before "
                     "release/invoke."
                 )
-            if binding.instance_ref.fingerprint is not None:
-                current_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
-                    descriptor, instance
+            if binding.instance_ref.fingerprint is None:
+                return (
+                    f"Capability binding for '{descriptor_id}.{operation_id}' attaches instance "
+                    f"'{instance_id}' with no instance_ref.fingerprint pinned — an unpinned instance "
+                    "fingerprint cannot be verified as fresh and is rejected."
                 )
-                if current_fingerprint != binding.instance_ref.fingerprint:
-                    return (
-                        f"Capability instance '{instance_id}' has been reconfigured since attach "
-                        "(instance_ref.fingerprint mismatch) — rebind and re-review before release/invoke."
-                    )
+            current_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
+                descriptor, instance
+            )
+            if current_fingerprint != binding.instance_ref.fingerprint:
+                return (
+                    f"Capability instance '{instance_id}' has been reconfigured since attach "
+                    "(instance_ref.fingerprint mismatch) — rebind and re-review before release/invoke."
+                )
         return None
 
     def resolve_binding_view(self, binding: CapabilityBinding) -> CapabilityBindingView:
