@@ -86,7 +86,7 @@ interface StudioHeaderProps {
   title: string;
   description: string;
   workflow?: WorkflowBlueprint;
-  status?: string;
+  status: string;
 }
 
 function StudioHeader({
@@ -110,7 +110,7 @@ function StudioHeader({
             <p>{description}</p>
           </div>
         </div>
-        {status ? <span className="status-chip">{status}</span> : null}
+        <span className="status-chip">{status}</span>
       </header>
       {workflow ? (
         <ol
@@ -346,7 +346,6 @@ export function LiteratureStudio({
   };
 
   const exportExtractionCsv = () => {
-    if (!visibleExtraction.length) return;
     const header = ["source_id", "method", "population", "outcome", "limitation"];
     const rows = visibleExtraction.map((row) => [
       row.source_id,
@@ -678,7 +677,9 @@ export function LiteratureStudio({
                     type="button"
                     className="secondary-button"
                     disabled={!visibleExtraction.length}
-                    onClick={exportExtractionCsv}
+                    onClick={
+                      visibleExtraction.length ? exportExtractionCsv : undefined
+                    }
                   >
                     Export CSV
                   </button>
@@ -1344,18 +1345,16 @@ export function GrantStudio({
               onSubmit={(event) => {
                 event.preventDefault();
                 const form = new FormData(event.currentTarget);
-                const name = String(form.get("name") ?? "").trim();
-                const baseUrl = String(form.get("baseUrl") ?? "").trim();
-                const justification = String(
-                  form.get("justification") ?? "",
-                ).trim();
+                const name = String(form.get("name")).trim();
+                const baseUrl = String(form.get("baseUrl")).trim();
+                const justification = String(form.get("justification")).trim();
                 if (!name || !baseUrl || !justification) return;
                 setDraftRequests((current) => [
                   ...current,
                   {
                     id: `draft-${Date.now()}`,
                     name,
-                    category: String(form.get("category") ?? "Funding"),
+                    category: String(form.get("category")),
                     baseUrl,
                     justification,
                     requestedAt: new Date().toISOString(),
@@ -1401,7 +1400,7 @@ export function GrantStudio({
           </div>
         </div>
       ) : null}
-      {selectedRequirement ? (
+      {selectedRequirement && grant ? (
         <div className="modal-backdrop" role="presentation">
           <div
             className="modal-card"
@@ -1430,7 +1429,7 @@ export function GrantStudio({
               </strong>
             </p>
             {(() => {
-              const evidence = (grant?.citations ?? []).filter((citation) =>
+              const evidence = grant.citations.filter((citation) =>
                 selectedRequirement.evidence_ids.includes(citation.id),
               );
               return evidence.length ? (
@@ -1911,20 +1910,19 @@ export function DatasetStudio({
     }
   };
 
-  const uploadToLibrary = () => {
-    if (!uploadedFile) return;
+  const uploadToLibrary = (file: File, kind: "csv" | "json") => {
     setLibraryUploadStatus("uploading");
     setLibraryUploadError(null);
     const form = new FormData();
-    form.append("title", uploadedFile.name);
+    form.append("title", file.name);
     form.append("kind", "Dataset");
     form.append("license", "Project supplied");
     form.append(
       "description",
-      `Dataset uploaded from Dataset Lab for deterministic profiling (${fileKind ?? "unknown"}).`,
+      `Dataset uploaded from Dataset Lab for deterministic profiling (${kind}).`,
     );
     form.append("source", "Workspace upload");
-    form.append("file", uploadedFile);
+    form.append("file", file);
     void uploadLibraryItem(form)
       .then(async () => {
         setLibraryUploadStatus("uploaded");
@@ -2059,13 +2057,13 @@ export function DatasetStudio({
               <span>{fileError}</span>
             </div>
           ) : null}
-          {uploadedFile ? (
+          {uploadedFile && fileKind ? (
             <div className="upload-actions">
               <button
                 type="button"
                 className="secondary-button"
                 disabled={libraryUploadStatus === "uploading"}
-                onClick={uploadToLibrary}
+                onClick={() => uploadToLibrary(uploadedFile, fileKind)}
               >
                 {libraryUploadStatus === "uploading"
                   ? "Uploading…"
@@ -2292,7 +2290,6 @@ export function InstitutionalStudio({
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(
     null,
   );
-  const [workIqEnabled, setWorkIqEnabled] = useState(false);
   const institutional =
     result && "abstained" in result
       ? (result as InstitutionalStudioResult)
@@ -2333,7 +2330,7 @@ export function InstitutionalStudio({
             >
               <input
                 type="checkbox"
-                checked={corpusScopes[scope.id] ?? false}
+                checked={corpusScopes[scope.id]}
                 disabled={scope.locked}
                 onChange={(event) =>
                   setCorpusScopes((current) => ({
@@ -2498,9 +2495,8 @@ export function InstitutionalStudio({
         <label className="check-row emphasis-check work-iq-toggle">
           <input
             type="checkbox"
-            checked={workIqEnabled}
+            checked={false}
             disabled
-            onChange={(event) => setWorkIqEnabled(event.target.checked)}
             aria-describedby="work-iq-readiness-note"
           />
           <span>
@@ -2772,18 +2768,17 @@ export function AutomationStudio({
     });
   };
 
-  const saveEdit = () => {
-    if (!editingId || !draft) return;
+  const saveEdit = (id: string, nextDraft: StepDraft) => {
     setSteps((current) =>
       current.map((step) =>
-        step.id === editingId
+        step.id === id
           ? {
               ...step,
-              label: draft.label.trim() || step.label,
-              kind: draft.kind,
-              depends_on: draft.dependsOn,
-              retry_limit: Math.min(5, Math.max(0, draft.retryLimit)),
-              approval_required: draft.approvalRequired,
+              label: nextDraft.label.trim() || step.label,
+              kind: nextDraft.kind,
+              depends_on: nextDraft.dependsOn,
+              retry_limit: Math.min(5, Math.max(0, nextDraft.retryLimit)),
+              approval_required: nextDraft.approvalRequired,
             }
           : step,
       ),
@@ -2793,21 +2788,15 @@ export function AutomationStudio({
   };
 
   const removeStep = (id: string) => {
-    if (steps.length <= 1 || dependedOnIds.has(id)) return;
     setSteps((current) => current.filter((step) => step.id !== id));
-    if (editingId === id) {
-      setEditingId(null);
-      setDraft(null);
-    }
   };
 
   const addStep = (form: StepDraft & { id: string }) => {
-    if (steps.length >= MAX_WORKFLOW_STEPS) return;
     setSteps((current) => [
       ...current,
       {
         id: form.id,
-        label: form.label.trim() || form.id,
+        label: form.label.trim(),
         kind: form.kind,
         depends_on: form.dependsOn,
         retry_limit: Math.min(5, Math.max(0, form.retryLimit)),
@@ -3053,15 +3042,18 @@ export function AutomationStudio({
                               ? `Workflow already has the maximum of ${MAX_WORKFLOW_STEPS} steps.`
                               : undefined
                         }
-                        onClick={() =>
-                          addStep({
-                            id: `${item.key}-${Date.now().toString(36)}`,
-                            label: item.label,
-                            kind: item.stepKind,
-                            dependsOn: [],
-                            retryLimit: 1,
-                            approvalRequired: false,
-                          })
+                        onClick={
+                          !item.authorized || atCapacity
+                            ? undefined
+                            : () =>
+                                addStep({
+                                  id: `${item.key}-${Date.now().toString(36)}`,
+                                  label: item.label,
+                                  kind: item.stepKind,
+                                  dependsOn: [],
+                                  retryLimit: 1,
+                                  approvalRequired: false,
+                                })
                         }
                       >
                         Add to graph
@@ -3119,7 +3111,7 @@ export function AutomationStudio({
                       setEditingId(null);
                       setDraft(null);
                     }}
-                    onCommit={saveEdit}
+                    onCommit={() => saveEdit(step.id, draft)}
                     commitLabel="Save"
                   />
                 ) : (
@@ -3152,7 +3144,11 @@ export function AutomationStudio({
                               ? "A workflow needs at least one step."
                               : undefined
                         }
-                        onClick={() => removeStep(step.id)}
+                        onClick={
+                          steps.length <= 1 || dependedOnIds.has(step.id)
+                            ? undefined
+                            : () => removeStep(step.id)
+                        }
                       >
                         <Trash2 size={14} />
                       </button>
@@ -3302,7 +3298,9 @@ export function AutomationStudio({
             </div>
             <p>
               This authorizes the exact validated graph
-              {automation ? ` (hash ${automation.graph_hash.slice(0, 12)}…)` : ""}{" "}
+              {automation?.graph_hash
+                ? ` (hash ${automation.graph_hash.slice(0, 12)}…)`
+                : ""}{" "}
               to run on its trigger. Activation is recorded only in this
               workspace session — connect a real approval and scheduling
               system before production use.

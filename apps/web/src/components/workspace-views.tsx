@@ -384,6 +384,7 @@ export function LibraryView({ data, onRefresh }: LibraryViewProps) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailItem, setDetailItem] = useState<LibraryItem | null>(null);
+  const detailTags = detailItem?.tags ?? [];
   const items = useMemo(
     () =>
       (data?.library ?? []).filter(
@@ -581,9 +582,9 @@ export function LibraryView({ data, onRefresh }: LibraryViewProps) {
                 </div>
               ) : null}
             </dl>
-            {(detailItem.tags ?? []).length ? (
+            {detailTags.length ? (
               <div className="tag-list">
-                {(detailItem.tags ?? []).map((tag) => (
+                {detailTags.map((tag) => (
                   <span key={tag}>{tag}</span>
                 ))}
               </div>
@@ -759,6 +760,7 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
   });
   const selected =
     filtered.find((run) => run.id === selectedRunId) ?? filtered[0] ?? null;
+  const selectedStages = selected?.stages ?? [];
   const approval = data?.approvals.find(
     (item) => item.run_id === selected?.id && item.state === "pending",
   );
@@ -899,8 +901,8 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
                   </div>
                 </dl>
                 <div className="run-timeline">
-                  {(selected.stages ?? []).length ? (
-                    (selected.stages ?? []).map((stage) => (
+                  {selectedStages.length ? (
+                    selectedStages.map((stage) => (
                       <div key={stage.id} data-status={stage.status}>
                         <span>
                           {stage.status === "completed" ? (
@@ -1065,11 +1067,10 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
   const [managedConnectorId, setManagedConnectorId] = useState(
     data?.connectors[0]?.id ?? "",
   );
+  const connectors = data?.connectors ?? [];
   const managedConnector =
-    (data?.connectors ?? []).find(
-      (connector) => connector.id === managedConnectorId,
-    ) ??
-    data?.connectors[0] ??
+    connectors.find((connector) => connector.id === managedConnectorId) ??
+    connectors[0] ??
     null;
   const [connectorDrafts, setConnectorDrafts] = useState<
     Record<string, { enabled: boolean; assigned_agents: string[] }>
@@ -1083,9 +1084,9 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
 
   const connectorCategories = [
     "All",
-    ...new Set((data?.connectors ?? []).map((item) => item.category)),
+    ...new Set(connectors.map((item) => item.category)),
   ];
-  const visibleConnectors = (data?.connectors ?? []).filter(
+  const visibleConnectors = connectors.filter(
     (connector) =>
       (connectorCategory === "All" ||
         connector.category === connectorCategory) &&
@@ -1095,7 +1096,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
   );
   const gatewayVersionCards = GATEWAY_VERSION_TARGETS.map((target) => ({
     ...target,
-    connector: (data?.connectors ?? []).find(
+    connector: connectors.find(
       (connector) =>
         target.pattern.test(connector.id) ||
         target.pattern.test(connector.category),
@@ -1503,7 +1504,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                             setManagedConnectorId(event.target.value)
                           }
                         >
-                          {(data?.connectors ?? []).map((connector) => (
+                          {connectors.map((connector) => (
                             <option value={connector.id} key={connector.id}>
                               {connector.name}
                             </option>

@@ -1,7 +1,9 @@
 import {
+  CORE_SCREENSHOT_CONTRACTS,
   DECLARED_SCREENSHOT_IDS,
   INTERACTION_GAPS,
   INTERACTION_MANIFEST,
+  STATE_SCREENSHOT_IDS,
   UI_COVERAGE_MANIFEST,
 } from "./interaction-manifest";
 
@@ -38,6 +40,18 @@ describe("V3 interaction manifest", () => {
   });
 
   it("links every control and state to routes, viewports, tests, and screenshots", () => {
+    expect(CORE_SCREENSHOT_CONTRACTS.map((contract) => contract.id)).toEqual(
+      expect.arrayContaining([
+        "visual.core.overview",
+        "visual.core.literature",
+        "visual.core.workflow",
+      ]),
+    );
+    expect(STATE_SCREENSHOT_IDS).toEqual([
+      "visual.state.empty",
+      "visual.state.loading",
+      "visual.state.error",
+    ]);
     expect(UI_COVERAGE_MANIFEST).toHaveLength(INTERACTION_MANIFEST.length);
     for (const interaction of UI_COVERAGE_MANIFEST) {
       expect(interaction.route).toMatch(/^\/(?:\?|$)/);
