@@ -72,6 +72,7 @@ from research_assistant_api.agent_studio.store import (
     DraftConflictError,
     IdempotencyConcurrencyError,
     IdempotencyNotFoundError,
+    ReleaseSuccessorConflictError,
     hash_idempotency_token,
     is_idempotency_lease_expired,
     validate_idempotency_lease_seconds,
@@ -458,9 +459,53 @@ class CosmosAgentStudioStore(AgentStudioStore):
         )
 
     def create_release(self, scope: ScopeContext, release: AgentRelease) -> AgentRelease:
+        """Append a new lifecycle transition, guarded by a Cosmos-native
+        create-if-absent successor document -- never a client-side
+        read-then-write race.
+
+        A dedicated ``release_successor::{version_id}::{predecessor}``
+        document (predecessor is ``previous_release_id``, or the literal
+        string ``root`` for a version's first release) is written via
+        ``create_item`` *before* the release document itself. Cosmos
+        rejects a duplicate ``create_item`` with a 409 Conflict, so two
+        concurrent callers racing to promote/activate/re-gate the exact same
+        predecessor release -- even across separate processes/instances --
+        can never both "win": the loser's guard write fails atomically
+        server-side and it raises :class:`ReleaseSuccessorConflictError`
+        naming the winning release, instead of silently creating a second
+        sibling successor (the promotion double-release race). The base
+        class's own local in-memory duplicate check still runs afterwards
+        (via ``super().create_release(...)``) as defense in depth.
+        """
+        self._require_scope_match(scope, release.tenant_id, release.project_id)
+        successor_id = self._release_successor_id(release.version_id, release.previous_release_id)
+        try:
+            self._container.create_item(
+                {
+                    "id": successor_id,
+                    "documentType": "release_successor",
+                    "scope_key": scope.scope_key,
+                    "payload": {"release_id": release.id},
+                }
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            document = self._read(scope.scope_key, successor_id)
+            winning_release_id = document["payload"]["release_id"] if document is not None else "<unknown>"
+            raise ReleaseSuccessorConflictError(
+                f"Release '{release.id}' lost a concurrent lifecycle-transition race for version "
+                f"'{release.version_id}': release '{winning_release_id}' already succeeded predecessor "
+                f"'{release.previous_release_id or 'none'}'."
+            ) from exc
         super().create_release(scope, release)
         self._upsert(scope.scope_key, self._release_id(release.id), "release", release.model_dump(mode="json"))
         return release
+
+    @staticmethod
+    def _release_successor_id(version_id: str, previous_release_id: str | None) -> str:
+        predecessor = previous_release_id or "root"
+        return f"release_successor::{version_id}::{predecessor}"
 
     def _sync_releases(self, scope: ScopeContext, version_id: str) -> None:
         documents = self._query_releases_for_version(scope.scope_key, version_id)
@@ -972,25 +1017,48 @@ class CosmosAgentStudioStore(AgentStudioStore):
         self._upsert(scope.scope_key, self._deployment_id(record.id), "deployment", record.model_dump(mode="json"))
         return record
 
+    def _cache_deployment(self, scope: ScopeContext, deployment: DeploymentRecord) -> None:
+        """Refresh the local process cache from a freshly-read Cosmos document.
+
+        Unlike the initial-population helpers used for write-once record
+        types, this always overwrites ``self._deployments[deployment.id]``
+        (never just "add if missing") so a status/health change written by
+        another process/replica is reflected here as soon as it is read,
+        instead of being masked by a stale value cached from an earlier read.
+        """
+        self._deployments[deployment.id] = deployment
+        ids = self._deployments_by_agent.setdefault((scope.scope_key, deployment.logical_agent_id), [])
+        if deployment.id not in ids:
+            ids.append(deployment.id)
+
     def list_deployments(self, scope: ScopeContext, logical_agent_id: str) -> tuple[DeploymentRecord, ...]:
         documents = self._query_partition(scope.scope_key, "deployment")
         for document in documents:
             deployment = DeploymentRecord.model_validate(document["payload"])
-            if deployment.logical_agent_id == logical_agent_id and deployment.id not in self._deployments:
-                AgentStudioStore.create_deployment(self, scope, deployment)
+            if deployment.logical_agent_id == logical_agent_id:
+                self._cache_deployment(scope, deployment)
         return super().list_deployments(scope, logical_agent_id)
 
     def get_deployment(self, scope: ScopeContext, deployment_id: str) -> DeploymentRecord | None:
-        cached = super().get_deployment(scope, deployment_id)
-        if cached is not None:
-            return cached
+        """Always a fresh Cosmos point read -- never a cache-first return.
+
+        ``DeploymentRecord`` is mutated in place by ``update_deployment``
+        (status/health/rollback), and that write may come from a different
+        process or replica than the one serving this read. Returning a
+        locally cached copy without re-checking Cosmos would let
+        activation/health/rollback decisions act on state that is stale
+        relative to what is actually persisted -- e.g. satisfying an
+        ``ACTIVE`` check against a ``HEALTHY`` reading that another replica
+        has since downgraded. The local cache is refreshed as a side effect
+        of this read; it is never consulted in place of Cosmos.
+        """
         document = self._read(scope.scope_key, self._deployment_id(deployment_id))
         if document is None:
             return None
         deployment = DeploymentRecord.model_validate(document["payload"])
         if deployment.tenant_id != scope.tenant_id or deployment.project_id != scope.project_id:
             return None
-        AgentStudioStore.create_deployment(self, scope, deployment)
+        self._cache_deployment(scope, deployment)
         return deployment
 
     def update_deployment(self, scope: ScopeContext, record: DeploymentRecord) -> DeploymentRecord:
@@ -1035,13 +1103,22 @@ class CosmosAgentStudioStore(AgentStudioStore):
         logical_agent_id: str,
         environment: DeploymentEnvironment,
     ) -> LogicalAgentBinding | None:
-        cached = super().get_binding(scope, logical_agent_id, environment)
-        if cached is not None:
-            return cached
+        """Always a fresh Cosmos point read -- never a cache-first return.
+
+        Binding resolution decides which released version actually serves a
+        logical agent in this environment. ``set_binding`` create-or-replaces
+        the same document, potentially from a different replica (e.g. a
+        rollback re-pointing the binding); a cache-first read here would let
+        request routing/resolve keep serving a version that Cosmos no longer
+        reflects. The local cache is refreshed as a side effect of this
+        read only.
+        """
         document = self._read(scope.scope_key, self._binding_id(logical_agent_id, environment))
         if document is None:
             return None
         binding = LogicalAgentBinding.model_validate(document["payload"])
+        if binding.tenant_id != scope.tenant_id or binding.project_id != scope.project_id:
+            return None
         AgentStudioStore.set_binding(self, scope, binding)
         return binding
 
@@ -1067,9 +1144,22 @@ class CosmosAgentStudioStore(AgentStudioStore):
         documents = self._query_partition(scope.scope_key, "tool_registration")
         for document in documents:
             registration = ToolRegistrationSpec.model_validate(document["payload"])
-            if registration.logical_agent_id == logical_agent_id and registration.id not in self._tool_registrations:
-                AgentStudioStore.create_tool_registration(self, scope, registration)
+            if registration.logical_agent_id == logical_agent_id:
+                self._cache_tool_registration(scope, registration)
         return super().list_tool_registrations(scope, logical_agent_id)
+
+    def _cache_tool_registration(self, scope: ScopeContext, registration: ToolRegistrationSpec) -> None:
+        """Refresh the local cache for a tool registration from a fresh read.
+
+        Tool registrations have no in-place update path today, but the
+        cache is refreshed unconditionally (not just populated on first
+        sight) for the same reason as deployments/bindings/proposals: this
+        must never rely on "already cached implies still correct".
+        """
+        self._tool_registrations[registration.id] = registration
+        ids = self._tool_registrations_by_agent.setdefault((scope.scope_key, registration.logical_agent_id), [])
+        if registration.id not in ids:
+            ids.append(registration.id)
 
     # -- Builder proposals --------------------------------------------------
 
@@ -1087,25 +1177,41 @@ class CosmosAgentStudioStore(AgentStudioStore):
         )
         return proposal
 
+    def _cache_builder_proposal(self, scope: ScopeContext, proposal: BuilderProposal) -> None:
+        """Refresh (never merely populate) the builder-proposal cache.
+
+        ``save_builder_proposal_decision`` mutates a proposal's state in
+        place (PENDING -> APPROVED/REJECTED); a stale cached copy must not
+        be handed back to a caller inspecting current proposal status.
+        """
+        self._builder_proposals[proposal.id] = proposal
+        ids = self._builder_proposals_by_agent.setdefault((scope.scope_key, proposal.logical_agent_id), [])
+        if proposal.id not in ids:
+            ids.append(proposal.id)
+
     def list_builder_proposals(self, scope: ScopeContext, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
         documents = self._query_partition(scope.scope_key, "builder_proposal")
         for document in documents:
             proposal = BuilderProposal.model_validate(document["payload"])
-            if proposal.logical_agent_id == logical_agent_id and proposal.id not in self._builder_proposals:
-                AgentStudioStore.create_builder_proposal(self, scope, proposal)
+            if proposal.logical_agent_id == logical_agent_id:
+                self._cache_builder_proposal(scope, proposal)
         return super().list_builder_proposals(scope, logical_agent_id)
 
     def get_builder_proposal(self, scope: ScopeContext, proposal_id: str) -> BuilderProposal | None:
-        cached = super().get_builder_proposal(scope, proposal_id)
-        if cached is not None:
-            return cached
+        """Always a fresh Cosmos point read -- never a cache-first return.
+
+        See ``get_deployment``/``get_binding`` for the rationale: a proposal
+        is mutable via ``save_builder_proposal_decision`` and a cache-first
+        read could show a caller a PENDING proposal that another replica has
+        already decided.
+        """
         document = self._read(scope.scope_key, self._builder_proposal_id(proposal_id))
         if document is None:
             return None
         proposal = BuilderProposal.model_validate(document["payload"])
         if proposal.tenant_id != scope.tenant_id or proposal.project_id != scope.project_id:
             return None
-        AgentStudioStore.create_builder_proposal(self, scope, proposal)
+        self._cache_builder_proposal(scope, proposal)
         return proposal
 
     def save_builder_proposal_decision(self, scope: ScopeContext, proposal: BuilderProposal) -> BuilderProposal:

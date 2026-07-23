@@ -88,7 +88,6 @@ def test_studio_run_and_approval_use_same_durable_instance() -> None:
     assert scheduled_payload["group_ids"] == [
         "researchers",
         "grant-reviewers",
-        "research-admins",
     ]
     assert decision.status_code == 200
     assert retry.status_code == 200

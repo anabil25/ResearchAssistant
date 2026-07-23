@@ -15,10 +15,20 @@ from pydantic import ValidationError
 from research_assistant_api.config import DEMO_IDENTITY_SAFE_ENVIRONMENTS, Settings
 
 
-def test_default_settings_allow_demo_identity_in_development() -> None:
+def test_default_settings_disable_demo_identity(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The out-of-the-box default must be least-privilege: demo identity is
+    off unless explicitly opted into via ``RESEARCH_ALLOW_DEMO_IDENTITY``,
+    even in the default ``development`` environment. A default of ``True``
+    would let an unconfigured deployment silently boot with an
+    unauthenticated, group-bearing identity. This clears the test session's
+    own opt-in env var (set in ``tests/conftest.py`` so unauthenticated
+    endpoint tests can exercise the demo identity) to verify the field's
+    true unconfigured default, not the test session's explicit override.
+    """
+    monkeypatch.delenv("RESEARCH_ALLOW_DEMO_IDENTITY", raising=False)
     settings = Settings()
     assert settings.environment == "development"
-    assert settings.allow_demo_identity is True
+    assert settings.allow_demo_identity is False
 
 
 @pytest.mark.parametrize("environment", sorted(DEMO_IDENTITY_SAFE_ENVIRONMENTS))

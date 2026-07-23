@@ -79,6 +79,18 @@ def _is_active(entry: MemoryEntry) -> bool:
     return entry.expires_at is None or entry.expires_at > utc_now()
 
 
+def _reject_if_inactive(entry: MemoryEntry, entry_id: str, *, action: str) -> None:
+    """Governance access (``inspect``/``correct``) must refuse an entry that
+    is forgotten OR expired. An expired-but-not-yet-purged entry is not
+    meaningfully different from a deleted one from the caller's perspective,
+    so it must not remain readable or correctable purely because a
+    retention/TTL sweep has not physically removed it yet."""
+    if entry.deleted_at is not None:
+        raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten and cannot be {action}.")
+    if entry.expires_at is not None and entry.expires_at <= utc_now():
+        raise MemoryPolicyError(f"Memory entry '{entry_id}' has expired and cannot be {action}.")
+
+
 def _can_read(entry: MemoryEntry, actor_id: str) -> bool:
     """Empty ``read_acl`` means "creator + agent context only"; a non-empty
     ACL additionally allows the listed principals."""
@@ -427,8 +439,7 @@ class MemoryService:
             raise MemoryAccessError(
                 f"Scope '{entry.scope_kind.value}' does not allow user-initiated inspect for this agent."
             )
-        if entry.deleted_at is not None:
-            raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten.")
+        _reject_if_inactive(entry, entry_id, action="inspected")
         if not _can_read(entry, actor_id):
             raise MemoryAccessError(f"Actor '{actor_id}' does not have read access to memory entry '{entry_id}'.")
         self._store.record_audit(
@@ -456,8 +467,7 @@ class MemoryService:
     ) -> MemoryEntry:
         entry = self._get_owned_entry(manifest, tenant_id=tenant_id, project_id=project_id, entry_id=entry_id)
         validate_memory_scopes(manifest, entry.scope_kind)
-        if entry.deleted_at is not None:
-            raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten and cannot be corrected.")
+        _reject_if_inactive(entry, entry_id, action="corrected")
         if not _can_write(entry, actor_id):
             raise MemoryAccessError(f"Actor '{actor_id}' does not have write access to memory entry '{entry_id}'.")
         updated = entry.model_copy(update={"content": content, "provenance": "operator_correction"})

@@ -2824,6 +2824,79 @@ def test_deployment_routes_cover_deploy_health_rollback_and_errors(
     assert bad_rollback.status_code == 409
 
 
+def test_record_health_requires_maintainer_role_at_router_and_service(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    """A viewer or contributor must never be able to record deployment
+    health: the health status recorded here is the sole gate
+    ``activate_release`` relies on, so anything less than MAINTAINER must
+    be refused before the mutation is attempted, and the role must be
+    resolved against the *deployment's own* logical agent (not merely a
+    project-scoped identity check)."""
+    _create_agent(client, logical_agent_id="agent-health-authz", headers=USER_HEADERS)
+    version = _cut_gated_version(client, "agent-health-authz", headers=USER_HEADERS)
+    deployment = _deploy_version(
+        client,
+        logical_agent_id="agent-health-authz",
+        version_id=version["id"],
+        headers=USER_HEADERS,
+    )
+
+    contributor_headers = _project_headers(
+        tenant_id="demo",
+        user_id="contributor-1",
+        project_ids=(DEFAULT_PROJECT_ID,),
+    )
+    _grant_role(
+        store,
+        logical_agent_id="agent-health-authz",
+        principal_id="contributor-1",
+        role=AgentRole.CONTRIBUTOR,
+    )
+
+    viewer_attempt = client.post(
+        f"/v1/agent-studio/deployments/{deployment['id']}/health",
+        json=_body(status="healthy"),
+        headers=VIEWER_HEADERS,
+    )
+    assert viewer_attempt.status_code == 403
+
+    contributor_attempt = client.post(
+        f"/v1/agent-studio/deployments/{deployment['id']}/health",
+        json=_body(status="healthy"),
+        headers=contributor_headers,
+    )
+    assert contributor_attempt.status_code == 403
+
+    # No health update was ever persisted by either denied attempt.
+    unchanged = client.get(
+        "/v1/agent-studio/agents/agent-health-authz/deployments",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert unchanged.json()[0]["health"]["status"] == HealthStatus.UNKNOWN.value
+
+    maintainer_headers = _project_headers(
+        tenant_id="demo",
+        user_id="maintainer-health",
+        project_ids=(DEFAULT_PROJECT_ID,),
+    )
+    _grant_role(
+        store,
+        logical_agent_id="agent-health-authz",
+        principal_id="maintainer-health",
+        role=AgentRole.MAINTAINER,
+    )
+    maintainer_attempt = client.post(
+        f"/v1/agent-studio/deployments/{deployment['id']}/health",
+        json=_body(status="healthy", detail="verified by maintainer"),
+        headers=maintainer_headers,
+    )
+    assert maintainer_attempt.status_code == 200
+    assert maintainer_attempt.json()["health"]["status"] == HealthStatus.HEALTHY.value
+
+
 def test_resolve_contract_and_catalog_routes_cover_full_happy_path(
     client: TestClient,
     store: AgentStudioStore,

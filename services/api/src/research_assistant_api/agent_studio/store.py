@@ -89,6 +89,21 @@ class IdempotencyConcurrencyError(AgentStudioStoreError):
     claim. Callers must re-fetch and retry, never blindly re-apply."""
 
 
+class ReleaseSuccessorConflictError(AgentStudioStoreError):
+    """Raised when ``create_release`` would create a second sibling
+    successor for the same ``(version_id, previous_release_id)`` pair.
+
+    ``AgentRelease``'s lifecycle is a single linear chain per version,
+    threaded via ``previous_release_id``. Two concurrent callers reading the
+    same predecessor (e.g. two approvers both promoting the same GATED
+    release, or two concurrent ``activate_release`` calls on the same
+    APPROVED release) must never both succeed in creating a next-state
+    release: exactly one is the legitimate successor and the other lost the
+    race and must be retried against the fresh predecessor, never silently
+    coexist as a sibling.
+    """
+
+
 def hash_idempotency_token(token: str) -> str:
     return hashlib.sha256(token.encode("utf-8")).hexdigest()
 
@@ -308,9 +323,27 @@ class AgentStudioStore:
 
         Never mutates an existing ``AgentRelease``; every transition
         (gated/approved/active/deprecated/rolled_back) is a brand-new record
-        chained via ``previous_release_id``.
+        chained via ``previous_release_id``. Rejects a second sibling
+        successor for the same predecessor (see
+        :class:`ReleaseSuccessorConflictError`), checked against the raw
+        local ``_releases_by_version`` cache -- deliberately *not* the
+        (possibly overridden) ``self.list_releases_for_version``, since a
+        Cosmos-backed subclass's sync loop calls this exact method to
+        populate that same cache one document at a time and going back
+        through the public, syncing accessor here would recurse. A Cosmos
+        subclass wraps this with a server-side atomic guard, called before
+        delegating here, for true cross-instance safety; this local check
+        remains as defense in depth for the in-memory case.
         """
         self._require_scope_match(scope, release.tenant_id, release.project_id)
+        for existing_id in self._releases_by_version.get(release.version_id, []):
+            existing = self._releases[existing_id]
+            if existing.id != release.id and existing.previous_release_id == release.previous_release_id:
+                raise ReleaseSuccessorConflictError(
+                    f"Release '{release.id}' lost a concurrent lifecycle-transition race for version "
+                    f"'{release.version_id}': release '{existing.id}' already succeeded predecessor "
+                    f"'{release.previous_release_id or 'none'}'."
+                )
         self._releases[release.id] = release
         self._releases_by_version.setdefault(release.version_id, []).append(release.id)
         return release

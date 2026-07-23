@@ -60,6 +60,9 @@ from research_assistant_api.agent_studio.runtime_selection import select_runtime
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.agent_studio.store import DraftConflictError as _StoreDraftConflictError
+from research_assistant_api.agent_studio.store import (
+    ReleaseSuccessorConflictError as _StoreReleaseSuccessorConflictError,
+)
 
 
 class ReleaseServiceError(RuntimeError):
@@ -76,6 +79,19 @@ class DraftConflictError(ReleaseServiceError):
     currently stored draft -- another writer saved a change first. Callers
     must re-fetch the latest draft (and its current ``etag``) and retry
     rather than silently overwriting the concurrent edit.
+    """
+
+
+class ReleasePromotionConflictError(ReleaseServiceError):
+    """Raised when a release lifecycle transition (gate cut, promotion
+    approval, or activation) loses a race against a concurrent caller
+    transitioning the exact same predecessor release.
+
+    Wraps the store-level ``ReleaseSuccessorConflictError`` so callers only
+    need to catch ``ReleaseServiceError`` (as the router already does,
+    mapping it to ``409 Conflict``): the caller must re-fetch the version's
+    current release state and retry, never assume its own attempt was the
+    one that won.
     """
 
 
@@ -489,7 +505,13 @@ class ReleaseService:
                 created_by=actor_id,
                 detail="Passed all applicable hard gates.",
             )
-            self._store.create_release(scope, release)
+            try:
+                self._store.create_release(scope, release)
+            except _StoreReleaseSuccessorConflictError as exc:
+                raise ReleasePromotionConflictError(
+                    f"Version '{version_id}' was concurrently gated/released by another request; "
+                    "re-fetch its current release state and retry."
+                ) from exc
         return report
 
     # -- Promotion / approvals --------------------------------------------
@@ -671,23 +693,33 @@ class ReleaseService:
             raise ReleaseServiceError(f"Version '{version_id}' has no gated release to promote.")
         # Each transition is its own append-only record, chained via
         # ``previous_release_id`` — never an in-place mutation of ``gated``.
-        self._store.create_release(
-            scope,
-            AgentRelease(
-                id=str(uuid4()),
-                version_id=version_id,
-                logical_agent_id=version.logical_agent_id,
-                tenant_id=scope.tenant_id,
-                project_id=scope.project_id,
-                manifest_hash=version.manifest_hash,
-                status=ReleaseStatus.APPROVED,
-                gate_report_id=gated.gate_report_id,
-                approval_id=approval_id,
-                previous_release_id=gated.id,
-                created_by=version.created_by,
-                detail="Promotion approved.",
-            ),
-        )
+        # Two concurrent promotions (e.g. two approvers deciding separate
+        # approval records for the same version) can both read this exact
+        # same ``gated`` predecessor before either has transitioned it; the
+        # store's successor guard lets only one create the APPROVED release.
+        try:
+            self._store.create_release(
+                scope,
+                AgentRelease(
+                    id=str(uuid4()),
+                    version_id=version_id,
+                    logical_agent_id=version.logical_agent_id,
+                    tenant_id=scope.tenant_id,
+                    project_id=scope.project_id,
+                    manifest_hash=version.manifest_hash,
+                    status=ReleaseStatus.APPROVED,
+                    gate_report_id=gated.gate_report_id,
+                    approval_id=approval_id,
+                    previous_release_id=gated.id,
+                    created_by=version.created_by,
+                    detail="Promotion approved.",
+                ),
+            )
+        except _StoreReleaseSuccessorConflictError as exc:
+            raise ReleasePromotionConflictError(
+                f"Version '{version_id}' was concurrently promoted by another approval; "
+                "re-fetch its current release state and retry."
+            ) from exc
         return version
 
     def activate_release(
@@ -738,25 +770,31 @@ class ReleaseService:
                 f"Version '{version_id}' has no successful deployment with a healthy smoke result in "
                 f"environment '{environment.value}'; activation requires a healthy deployment first."
             )
-        return self._store.create_release(
-            scope,
-            AgentRelease(
-                id=str(uuid4()),
-                version_id=version_id,
-                logical_agent_id=version.logical_agent_id,
-                tenant_id=scope.tenant_id,
-                project_id=scope.project_id,
-                manifest_hash=version.manifest_hash,
-                status=ReleaseStatus.ACTIVE,
-                environment=environment,
-                gate_report_id=approved.gate_report_id,
-                approval_id=approved.approval_id,
-                deployment_id=healthy_deployment.id,
-                previous_release_id=approved.id,
-                created_by=actor_id,
-                detail="Version activated after a successful deployment and healthy smoke check.",
-            ),
-        )
+        try:
+            return self._store.create_release(
+                scope,
+                AgentRelease(
+                    id=str(uuid4()),
+                    version_id=version_id,
+                    logical_agent_id=version.logical_agent_id,
+                    tenant_id=scope.tenant_id,
+                    project_id=scope.project_id,
+                    manifest_hash=version.manifest_hash,
+                    status=ReleaseStatus.ACTIVE,
+                    environment=environment,
+                    gate_report_id=approved.gate_report_id,
+                    approval_id=approved.approval_id,
+                    deployment_id=healthy_deployment.id,
+                    previous_release_id=approved.id,
+                    created_by=actor_id,
+                    detail="Version activated after a successful deployment and healthy smoke check.",
+                ),
+            )
+        except _StoreReleaseSuccessorConflictError as exc:
+            raise ReleasePromotionConflictError(
+                f"Version '{version_id}' was concurrently activated by another request; "
+                "re-fetch its current release state and retry."
+            ) from exc
 
     # -- Admin escalation --------------------------------------------------
 

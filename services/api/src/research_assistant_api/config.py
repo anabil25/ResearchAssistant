@@ -14,6 +14,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: as production-like and refuses to start with demo identity enabled, so
 #: the bypass can never be silently carried into a production deployment
 #: through an unset or misconfigured ``RESEARCH_ALLOW_DEMO_IDENTITY``.
+#: ``Settings.allow_demo_identity`` defaults to ``False``: even in a safe
+#: environment, demo identity must be explicitly opted into via
+#: ``RESEARCH_ALLOW_DEMO_IDENTITY=true`` -- it is never enabled by default.
 DEMO_IDENTITY_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
 
@@ -120,7 +123,7 @@ class Settings(BaseSettings):
         validation_alias="RESEARCH_ALLOWED_ORIGINS",
     )
     allow_demo_identity: bool = Field(
-        default=True,
+        default=False,
         validation_alias="RESEARCH_ALLOW_DEMO_IDENTITY",
     )
     trust_platform_identity_headers: bool = Field(

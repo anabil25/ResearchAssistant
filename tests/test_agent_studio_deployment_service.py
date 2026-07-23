@@ -407,6 +407,7 @@ def test_deploy_and_record_health_are_cross_project_isolated(
             tenant_id=TENANT,
             project_id=OTHER_PROJECT_ID,
             deployment_id=record.id,
+            actor_role=AgentRole.MAINTAINER,
             status=HealthStatus.HEALTHY,
         )
 
@@ -521,8 +522,42 @@ def test_record_health_raises_for_missing_deployment(deployment_service: Deploym
             tenant_id="demo",
             project_id=TEST_PROJECT_ID,
             deployment_id="missing",
+            actor_role=AgentRole.MAINTAINER,
             status=HealthStatus.HEALTHY,
         )
+
+
+def test_record_health_requires_maintainer_role(
+    release_service: ReleaseServiceHarness,
+    deployment_service: DeploymentService,
+    store: AgentStudioStore,
+) -> None:
+    """Defense-in-depth: even when called directly (bypassing the router's
+    own 403 gate), the service must independently refuse a sub-MAINTAINER
+    role, since a forged HEALTHY report is the sole safety net
+    ``activate_release`` relies on."""
+    version, _ = _version_with_latest_release(release_service, store, latest_status=ReleaseStatus.GATED)
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-deploy-test",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    with pytest.raises(DeploymentServiceError, match="cannot record deployment health"):
+        deployment_service.record_health(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            deployment_id=record.id,
+            actor_role=AgentRole.CONTRIBUTOR,
+            status=HealthStatus.HEALTHY,
+        )
+
+    persisted = store.get_deployment(_scope(), record.id)
+    assert persisted is not None
+    assert persisted.health.status is HealthStatus.UNKNOWN
 
 
 def test_record_health_updates_deployment_health_and_trace(
@@ -544,6 +579,7 @@ def test_record_health_updates_deployment_health_and_trace(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         deployment_id=record.id,
+        actor_role=AgentRole.MAINTAINER,
         status=HealthStatus.DEGRADED,
         detail="latency spike",
         trace_ref="trace-xyz",
@@ -577,6 +613,7 @@ def test_record_health_without_trace_ref_leaves_existing_trace(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         deployment_id=record.id,
+        actor_role=AgentRole.MAINTAINER,
         status=HealthStatus.HEALTHY,
     )
 

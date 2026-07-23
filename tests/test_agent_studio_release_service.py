@@ -30,6 +30,7 @@ from research_assistant_api.agent_studio.models import (
     AGENT_STUDIO_PROTOCOL_VERSION,
     AgentManifest,
     AgentOwnerKind,
+    AgentRelease,
     AgentRole,
     AgentVersion,
     AgentVisibility,
@@ -59,6 +60,7 @@ from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
     DraftConflictError,
+    ReleasePromotionConflictError,
     ReleaseService,
     ReleaseServiceError,
     manifest_hash,
@@ -1088,6 +1090,61 @@ def test_run_release_gates_records_actual_actor_as_created_by(service: ReleaseSe
     assert version.created_by == "author-1"
 
 
+def test_run_release_gates_raises_promotion_conflict_when_a_concurrent_gate_wins_the_race(
+    service: ReleaseService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two callers running gates for the same never-yet-released version can
+    both read ``latest_release_for_version() is None`` before either writes.
+    Only one may win the race to create the first (root) GATED release; the
+    loser must see a ``ReleasePromotionConflictError``, never a silent
+    sibling release."""
+    _create_agent(service)
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    scope = _scope()
+    # Simulate the concurrent winner: it already created the root GATED
+    # release (previous_release_id=None) for this version.
+    service._store.create_release(
+        scope,
+        AgentRelease(
+            id="winner-release",
+            version_id=version.id,
+            logical_agent_id=version.logical_agent_id,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            manifest_hash=version.manifest_hash,
+            status=ReleaseStatus.GATED,
+            gate_report_id="winner-report",
+            previous_release_id=None,
+            created_by="other-user",
+            detail="Concurrent winner.",
+        ),
+    )
+    # Freeze this call's view of "current predecessor" at the stale,
+    # pre-race value (None) so it computes the exact same
+    # previous_release_id the concurrent winner already claimed above --
+    # this reproduces the actual race window under test, not a mocked-away
+    # code path.
+    monkeypatch.setattr(service._store, "latest_release_for_version", lambda *a, **k: None)
+
+    with pytest.raises(ReleasePromotionConflictError, match="concurrently gated/released"):
+        service.run_release_gates(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        )
+    # Only the winner's release exists; the loser never persisted a sibling.
+    assert [r.id for r in service._store.list_releases_for_version(scope, version.id)] == ["winner-release"]
+
+
 def test_request_promotion_requires_contributor_role(service: ReleaseService) -> None:
     version = _gated_version(service)
 
@@ -1174,6 +1231,58 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_approved(se
             destination="production",
             evidence_summary="Try again.",
         )
+
+
+def test_request_promotion_raises_promotion_conflict_when_a_concurrent_promotion_wins_the_race(
+    service: ReleaseService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two approvers deciding separate approval records for the same GATED
+    version can both read the same GATED predecessor before either has
+    transitioned it. Only one may win the race to create the APPROVED
+    release; the loser must see a ``ReleasePromotionConflictError``."""
+    version = _gated_version(service)
+    scope = _scope()
+    gated = service._store.latest_release_for_version(scope, version.id)
+    assert gated is not None
+    # Simulate the concurrent winner: another approval already promoted the
+    # exact same GATED predecessor to APPROVED.
+    service._store.create_release(
+        scope,
+        AgentRelease(
+            id="winner-approved-release",
+            version_id=version.id,
+            logical_agent_id=version.logical_agent_id,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            manifest_hash=version.manifest_hash,
+            status=ReleaseStatus.APPROVED,
+            gate_report_id=gated.gate_report_id,
+            approval_id="other-approval",
+            previous_release_id=gated.id,
+            created_by="other-user",
+            detail="Concurrent winner.",
+        ),
+    )
+    # Freeze this call's view of "current predecessor" at the stale,
+    # pre-race GATED value so it computes the exact same
+    # previous_release_id the concurrent winner already claimed above.
+    monkeypatch.setattr(service._store, "latest_release_for_version", lambda *a, **k: gated)
+
+    with pytest.raises(ReleasePromotionConflictError, match="concurrently promoted"):
+        service.request_promotion(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.MAINTAINER,
+            destination="production",
+            evidence_summary="All hard gates green.",
+        )
+    # Only the winner's APPROVED release exists; the loser never persisted a
+    # sibling successor, and no approval record was left dangling either.
+    releases = service._store.list_releases_for_version(scope, version.id)
+    assert [r.id for r in releases] == [gated.id, "winner-approved-release"]
+    assert service._store.list_approvals(scope, version.id) == ()
 
 
 def test_activate_release_requires_maintainer_role(service: ReleaseService) -> None:
@@ -1291,6 +1400,72 @@ def test_activate_release_succeeds_after_healthy_deployment(service: ReleaseServ
         ReleaseStatus.ACTIVE,
     ]
     _ = approved
+
+
+def test_activate_release_raises_promotion_conflict_when_a_concurrent_activation_wins_the_race(
+    service: ReleaseService, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Two activation requests for the same APPROVED release (e.g. retried
+    after a slow response) can both read the same APPROVED predecessor
+    before either has transitioned it. Only one may win the race to create
+    the ACTIVE release; the loser must see a ``ReleasePromotionConflictError``,
+    never a second sibling ACTIVE release for the same predecessor."""
+    version = _gated_version(service)
+    service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+    _record_healthy_deployment(service, version)
+    scope = _scope()
+    approved = service._store.latest_release_for_version(scope, version.id)
+    assert approved is not None and approved.status is ReleaseStatus.APPROVED
+    # Simulate the concurrent winner: another activation request already
+    # transitioned the exact same APPROVED predecessor to ACTIVE.
+    service._store.create_release(
+        scope,
+        AgentRelease(
+            id="winner-active-release",
+            version_id=version.id,
+            logical_agent_id=version.logical_agent_id,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            manifest_hash=version.manifest_hash,
+            status=ReleaseStatus.ACTIVE,
+            gate_report_id=approved.gate_report_id,
+            approval_id=approved.approval_id,
+            deployment_id="winner-deployment",
+            previous_release_id=approved.id,
+            created_by="other-user",
+            detail="Concurrent winner.",
+        ),
+    )
+    # Freeze this call's view of "current predecessor" at the stale,
+    # pre-race APPROVED value so it computes the exact same
+    # previous_release_id the concurrent winner already claimed above.
+    monkeypatch.setattr(service._store, "latest_release_for_version", lambda *a, **k: approved)
+
+    with pytest.raises(ReleasePromotionConflictError, match="concurrently activated"):
+        service.activate_release(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-3",
+            actor_role=AgentRole.MAINTAINER,
+        )
+    # Only the winner's ACTIVE release exists; the loser never persisted a
+    # sibling ACTIVE successor for the same APPROVED predecessor.
+    releases = service._store.list_releases_for_version(scope, version.id)
+    assert [r.id for r in releases[-2:]] == [approved.id, "winner-active-release"]
+    assert _release_statuses(service, version) == [
+        ReleaseStatus.GATED,
+        ReleaseStatus.APPROVED,
+        ReleaseStatus.ACTIVE,
+    ]
 
 
 def test_activate_release_raises_for_missing_version(service: ReleaseService) -> None:

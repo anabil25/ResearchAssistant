@@ -29,10 +29,12 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposalState,
     BuilderProvenance,
     DeploymentEnvironment,
+    DeploymentHealth,
     DeploymentRecord,
     GateName,
     GateResult,
     GateStatus,
+    HealthStatus,
     IdempotencyClaimDisposition,
     IdempotencyKey,
     IdempotencyState,
@@ -54,6 +56,7 @@ from research_assistant_api.agent_studio.store import (
     DraftConflictError,
     IdempotencyConcurrencyError,
     IdempotencyNotFoundError,
+    ReleaseSuccessorConflictError,
 )
 from research_assistant_api.config import Settings
 
@@ -1134,6 +1137,150 @@ def test_releases_round_trip_latest_and_scope_guards(
     assert _new_store(fake_client_factory).get_release(SCOPE, "release-mismatch") is None
 
 
+def test_create_release_rejects_duplicate_successor_for_same_predecessor(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Two releases that both claim the same predecessor (including two
+    "first" releases for the same version, whose predecessor is ``None``)
+    must never both succeed -- this is the promotion/activation
+    double-release race. The loser must raise
+    ``ReleaseSuccessorConflictError`` naming the winner, and the losing
+    release must never be persisted.
+    """
+    store = _new_store(fake_client_factory)
+    first_release = _release(release_id="release-first")
+    assert store.create_release(SCOPE, first_release) == first_release
+
+    duplicate_first = _release(release_id="release-first-duplicate")
+    with pytest.raises(ReleaseSuccessorConflictError, match="release-first"):
+        store.create_release(SCOPE, duplicate_first)
+    assert store.get_release(SCOPE, "release-first-duplicate") is None
+
+    approved = _release(
+        release_id="release-approved",
+        status=ReleaseStatus.APPROVED,
+        previous_release_id=first_release.id,
+    )
+    assert store.create_release(SCOPE, approved) == approved
+
+    rival_approved = _release(
+        release_id="release-approved-rival",
+        status=ReleaseStatus.APPROVED,
+        previous_release_id=first_release.id,
+    )
+    with pytest.raises(ReleaseSuccessorConflictError, match="release-approved"):
+        store.create_release(SCOPE, rival_approved)
+    assert store.get_release(SCOPE, "release-approved-rival") is None
+
+    # A distinct predecessor (a different version entirely) is unaffected.
+    other_version_first = _release(release_id="release-other-first", version_id="version-2")
+    assert store.create_release(SCOPE, other_version_first) == other_version_first
+
+
+def test_create_release_raises_when_successor_guard_conflict_document_vanishes(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """If the guard document is deleted between the conflicting
+    ``create_item`` 409 and the read-back (an extremely narrow window),
+    the error must still surface clearly rather than raising a bare
+    ``KeyError``/``TypeError`` or silently succeeding.
+    """
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _flaky_create_item(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "release_successor":
+            container.documents.pop((body["scope_key"], body["id"]), None)
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409,
+                message="conflict: document already exists",
+            )
+        return original_create_item(body)
+
+    container.create_item = _flaky_create_item  # type: ignore[method-assign]
+
+    with pytest.raises(ReleaseSuccessorConflictError, match="<unknown>"):
+        store.create_release(SCOPE, _release(release_id="release-vanishing-guard"))
+
+
+def test_create_release_propagates_non_conflict_successor_guard_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+
+    def _failing_create_item(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "release_successor":
+            raise CosmosHttpResponseError(status_code=503, message="unavailable")  # type: ignore[no-untyped-call]
+        raise AssertionError("unexpected create_item call")
+
+    container.create_item = _failing_create_item  # type: ignore[method-assign]
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.create_release(SCOPE, _release(release_id="release-service-unavailable"))
+
+
+def test_create_release_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances/processes racing to promote the same
+    GATED release (or otherwise transition the same predecessor). Each
+    thread uses its OWN ``CosmosAgentStudioStore`` instance, mirroring
+    multiple API replicas, but all instances share the same underlying
+    ``FakeContainer`` documents. Exactly one successor may be created for
+    that predecessor; every other thread must observe
+    ``ReleaseSuccessorConflictError``, never a silently-coexisting sibling.
+    """
+    first = _new_store(fake_client_factory)
+    gated = _release(release_id="release-race-gated")
+    assert first.create_release(SCOPE, gated) == gated
+
+    thread_count = 12
+    successes: list[AgentRelease] = []
+    conflicts: list[BaseException] = []
+    other_errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _promote(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        candidate = _release(
+            release_id=f"release-race-approved-{worker_index}",
+            status=ReleaseStatus.APPROVED,
+            previous_release_id=gated.id,
+        )
+        barrier.wait()
+        try:
+            record = store.create_release(SCOPE, candidate)
+        except ReleaseSuccessorConflictError as exc:
+            with lock:
+                conflicts.append(exc)
+            return
+        except BaseException as exc:  # pragma: no cover - only hit on genuine bugs
+            with lock:
+                other_errors.append(exc)
+            return
+        with lock:
+            successes.append(record)
+
+    threads = [threading.Thread(target=_promote, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert other_errors == []
+    assert len(successes) == 1, f"expected exactly one winning successor, got: {successes}"
+    assert len(conflicts) == thread_count - 1
+
+    final_store = _new_store(fake_client_factory)
+    releases = final_store.list_releases_for_version(SCOPE, gated.version_id)
+    approved_releases = [release for release in releases if release.status == ReleaseStatus.APPROVED]
+    assert len(approved_releases) == 1
+    assert approved_releases[0].id == successes[0].id
+
+
 def test_approvals_create_list_get_and_scope_isolation(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
@@ -1999,6 +2146,48 @@ def test_deployments_create_list_get_update_and_scope_guards(
     assert _new_store(fake_client_factory).get_deployment(SCOPE, "deployment-mismatch") is None
 
 
+def test_get_deployment_reflects_cross_replica_health_change_without_cache_shortcut(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Two independent ``CosmosAgentStudioStore`` instances share one Cosmos
+    container -- mirroring two API replicas. A status/health change written
+    through replica B must be visible on replica A's *next* read, even
+    though replica A already cached the deployment from an earlier read.
+    A cache-first ``get_deployment`` would keep serving replica A's stale
+    ``HEALTHY`` snapshot forever, letting an ACTIVE/health decision succeed
+    against data Cosmos no longer reflects.
+    """
+    replica_a = _new_store(fake_client_factory)
+    replica_b = _new_store(fake_client_factory)
+
+    deployment = _deployment(deployment_id="deployment-cross-replica")
+    replica_b.create_deployment(SCOPE, deployment)
+
+    # Replica A reads and caches the UNKNOWN-health deployment.
+    first_read = replica_a.get_deployment(SCOPE, deployment.id)
+    assert first_read is not None
+    assert first_read.health.status == HealthStatus.UNKNOWN
+    assert deployment.id in replica_a._deployments
+
+    # Replica B independently reports HEALTHY, then DEGRADED.
+    healthy = deployment.model_copy(update={"health": DeploymentHealth(status=HealthStatus.HEALTHY)})
+    replica_b.update_deployment(SCOPE, healthy)
+    degraded = healthy.model_copy(update={"health": DeploymentHealth(status=HealthStatus.DEGRADED)})
+    replica_b.update_deployment(SCOPE, degraded)
+
+    # Replica A must observe the fresh DEGRADED state on its next read --
+    # not the DEGRADED-masking stale HEALTHY value from its own cache.
+    second_read = replica_a.get_deployment(SCOPE, deployment.id)
+    assert second_read is not None
+    assert second_read.health.status == HealthStatus.DEGRADED
+
+    # list_deployments must refresh the already-cached entry too, not just
+    # add newly-discovered documents.
+    listed = replica_a.list_deployments(SCOPE, AGENT_ID)
+    assert len(listed) == 1
+    assert listed[0].health.status == HealthStatus.DEGRADED
+
+
 def test_update_deployment_handles_missing_and_conflicts(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
@@ -2044,6 +2233,51 @@ def test_bindings_and_tool_registrations_round_trip(
     assert reloaded.list_tool_registrations(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
 
 
+def test_get_binding_reflects_cross_replica_rebind_without_cache_shortcut(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A rollback re-pointing a binding on one replica must be observed by
+    another replica's next ``get_binding`` -- a cache-first read would keep
+    routing/resolve on a version Cosmos no longer designates as current.
+    """
+    replica_a = _new_store(fake_client_factory)
+    replica_b = _new_store(fake_client_factory)
+
+    original = _binding(version_id="version-1")
+    replica_b.set_binding(SCOPE, original)
+
+    first_read = replica_a.get_binding(SCOPE, AGENT_ID, DeploymentEnvironment.DEVELOPMENT)
+    assert first_read is not None
+    assert first_read.resolved_version_id == "version-1"
+    assert (SCOPE.scope_key, AGENT_ID, DeploymentEnvironment.DEVELOPMENT.value) in replica_a._bindings
+
+    rolled_back = _binding(version_id="version-0-rollback")
+    replica_b.set_binding(SCOPE, rolled_back)
+
+    second_read = replica_a.get_binding(SCOPE, AGENT_ID, DeploymentEnvironment.DEVELOPMENT)
+    assert second_read is not None
+    assert second_read.resolved_version_id == "version-0-rollback"
+
+
+def test_get_binding_rejects_document_with_mismatched_scope_fields(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A binding document living in the correct partition but whose payload
+    disagrees with the requested scope's tenant/project must never be
+    returned -- covers the defense-in-depth field check that runs after the
+    fresh Cosmos read, independent of partition-key isolation.
+    """
+    _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    mismatched = _binding(project_id=OTHER_PROJECT)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id=f"binding::{AGENT_ID}::{DeploymentEnvironment.DEVELOPMENT.value}",
+        document_type="binding",
+        payload=mismatched.model_dump(mode="json"),
+    )
+    assert _new_store(fake_client_factory).get_binding(SCOPE, AGENT_ID, DeploymentEnvironment.DEVELOPMENT) is None
+
 def test_builder_proposals_create_list_get_and_scope_guards(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
@@ -2075,6 +2309,36 @@ def test_builder_proposals_create_list_get_and_scope_guards(
         payload=mismatched.model_dump(mode="json"),
     )
     assert _new_store(fake_client_factory).get_builder_proposal(SCOPE, "proposal-mismatch") is None
+
+
+def test_get_builder_proposal_reflects_cross_replica_decision_without_cache_shortcut(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Once replica B decides a proposal, replica A's next
+    ``get_builder_proposal``/``list_builder_proposals`` must show the
+    decided state, not a PENDING snapshot cached from an earlier read.
+    """
+    replica_a = _new_store(fake_client_factory)
+    replica_b = _new_store(fake_client_factory)
+
+    proposal = _proposal(proposal_id="proposal-cross-replica")
+    replica_b.create_builder_proposal(SCOPE, proposal)
+
+    first_read = replica_a.get_builder_proposal(SCOPE, proposal.id)
+    assert first_read is not None
+    assert first_read.state == BuilderProposalState.PENDING
+    assert proposal.id in replica_a._builder_proposals
+
+    decided = proposal.model_copy(update={"state": BuilderProposalState.APPLIED, "decided_by": "approver-1"})
+    replica_b.save_builder_proposal_decision(SCOPE, decided)
+
+    second_read = replica_a.get_builder_proposal(SCOPE, proposal.id)
+    assert second_read is not None
+    assert second_read.state == BuilderProposalState.APPLIED
+
+    listed = replica_a.list_builder_proposals(SCOPE, AGENT_ID)
+    assert len(listed) == 1
+    assert listed[0].state == BuilderProposalState.APPLIED
 
 
 def test_save_builder_proposal_decision_handles_success_missing_decided_and_conflicts(

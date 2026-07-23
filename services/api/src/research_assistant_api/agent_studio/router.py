@@ -96,6 +96,7 @@ from research_assistant_api.agent_studio.models import (
     ResolvedAgentContract,
     StudioApprovalRecord,
     ToolRegistrationSpec,
+    role_at_least,
 )
 from research_assistant_api.agent_studio.release_attestation import (
     ReleaseAttestationOutcome,
@@ -1362,18 +1363,25 @@ def list_deployments(request: Request, logical_agent_id: str, project_id: str) -
 def record_health(request: Request, deployment_id: str, payload: HealthUpdateRequest) -> DeploymentRecord:
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
-    _audit_service(request)  # fail closed before mutating if audit is unavailable
-    try:
-        record = _deployment_service(request).record_health(
-            tenant_id=scope.tenant_id,
-            project_id=scope.project_id,
-            deployment_id=deployment_id,
-            status=payload.status,
-            detail=payload.detail,
-            trace_ref=payload.trace_ref,
+    deployment = _store(request).get_deployment(scope, deployment_id)
+    if deployment is None:
+        raise _not_found(f"Deployment '{deployment_id}' not found.")
+    role = _actor_role(request, identity, deployment.logical_agent_id, scope.project_id)
+    if not role_at_least(role, AgentRole.MAINTAINER):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role.value}' cannot record deployment health.",
         )
-    except DeploymentServiceError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
+    record = _deployment_service(request).record_health(
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        deployment_id=deployment_id,
+        actor_role=role,
+        status=payload.status,
+        detail=payload.detail,
+        trace_ref=payload.trace_ref,
+    )
     _audit(
         request,
         scope=scope,

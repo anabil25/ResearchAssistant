@@ -96,7 +96,14 @@ def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
             user_id="demo-researcher",
             display_name="Dr. Maya Chen",
             tenant_id=settings.workspace_tenant_id,
-            groups=("researchers", "grant-reviewers", "research-admins"),
+            # Least privilege: the demo/local-dev sandbox identity must not
+            # carry platform-owner/admin rights by default. It intentionally
+            # excludes "research-admins" (an Agent Studio
+            # ``PLATFORM_OWNER_GROUPS`` member) so an unauthenticated demo
+            # session can never trivially satisfy platform-owner checks;
+            # "grant-reviewers" is retained only because an unrelated
+            # legacy grant-review feature requires it for local testability.
+            groups=("researchers", "grant-reviewers"),
             source="demo-sandbox",
         )
 

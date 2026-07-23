@@ -52,6 +52,24 @@ def test_demo_identity_uses_the_configured_workspace_tenant() -> None:
     assert identity.tenant_id == "accelerator-tenant"
 
 
+def test_demo_identity_cannot_satisfy_platform_owner_groups_even_when_enabled() -> None:
+    """Least privilege: even when explicitly opted into
+    (``allow_demo_identity=True``), the demo/local-dev sandbox identity must
+    never carry platform-owner rights. Agent Studio's
+    ``PLATFORM_OWNER_GROUPS`` gates system-agent versioning and other
+    elevated operations; a demo session that satisfied it would let any
+    unauthenticated caller impersonate a platform owner.
+    """
+    from research_assistant_api.agent_studio.router import PLATFORM_OWNER_GROUPS
+    from research_assistant_api.identity import resolve_identity
+
+    request = type("Request", (), {"headers": {}})()
+    identity = resolve_identity(request, Settings(allow_demo_identity=True))
+
+    assert identity.source == "demo-sandbox"
+    assert not PLATFORM_OWNER_GROUPS.intersection(identity.groups)
+
+
 def test_workspace_operational_surfaces_are_populated(client: TestClient) -> None:
     workspace = client.get("/api/workspace")
     library = client.get("/api/library")
@@ -71,7 +89,17 @@ def test_workspace_operational_surfaces_are_populated(client: TestClient) -> Non
     assert len(agents.json()) == 9
 
 
-def test_connector_test_uses_the_connector_implementation(client: TestClient) -> None:
+def test_connector_test_uses_the_connector_implementation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``POST /api/connectors/{id}/test`` requires ``research-admins`` (a
+    pre-existing, non-Agent-Studio admin gate). The demo identity no longer
+    carries that group by default (least privilege), so this must
+    authenticate explicitly as an admin via the header-based identity path
+    rather than relying on the ambient demo identity.
+    """
+    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
     calls: list[tuple[str, str, int]] = []
 
     class FakeGateway:
@@ -96,9 +124,10 @@ def test_connector_test_uses_the_connector_implementation(client: TestClient) ->
         async def close(self) -> None:
             return None
 
-    app.state.connector_gateway = FakeGateway()
-
-    response = client.post("/api/connectors/grants_gov/test")
+    with TestClient(app) as test_client:
+        app.state.settings = Settings()
+        app.state.connector_gateway = FakeGateway()
+        response = test_client.post("/api/connectors/grants_gov/test", headers=headers)
 
     assert response.status_code == 200
     assert response.json()["test_status"] == "ready"
@@ -106,11 +135,19 @@ def test_connector_test_uses_the_connector_implementation(client: TestClient) ->
 
 
 def test_connector_test_distinguishes_missing_gateway_configuration(
-    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    app.state.connector_gateway = DisabledConnectorGateway()
+    """See ``test_connector_test_uses_the_connector_implementation``: this
+    route requires explicit ``research-admins`` authentication now that the
+    demo identity no longer carries that group by default.
+    """
+    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
-    response = client.post("/api/connectors/pubmed/test")
+    with TestClient(app) as test_client:
+        app.state.settings = Settings()
+        app.state.connector_gateway = DisabledConnectorGateway()
+        response = test_client.post("/api/connectors/pubmed/test", headers=headers)
 
     assert response.status_code == 200
     assert response.json()["test_status"] == "configuration_required"
@@ -576,11 +613,21 @@ def test_approval_decision_records_actor_rationale_and_action(client: TestClient
     assert decision["rationale"].startswith("The exact destination")
 
 
-def test_settings_cannot_enable_global_online_research(client: TestClient) -> None:
-    payload = client.get("/api/settings").json()
-    payload["online_research_default"] = True
+def test_settings_cannot_enable_global_online_research(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``PUT /api/settings`` requires ``research-admins``; authenticate
+    explicitly since the demo identity no longer carries that group.
+    """
+    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
-    response = client.put("/api/settings", json=payload)
+    with TestClient(app) as test_client:
+        app.state.settings = Settings()
+        payload = test_client.get("/api/settings", headers=headers).json()
+        payload["online_research_default"] = True
+
+        response = test_client.put("/api/settings", headers=headers, json=payload)
 
     assert response.status_code == 422
     assert "opt-in per run" in response.json()["detail"]

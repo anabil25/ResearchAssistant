@@ -806,6 +806,84 @@ def test_memory_service_correct_rejects_missing_forgotten_and_unauthorized_entri
         )
 
 
+def test_memory_service_inspect_rejects_expired_entry_like_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """An expired-but-not-yet-purged entry must be as unavailable to
+    ``inspect`` as an explicitly forgotten one, not merely absent from
+    ``recall``/``export``."""
+    monkeypatch.setattr("research_assistant_api.agent_studio.memory_service.utc_now", lambda: BASE_TIME)
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(
+        manifest,
+        _entry(entry_id="entry-expired", expires_at=BASE_TIME - timedelta(minutes=1)),
+    )
+
+    with pytest.raises(MemoryPolicyError, match="expired"):
+        service.inspect(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-expired", actor_id="creator-1"
+        )
+
+
+def test_memory_service_correct_rejects_expired_entry_like_forgotten(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Same rule for ``correct``: an expired entry cannot be silently
+    "corrected" back into apparent validity."""
+    monkeypatch.setattr("research_assistant_api.agent_studio.memory_service.utc_now", lambda: BASE_TIME)
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(
+        manifest,
+        _entry(
+            entry_id="entry-expired",
+            write_acl=("writer-1",),
+            expires_at=BASE_TIME - timedelta(minutes=1),
+        ),
+    )
+
+    with pytest.raises(MemoryPolicyError, match="expired"):
+        service.correct(
+            manifest,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id="entry-expired",
+            actor_id="writer-1",
+            content="fixed",
+        )
+
+
+def test_memory_service_inspect_and_correct_allow_not_yet_expired_entry(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A future ``expires_at`` must not be mistaken for expiry: inspect/correct
+    remain available right up until the expiry instant."""
+    monkeypatch.setattr("research_assistant_api.agent_studio.memory_service.utc_now", lambda: BASE_TIME)
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(
+        manifest,
+        _entry(
+            entry_id="entry-not-expired",
+            write_acl=("writer-1",),
+            expires_at=BASE_TIME + timedelta(days=1),
+        ),
+    )
+
+    inspected = service.inspect(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-not-expired", actor_id="creator-1"
+    )
+    assert inspected.id == "entry-not-expired"
+
+    corrected = service.correct(
+        manifest,
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        entry_id="entry-not-expired",
+        actor_id="writer-1",
+        content="fixed",
+    )
+    assert corrected.content == "fixed"
+
+
 def test_memory_service_forget_soft_deletes_and_records_audit(monkeypatch: pytest.MonkeyPatch) -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)

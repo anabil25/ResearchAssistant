@@ -228,10 +228,25 @@ class DeploymentService:
         tenant_id: str,
         project_id: str,
         deployment_id: str,
+        actor_role: AgentRole,
         status: HealthStatus,
         detail: str = "",
         trace_ref: str | None = None,
     ) -> DeploymentRecord:
+        """Record a health/smoke result for a development deployment.
+
+        Gated at MAINTAINER (the same threshold as ``rollback`` and
+        ``activate_release``), not the lower CONTRIBUTOR threshold used by
+        ``deploy``: a forged/careless HEALTHY report here is the sole
+        safety net ``activate_release`` relies on to make a version live,
+        so recording health must never be reachable by a lower-privileged
+        (e.g. VIEWER/CONTRIBUTOR) or unauthorized identity. Automated
+        reporters (CI/smoke-test runners) must authenticate as a
+        maintainer-or-above service identity, never anonymously or as a
+        viewer.
+        """
+        if not role_at_least(actor_role, AgentRole.MAINTAINER):
+            raise DeploymentServiceError(f"Role '{actor_role.value}' cannot record deployment health.")
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         deployment = self._store.get_deployment(scope, deployment_id)
         if deployment is None:
