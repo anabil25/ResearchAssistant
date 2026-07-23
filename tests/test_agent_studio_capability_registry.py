@@ -9,6 +9,7 @@ from research_assistant_api.agent_studio.capability_registry import (
 from research_assistant_api.agent_studio.models import (
     CapabilityDescriptor,
     CapabilityOperation,
+    OperationClass,
     OperationMaturity,
 )
 
@@ -85,6 +86,9 @@ def test_attach_returns_capability_instance_for_ga_operation() -> None:
     assert instance.attached_by == "user-1"
     assert instance.workspace_connection_id == "conn-1"
     assert instance.config == {"index": "my-index"}
+    descriptor = registry.get("foundry.azure_ai_search")
+    assert descriptor is not None
+    assert instance.descriptor_version == descriptor.version
 
 
 def test_attach_defaults_config_to_empty_dict() -> None:
@@ -98,6 +102,30 @@ def test_attach_rejects_preview_operation() -> None:
     registry = default_registry()
     with pytest.raises(CapabilityAttachmentError):
         registry.attach(descriptor_id="foundry.memory", operation="store", attached_by="user-1")
+
+
+def test_seeded_operations_carry_operation_class_and_side_effect_metadata() -> None:
+    registry = default_registry()
+    search = registry.get("foundry.web_search")
+    assert search is not None
+    search_op = search.operation("search")
+    assert search_op is not None
+    assert search_op.operation_class == OperationClass.READ
+    assert search_op.side_effect_destinations == ("public_web",)
+    assert search_op.requires_approval is False
+
+    functions = registry.get("foundry.azure_functions")
+    assert functions is not None
+    invoke_op = functions.operation("invoke")
+    assert invoke_op is not None
+    assert invoke_op.operation_class == OperationClass.WRITE_IRREVERSIBLE
+    assert invoke_op.requires_approval is True
+
+    function_calling = registry.get("foundry.function_calling")
+    assert function_calling is not None
+    fc_op = function_calling.operation("invoke")
+    assert fc_op is not None
+    assert fc_op.operation_class == OperationClass.PURE
 
 
 def test_custom_registry_can_override_seed_descriptors() -> None:

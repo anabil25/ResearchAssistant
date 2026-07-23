@@ -21,6 +21,7 @@ from research_assistant_api.agent_studio.approvals import (
 )
 from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
 from research_assistant_api.agent_studio.models import (
+    AGENT_STUDIO_PROTOCOL_VERSION,
     AgentDraft,
     AgentManifest,
     AgentOwnerKind,
@@ -34,6 +35,8 @@ from research_assistant_api.agent_studio.models import (
     OwnershipGrant,
     ReleaseGateReport,
     StudioApprovalRecord,
+    ToolRegistration,
+    ToolRegistrationKind,
     role_at_least,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence, run_gates
@@ -200,6 +203,9 @@ class ReleaseService:
         fork_of_version_id = draft.based_on_version_id if sequence == 1 else None
 
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
+        capability_versions = {
+            binding.descriptor_id: binding.descriptor_version for binding in draft.manifest.capabilities
+        }
         version = AgentVersion(
             id=str(uuid4()),
             logical_agent_id=logical_agent_id,
@@ -212,6 +218,10 @@ class ReleaseService:
             fork_of_version_id=fork_of_version_id,
             runtime_target=selection.target,
             runtime_selection_reasons=selection.reasons,
+            model_deployment=draft.manifest.model_deployment,
+            capability_versions=capability_versions,
+            package_version=f"{sequence}.0.0",
+            protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
         )
         self._store.create_version(version)
 
@@ -385,6 +395,44 @@ class ReleaseService:
     def _require_role(actor_role: AgentRole, minimum: AgentRole) -> None:
         if not role_at_least(actor_role, minimum):
             raise AuthorizationError(f"Role '{actor_role.value}' does not meet the minimum '{minimum.value}'.")
+
+    # -- Tool registration (runtime handler wiring) ------------------------
+
+    def register_tool(
+        self,
+        *,
+        tenant_id: str,
+        logical_agent_id: str,
+        descriptor_id: str,
+        operation: str,
+        kind: ToolRegistrationKind,
+        handler_ref: str,
+        registered_by: str,
+        actor_role: AgentRole,
+    ) -> ToolRegistration:
+        """Register the runtime handler for a GA capability operation.
+
+        Distinct from attaching a ``CapabilityBinding`` to a manifest: this
+        declares *how* an already-attachable operation is dispatched at
+        runtime (Managed Foundry native resolution vs. a Custom Hosted
+        handler reference), and is independently authorized/persisted.
+        """
+        self._require_role(actor_role, AgentRole.CONTRIBUTOR)
+        self._registry.validate_attachment(descriptor_id=descriptor_id, operation=operation)
+        registration = ToolRegistration(
+            id=str(uuid4()),
+            tenant_id=tenant_id,
+            logical_agent_id=logical_agent_id,
+            descriptor_id=descriptor_id,
+            operation=operation,
+            kind=kind,
+            handler_ref=handler_ref,
+            registered_by=registered_by,
+        )
+        return self._store.create_tool_registration(registration)
+
+    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
+        return self._store.list_tool_registrations(tenant_id, logical_agent_id)
 
 
 def resolve_actor_role(

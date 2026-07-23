@@ -9,6 +9,8 @@ trusts a client-supplied role or tenant ID.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from typing import cast
 from uuid import uuid4
 
@@ -26,18 +28,21 @@ from research_assistant_api.agent_studio.deployment_service import (
 from research_assistant_api.agent_studio.memory_service import MemoryPolicyError, MemoryService
 from research_assistant_api.agent_studio.model_discovery import ModelDiscovery, ModelDiscoveryError
 from research_assistant_api.agent_studio.models import (
+    AGENT_MANIFEST_SCHEMA_VERSION,
     AgentDraft,
+    AgentManifest,
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    CapabilityBinding,
     CapabilityDescriptor,
-    CapabilityInstance,
     DeploymentRecord,
     MemoryEntry,
     MemoryScopeKind,
     ModelDeploymentRef,
     ReleaseGateReport,
     StudioApprovalRecord,
+    ToolRegistration,
 )
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
@@ -54,6 +59,7 @@ from research_assistant_api.agent_studio.schemas import (
     ForkRequest,
     HealthUpdateRequest,
     PromotionRequest,
+    RegisterToolRequest,
     RememberRequest,
     RollbackRequest,
     RunGatesRequest,
@@ -148,12 +154,12 @@ def list_deployed_models(request: Request) -> list[ModelDeploymentRef]:
         raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)) from exc
 
 
-@router.post("/capabilities/attach", response_model=CapabilityInstance)
-def attach_capability(request: Request, payload: AttachCapabilityRequest) -> CapabilityInstance:
+@router.post("/capabilities/attach", response_model=CapabilityBinding)
+def attach_capability(request: Request, payload: AttachCapabilityRequest) -> CapabilityBinding:
     """Attach a capability operation, enforcing GA-only maturity.
 
     Rejects preview/unavailable operations with an honest reason rather than
-    silently succeeding; the resulting ``CapabilityInstance`` is returned for
+    silently succeeding; the resulting ``CapabilityBinding`` is returned for
     the caller to merge into a draft manifest via ``PUT .../draft``.
     """
     identity = _identity(request)
@@ -167,6 +173,25 @@ def attach_capability(request: Request, payload: AttachCapabilityRequest) -> Cap
         )
     except CapabilityAttachmentError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/schemas/agent-manifest")
+def get_agent_manifest_schema(request: Request) -> dict[str, object]:
+    """Canonical JSON Schema + content digest for the persisted ``AgentManifest``.
+
+    External consumers (e.g. the harness) resolve the manifest contract from
+    this endpoint's JSON Schema and digest rather than importing this
+    codebase's Python model class.
+    """
+    _identity(request)
+    schema = AgentManifest.model_json_schema()
+    canonical = json.dumps(schema, sort_keys=True, separators=(",", ":"))
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return {
+        "schema_version": AGENT_MANIFEST_SCHEMA_VERSION,
+        "digest": f"sha256:{digest}",
+        "json_schema": schema,
+    }
 
 
 @router.post("/agents", response_model=AgentDraft, status_code=status.HTTP_201_CREATED)
@@ -230,6 +255,47 @@ def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) ->
         )
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post(
+    "/agents/{logical_agent_id}/tool-registrations",
+    response_model=ToolRegistration,
+    status_code=status.HTTP_201_CREATED,
+)
+def register_tool(
+    request: Request,
+    logical_agent_id: str,
+    payload: RegisterToolRequest,
+) -> ToolRegistration:
+    """Register the runtime handler for a GA capability operation.
+
+    Rejects operations that are not GA-attachable with the same honest
+    reason as ``/capabilities/attach`` (never silently registers a handler
+    for a preview/unavailable operation).
+    """
+    identity = _identity(request)
+    role = _actor_role(request, identity, logical_agent_id)
+    try:
+        return _release_service(request).register_tool(
+            tenant_id=identity.tenant_id,
+            logical_agent_id=logical_agent_id,
+            descriptor_id=payload.descriptor_id,
+            operation=payload.operation,
+            kind=payload.kind,
+            handler_ref=payload.handler_ref,
+            registered_by=identity.user_id,
+            actor_role=role,
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except CapabilityAttachmentError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/agents/{logical_agent_id}/tool-registrations", response_model=list[ToolRegistration])
+def list_tool_registrations(request: Request, logical_agent_id: str) -> list[ToolRegistration]:
+    identity = _identity(request)
+    return list(_release_service(request).list_tool_registrations(identity.tenant_id, logical_agent_id))
 
 
 @router.post(

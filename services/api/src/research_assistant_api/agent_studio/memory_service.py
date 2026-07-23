@@ -4,7 +4,11 @@ Only GA memory mechanisms are ever attached by this service. The Microsoft
 Foundry native "Memory" feature is documented as **preview** (see
 ``capability_registry.py``) and is surfaced only as a preview capability
 descriptor operation — it is never wired into ``MemoryService`` and never
-attached by ``AgentManifest.memory_scopes`` validation below.
+attached by ``AgentManifest.memory_policy`` validation below.
+
+Persistent memory is off by default: ``MemoryPolicy.enabled`` must be
+explicitly set ``True`` on the manifest before any ``remember``/``recall``
+call is permitted, even if ``scopes`` are declared.
 """
 
 from __future__ import annotations
@@ -27,8 +31,15 @@ class MemoryPolicyError(RuntimeError):
 
 
 def validate_memory_scopes(manifest: AgentManifest) -> None:
-    """Reject any manifest that attempts to bind a non-GA memory mechanism."""
-    for binding in manifest.memory_scopes:
+    """Reject any manifest that attempts to bind a non-GA memory mechanism
+    or that has not explicitly opted into persistent memory.
+    """
+    if not manifest.memory_policy.enabled:
+        raise MemoryPolicyError(
+            f"Manifest '{manifest.logical_agent_id}' has persistent memory disabled "
+            "(MemoryPolicy.enabled=False by default); enable it explicitly to use memory."
+        )
+    for binding in manifest.memory_policy.scopes:
         if not binding.mechanism.is_ga:
             raise MemoryPolicyError(
                 f"Memory mechanism '{binding.mechanism.value}' is not GA and cannot be attached; "
@@ -180,7 +191,7 @@ class MemoryService:
     def remember(self, manifest: AgentManifest, entry: MemoryEntry) -> MemoryEntry:
         validate_memory_scopes(manifest)
         matching_scope = next(
-            (scope for scope in manifest.memory_scopes if scope.kind == entry.scope_kind),
+            (scope for scope in manifest.memory_policy.scopes if scope.kind == entry.scope_kind),
             None,
         )
         if matching_scope is None:

@@ -200,7 +200,7 @@ def _create_agent(
     assert response.status_code == 201, response.text
     if memory_scopes is not None:
         draft = response.json()
-        draft["manifest"]["memory_scopes"] = memory_scopes
+        draft["manifest"]["memory_policy"] = {"enabled": True, "scopes": memory_scopes}
         update = client.put(
             f"/api/agent-studio/agents/{logical_agent_id}/draft",
             json={"manifest": draft["manifest"]},
@@ -263,6 +263,102 @@ def test_attach_capability_rejects_unknown_descriptor(client: TestClient) -> Non
         headers=OWNER_HEADERS,
     )
     assert response.status_code == 422
+
+
+# -- Manifest schema endpoint ---------------------------------------------
+
+
+def test_get_agent_manifest_schema_returns_schema_and_digest(client: TestClient) -> None:
+    response = client.get("/api/agent-studio/schemas/agent-manifest", headers=OWNER_HEADERS)
+    assert response.status_code == 200
+    body = response.json()
+    assert body["schema_version"] == "agent-studio.manifest.v1"
+    assert body["digest"].startswith("sha256:")
+    assert body["json_schema"]["title"] == "AgentManifest"
+
+
+# -- Tool registrations -----------------------------------------------------
+
+
+def test_register_tool_succeeds_for_ga_operation(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-tool-reg")
+    response = client.post(
+        "/api/agent-studio/agents/agent-tool-reg/tool-registrations",
+        json={
+            "descriptor_id": "foundry.web_search",
+            "operation": "search",
+            "kind": "managed_foundry_native",
+            "handler_ref": "builtin://web_search",
+        },
+        headers=OWNER_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    body = response.json()
+    assert body["descriptor_id"] == "foundry.web_search"
+    assert body["operation"] == "search"
+    assert body["kind"] == "managed_foundry_native"
+    assert body["handler_ref"] == "builtin://web_search"
+    assert body["logical_agent_id"] == "agent-tool-reg"
+
+
+def test_register_tool_rejects_non_ga_operation(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-tool-reg-nonga")
+    response = client.post(
+        "/api/agent-studio/agents/agent-tool-reg-nonga/tool-registrations",
+        json={
+            "descriptor_id": "foundry.memory",
+            "operation": "recall",
+            "kind": "custom_handler",
+            "handler_ref": "custom://memory",
+        },
+        headers=OWNER_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+def test_register_tool_rejects_viewer_role(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-tool-reg-viewer")
+    response = client.post(
+        "/api/agent-studio/agents/agent-tool-reg-viewer/tool-registrations",
+        json={
+            "descriptor_id": "foundry.web_search",
+            "operation": "search",
+            "kind": "managed_foundry_native",
+            "handler_ref": "builtin://web_search",
+        },
+        headers=VIEWER_HEADERS,
+    )
+    assert response.status_code == 403
+
+
+def test_list_tool_registrations_returns_registered_tools(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-tool-reg-list")
+    client.post(
+        "/api/agent-studio/agents/agent-tool-reg-list/tool-registrations",
+        json={
+            "descriptor_id": "foundry.web_search",
+            "operation": "search",
+            "kind": "managed_foundry_native",
+            "handler_ref": "builtin://web_search",
+        },
+        headers=OWNER_HEADERS,
+    )
+    response = client.get(
+        "/api/agent-studio/agents/agent-tool-reg-list/tool-registrations", headers=OWNER_HEADERS
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert len(body) == 1
+    assert body[0]["descriptor_id"] == "foundry.web_search"
+
+
+def test_list_tool_registrations_returns_empty_for_agent_with_none_registered(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-tool-reg-empty")
+    response = client.get(
+        "/api/agent-studio/agents/agent-tool-reg-empty/tool-registrations", headers=OWNER_HEADERS
+    )
+    assert response.status_code == 200
+    assert response.json() == []
 
 
 # -- Models -------------------------------------------------------------
@@ -945,8 +1041,14 @@ def test_recall_returns_422_when_manifest_declares_non_ga_mechanism(client: Test
 def test_recall_returns_empty_list_for_undeclared_scope(client: TestClient) -> None:
     # Unlike ``remember``, ``recall`` only enforces GA-mechanism validation
     # across whatever scopes *are* declared; an undeclared scope simply has
-    # no entries rather than being rejected outright.
-    _create_agent(client, logical_agent_id="agent-memory-recall-undeclared")
+    # no entries rather than being rejected outright. Memory must still be
+    # explicitly enabled via MemoryPolicy (persistent memory is off by
+    # default) even though the specific scope being recalled isn't declared.
+    _create_agent(
+        client,
+        logical_agent_id="agent-memory-recall-undeclared",
+        memory_scopes=[{"kind": "user", "mechanism": "application_memory_store"}],
+    )
     response = client.get(
         "/api/agent-studio/agents/agent-memory-recall-undeclared/memory",
         params={"scope_kind": "conversation", "scope_id": "conv-1"},
@@ -954,6 +1056,17 @@ def test_recall_returns_empty_list_for_undeclared_scope(client: TestClient) -> N
     )
     assert response.status_code == 200
     assert response.json() == []
+
+
+def test_recall_returns_422_when_memory_policy_disabled(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-memory-recall-policy-off")
+    response = client.get(
+        "/api/agent-studio/agents/agent-memory-recall-policy-off/memory",
+        params={"scope_kind": "conversation", "scope_id": "conv-1"},
+        headers=OWNER_HEADERS,
+    )
+    assert response.status_code == 422
+    assert "disabled" in response.json()["detail"]
 
 
 def test_remember_returns_503_when_memory_service_unavailable(

@@ -18,6 +18,7 @@ from research_assistant_api.agent_studio.models import (
     AgentVisibility,
     HealthStatus,
     MemoryScopeKind,
+    ToolRegistrationKind,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 
@@ -113,3 +114,12 @@ class RememberRequest(BaseModel):
     scope_id: str = Field(min_length=1, max_length=200)
     role: str = Field(default="note", max_length=40)
     content: str = Field(min_length=1, max_length=20000)
+
+
+class RegisterToolRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    descriptor_id: str = Field(min_length=1, max_length=160)
+    operation: str = Field(min_length=1, max_length=120)
+    kind: ToolRegistrationKind
+    handler_ref: str = Field(min_length=1, max_length=500)

@@ -23,6 +23,18 @@ def utc_now() -> datetime:
     return datetime.now(UTC)
 
 
+#: Canonical JSON Schema version identifier for the persisted ``AgentManifest``
+#: shape. Consumers outside this codebase (e.g. the harness) resolve the
+#: manifest contract via ``GET /api/agent-studio/schemas/agent-manifest``
+#: (JSON Schema + content digest), never by importing this Python class.
+AGENT_MANIFEST_SCHEMA_VERSION = "agent-studio.manifest.v1"
+
+#: Wire/protocol version for the overall Agent Studio release contract
+#: (independent of the manifest's own schema version), recorded on every
+#: immutable ``AgentVersion`` for forward-compatible interop.
+AGENT_STUDIO_PROTOCOL_VERSION = "agent-studio.protocol.v1"
+
+
 # --------------------------------------------------------------------------
 # Ownership, roles, visibility
 # --------------------------------------------------------------------------
@@ -115,25 +127,49 @@ class OperationMaturity(StrEnum):
     UNAVAILABLE = "unavailable"
 
 
+class OperationClass(StrEnum):
+    """Deterministic side-effect classification for a capability operation.
+
+    Independent of ``maturity`` (GA/preview/unavailable eligibility) and of
+    ``requires_approval``/``side_effect_destinations`` (declared alongside it
+    on ``CapabilityOperation``): an operation's class describes *what kind*
+    of effect invoking it can have, not whether it is safe to attach or
+    whether it needs human sign-off.
+    """
+
+    PURE = "pure"
+    READ = "read"
+    WRITE_REVERSIBLE = "write_reversible"
+    WRITE_IRREVERSIBLE = "write_irreversible"
+    PRIVILEGED = "privileged"
+
+
 class CapabilityOperation(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1, max_length=120)
     maturity: OperationMaturity
+    operation_class: OperationClass = OperationClass.READ
+    side_effect_destinations: tuple[str, ...] = Field(default_factory=tuple)
+    requires_approval: bool = False
     reason: str | None = None
 
 
 class CapabilityDescriptor(BaseModel):
-    """Provider-declared capability catalog entry.
+    """Provider-declared capability *catalog/governance* entry.
 
     ``operations`` is the honest, per-operation maturity surface: GA
     operations are attachable, ``preview``/``unavailable`` operations remain
-    visible (with ``reason``) but are rejected at attach time.
+    visible (with ``reason``) but are rejected at attach time. ``version``
+    is the descriptor's own catalog version, pinned by any
+    ``CapabilityBinding`` that attaches it (see below) so a later catalog
+    update never silently changes an already-released agent's behavior.
     """
 
     model_config = ConfigDict(frozen=True)
 
     id: str = Field(min_length=1, max_length=160)
+    version: str = Field(default="1", min_length=1, max_length=40)
     provider: str = Field(min_length=1, max_length=120)
     title: str = Field(min_length=1, max_length=200)
     description: str = Field(min_length=1, max_length=2000)
@@ -148,15 +184,57 @@ class CapabilityDescriptor(BaseModel):
         return next((op for op in self.operations if op.name == name), None)
 
 
-class CapabilityInstance(BaseModel):
+class CapabilityBinding(BaseModel):
+    """An agent's *attachment* of a catalog operation: config + version pin.
+
+    Distinct from ``CapabilityDescriptor`` (the catalog/governance entry) and
+    from ``ToolRegistration`` (the runtime handler wiring below):
+    ``CapabilityBinding`` only records that this manifest has chosen to use
+    ``descriptor_id.operation`` at ``descriptor_version``, with what config
+    and workspace connection.
+    """
+
     model_config = ConfigDict(extra="forbid")
 
     descriptor_id: str = Field(min_length=1, max_length=160)
+    descriptor_version: str = Field(default="1", min_length=1, max_length=40)
     operation: str = Field(min_length=1, max_length=120)
     workspace_connection_id: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
     attached_by: str = Field(min_length=1, max_length=200)
     attached_at: datetime = Field(default_factory=utc_now)
+
+
+class ToolRegistrationKind(StrEnum):
+    """How a bound capability operation is actually invoked at runtime."""
+
+    MANAGED_FOUNDRY_NATIVE = "managed_foundry_native"
+    CUSTOM_HANDLER = "custom_handler"
+
+
+class ToolRegistration(BaseModel):
+    """Runtime handler wiring for a ``CapabilityBinding``.
+
+    Separate from ``CapabilityDescriptor`` (catalog/governance) and
+    ``CapabilityBinding`` (agent attachment/config/version pin): this record
+    declares *how* an attached operation is dispatched at runtime — resolved
+    natively by the Managed Foundry runtime, or routed to an
+    application-owned handler for the Custom Hosted runtime. Immutable once
+    created; re-pointing a tool to a different handler creates a new
+    registration rather than mutating this one.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    logical_agent_id: str
+    descriptor_id: str = Field(min_length=1, max_length=160)
+    operation: str = Field(min_length=1, max_length=120)
+    kind: ToolRegistrationKind
+    handler_ref: str = Field(min_length=1, max_length=500)
+    registered_by: str = Field(min_length=1, max_length=200)
+    registered_at: datetime = Field(default_factory=utc_now)
 
 
 # --------------------------------------------------------------------------
@@ -224,6 +302,22 @@ class MemoryScopeBinding(BaseModel):
     retention_days: int | None = Field(default=None, ge=1, le=3650)
 
 
+class MemoryPolicy(BaseModel):
+    """Manifest-level memory policy.
+
+    Persistent memory is **off by default** (``enabled=False``): a manifest
+    with an empty/absent policy has no memory access at all, even if a
+    caller declares ``scopes``. Setting ``enabled=True`` is an explicit,
+    auditable opt-in (recorded via draft updates) into application-owned GA
+    memory mechanisms for the declared ``scopes`` only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    enabled: bool = False
+    scopes: tuple[MemoryScopeBinding, ...] = Field(default_factory=tuple)
+
+
 class MemoryEntry(BaseModel):
     """A single application-owned (GA) memory record.
 
@@ -255,14 +349,16 @@ class AgentManifest(BaseModel):
 
     logical_agent_id: str = Field(pattern=r"^agent-[a-z0-9-]{3,80}$")
     tenant_id: str = Field(min_length=1, max_length=200)
+    schema_version: str = Field(default=AGENT_MANIFEST_SCHEMA_VERSION, min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
     owner_kind: AgentOwnerKind
     owner_id: str = Field(min_length=1, max_length=200)
     visibility: AgentVisibility = AgentVisibility.PRIVATE
-    capabilities: tuple[CapabilityInstance, ...] = Field(default_factory=tuple)
+    capabilities: tuple[CapabilityBinding, ...] = Field(default_factory=tuple)
     runtime_requirements: RuntimeRequirements = Field(default_factory=RuntimeRequirements)
-    memory_scopes: tuple[MemoryScopeBinding, ...] = Field(default_factory=tuple)
+    model_deployment: ModelDeploymentRef | None = None
+    memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
     workspace_connections: tuple[str, ...] = Field(default_factory=tuple)
     tags: tuple[str, ...] = Field(default_factory=tuple)
 
@@ -326,6 +422,10 @@ class AgentVersion(BaseModel):
     fork_of_version_id: str | None = None
     runtime_target: RuntimeTarget | None = None
     runtime_selection_reasons: tuple[str, ...] = Field(default_factory=tuple)
+    model_deployment: ModelDeploymentRef | None = None
+    capability_versions: dict[str, str] = Field(default_factory=dict)
+    package_version: str = Field(default="0.0.0")
+    protocol_version: str = Field(default=AGENT_STUDIO_PROTOCOL_VERSION)
     gate_report_id: str | None = None
     status: AgentVersionStatus = AgentVersionStatus.DRAFT
 

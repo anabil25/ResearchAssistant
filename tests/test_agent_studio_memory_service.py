@@ -17,6 +17,7 @@ from research_assistant_api.agent_studio.models import (
     AgentOwnerKind,
     MemoryEntry,
     MemoryMechanism,
+    MemoryPolicy,
     MemoryScopeBinding,
     MemoryScopeKind,
 )
@@ -26,15 +27,33 @@ if TYPE_CHECKING:
     from azure.core.credentials import TokenCredential
 
 
-def _manifest(memory_scopes: tuple[MemoryScopeBinding, ...] = ()) -> AgentManifest:
+def _manifest(memory_scopes: tuple[MemoryScopeBinding, ...] = (), *, enabled: bool = True) -> AgentManifest:
     return AgentManifest(
         logical_agent_id="agent-memory-test",
         tenant_id="demo",
         display_name="Memory Test Agent",
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",
-        memory_scopes=memory_scopes,
+        memory_policy=MemoryPolicy(enabled=enabled, scopes=memory_scopes),
     )
+
+
+def test_memory_policy_defaults_to_disabled_with_no_scopes() -> None:
+    manifest = AgentManifest(
+        logical_agent_id="agent-memory-default",
+        tenant_id="demo",
+        display_name="Default Memory Agent",
+        owner_kind=AgentOwnerKind.USER,
+        owner_id="user-1",
+    )
+    assert manifest.memory_policy.enabled is False
+    assert manifest.memory_policy.scopes == ()
+
+
+def test_validate_memory_scopes_rejects_when_policy_disabled() -> None:
+    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION),), enabled=False)
+    with pytest.raises(MemoryPolicyError, match="disabled"):
+        validate_memory_scopes(manifest)
 
 
 def test_validate_memory_scopes_accepts_ga_mechanisms() -> None:

@@ -24,6 +24,7 @@ from research_assistant_api.agent_studio.models import (
     OwnershipGrant,
     ReleaseGateReport,
     StudioApprovalRecord,
+    ToolRegistration,
     role_at_least,
 )
 
@@ -55,6 +56,8 @@ class AgentStudioStore:
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
+        self._tool_registrations: dict[str, ToolRegistration] = {}
+        self._tool_registrations_by_agent: dict[tuple[str, str], list[str]] = {}
 
     # -- Drafts -----------------------------------------------------------
 
@@ -232,6 +235,19 @@ class AgentStudioStore:
         environment: DeploymentEnvironment,
     ) -> LogicalAgentBinding | None:
         return self._bindings.get((tenant_id, logical_agent_id, environment.value))
+
+    # -- Tool registrations (runtime handler wiring) -----------------------
+
+    def create_tool_registration(self, registration: ToolRegistration) -> ToolRegistration:
+        self._tool_registrations[registration.id] = registration
+        self._tool_registrations_by_agent.setdefault(
+            (registration.tenant_id, registration.logical_agent_id), []
+        ).append(registration.id)
+        return registration
+
+    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
+        ids = self._tool_registrations_by_agent.get((tenant_id, logical_agent_id), [])
+        return tuple(self._tool_registrations[registration_id] for registration_id in ids)
 
 
 __all__ = [

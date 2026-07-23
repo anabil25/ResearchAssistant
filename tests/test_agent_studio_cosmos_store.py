@@ -25,6 +25,8 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     RuntimeTarget,
     StudioApprovalRecord,
+    ToolRegistration,
+    ToolRegistrationKind,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStoreError
 from research_assistant_api.config import Settings
@@ -424,6 +426,44 @@ def test_binding_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
     assert reloaded.resolved_version_id == "version-1"
     assert second.get_binding("demo", "agent-cosmos-test", DeploymentEnvironment.DEVELOPMENT) is not None
     assert second.get_binding("other-tenant", "agent-cosmos-test", DeploymentEnvironment.DEVELOPMENT) is None
+
+
+def test_tool_registration_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
+    first = _new_store(fake_client)
+    registration = ToolRegistration(
+        id="reg-1",
+        tenant_id="demo",
+        logical_agent_id="agent-cosmos-test",
+        descriptor_id="foundry.web_search",
+        operation="search",
+        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+        handler_ref="builtin://web_search",
+        registered_by="user-1",
+    )
+    other_registration = ToolRegistration(
+        id="reg-2",
+        tenant_id="demo",
+        logical_agent_id="agent-cosmos-other",
+        descriptor_id="foundry.web_search",
+        operation="search",
+        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+        handler_ref="builtin://web_search",
+        registered_by="user-1",
+    )
+    first.create_tool_registration(registration)
+    first.create_tool_registration(other_registration)
+
+    second = _new_store(fake_client)
+    reloaded = second.list_tool_registrations("demo", "agent-cosmos-test")
+    assert len(reloaded) == 1
+    assert reloaded[0].id == "reg-1"
+    assert second.list_tool_registrations("other-tenant", "agent-cosmos-test") == ()
+
+    # Re-querying the same tenant hits documents already hydrated into the
+    # in-memory cache above, exercising the "already cached" loop branch.
+    reloaded_other = second.list_tool_registrations("demo", "agent-cosmos-other")
+    assert len(reloaded_other) == 1
+    assert reloaded_other[0].id == "reg-2"
 
 
 def test_build_agent_studio_store_raises_when_cosmos_not_configured() -> None:

@@ -18,9 +18,10 @@ registry (e.g. from a live discovery source) via ``CapabilityRegistry``.
 from __future__ import annotations
 
 from research_assistant_api.agent_studio.models import (
+    CapabilityBinding,
     CapabilityDescriptor,
-    CapabilityInstance,
     CapabilityOperation,
+    OperationClass,
     OperationMaturity,
 )
 
@@ -29,16 +30,52 @@ class CapabilityAttachmentError(ValueError):
     """Raised when an attempted capability attachment is not GA-eligible."""
 
 
-def _ga(name: str) -> CapabilityOperation:
-    return CapabilityOperation(name=name, maturity=OperationMaturity.GA)
+def _ga(
+    name: str,
+    *,
+    operation_class: OperationClass = OperationClass.READ,
+    side_effect_destinations: tuple[str, ...] = (),
+    requires_approval: bool = False,
+) -> CapabilityOperation:
+    return CapabilityOperation(
+        name=name,
+        maturity=OperationMaturity.GA,
+        operation_class=operation_class,
+        side_effect_destinations=side_effect_destinations,
+        requires_approval=requires_approval,
+    )
 
 
-def _preview(name: str, reason: str) -> CapabilityOperation:
-    return CapabilityOperation(name=name, maturity=OperationMaturity.PREVIEW, reason=reason)
+def _preview(
+    name: str,
+    reason: str,
+    *,
+    operation_class: OperationClass = OperationClass.READ,
+    side_effect_destinations: tuple[str, ...] = (),
+    requires_approval: bool = False,
+) -> CapabilityOperation:
+    return CapabilityOperation(
+        name=name,
+        maturity=OperationMaturity.PREVIEW,
+        operation_class=operation_class,
+        side_effect_destinations=side_effect_destinations,
+        requires_approval=requires_approval,
+        reason=reason,
+    )
 
 
-def _unavailable(name: str, reason: str) -> CapabilityOperation:
-    return CapabilityOperation(name=name, maturity=OperationMaturity.UNAVAILABLE, reason=reason)
+def _unavailable(
+    name: str,
+    reason: str,
+    *,
+    operation_class: OperationClass = OperationClass.PRIVILEGED,
+) -> CapabilityOperation:
+    return CapabilityOperation(
+        name=name,
+        maturity=OperationMaturity.UNAVAILABLE,
+        operation_class=operation_class,
+        reason=reason,
+    )
 
 
 _PREVIEW_REASON = "Documented as preview in the Foundry Agent Service tool catalog."
@@ -51,7 +88,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Web Search",
             description="Retrieve real-time public web information with inline citations.",
-            operations=(_ga("search"),),
+            operations=(_ga("search", side_effect_destinations=("public_web",)),),
             risk_tier="medium",
             data_boundary="public",
             managed_foundry_native=True,
@@ -62,8 +99,17 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             title="Code Interpreter",
             description="Write and run Python code in a Foundry-managed sandbox.",
             operations=(
-                _ga("run"),
-                _preview("custom_environment", _PREVIEW_REASON),
+                _ga(
+                    "run",
+                    operation_class=OperationClass.WRITE_REVERSIBLE,
+                    side_effect_destinations=("foundry_sandbox",),
+                ),
+                _preview(
+                    "custom_environment",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_REVERSIBLE,
+                    side_effect_destinations=("foundry_sandbox",),
+                ),
             ),
             risk_tier="medium",
             data_boundary="project",
@@ -74,7 +120,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="File Search",
             description="Augment agents with knowledge from uploaded files.",
-            operations=(_ga("search"),),
+            operations=(_ga("search", side_effect_destinations=("file_store",)),),
             auth_requirements=("workspace_connection:file_store",),
             risk_tier="low",
             data_boundary="project",
@@ -85,7 +131,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Azure AI Search",
             description="Ground agents with data from an existing Azure AI Search index.",
-            operations=(_ga("search"),),
+            operations=(_ga("search", side_effect_destinations=("azure_ai_search_index",)),),
             auth_requirements=("workspace_connection:azure_ai_search",),
             risk_tier="low",
             data_boundary="tenant",
@@ -96,7 +142,14 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Azure Functions",
             description="Call Azure Functions to perform custom actions and retrieve dynamic data.",
-            operations=(_ga("invoke"),),
+            operations=(
+                _ga(
+                    "invoke",
+                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                    side_effect_destinations=("azure_functions",),
+                    requires_approval=True,
+                ),
+            ),
             auth_requirements=("workspace_connection:azure_functions",),
             risk_tier="medium",
             data_boundary="project",
@@ -107,7 +160,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Function Calling",
             description="Define custom functions the agent can call; the caller executes and returns results.",
-            operations=(_ga("invoke"),),
+            operations=(_ga("invoke", operation_class=OperationClass.PURE),),
             risk_tier="medium",
             data_boundary="project",
             managed_foundry_native=True,
@@ -117,7 +170,15 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Foundry Native Memory",
             description="Foundry-managed long-term agent memory store.",
-            operations=(_preview("recall", _PREVIEW_REASON), _preview("store", _PREVIEW_REASON)),
+            operations=(
+                _preview("recall", _PREVIEW_REASON, side_effect_destinations=("foundry_memory_store",)),
+                _preview(
+                    "store",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_REVERSIBLE,
+                    side_effect_destinations=("foundry_memory_store",),
+                ),
+            ),
             risk_tier="high",
             data_boundary="tenant",
             managed_foundry_native=True,
@@ -127,7 +188,14 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Custom Code Interpreter",
             description="Customized code interpreter resources/packages/Container Apps environment.",
-            operations=(_preview("run", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "run",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_REVERSIBLE,
+                    side_effect_destinations=("container_apps_environment",),
+                ),
+            ),
             risk_tier="medium",
             data_boundary="project",
             managed_foundry_native=True,
@@ -137,7 +205,14 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Image Generation",
             description="Generate images as part of conversations and workflows.",
-            operations=(_preview("generate", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "generate",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_REVERSIBLE,
+                    side_effect_destinations=("generated_media_store",),
+                ),
+            ),
             risk_tier="medium",
             data_boundary="project",
             managed_foundry_native=True,
@@ -147,7 +222,15 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Browser Automation",
             description="Perform browser tasks through natural language prompts.",
-            operations=(_preview("run", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "run",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                    side_effect_destinations=("public_web",),
+                    requires_approval=True,
+                ),
+            ),
             risk_tier="high",
             data_boundary="public",
             managed_foundry_native=True,
@@ -157,7 +240,15 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Computer Use",
             description="Interact with computer systems through their user interfaces.",
-            operations=(_preview("run", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "run",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.PRIVILEGED,
+                    side_effect_destinations=("host_computer",),
+                    requires_approval=True,
+                ),
+            ),
             risk_tier="high",
             data_boundary="public",
             managed_foundry_native=True,
@@ -167,7 +258,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Microsoft Fabric",
             description="Connect to a Microsoft Fabric data agent for data analysis.",
-            operations=(_preview("query", _PREVIEW_REASON),),
+            operations=(_preview("query", _PREVIEW_REASON, side_effect_destinations=("microsoft_fabric",)),),
             auth_requirements=("workspace_connection:fabric",),
             risk_tier="medium",
             data_boundary="tenant",
@@ -178,7 +269,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="SharePoint",
             description="Chat with private documents stored in SharePoint.",
-            operations=(_preview("search", _PREVIEW_REASON),),
+            operations=(_preview("search", _PREVIEW_REASON, side_effect_destinations=("sharepoint",)),),
             auth_requirements=("workspace_connection:sharepoint",),
             risk_tier="medium",
             data_boundary="tenant",
@@ -189,7 +280,15 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Toolbox Connector (Custom · Preview)",
             description="Connector-namespace managed MCP tool access (gateway_connector / catalog_MCP).",
-            operations=(_preview("invoke", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "invoke",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                    side_effect_destinations=("toolbox_connector",),
+                    requires_approval=True,
+                ),
+            ),
             auth_requirements=("workspace_connection:toolbox",),
             risk_tier="high",
             data_boundary="tenant",
@@ -200,7 +299,15 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="microsoft_foundry",
             title="Agent2Agent (A2A)",
             description="Call another agent over the A2A protocol.",
-            operations=(_preview("call", _PREVIEW_REASON),),
+            operations=(
+                _preview(
+                    "call",
+                    _PREVIEW_REASON,
+                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                    side_effect_destinations=("a2a_peer_agent",),
+                    requires_approval=True,
+                ),
+            ),
             risk_tier="high",
             data_boundary="tenant",
             managed_foundry_native=True,
@@ -266,11 +373,13 @@ class CapabilityRegistry:
         attached_by: str,
         workspace_connection_id: str | None = None,
         config: dict[str, object] | None = None,
-    ) -> CapabilityInstance:
-        """Validate and construct a ``CapabilityInstance`` for a GA operation."""
+    ) -> CapabilityBinding:
+        """Validate and construct a ``CapabilityBinding`` for a GA operation."""
         self.validate_attachment(descriptor_id=descriptor_id, operation=operation)
-        return CapabilityInstance(
+        descriptor = self._descriptors[descriptor_id]
+        return CapabilityBinding(
             descriptor_id=descriptor_id,
+            descriptor_version=descriptor.version,
             operation=operation,
             workspace_connection_id=workspace_connection_id,
             config=dict(config or {}),

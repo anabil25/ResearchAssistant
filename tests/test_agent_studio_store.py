@@ -18,6 +18,8 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     RuntimeTarget,
     StudioApprovalRecord,
+    ToolRegistration,
+    ToolRegistrationKind,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
 
@@ -289,3 +291,21 @@ def test_logical_agent_binding_round_trip() -> None:
     store.set_binding(binding)
     assert store.get_binding("demo", "agent-store-test", DeploymentEnvironment.DEVELOPMENT) == binding
     assert store.get_binding("other-tenant", "agent-store-test", DeploymentEnvironment.DEVELOPMENT) is None
+
+
+def test_tool_registration_round_trip_and_tenant_scoping() -> None:
+    store = AgentStudioStore()
+    registration = ToolRegistration(
+        id="reg-1",
+        tenant_id="demo",
+        logical_agent_id="agent-store-test",
+        descriptor_id="foundry.web_search",
+        operation="search",
+        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+        handler_ref="builtin://web_search",
+        registered_by="user-1",
+    )
+    store.create_tool_registration(registration)
+    assert store.list_tool_registrations("demo", "agent-store-test") == (registration,)
+    assert store.list_tool_registrations("other-tenant", "agent-store-test") == ()
+    assert store.list_tool_registrations("demo", "agent-other") == ()

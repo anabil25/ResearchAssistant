@@ -5,7 +5,7 @@ from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
     AgentVisibility,
-    CapabilityInstance,
+    CapabilityBinding,
     GateName,
     GateResult,
     GateStatus,
@@ -112,7 +112,7 @@ def test_build_test_smoke_gates_pass_with_default_detail() -> None:
 def test_auth_gate_fails_when_capability_missing_from_catalog() -> None:
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(descriptor_id="unknown.capability", operation="run", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="unknown.capability", operation="run", attached_by="user-1"),
         )
     )
     report = run_gates(
@@ -126,7 +126,7 @@ def test_auth_gate_fails_when_workspace_connection_missing() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(descriptor_id="foundry.file_search", operation="search", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="foundry.file_search", operation="search", attached_by="user-1"),
         )
     )
     report = run_gates(
@@ -144,7 +144,7 @@ def test_auth_gate_passes_when_workspace_connection_attached() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.file_search",
                 operation="search",
                 attached_by="user-1",
@@ -166,7 +166,7 @@ def test_policy_gate_fails_for_non_ga_operation() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(descriptor_id="foundry.memory", operation="recall", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="foundry.memory", operation="recall", attached_by="user-1"),
         )
     )
     report = run_gates(
@@ -183,7 +183,7 @@ def test_policy_gate_fails_for_non_ga_operation() -> None:
 def test_policy_gate_fails_for_missing_capability_in_catalog() -> None:
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(descriptor_id="unknown.capability", operation="run", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="unknown.capability", operation="run", attached_by="user-1"),
         )
     )
     report = run_gates(
@@ -198,7 +198,7 @@ def test_policy_gate_fails_for_high_risk_capability_at_org_visibility() -> None:
     manifest = _manifest(
         visibility=AgentVisibility.ORG,
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.browser_automation", operation="run", attached_by="user-1"
             ),
         ),
@@ -219,7 +219,7 @@ def test_policy_gate_passes_for_low_risk_capability_at_published_visibility() ->
     manifest = _manifest(
         visibility=AgentVisibility.PUBLISHED,
         capabilities=(
-            CapabilityInstance(descriptor_id="foundry.web_search", operation="search", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="foundry.web_search", operation="search", attached_by="user-1"),
         ),
     )
     report = run_gates(
@@ -236,7 +236,7 @@ def test_security_gate_detects_embedded_secret_in_config() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.azure_functions",
                 operation="invoke",
                 attached_by="user-1",
@@ -260,7 +260,7 @@ def test_security_gate_detects_secret_nested_in_list_config() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.azure_functions",
                 operation="invoke",
                 attached_by="user-1",
@@ -284,7 +284,7 @@ def test_security_gate_flags_system_owned_high_risk_public_capability() -> None:
     manifest = _manifest(
         owner_kind=AgentOwnerKind.SYSTEM,
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.browser_automation", operation="run", attached_by="user-1"
             ),
         ),
@@ -316,7 +316,6 @@ def test_schema_gate_fails_when_manifest_data_violates_its_own_schema() -> None:
         visibility=AgentVisibility.PRIVATE,
         capabilities=(),
         runtime_requirements=RuntimeRequirements(),
-        memory_scopes=(),
         workspace_connections=(),
         tags=(),
     )
@@ -331,7 +330,7 @@ def test_security_gate_ignores_non_string_non_container_config_values() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(
+            CapabilityBinding(
                 descriptor_id="foundry.azure_functions",
                 operation="invoke",
                 attached_by="user-1",
@@ -354,7 +353,7 @@ def test_security_gate_passes_with_no_findings() -> None:
     registry = default_registry()
     manifest = _manifest(
         capabilities=(
-            CapabilityInstance(descriptor_id="foundry.web_search", operation="search", attached_by="user-1"),
+            CapabilityBinding(descriptor_id="foundry.web_search", operation="search", attached_by="user-1"),
         )
     )
     report = run_gates(

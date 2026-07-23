@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityAttachmentError, default_registry
 from research_assistant_api.agent_studio.models import (
     AgentOwnerKind,
     AgentRole,
@@ -9,7 +9,10 @@ from research_assistant_api.agent_studio.models import (
     AgentVersionStatus,
     AgentVisibility,
     ApprovalState,
+    CapabilityBinding,
+    ModelDeploymentRef,
     StudioApprovalRecord,
+    ToolRegistrationKind,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_service import (
@@ -521,3 +524,82 @@ def test_resolve_actor_role_defaults_to_viewer_for_unknown_principal(service: Re
     assert resolve_actor_role(
         service._store, tenant_id="demo", logical_agent_id="agent-unknown", principal_id="ghost"
     ) == AgentRole.VIEWER
+
+
+# -- cut_version new contract fields ---------------------------------------
+
+
+def test_cut_version_populates_model_deployment_capability_versions_and_package_protocol(
+    service: ReleaseService,
+) -> None:
+    service.create_agent(
+        tenant_id="demo", logical_agent_id="agent-cut-fields", display_name="Agent Cut Fields",
+        owner_kind=AgentOwnerKind.USER, owner_id="user-1", requested_by="user-1", is_platform_owner=False,
+    )
+    draft = service._store.get_draft("demo", "agent-cut-fields")
+    assert draft is not None
+    model_deployment = ModelDeploymentRef(
+        deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"
+    )
+    binding = CapabilityBinding(
+        descriptor_id="foundry.web_search", operation="search", attached_by="user-1", descriptor_version="1"
+    )
+    updated_manifest = draft.manifest.model_copy(
+        update={"model_deployment": model_deployment, "capabilities": (binding,)}
+    )
+    service.update_draft(
+        tenant_id="demo", logical_agent_id="agent-cut-fields", manifest=updated_manifest,
+        updated_by="user-1", actor_role=AgentRole.OWNER,
+    )
+    version = service.cut_version(
+        tenant_id="demo", logical_agent_id="agent-cut-fields", actor_id="user-1", actor_role=AgentRole.OWNER
+    )
+    assert version.model_deployment == model_deployment
+    assert version.capability_versions == {"foundry.web_search": "1"}
+    assert version.package_version == "1.0.0"
+    assert version.protocol_version == "agent-studio.protocol.v1"
+
+
+# -- Tool registration ------------------------------------------------------
+
+
+def test_register_tool_requires_contributor_role(service: ReleaseService) -> None:
+    service.create_agent(
+        tenant_id="demo", logical_agent_id="agent-tool", display_name="Agent Tool",
+        owner_kind=AgentOwnerKind.USER, owner_id="user-1", requested_by="user-1", is_platform_owner=False,
+    )
+    with pytest.raises(AuthorizationError):
+        service.register_tool(
+            tenant_id="demo", logical_agent_id="agent-tool", descriptor_id="foundry.web_search",
+            operation="search", kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+            handler_ref="builtin://web_search", registered_by="user-2", actor_role=AgentRole.VIEWER,
+        )
+
+
+def test_register_tool_rejects_non_ga_operation(service: ReleaseService) -> None:
+    service.create_agent(
+        tenant_id="demo", logical_agent_id="agent-tool-nonga", display_name="Agent Tool NonGA",
+        owner_kind=AgentOwnerKind.USER, owner_id="user-1", requested_by="user-1", is_platform_owner=False,
+    )
+    with pytest.raises(CapabilityAttachmentError):
+        service.register_tool(
+            tenant_id="demo", logical_agent_id="agent-tool-nonga", descriptor_id="foundry.memory",
+            operation="recall", kind=ToolRegistrationKind.CUSTOM_HANDLER,
+            handler_ref="custom://memory", registered_by="user-1", actor_role=AgentRole.OWNER,
+        )
+
+
+def test_register_tool_succeeds_and_list_tool_registrations_returns_it(service: ReleaseService) -> None:
+    service.create_agent(
+        tenant_id="demo", logical_agent_id="agent-tool-ok", display_name="Agent Tool OK",
+        owner_kind=AgentOwnerKind.USER, owner_id="user-1", requested_by="user-1", is_platform_owner=False,
+    )
+    registration = service.register_tool(
+        tenant_id="demo", logical_agent_id="agent-tool-ok", descriptor_id="foundry.web_search",
+        operation="search", kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+        handler_ref="builtin://web_search", registered_by="user-1", actor_role=AgentRole.OWNER,
+    )
+    assert registration.descriptor_id == "foundry.web_search"
+    listed = service.list_tool_registrations("demo", "agent-tool-ok")
+    assert listed == (registration,)
+    assert service.list_tool_registrations("demo", "agent-tool-other") == ()
