@@ -186,6 +186,19 @@ class CapabilityOperation(BaseModel):
     provenance trail for the maturity claim — where it was confirmed, against
     which provider release, and when it was last checked; a maturity claim
     with no provenance is a catalog-authoring smell, not a runtime error.
+
+    ``requires_approval`` is *not* purely informational: ``approval_policy_ref``
+    names the versioned approval policy that ``CapabilityRegistry.attach``
+    (attach-time satisfiability), the ``APPROVAL`` release gate (cut/release
+    hard-block on missing/expired/mismatched approval), and deploy-time
+    checks all resolve against. ``least_privilege_scopes``/``least_privilege_roles``
+    declare the minimum access an invocation needs; ``timeout_seconds``/
+    ``max_retries``/``idempotent`` are runtime dispatch contract facts (not
+    behavior this backend executes itself — the harness/runtime owns
+    invocation — but real, declared metadata a caller must honor).
+    ``input_schema_digest``/``output_schema_digest`` are operation-level
+    (independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),
+    since a single descriptor's operations can have distinct I/O shapes.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -193,12 +206,21 @@ class CapabilityOperation(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     maturity: OperationMaturity
     operation_class: OperationClass = OperationClass.READ
+    risk: str = Field(default="low")
     side_effect_destinations: tuple[str, ...] = Field(default_factory=tuple)
     requires_approval: bool = False
+    approval_policy_ref: str | None = None
     reason: str | None = None
     source_url: str | None = None
     source_version: str | None = None
     last_verified_at: datetime | None = None
+    input_schema_digest: str | None = None
+    output_schema_digest: str | None = None
+    timeout_seconds: int | None = Field(default=None, ge=1, le=3600)
+    max_retries: int = Field(default=0, ge=0, le=10)
+    idempotent: bool = False
+    least_privilege_scopes: tuple[str, ...] = Field(default_factory=tuple)
+    least_privilege_roles: tuple[str, ...] = Field(default_factory=tuple)
 
 
 class CapabilityDescriptor(BaseModel):
@@ -381,27 +403,57 @@ class MemoryMechanism(StrEnum):
 
 
 class MemoryScopeBinding(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    """Per-scope memory configuration.
 
-    kind: MemoryScopeKind
-    mechanism: MemoryMechanism = MemoryMechanism.APPLICATION_MEMORY_STORE
-    retention_days: int | None = Field(default=None, ge=1, le=3650)
-
-
-class MemoryPolicy(BaseModel):
-    """Manifest-level memory policy.
-
-    Persistent memory is **off by default** (``enabled=False``): a manifest
-    with an empty/absent policy has no memory access at all, even if a
-    caller declares ``scopes``. Setting ``enabled=True`` is an explicit,
-    auditable opt-in (recorded via draft updates) into application-owned GA
-    memory mechanisms for the declared ``scopes`` only.
+    There is deliberately no manifest-wide "memory enabled" bit: each scope
+    independently declares ``enabled`` (may this scope be accessed at all)
+    and, separately, ``persistent`` (may entries in this scope outlive the
+    current conversation/session). Conversation memory may be ``enabled=True``
+    while user/project/private-agent scopes stay ``enabled=False``; a scope
+    can even be ``enabled=True`` but ``persistent=False`` (session-only
+    working memory). ``persistent`` defaults ``False`` even when the scope
+    itself is enabled. ``default_read_acl``/``default_write_acl`` declare the
+    scope's baseline ACL (applied to entries that don't override it);
+    ``allow_user_inspect``/``allow_user_forget``/``allow_user_export`` are the
+    end-user self-service controls this scope exposes; ``provenance``
+    records where/why this scope was configured (e.g. an admin policy vs. an
+    owner opt-in), for inspect/audit.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    kind: MemoryScopeKind
     enabled: bool = False
+    persistent: bool = False
+    mechanism: MemoryMechanism = MemoryMechanism.APPLICATION_MEMORY_STORE
+    retention_days: int | None = Field(default=None, ge=1, le=3650)
+    default_read_acl: tuple[str, ...] = Field(default_factory=tuple)
+    default_write_acl: tuple[str, ...] = Field(default_factory=tuple)
+    allow_user_inspect: bool = True
+    allow_user_forget: bool = True
+    allow_user_export: bool = True
+    provenance: str = Field(default="", max_length=200)
+
+
+class MemoryPolicy(BaseModel):
+    """Manifest-level memory policy: an independent per-scope declaration.
+
+    A manifest with no declared ``scopes`` (or a scope with ``enabled=False``,
+    the default) has no memory access at all for that scope. There is no
+    single global switch; access is evaluated per ``MemoryScopeKind`` via
+    ``scope()``/``is_enabled()``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
     scopes: tuple[MemoryScopeBinding, ...] = Field(default_factory=tuple)
+
+    def scope(self, kind: MemoryScopeKind) -> MemoryScopeBinding | None:
+        return next((binding for binding in self.scopes if binding.kind == kind), None)
+
+    def is_enabled(self, kind: MemoryScopeKind) -> bool:
+        binding = self.scope(kind)
+        return binding is not None and binding.enabled
 
 
 class MemoryEntry(BaseModel):
@@ -609,6 +661,12 @@ class AgentManifest(BaseModel):
     schema_version: str = Field(default=AGENT_MANIFEST_SCHEMA_VERSION, min_length=1, max_length=80)
     display_name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
+    #: The agent's actual instructions/system-prompt text. Runtime-neutral:
+    #: both Managed Foundry and Custom Hosted runtimes consume the same
+    #: ``instructions`` string. Covered by ``manifest_hash`` like every other
+    #: manifest field, so any instructions edit is reflected in a new content
+    #: hash at cut time.
+    instructions: str = Field(default="", max_length=40000)
     owner_kind: AgentOwnerKind
     owner_id: str = Field(min_length=1, max_length=200)
     visibility: AgentVisibility = AgentVisibility.PRIVATE
@@ -660,6 +718,28 @@ class LineageEdge(BaseModel):
     relationship: str = Field(default="fork")
 
 
+class ReleaseArtifactMetadata(BaseModel):
+    """Real, non-fabricated build/package metadata recorded at cut time.
+
+    Distinct from ``AgentVersion.sequence`` (a display/ordering integer):
+    ``sequence`` is never used to derive a version string here.
+    ``package_versions`` is the actual locked dependency version map read
+    from the running distribution (see ``release_artifact_metadata.py``);
+    ``lock_digest`` is a content hash over that map; ``framework_version``/
+    ``hosting_package_version`` are the real installed framework/hosting
+    package versions; ``source_revision`` is the source control revision the
+    cut was built from (``None`` when genuinely unknown — never fabricated).
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    package_versions: dict[str, str] = Field(default_factory=dict)
+    lock_digest: str | None = None
+    framework_version: str = Field(default="unknown")
+    hosting_package_version: str = Field(default="unknown")
+    source_revision: str | None = None
+
+
 class AgentVersion(BaseModel):
     """An immutable, content-addressed release candidate/record.
 
@@ -689,7 +769,7 @@ class AgentVersion(BaseModel):
     runtime_selection_reasons: tuple[str, ...] = Field(default_factory=tuple)
     model_deployment: ModelDeploymentRef | None = None
     capability_versions: dict[str, str] = Field(default_factory=dict)
-    package_version: str = Field(default="0.0.0")
+    artifact_metadata: ReleaseArtifactMetadata = Field(default_factory=ReleaseArtifactMetadata)
     protocol_version: str = Field(default=AGENT_STUDIO_PROTOCOL_VERSION)
 
 
@@ -759,7 +839,7 @@ class ResolvedAgentContract(BaseModel):
     capability_versions: dict[str, str] = Field(default_factory=dict)
     input_schema_ref: SchemaRef | None = None
     output_schema_ref: SchemaRef | None = None
-    package_version: str
+    artifact_metadata: ReleaseArtifactMetadata
     protocol_version: str
 
 
@@ -791,6 +871,7 @@ class GateName(StrEnum):
     TEST = "test"
     AUTH = "auth"
     POLICY = "policy"
+    APPROVAL = "approval"
     SECURITY = "security"
     SMOKE = "smoke"
 
@@ -851,6 +932,7 @@ class ApprovalKind(StrEnum):
     RELEASE_PROMOTION = "release_promotion"
     FORK_PROMOTION = "fork_promotion"
     ADMIN_ESCALATION = "admin_escalation"
+    CAPABILITY_OPERATION = "capability_operation"
 
 
 class ApprovalState(StrEnum):

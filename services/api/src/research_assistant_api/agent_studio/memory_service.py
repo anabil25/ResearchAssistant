@@ -22,6 +22,7 @@ from research_assistant_api.agent_studio.models import (
     MemoryAuditAction,
     MemoryAuditRecord,
     MemoryEntry,
+    MemoryScopeBinding,
     MemoryScopeKind,
     utc_now,
 )
@@ -29,6 +30,14 @@ from research_assistant_api.config import Settings
 
 if TYPE_CHECKING:
     from azure.core.credentials import TokenCredential
+
+
+#: Non-persistent scopes (``persistent=False``, the default even when
+#: ``enabled=True``) never store an entry indefinitely: when neither the
+#: entry nor the scope binding declares a retention period, this bounded
+#: fallback TTL is applied so "not persistent" is a real, enforced fact
+#: rather than an aspiration.
+_DEFAULT_NON_PERSISTENT_TTL_DAYS = 1
 
 
 class MemoryPolicyError(RuntimeError):
@@ -40,21 +49,26 @@ class MemoryAccessError(MemoryPolicyError):
     inspect/correct/forget/export action on a specific entry."""
 
 
-def validate_memory_scopes(manifest: AgentManifest) -> None:
-    """Reject any manifest that attempts to bind a non-GA memory mechanism
-    or that has not explicitly opted into persistent memory.
+def validate_memory_scopes(manifest: AgentManifest, scope_kind: MemoryScopeKind) -> MemoryScopeBinding:
+    """Reject access to a memory scope that is disabled, undeclared, or bound
+    to a non-GA mechanism; return the resolved binding on success.
+
+    There is no manifest-wide "memory enabled" bit: conversation memory may
+    be enabled while user/project/private-agent scopes stay disabled (the
+    default), so every check is scoped to exactly the ``scope_kind`` being
+    accessed, never a global flag.
     """
-    if not manifest.memory_policy.enabled:
+    binding = manifest.memory_policy.scope(scope_kind)
+    if binding is None or not binding.enabled:
         raise MemoryPolicyError(
-            f"Manifest '{manifest.logical_agent_id}' has persistent memory disabled "
-            "(MemoryPolicy.enabled=False by default); enable it explicitly to use memory."
+            f"Manifest '{manifest.logical_agent_id}' does not have the '{scope_kind.value}' memory scope enabled."
         )
-    for binding in manifest.memory_policy.scopes:
-        if not binding.mechanism.is_ga:
-            raise MemoryPolicyError(
-                f"Memory mechanism '{binding.mechanism.value}' is not GA and cannot be attached; "
-                "it is only available as a preview capability."
-            )
+    if not binding.mechanism.is_ga:
+        raise MemoryPolicyError(
+            f"Memory mechanism '{binding.mechanism.value}' is not GA and cannot be attached; "
+            "it is only available as a preview capability."
+        )
+    return binding
 
 
 def _is_active(entry: MemoryEntry) -> bool:
@@ -307,17 +321,20 @@ class MemoryService:
         self._store = store
 
     def remember(self, manifest: AgentManifest, entry: MemoryEntry) -> MemoryEntry:
-        validate_memory_scopes(manifest)
-        matching_scope = next(
-            (scope for scope in manifest.memory_policy.scopes if scope.kind == entry.scope_kind),
-            None,
-        )
-        if matching_scope is None:
-            raise MemoryPolicyError(
-                f"Manifest '{manifest.logical_agent_id}' does not declare a '{entry.scope_kind.value}' memory scope."
+        binding = validate_memory_scopes(manifest, entry.scope_kind)
+        ttl_days = entry.ttl_days
+        if ttl_days is None:
+            # A scope that isn't ``persistent`` never stores indefinitely;
+            # fall back to the scope's own retention or a conservative
+            # bounded default rather than leaving ``expires_at`` unset.
+            if binding.persistent:
+                ttl_days = binding.retention_days
+            else:
+                ttl_days = binding.retention_days or _DEFAULT_NON_PERSISTENT_TTL_DAYS
+        if ttl_days is not None and entry.expires_at is None:
+            entry = entry.model_copy(
+                update={"ttl_days": ttl_days, "expires_at": entry.created_at + timedelta(days=ttl_days)}
             )
-        if entry.ttl_days is not None and entry.expires_at is None:
-            entry = entry.model_copy(update={"expires_at": entry.created_at + timedelta(days=entry.ttl_days)})
         stored = self._store.append(entry)
         self._store.record_audit(
             MemoryAuditRecord(
@@ -341,7 +358,7 @@ class MemoryService:
         actor_id: str,
         limit: int = 100,
     ) -> tuple[MemoryEntry, ...]:
-        validate_memory_scopes(manifest)
+        validate_memory_scopes(manifest, scope_kind)
         entries = self._store.list_entries(
             tenant_id=tenant_id,
             scope_kind=scope_kind,
@@ -365,9 +382,14 @@ class MemoryService:
     def inspect(self, manifest: AgentManifest, *, tenant_id: str, entry_id: str, actor_id: str) -> MemoryEntry:
         """Read a single memory entry (governance action, distinct from
         ordinary ``recall``): raises if it does not exist for this agent, has
-        been forgotten, or the actor lacks read access."""
-        validate_memory_scopes(manifest)
+        been forgotten, the actor lacks read access, or the scope's
+        ``allow_user_inspect`` self-service control is off."""
         entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        binding = validate_memory_scopes(manifest, entry.scope_kind)
+        if not binding.allow_user_inspect:
+            raise MemoryAccessError(
+                f"Scope '{entry.scope_kind.value}' does not allow user-initiated inspect for this agent."
+            )
         if entry.deleted_at is not None:
             raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten.")
         if not _can_read(entry, actor_id):
@@ -392,8 +414,8 @@ class MemoryService:
         actor_id: str,
         content: str,
     ) -> MemoryEntry:
-        validate_memory_scopes(manifest)
         entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        validate_memory_scopes(manifest, entry.scope_kind)
         if entry.deleted_at is not None:
             raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten and cannot be corrected.")
         if not _can_write(entry, actor_id):
@@ -421,8 +443,12 @@ class MemoryService:
         actor_id: str,
         reason: str = "",
     ) -> MemoryEntry:
-        validate_memory_scopes(manifest)
         entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        binding = validate_memory_scopes(manifest, entry.scope_kind)
+        if not binding.allow_user_forget:
+            raise MemoryAccessError(
+                f"Scope '{entry.scope_kind.value}' does not allow user-initiated forget for this agent."
+            )
         if not _can_write(entry, actor_id):
             raise MemoryAccessError(f"Actor '{actor_id}' does not have write access to memory entry '{entry_id}'.")
         updated = entry.model_copy(update={"deleted_at": utc_now()})
@@ -449,7 +475,9 @@ class MemoryService:
         actor_id: str,
         limit: int = 1000,
     ) -> tuple[MemoryEntry, ...]:
-        validate_memory_scopes(manifest)
+        binding = validate_memory_scopes(manifest, scope_kind)
+        if not binding.allow_user_export:
+            raise MemoryAccessError(f"Scope '{scope_kind.value}' does not allow user-initiated export for this agent.")
         entries = self._store.list_entries(
             tenant_id=tenant_id,
             scope_kind=scope_kind,

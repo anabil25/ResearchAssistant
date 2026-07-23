@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from datetime import UTC, datetime
 
 import pytest
 import research_assistant_api.agent_studio.release_service as release_service_module
 from research_assistant_api.agent_studio.approvals import ApprovalError, idempotency_key
 from research_assistant_api.agent_studio.capability_registry import CapabilityAttachmentError, default_registry
+from research_assistant_api.agent_studio.model_discovery import (
+    InMemoryModelDiscovery,
+    UnavailableModelDiscovery,
+)
 from research_assistant_api.agent_studio.models import (
     AGENT_STUDIO_PROTOCOL_VERSION,
     AgentManifest,
@@ -15,6 +20,7 @@ from research_assistant_api.agent_studio.models import (
     AgentVisibility,
     ApprovalKind,
     ApprovalState,
+    CapabilityDescriptor,
     DeploymentEnvironment,
     EvaluationRecord,
     GateName,
@@ -25,6 +31,7 @@ from research_assistant_api.agent_studio.models import (
     ReleaseStatus,
     RuntimeRequirements,
     RuntimeTarget,
+    StudioApprovalRecord,
     ToolRegistrationKind,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
@@ -56,7 +63,13 @@ class SpyAllocateStore(AgentStudioStore):
 
 @pytest.fixture
 def service() -> ReleaseService:
-    return ReleaseService(AgentStudioStore(), default_registry())
+    return ReleaseService(
+        AgentStudioStore(),
+        default_registry(),
+        model_discovery=InMemoryModelDiscovery(
+            (ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),)
+        ),
+    )
 
 
 def _create_agent(
@@ -366,7 +379,13 @@ def test_cut_version_raises_when_no_draft_exists(service: ReleaseService) -> Non
 
 def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     store = SpyAllocateStore()
-    service = ReleaseService(store, default_registry())
+    service = ReleaseService(
+        store,
+        default_registry(),
+        model_discovery=InMemoryModelDiscovery(
+            (ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),)
+        ),
+    )
     _create_agent(service, logical_agent_id="agent-cut-fields")
     draft = store.get_draft("demo", "agent-cut-fields")
     assert draft is not None
@@ -408,7 +427,9 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     assert version.runtime_target is RuntimeTarget.MANAGED_FOUNDRY
     assert version.model_deployment == updated_manifest.model_deployment
     assert version.capability_versions == {"foundry.web_search": "1"}
-    assert version.package_version == "7.0.0"
+    assert version.artifact_metadata.package_versions
+    assert version.artifact_metadata.lock_digest is not None
+    assert version.artifact_metadata.lock_digest.startswith("sha256:")
     assert version.protocol_version == AGENT_STUDIO_PROTOCOL_VERSION
 
 
@@ -502,7 +523,17 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
     service._store._releases_by_version.clear()
     calls: list[RuntimeTarget | None] = []
 
-    def fake_run_gates(*, version_id: str, report_id: str, manifest, capability_catalog, evidence, runtime_target):
+    def fake_run_gates(
+        *,
+        version_id: str,
+        report_id: str,
+        manifest: AgentManifest,
+        manifest_hash: str,
+        capability_catalog: Mapping[str, CapabilityDescriptor],
+        evidence: GateEvidence,
+        runtime_target: RuntimeTarget | None,
+        capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+    ) -> ReleaseGateReport:
         calls.append(runtime_target)
         idx = len(calls)
         return ReleaseGateReport(
@@ -555,7 +586,17 @@ def test_run_release_gates_failed_report_creates_no_release(
         actor_role=AgentRole.OWNER,
     )
 
-    def fake_run_gates(*, version_id: str, report_id: str, manifest, capability_catalog, evidence, runtime_target):
+    def fake_run_gates(
+        *,
+        version_id: str,
+        report_id: str,
+        manifest: AgentManifest,
+        manifest_hash: str,
+        capability_catalog: Mapping[str, CapabilityDescriptor],
+        evidence: GateEvidence,
+        runtime_target: RuntimeTarget | None,
+        capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+    ) -> ReleaseGateReport:
         return ReleaseGateReport(
             id="report-fail",
             version_id=version_id,
@@ -990,3 +1031,177 @@ def test_register_tool_succeeds_and_lists_registrations(service: ReleaseService)
     assert registration.descriptor_id == "foundry.web_search"
     assert service.list_tool_registrations("demo", "agent-tool-ok") == (registration,)
     assert service.list_tool_registrations("demo", "agent-tool-other") == ()
+
+
+def _service_with_model_deployment_manifest(
+    *,
+    logical_agent_id: str,
+    model_discovery: InMemoryModelDiscovery | UnavailableModelDiscovery,
+) -> tuple[ReleaseService, str]:
+    """Build a service with the given (fake or unavailable) model discovery
+    and a draft manifest that declares a ``model_deployment``, ready for
+    ``cut_version`` to trigger ``_revalidate_model_deployment``."""
+    local_service = ReleaseService(AgentStudioStore(), default_registry(), model_discovery=model_discovery)
+    _create_agent(local_service, logical_agent_id=logical_agent_id)
+    draft = local_service._store.get_draft("demo", logical_agent_id)
+    assert draft is not None
+    local_service.update_draft(
+        tenant_id="demo",
+        logical_agent_id=logical_agent_id,
+        manifest=draft.manifest.model_copy(
+            update={
+                "model_deployment": ModelDeploymentRef(
+                    deployment_name="gpt-4o-mini",
+                    model_name="gpt-4o-mini",
+                    model_format="openai",
+                ),
+            }
+        ),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    return local_service, logical_agent_id
+
+
+def test_cut_version_hard_fails_when_model_discovery_is_unavailable() -> None:
+    local_service, logical_agent_id = _service_with_model_deployment_manifest(
+        logical_agent_id="agent-model-unavailable",
+        model_discovery=UnavailableModelDiscovery(),
+    )
+
+    with pytest.raises(ReleaseServiceError, match="Cannot revalidate model deployment"):
+        local_service.cut_version(
+            tenant_id="demo",
+            logical_agent_id=logical_agent_id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_cut_version_hard_fails_when_declared_deployment_is_not_live() -> None:
+    local_service, logical_agent_id = _service_with_model_deployment_manifest(
+        logical_agent_id="agent-model-missing",
+        model_discovery=InMemoryModelDiscovery(()),
+    )
+
+    with pytest.raises(ReleaseServiceError, match="was not found among the project's live deployed models"):
+        local_service.cut_version(
+            tenant_id="demo",
+            logical_agent_id=logical_agent_id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_request_capability_approval_raises_for_missing_version(service: ReleaseService) -> None:
+    with pytest.raises(ReleaseServiceError, match="Version 'missing' not found"):
+        service.request_capability_approval(
+            tenant_id="demo",
+            version_id="missing",
+            descriptor_id="foundry.azure_functions",
+            operation="invoke",
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence_summary="n/a",
+        )
+
+
+def test_request_capability_approval_raises_when_binding_absent_from_version(service: ReleaseService) -> None:
+    version = _gated_version(service, logical_agent_id="agent-no-binding")
+
+    with pytest.raises(ReleaseServiceError, match="has no capability binding for"):
+        service.request_capability_approval(
+            tenant_id="demo",
+            version_id=version.id,
+            descriptor_id="foundry.azure_functions",
+            operation="invoke",
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence_summary="n/a",
+        )
+
+
+def test_decide_capability_approval_raises_for_missing_approval(service: ReleaseService) -> None:
+    with pytest.raises(ReleaseServiceError, match="Approval 'missing' not found"):
+        service.decide_capability_approval(
+            tenant_id="demo",
+            approval_id="missing",
+            approver_id="user-1",
+            approver_role=AgentRole.OWNER,
+            approve=True,
+        )
+
+
+def test_decide_capability_approval_rejects_non_capability_operation_approval(service: ReleaseService) -> None:
+    version = _gated_version(service, logical_agent_id="agent-wrong-kind")
+    promotion_record = service.request_promotion(
+        tenant_id="demo",
+        version_id=version.id,
+        actor_id="user-2",
+        actor_role=AgentRole.CONTRIBUTOR,
+        destination="production",
+        evidence_summary="Ready to ship.",
+    )
+    assert isinstance(promotion_record, StudioApprovalRecord)
+
+    with pytest.raises(ReleaseServiceError, match="is not a capability-operation approval"):
+        service.decide_capability_approval(
+            tenant_id="demo",
+            approval_id=promotion_record.id,
+            approver_id="user-1",
+            approver_role=AgentRole.OWNER,
+            approve=True,
+        )
+
+
+def test_request_and_decide_capability_approval_happy_path(service: ReleaseService) -> None:
+    _create_agent(service, logical_agent_id="agent-capability-approval-service")
+    binding = service._registry.attach(
+        descriptor_id="foundry.azure_functions",
+        operation="invoke",
+        attached_by="user-1",
+        connection_ref="conn-azure-functions",
+        policy_ref="policy.capability-approval.write-irreversible.v1",
+    )
+    draft = service._store.get_draft("demo", "agent-capability-approval-service")
+    assert draft is not None
+    service.update_draft(
+        tenant_id="demo",
+        logical_agent_id="agent-capability-approval-service",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    version = service.cut_version(
+        tenant_id="demo",
+        logical_agent_id="agent-capability-approval-service",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    requested = service.request_capability_approval(
+        tenant_id="demo",
+        version_id=version.id,
+        descriptor_id="foundry.azure_functions",
+        operation="invoke",
+        actor_id="user-2",
+        actor_role=AgentRole.CONTRIBUTOR,
+        evidence_summary="Reviewed the destination and scopes.",
+    )
+
+    assert requested.kind is ApprovalKind.CAPABILITY_OPERATION
+    assert requested.state is ApprovalState.PENDING
+    assert requested.content_hash == version.manifest_hash
+    assert requested.destination == "foundry.azure_functions.invoke"
+
+    decided = service.decide_capability_approval(
+        tenant_id="demo",
+        approval_id=requested.id,
+        approver_id="user-1",
+        approver_role=AgentRole.OWNER,
+        approve=True,
+        rationale="Looks safe.",
+    )
+
+    assert decided.state is ApprovalState.APPROVED
+    assert decided.id == requested.id

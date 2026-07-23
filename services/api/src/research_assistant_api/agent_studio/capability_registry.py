@@ -55,6 +55,7 @@ def _ga(
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
+    approval_policy_ref: str | None = None,
     source_url: str = _LEARN_TOOL_CATALOG_URL,
     source_version: str | None = None,
     last_verified_at: datetime | None = None,
@@ -65,6 +66,7 @@ def _ga(
         operation_class=operation_class,
         side_effect_destinations=side_effect_destinations,
         requires_approval=requires_approval,
+        approval_policy_ref=approval_policy_ref,
         source_url=source_url,
         source_version=source_version,
         last_verified_at=last_verified_at,
@@ -78,6 +80,7 @@ def _preview(
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
+    approval_policy_ref: str | None = None,
     source_url: str = _LEARN_TOOL_CATALOG_URL,
     source_version: str | None = None,
     last_verified_at: datetime | None = None,
@@ -88,6 +91,7 @@ def _preview(
         operation_class=operation_class,
         side_effect_destinations=side_effect_destinations,
         requires_approval=requires_approval,
+        approval_policy_ref=approval_policy_ref,
         reason=reason,
         source_url=source_url,
         source_version=source_version,
@@ -232,6 +236,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
                     operation_class=OperationClass.WRITE_IRREVERSIBLE,
                     side_effect_destinations=("azure_functions",),
                     requires_approval=True,
+                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
                 ),
             ),
             auth_requirements=("workspace_connection:azure_functions",),
@@ -313,6 +318,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
                     operation_class=OperationClass.WRITE_IRREVERSIBLE,
                     side_effect_destinations=("public_web",),
                     requires_approval=True,
+                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
                 ),
             ),
             risk_tier="high",
@@ -331,6 +337,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
                     operation_class=OperationClass.PRIVILEGED,
                     side_effect_destinations=("host_computer",),
                     requires_approval=True,
+                    approval_policy_ref="policy.capability-approval.privileged.v1",
                 ),
             ),
             risk_tier="high",
@@ -371,6 +378,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
                     operation_class=OperationClass.WRITE_IRREVERSIBLE,
                     side_effect_destinations=("toolbox_connector",),
                     requires_approval=True,
+                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
                 ),
             ),
             auth_requirements=("workspace_connection:toolbox",),
@@ -390,6 +398,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
                     operation_class=OperationClass.WRITE_IRREVERSIBLE,
                     side_effect_destinations=("a2a_peer_agent",),
                     requires_approval=True,
+                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
                 ),
             ),
             risk_tier="high",
@@ -497,7 +506,12 @@ class CapabilityRegistry:
         """Validate that ``operation`` on ``descriptor_id`` is GA-attachable.
 
         Returns the resolved ``CapabilityOperation`` on success; raises
-        ``CapabilityAttachmentError`` with an honest reason otherwise.
+        ``CapabilityAttachmentError`` with an honest reason otherwise. When
+        the operation ``requires_approval``, its declared
+        ``approval_policy_ref`` must be present — an operation flagged as
+        approval-gated with no governing policy reference is an
+        unsatisfiable, catalog-authoring inconsistency and must never be
+        silently treated as attachable.
         """
         descriptor = self._descriptors.get(descriptor_id)
         if descriptor is None:
@@ -509,6 +523,11 @@ class CapabilityRegistry:
             reason = resolved.reason or f"Operation '{operation}' is {resolved.maturity.value}."
             raise CapabilityAttachmentError(
                 f"Cannot attach '{descriptor_id}.{operation}': {reason}"
+            )
+        if resolved.requires_approval and resolved.approval_policy_ref is None:
+            raise CapabilityAttachmentError(
+                f"Cannot attach '{descriptor_id}.{operation}': it requires approval but declares no "
+                "approval_policy_ref, so the approval requirement is unsatisfiable."
             )
         return resolved
 
@@ -529,9 +548,19 @@ class CapabilityRegistry:
         ``CapabilityInstance`` for the same ``descriptor_id``; the binding
         pins the instance's ``discovered_provider_version`` so a later
         instance re-discovery never silently changes an already-attached
-        binding's behavior.
+        binding's behavior. When the resolved operation ``requires_approval``,
+        a ``policy_ref`` must be supplied — attach-time satisfiability of an
+        approval-gated operation means the caller has identified *how*
+        approval will be sought, not that it has already been granted (that
+        is enforced later, at the APPROVAL release gate and again at
+        deploy time).
         """
-        self.validate_attachment(descriptor_id=descriptor_id, operation=operation)
+        resolved = self.validate_attachment(descriptor_id=descriptor_id, operation=operation)
+        if resolved.requires_approval and policy_ref is None:
+            raise CapabilityAttachmentError(
+                f"Cannot attach '{descriptor_id}.{operation}': it requires approval, so a policy_ref "
+                "identifying the governing approval policy must be supplied."
+            )
         descriptor = self._descriptors[descriptor_id]
         pinned_provider_version: str | None = None
         if instance_id is not None:

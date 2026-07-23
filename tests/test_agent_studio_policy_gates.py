@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from research_assistant_api.agent_studio.capability_registry import default_registry
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
     AgentVisibility,
+    ApprovalKind,
+    ApprovalState,
     CapabilityBinding,
     CapabilityDescriptor,
     CapabilityOperation,
@@ -17,9 +21,12 @@ from research_assistant_api.agent_studio.models import (
     OperationMaturity,
     ReleaseGateReport,
     RuntimeTarget,
+    SchemaRef,
+    StudioApprovalRecord,
 )
 from research_assistant_api.agent_studio.policy_gates import (
     GateEvidence,
+    _approval_gate,
     _auth_gate,
     _build_gate,
     _contains_secret,
@@ -30,6 +37,7 @@ from research_assistant_api.agent_studio.policy_gates import (
     _test_gate,
     run_gates,
 )
+from research_assistant_api.agent_studio.schema_ref_resolver import InlineSchemaRefResolver
 
 
 def _manifest(**overrides: object) -> AgentManifest:
@@ -88,6 +96,7 @@ def test_run_gates_all_pass_for_custom_hosted_with_evidence() -> None:
         version_id="version-1",
         report_id="report-1",
         manifest=_manifest(),
+        manifest_hash="sha256:" + "a" * 64,
         capability_catalog=default_registry().as_mapping(),
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
@@ -103,6 +112,7 @@ def test_run_gates_marks_build_not_applicable_for_managed_foundry() -> None:
         version_id="version-1",
         report_id="report-1",
         manifest=_manifest(),
+        manifest_hash="sha256:" + "a" * 64,
         capability_catalog=default_registry().as_mapping(),
         evidence=GateEvidence(tests_passed=True, smoke_passed=True),
         runtime_target=RuntimeTarget.MANAGED_FOUNDRY,
@@ -116,10 +126,144 @@ def test_run_gates_marks_build_not_applicable_for_managed_foundry() -> None:
 def test_schema_gate_revalidates_corrupted_manifest() -> None:
     corrupted = _manifest().model_copy(update={"logical_agent_id": "not valid"})
 
-    result = _schema_gate(corrupted)
+    result = _schema_gate(corrupted, InlineSchemaRefResolver())
 
     assert result.status is GateStatus.FAILED
     assert "logical_agent_id" in result.detail
+
+
+def test_schema_gate_fails_when_schema_ref_resolution_fails() -> None:
+    manifest = _manifest(
+        input_schema_ref=SchemaRef(ref="schema://input", digest="sha256:" + "a" * 64),
+    )
+
+    result = _schema_gate(manifest, InlineSchemaRefResolver())
+
+    assert result.status is GateStatus.FAILED
+    assert "input_schema_ref" in result.detail
+
+
+def _approval_record(
+    *,
+    state: ApprovalState = ApprovalState.APPROVED,
+    destination: str = "foundry.azure_functions.invoke",
+    content_hash: str | None = "sha256:manifest-a",
+    expires_at: datetime | None = None,
+) -> StudioApprovalRecord:
+    return StudioApprovalRecord(
+        id="approval-1",
+        version_id="version-1",
+        tenant_id="tenant-1",
+        kind=ApprovalKind.CAPABILITY_OPERATION,
+        state=state,
+        gated_action="attach",
+        destination=destination,
+        requested_by="user-1",
+        evidence_summary="Reviewed.",
+        risk="medium",
+        idempotency_key="idem-1",
+        content_hash=content_hash,
+        expires_at=expires_at,
+    )
+
+
+def test_approval_gate_passes_when_no_binding_requires_approval() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.web_search", "search"),)),
+        default_registry().as_mapping(),
+        "sha256:manifest-a",
+        (),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.PASSED
+
+
+def test_approval_gate_skips_missing_descriptor_and_missing_operation() -> None:
+    catalog = {
+        "custom.safe": _descriptor("custom.safe", CapabilityOperation(name="search", maturity=OperationMaturity.GA)),
+    }
+    result = _approval_gate(
+        _manifest(
+            capabilities=(
+                _binding("missing.capability", "search"),
+                _binding("custom.safe", "missing_operation"),
+            )
+        ),
+        catalog,
+        "sha256:manifest-a",
+        (),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.PASSED
+
+
+def test_approval_gate_fails_when_no_approved_record_exists() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        default_registry().as_mapping(),
+        "sha256:manifest-a",
+        (),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.FAILED
+    assert "no approved record was found" in result.detail
+
+
+def test_approval_gate_fails_when_approval_bound_to_different_manifest_hash() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        default_registry().as_mapping(),
+        "sha256:manifest-a",
+        (_approval_record(content_hash="sha256:manifest-b"),),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.FAILED
+    assert "different manifest content hash" in result.detail
+
+
+def test_approval_gate_fails_when_approval_expired() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        default_registry().as_mapping(),
+        "sha256:manifest-a",
+        (_approval_record(expires_at=datetime(2029, 1, 1, tzinfo=UTC)),),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.FAILED
+    assert "expired" in result.detail
+
+
+def test_approval_gate_passes_with_matching_unexpired_approved_record() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        default_registry().as_mapping(),
+        "sha256:manifest-a",
+        (_approval_record(expires_at=datetime(2031, 1, 1, tzinfo=UTC)),),
+        datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert result.status is GateStatus.PASSED
+
+
+def test_run_gates_fails_report_when_required_capability_approval_is_missing() -> None:
+    report = run_gates(
+        version_id="version-1",
+        report_id="report-1",
+        manifest=_manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        manifest_hash="sha256:manifest-a",
+        capability_catalog=default_registry().as_mapping(),
+        evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        runtime_target=RuntimeTarget.CUSTOM_HOSTED,
+        now=datetime(2030, 1, 1, tzinfo=UTC),
+    )
+
+    assert not report.passed
+    assert _gate(report, GateName.APPROVAL).status is GateStatus.FAILED
 
 
 def test_build_test_and_smoke_gate_helpers_cover_skip_fail_and_pass_paths() -> None:

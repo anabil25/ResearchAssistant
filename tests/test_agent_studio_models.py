@@ -166,10 +166,10 @@ def test_agent_manifest_validates_full_current_shape_and_defaults() -> None:
             ),
         ),
         memory_policy=MemoryPolicy(
-            enabled=True,
             scopes=(
                 MemoryScopeBinding(
                     kind=MemoryScopeKind.PROJECT,
+                    enabled=True,
                     mechanism=MemoryMechanism.APPLICATION_MEMORY_STORE,
                     retention_days=30,
                 ),
@@ -205,7 +205,7 @@ def test_agent_manifest_validates_full_current_shape_and_defaults() -> None:
     assert manifest.capabilities[0].instance_id == "instance-1"
     assert manifest.capabilities[0].connection_ref == "conn-search"
     assert manifest.knowledge_bindings[0].capability_binding_index == 0
-    assert manifest.memory_policy.enabled is True
+    assert manifest.memory_policy.is_enabled(MemoryScopeKind.PROJECT) is True
     assert manifest.specialist_policy.delegation_scope is DelegationScope.SPECIALIST_POOL
     assert manifest.citation_policy.require_citations is True
     assert manifest.artifact_contract.output_kind == "json"
@@ -322,7 +322,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         capability_versions=version.capability_versions,
         input_schema_ref=_schema_ref("input"),
         output_schema_ref=_schema_ref("output"),
-        package_version=version.package_version,
+        artifact_metadata=version.artifact_metadata,
         protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
     )
     evaluation = EvaluationRecord(
@@ -368,7 +368,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     assert lineage.relationship == "fork"
     assert version.protocol_version == AGENT_STUDIO_PROTOCOL_VERSION
     assert release.environment is DeploymentEnvironment.DEVELOPMENT
-    assert resolved.package_version == version.package_version
+    assert resolved.artifact_metadata == version.artifact_metadata
     assert evaluation.advisory is True
     assert approval.state.value == "pending"
     assert deployment.health.status is HealthStatus.UNKNOWN

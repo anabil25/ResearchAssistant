@@ -344,3 +344,48 @@ def test_attach_rejects_missing_instance_wrong_descriptor_and_unavailable_instan
             attached_by="user-1",
             instance_id=unavailable.id,
         )
+
+
+def test_validate_attachment_rejects_requires_approval_operation_without_policy_ref() -> None:
+    """An operation flagged ``requires_approval`` with no ``approval_policy_ref``
+    declared in the catalog is an unsatisfiable authoring inconsistency."""
+    registry = CapabilityRegistry(
+        descriptors=(
+            CapabilityDescriptor(
+                id="custom.unsatisfiable",
+                provider="custom_hosted",
+                title="Unsatisfiable approval",
+                description="An operation that requires approval but has no policy ref.",
+                operations=(
+                    CapabilityOperation(
+                        name="run",
+                        maturity=OperationMaturity.GA,
+                        operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                        requires_approval=True,
+                    ),
+                ),
+            ),
+        ),
+    )
+
+    with pytest.raises(
+        CapabilityAttachmentError,
+        match="approval_policy_ref, so the approval requirement is unsatisfiable",
+    ):
+        registry.validate_attachment(descriptor_id="custom.unsatisfiable", operation="run")
+
+
+def test_attach_rejects_requires_approval_operation_with_no_policy_ref_supplied() -> None:
+    """Even when the catalog declares an ``approval_policy_ref``, the caller
+    attaching the operation must still supply a ``policy_ref`` identifying how
+    approval will be sought for this specific attachment."""
+    with pytest.raises(
+        CapabilityAttachmentError,
+        match="so a policy_ref identifying the governing approval policy must be supplied",
+    ):
+        default_registry().attach(
+            descriptor_id="foundry.azure_functions",
+            operation="invoke",
+            attached_by="user-1",
+            connection_ref="conn-azure-functions",
+        )

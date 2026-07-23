@@ -6,9 +6,17 @@ from __future__ import annotations
 
 from uuid import uuid4
 
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
+from research_assistant_api.agent_studio.model_discovery import (
+    ModelDiscovery,
+    ModelDiscoveryError,
+    UnavailableModelDiscovery,
+)
 from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
+    ApprovalKind,
+    ApprovalState,
     DeploymentEnvironment,
     DeploymentHealth,
     DeploymentRecord,
@@ -17,6 +25,7 @@ from research_assistant_api.agent_studio.models import (
     ReleaseStatus,
     ResolvedAgentContract,
     role_at_least,
+    utc_now,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
@@ -30,8 +39,85 @@ class DeploymentServiceError(RuntimeError):
 
 
 class DeploymentService:
-    def __init__(self, store: AgentStudioStore) -> None:
+    def __init__(
+        self,
+        store: AgentStudioStore,
+        *,
+        capability_registry: CapabilityRegistry | None = None,
+        model_discovery: ModelDiscovery | None = None,
+    ) -> None:
         self._store = store
+        # Both are optional purely for lightweight unit tests that exercise
+        # deployment mechanics unrelated to model/approval revalidation.
+        # Production wiring (``app.py``) always supplies both; when a
+        # version actually declares a ``model_deployment`` or an approval-
+        # gated capability binding, omitting these still fails closed at the
+        # point the check would run (see ``_revalidate_model_deployment``/
+        # ``_revalidate_capability_approvals`` below) rather than silently
+        # skipping.
+        self._registry = capability_registry
+        self._model_discovery = model_discovery
+
+    def _revalidate_model_deployment(self, version: AgentVersion) -> None:
+        declared = version.model_deployment
+        if declared is None:
+            return
+        discovery: ModelDiscovery = (
+            self._model_discovery if self._model_discovery is not None else UnavailableModelDiscovery()
+        )
+        try:
+            live = discovery.list_deployed_models()
+        except ModelDiscoveryError as exc:
+            raise DeploymentServiceError(
+                f"Cannot revalidate model deployment '{declared.deployment_name}' at deploy time: {exc}"
+            ) from exc
+        match = next(
+            (
+                ref
+                for ref in live
+                if ref.deployment_name == declared.deployment_name and ref.model_name == declared.model_name
+            ),
+            None,
+        )
+        if match is None:
+            raise DeploymentServiceError(
+                f"Model deployment '{declared.deployment_name}' (model '{declared.model_name}') is missing, "
+                "stale, or unavailable; deployment smoke-check cannot proceed."
+            )
+
+    def _revalidate_capability_approvals(self, tenant_id: str, version: AgentVersion) -> None:
+        if self._registry is None:
+            return
+        catalog = self._registry.as_mapping()
+        approvals = self._store.list_approvals(tenant_id, version.id)
+        for binding in version.manifest.capabilities:
+            descriptor = catalog.get(binding.descriptor_id)
+            if descriptor is None:
+                continue
+            operation = descriptor.operation(binding.operation)
+            if operation is None or not operation.requires_approval:
+                continue
+            destination = f"{binding.descriptor_id}.{binding.operation}"
+            approved = next(
+                (
+                    record
+                    for record in approvals
+                    if record.kind == ApprovalKind.CAPABILITY_OPERATION
+                    and record.destination == destination
+                    and record.state == ApprovalState.APPROVED
+                ),
+                None,
+            )
+            if approved is None:
+                raise DeploymentServiceError(
+                    f"Capability binding '{destination}' requires approval but no approved record was found."
+                )
+            if approved.content_hash != version.manifest_hash:
+                raise DeploymentServiceError(
+                    f"Capability binding '{destination}' approval is bound to a different manifest content hash."
+                )
+            if approved.expires_at is not None and approved.expires_at <= utc_now():
+                raise DeploymentServiceError(f"Capability binding '{destination}' approval has expired.")
 
     def deploy(
         self,
@@ -49,6 +135,10 @@ class DeploymentService:
         gates failed) cannot be deployed even to the development
         environment; smoke-test failure at deployment time still blocks
         activation independently (see ``record_health``/router smoke gate).
+        The declared model deployment (if any) and any approval-gated
+        capability bindings are revalidated again here, independent of the
+        gate run at cut time, since either can have gone stale/expired
+        between cut and deploy.
         """
         if not role_at_least(actor_role, AgentRole.CONTRIBUTOR):
             raise DeploymentServiceError(f"Role '{actor_role.value}' cannot create deployments.")
@@ -62,6 +152,8 @@ class DeploymentService:
                 f"Version '{version_id}' has release status '{current_status}'; it must pass all hard gates "
                 "before it can be deployed."
             )
+        self._revalidate_model_deployment(version)
+        self._revalidate_capability_approvals(tenant_id, version)
         runtime_target = version.runtime_target
         if runtime_target is None:
             raise DeploymentServiceError(f"Version '{version_id}' has no runtime_target resolved.")
@@ -241,7 +333,7 @@ class DeploymentService:
             capability_versions=dict(version.capability_versions),
             input_schema_ref=version.manifest.input_schema_ref,
             output_schema_ref=version.manifest.output_schema_ref,
-            package_version=version.package_version,
+            artifact_metadata=version.artifact_metadata,
             protocol_version=version.protocol_version,
         )
 

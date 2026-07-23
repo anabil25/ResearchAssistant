@@ -20,6 +20,11 @@ from research_assistant_api.agent_studio.approvals import (
     requires_approval,
 )
 from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
+from research_assistant_api.agent_studio.model_discovery import (
+    ModelDiscovery,
+    ModelDiscoveryError,
+    UnavailableModelDiscovery,
+)
 from research_assistant_api.agent_studio.models import (
     AGENT_STUDIO_PROTOCOL_VERSION,
     AgentDraft,
@@ -43,6 +48,10 @@ from research_assistant_api.agent_studio.models import (
     utc_now,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence, run_gates
+from research_assistant_api.agent_studio.release_artifact_metadata import (
+    InstalledPackageArtifactSource,
+    ReleaseArtifactSource,
+)
 from research_assistant_api.agent_studio.runtime_selection import select_runtime
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
@@ -62,9 +71,27 @@ def manifest_hash(manifest: AgentManifest) -> str:
 
 
 class ReleaseService:
-    def __init__(self, store: AgentStudioStore, capability_registry: CapabilityRegistry) -> None:
+    def __init__(
+        self,
+        store: AgentStudioStore,
+        capability_registry: CapabilityRegistry,
+        *,
+        model_discovery: ModelDiscovery | None = None,
+        artifact_source: ReleaseArtifactSource | None = None,
+    ) -> None:
         self._store = store
         self._registry = capability_registry
+        # Fail-closed default: if no live discovery is wired, any manifest
+        # that declares a ``model_deployment`` will hard-fail cut/deploy
+        # revalidation rather than silently skipping the check. Tests must
+        # explicitly supply a fake/in-memory discovery to exercise the
+        # success path.
+        self._model_discovery: ModelDiscovery = (
+            model_discovery if model_discovery is not None else UnavailableModelDiscovery()
+        )
+        self._artifact_source: ReleaseArtifactSource = (
+            artifact_source if artifact_source is not None else InstalledPackageArtifactSource()
+        )
 
     # -- Agent creation and drafts ----------------------------------------
 
@@ -195,6 +222,40 @@ class ReleaseService:
 
     # -- Cutting immutable versions ----------------------------------------
 
+    def _revalidate_model_deployment(self, manifest: AgentManifest) -> None:
+        """Hard-fail if a declared ``model_deployment`` isn't live in the
+        project's discovered deployments right now.
+
+        A manifest with no ``model_deployment`` (e.g. a pure Custom Hosted
+        agent with no model policy) has nothing to revalidate. Otherwise the
+        declared deployment must still exist, live, in
+        ``model_discovery.list_deployed_models()`` with a matching resource
+        id/name and model name — missing, stale, or unavailable discovery
+        all hard-fail identically rather than trusting the declared ref.
+        """
+        declared = manifest.model_deployment
+        if declared is None:
+            return
+        try:
+            live = self._model_discovery.list_deployed_models()
+        except ModelDiscoveryError as exc:
+            raise ReleaseServiceError(
+                f"Cannot revalidate model deployment '{declared.deployment_name}': {exc}"
+            ) from exc
+        match = next(
+            (
+                ref
+                for ref in live
+                if ref.deployment_name == declared.deployment_name and ref.model_name == declared.model_name
+            ),
+            None,
+        )
+        if match is None:
+            raise ReleaseServiceError(
+                f"Model deployment '{declared.deployment_name}' (model '{declared.model_name}') "
+                "was not found among the project's live deployed models; it is missing, stale, or unavailable."
+            )
+
     def cut_version(
         self,
         *,
@@ -207,6 +268,7 @@ class ReleaseService:
         draft = self._store.get_draft(tenant_id, logical_agent_id)
         if draft is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to cut.")
+        self._revalidate_model_deployment(draft.manifest)
         previous_versions = self._store.list_versions(tenant_id, logical_agent_id)
         parent_version_id = previous_versions[-1].id if previous_versions else None
 
@@ -235,7 +297,7 @@ class ReleaseService:
                 runtime_selection_reasons=selection.reasons,
                 model_deployment=draft.manifest.model_deployment,
                 capability_versions=capability_versions,
-                package_version=f"{sequence}.0.0",
+                artifact_metadata=self._artifact_source.current_metadata(),
                 protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
             )
 
@@ -271,9 +333,11 @@ class ReleaseService:
             version_id=version_id,
             report_id=str(uuid4()),
             manifest=version.manifest,
+            manifest_hash=version.manifest_hash,
             capability_catalog=self._registry.as_mapping(),
             evidence=evidence,
             runtime_target=version.runtime_target,
+            capability_approvals=self._store.list_approvals(tenant_id, version_id),
         )
         self._store.save_gate_report(report)
         if report.passed:
@@ -365,6 +429,84 @@ class ReleaseService:
         if decided.state == ApprovalState.APPROVED:
             self._promote(tenant_id, decided.version_id)
         return decided
+
+    # -- Capability-operation approvals -----------------------------------
+
+    def request_capability_approval(
+        self,
+        *,
+        tenant_id: str,
+        version_id: str,
+        descriptor_id: str,
+        operation: str,
+        actor_id: str,
+        actor_role: AgentRole,
+        evidence_summary: str,
+        risk: str = "medium",
+        permissions_policy_ref: str | None = None,
+        destination_policy_ref: str | None = None,
+    ) -> StudioApprovalRecord:
+        """Request approval for one attached capability operation binding.
+
+        This is the way the APPROVAL hard gate (and deploy-time recheck) is
+        satisfied for an operation whose ``CapabilityOperation.requires_approval``
+        is True: the record is bound to this exact version's content hash and
+        to the ``descriptor_id.operation`` destination, so it can never be
+        reused to approve a different manifest or a different operation.
+        """
+        version = self._store.get_version(tenant_id, version_id)
+        if version is None:
+            raise ReleaseServiceError(f"Version '{version_id}' not found.")
+        destination = f"{descriptor_id}.{operation}"
+        binding = next(
+            (
+                b
+                for b in version.manifest.capabilities
+                if b.descriptor_id == descriptor_id and b.operation == operation
+            ),
+            None,
+        )
+        if binding is None:
+            raise ReleaseServiceError(f"Version '{version_id}' has no capability binding for '{destination}'.")
+        record = build_approval_request(
+            approval_id=str(uuid4()),
+            tenant_id=tenant_id,
+            version_id=version_id,
+            kind=ApprovalKind.CAPABILITY_OPERATION,
+            gated_action="attach_capability_operation",
+            destination=destination,
+            requested_by=actor_id,
+            evidence_summary=evidence_summary,
+            risk=risk,
+            content_hash=version.manifest_hash,
+            permissions_policy_ref=permissions_policy_ref,
+            destination_policy_ref=destination_policy_ref,
+        )
+        return self._store.create_approval(record)
+
+    def decide_capability_approval(
+        self,
+        *,
+        tenant_id: str,
+        approval_id: str,
+        approver_id: str,
+        approver_role: AgentRole,
+        approve: bool,
+        rationale: str | None = None,
+    ) -> StudioApprovalRecord:
+        record = self._store.get_approval(tenant_id, approval_id)
+        if record is None:
+            raise ReleaseServiceError(f"Approval '{approval_id}' not found.")
+        if record.kind is not ApprovalKind.CAPABILITY_OPERATION:
+            raise ReleaseServiceError(f"Approval '{approval_id}' is not a capability-operation approval.")
+        decided = decide_approval(
+            record,
+            approver_id=approver_id,
+            approver_role=approver_role,
+            approve=approve,
+            rationale=rationale,
+        )
+        return self._store.save_approval_decision(decided)
 
     def _promote(self, tenant_id: str, version_id: str) -> AgentVersion:
         version = self._store.get_version(tenant_id, version_id)

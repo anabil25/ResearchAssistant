@@ -144,7 +144,8 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     """
     registry = default_registry()
     application.state.agent_studio_registry = registry
-    application.state.agent_studio_model_discovery = build_model_discovery(settings)
+    model_discovery = build_model_discovery(settings)
+    application.state.agent_studio_model_discovery = model_discovery
     try:
         store = build_agent_studio_store(settings)
     except AgentStudioStoreError as exc:
@@ -155,8 +156,12 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_builder_service = None
     else:
         application.state.agent_studio_store = store
-        application.state.agent_studio_release_service = ReleaseService(store, registry)
-        application.state.agent_studio_deployment_service = DeploymentService(store)
+        application.state.agent_studio_release_service = ReleaseService(
+            store, registry, model_discovery=model_discovery
+        )
+        application.state.agent_studio_deployment_service = DeploymentService(
+            store, capability_registry=registry, model_discovery=model_discovery
+        )
         application.state.agent_studio_builder_service = BuilderService(
             store,
             build_manifest_proposal_generator(settings),

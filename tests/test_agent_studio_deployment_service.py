@@ -1,22 +1,29 @@
 # mypy: disable-error-code=import-untyped
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
-from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, default_registry
 from research_assistant_api.agent_studio.deployment_service import DeploymentService, DeploymentServiceError
+from research_assistant_api.agent_studio.model_discovery import InMemoryModelDiscovery, UnavailableModelDiscovery
 from research_assistant_api.agent_studio.models import (
     AgentOwnerKind,
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalKind,
+    ApprovalState,
     CapabilityBinding,
     DeploymentEnvironment,
     HealthStatus,
     LogicalAgentBinding,
+    ModelDeploymentRef,
     ReleaseStatus,
     RuntimeRequirements,
     RuntimeTarget,
     SchemaRef,
+    StudioApprovalRecord,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_service import ReleaseService
@@ -616,7 +623,7 @@ def test_resolve_returns_full_contract_for_bound_version(
     assert resolved.capability_versions == {"foundry.web_search": "1"}
     assert resolved.input_schema_ref == input_schema
     assert resolved.output_schema_ref == output_schema
-    assert resolved.package_version == version.package_version
+    assert resolved.artifact_metadata == version.artifact_metadata
     assert resolved.protocol_version == version.protocol_version
 
 
@@ -815,3 +822,338 @@ def test_runtime_target_migration_requires_cutting_a_new_version(
     assert first_version.runtime_target is RuntimeTarget.MANAGED_FOUNDRY
     assert store.get_version("demo", first_version.id) == first_version
     assert second_version.runtime_target is RuntimeTarget.CUSTOM_HOSTED
+
+
+# -- Deploy-time revalidation: capability-operation approvals ---------------
+#
+# ``DeploymentService`` independently re-checks approval-gated capability
+# bindings at deploy time (not just at cut/gate time), since an approval can
+# be revoked/expired or the manifest content can otherwise diverge between
+# cut and deploy. These tests bypass ``run_release_gates`` (via
+# ``_append_release`` directly) so each scenario can freely control whether
+# a matching approval exists in the store, independent of the cut-time gate.
+
+
+def _capability_gated_version(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+    *,
+    logical_agent_id: str,
+    owner: str = "user-1",
+) -> AgentVersion:
+    _create_agent(release_service, logical_agent_id=logical_agent_id, owner=owner)
+    binding = release_service._registry.attach(
+        descriptor_id="foundry.azure_functions",
+        operation="invoke",
+        attached_by=owner,
+        connection_ref="conn-azure-functions",
+        policy_ref="policy.capability-approval.write-irreversible.v1",
+    )
+    draft = release_service._store.get_draft("demo", logical_agent_id)
+    assert draft is not None
+    release_service.update_draft(
+        tenant_id="demo",
+        logical_agent_id=logical_agent_id,
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by=owner,
+        actor_role=AgentRole.OWNER,
+    )
+    version = release_service.cut_version(
+        tenant_id="demo",
+        logical_agent_id=logical_agent_id,
+        actor_id=owner,
+        actor_role=AgentRole.OWNER,
+    )
+    _append_release(store, version, ReleaseStatus.GATED, created_by=owner)
+    return version
+
+
+def test_deploy_raises_when_capability_approval_is_missing(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-missing")
+    deployment_service = DeploymentService(store, capability_registry=default_registry())
+
+    with pytest.raises(DeploymentServiceError, match="requires approval but no approved record was found"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            logical_agent_id="agent-deploy-approval-missing",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_raises_when_capability_approval_content_hash_mismatches(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-stale-hash")
+    store.create_approval(
+        StudioApprovalRecord(
+            id="approval-stale-hash",
+            version_id=version.id,
+            tenant_id="demo",
+            kind=ApprovalKind.CAPABILITY_OPERATION,
+            state=ApprovalState.APPROVED,
+            gated_action="attach_capability_operation",
+            destination="foundry.azure_functions.invoke",
+            requested_by="user-2",
+            evidence_summary="Reviewed.",
+            risk="medium",
+            idempotency_key="idem-stale-hash",
+            content_hash="sha256:not-this-version",
+        )
+    )
+    deployment_service = DeploymentService(store, capability_registry=default_registry())
+
+    with pytest.raises(DeploymentServiceError, match="bound to a different manifest content hash"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            logical_agent_id="agent-deploy-approval-stale-hash",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_raises_when_capability_approval_has_expired(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-expired")
+    store.create_approval(
+        StudioApprovalRecord(
+            id="approval-expired",
+            version_id=version.id,
+            tenant_id="demo",
+            kind=ApprovalKind.CAPABILITY_OPERATION,
+            state=ApprovalState.APPROVED,
+            gated_action="attach_capability_operation",
+            destination="foundry.azure_functions.invoke",
+            requested_by="user-2",
+            evidence_summary="Reviewed.",
+            risk="medium",
+            idempotency_key="idem-expired",
+            content_hash=version.manifest_hash,
+            expires_at=datetime(2000, 1, 1, tzinfo=UTC),
+        )
+    )
+    deployment_service = DeploymentService(store, capability_registry=default_registry())
+
+    with pytest.raises(DeploymentServiceError, match="approval has expired"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            logical_agent_id="agent-deploy-approval-expired",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_succeeds_when_capability_approval_is_valid(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-valid")
+    store.create_approval(
+        StudioApprovalRecord(
+            id="approval-valid",
+            version_id=version.id,
+            tenant_id="demo",
+            kind=ApprovalKind.CAPABILITY_OPERATION,
+            state=ApprovalState.APPROVED,
+            gated_action="attach_capability_operation",
+            destination="foundry.azure_functions.invoke",
+            requested_by="user-2",
+            evidence_summary="Reviewed.",
+            risk="medium",
+            idempotency_key="idem-valid",
+            content_hash=version.manifest_hash,
+        )
+    )
+    deployment_service = DeploymentService(store, capability_registry=default_registry())
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-approval-valid",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert record.version_id == version.id
+
+
+def test_deploy_skips_capability_bindings_whose_descriptor_is_unknown_to_the_registry(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    """The registry passed to ``DeploymentService`` may not (yet) know about
+    a descriptor referenced by an already-cut version's binding (e.g. a
+    descriptor retired from the catalog after the version was cut); this
+    must be skipped rather than treated as an approval failure."""
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-unknown-descriptor")
+    deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-unknown-descriptor",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert record.version_id == version.id
+
+
+def test_deploy_skips_capability_bindings_whose_operation_does_not_require_approval(
+    release_service: ReleaseService,
+    store: AgentStudioStore,
+) -> None:
+    _create_agent(release_service, logical_agent_id="agent-deploy-no-approval-needed")
+    binding = release_service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+    )
+    draft = store.get_draft("demo", "agent-deploy-no-approval-needed")
+    assert draft is not None
+    release_service.update_draft(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-no-approval-needed",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    version = release_service.cut_version(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-no-approval-needed",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    _append_release(store, version, ReleaseStatus.GATED, created_by="user-1")
+    deployment_service = DeploymentService(store, capability_registry=default_registry())
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-no-approval-needed",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert record.version_id == version.id
+
+
+# -- Deploy-time revalidation: model deployment ------------------------------
+#
+# Like the capability-approval recheck above, ``DeploymentService`` also
+# revalidates a declared ``model_deployment`` against *live* discovery again
+# at deploy time, independent of whatever discovery was wired into the
+# ``ReleaseService`` that cut the version — a deployment name can go stale
+# between cut and deploy.
+
+
+def _model_deployment_gated_version(
+    store: AgentStudioStore,
+    *,
+    logical_agent_id: str,
+    discovery_models: tuple[ModelDeploymentRef, ...],
+    owner: str = "user-1",
+) -> AgentVersion:
+    release_service = ReleaseService(
+        store,
+        default_registry(),
+        model_discovery=InMemoryModelDiscovery(discovery_models),
+    )
+    _create_agent(release_service, logical_agent_id=logical_agent_id, owner=owner)
+    draft = store.get_draft("demo", logical_agent_id)
+    assert draft is not None
+    release_service.update_draft(
+        tenant_id="demo",
+        logical_agent_id=logical_agent_id,
+        manifest=draft.manifest.model_copy(
+            update={
+                "model_deployment": ModelDeploymentRef(
+                    deployment_name="gpt-4o-mini",
+                    model_name="gpt-4o-mini",
+                    model_format="openai",
+                )
+            }
+        ),
+        updated_by=owner,
+        actor_role=AgentRole.OWNER,
+    )
+    version = release_service.cut_version(
+        tenant_id="demo",
+        logical_agent_id=logical_agent_id,
+        actor_id=owner,
+        actor_role=AgentRole.OWNER,
+    )
+    _append_release(store, version, ReleaseStatus.GATED, created_by=owner)
+    return version
+
+
+def test_deploy_hard_fails_when_model_discovery_unavailable_at_deploy_time(store: AgentStudioStore) -> None:
+    version = _model_deployment_gated_version(
+        store,
+        logical_agent_id="agent-deploy-model-unavailable",
+        discovery_models=(
+            ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),
+        ),
+    )
+    deployment_service = DeploymentService(store, model_discovery=UnavailableModelDiscovery())
+
+    with pytest.raises(DeploymentServiceError, match="Cannot revalidate model deployment"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            logical_agent_id="agent-deploy-model-unavailable",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_hard_fails_when_declared_deployment_not_live_at_deploy_time(store: AgentStudioStore) -> None:
+    version = _model_deployment_gated_version(
+        store,
+        logical_agent_id="agent-deploy-model-stale",
+        discovery_models=(
+            ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),
+        ),
+    )
+    deployment_service = DeploymentService(store, model_discovery=InMemoryModelDiscovery(()))
+
+    with pytest.raises(
+        DeploymentServiceError,
+        match="is missing, stale, or unavailable; deployment smoke-check cannot proceed",
+    ):
+        deployment_service.deploy(
+            tenant_id="demo",
+            logical_agent_id="agent-deploy-model-stale",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_succeeds_when_declared_deployment_still_live_at_deploy_time(store: AgentStudioStore) -> None:
+    matching = (ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),)
+    version = _model_deployment_gated_version(
+        store,
+        logical_agent_id="agent-deploy-model-live",
+        discovery_models=matching,
+    )
+    deployment_service = DeploymentService(store, model_discovery=InMemoryModelDiscovery(matching))
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        logical_agent_id="agent-deploy-model-live",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert record.version_id == version.id

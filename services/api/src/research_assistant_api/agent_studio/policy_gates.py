@@ -13,12 +13,15 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping
+from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentVisibility,
+    ApprovalKind,
+    ApprovalState,
     CapabilityDescriptor,
     GateName,
     GateResult,
@@ -26,6 +29,13 @@ from research_assistant_api.agent_studio.models import (
     OperationMaturity,
     ReleaseGateReport,
     RuntimeTarget,
+    StudioApprovalRecord,
+    utc_now,
+)
+from research_assistant_api.agent_studio.schema_ref_resolver import (
+    InlineSchemaRefResolver,
+    SchemaRefResolver,
+    SchemaResolutionError,
 )
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -56,12 +66,26 @@ class GateEvidence(BaseModel):
     smoke_detail: str = ""
 
 
-def _schema_gate(manifest: AgentManifest) -> GateResult:
+def _schema_gate(manifest: AgentManifest, schema_resolver: SchemaRefResolver) -> GateResult:
     try:
         AgentManifest.model_validate(manifest.model_dump(mode="json"))
     except ValidationError as exc:
         return GateResult(name=GateName.SCHEMA, status=GateStatus.FAILED, detail=str(exc))
-    return GateResult(name=GateName.SCHEMA, status=GateStatus.PASSED, detail="Manifest re-validated against schema.")
+    for label, ref in (
+        ("input_schema_ref", manifest.input_schema_ref),
+        ("output_schema_ref", manifest.output_schema_ref),
+    ):
+        if ref is None:
+            continue
+        try:
+            schema_resolver.resolve_and_verify(ref)
+        except SchemaResolutionError as exc:
+            return GateResult(name=GateName.SCHEMA, status=GateStatus.FAILED, detail=f"{label}: {exc}")
+    return GateResult(
+        name=GateName.SCHEMA,
+        status=GateStatus.PASSED,
+        detail="Manifest re-validated against schema; input/output schema refs resolved and digest-verified.",
+    )
 
 
 def _build_gate(evidence: GateEvidence, runtime_target: RuntimeTarget | None) -> GateResult:
@@ -153,6 +177,56 @@ def _policy_gate(
     return GateResult(name=GateName.POLICY, status=GateStatus.PASSED, detail="No policy violations found.")
 
 
+def _approval_gate(
+    manifest: AgentManifest,
+    capability_catalog: Mapping[str, CapabilityDescriptor],
+    manifest_hash: str,
+    capability_approvals: tuple[StudioApprovalRecord, ...],
+    now: datetime,
+) -> GateResult:
+    """Hard-block cut/release when a capability operation that
+    ``requires_approval`` has no matching, approved, unexpired record.
+
+    ``requires_approval`` is not informational: this gate resolves each
+    binding's operation and requires a ``StudioApprovalRecord`` of kind
+    ``CAPABILITY_OPERATION`` targeting this exact binding (by
+    ``descriptor_id.operation`` destination), in ``APPROVED`` state, bound to
+    this exact manifest content hash, and not expired. Missing, mismatched,
+    or expired approvals all fail this gate identically — none are silently
+    treated as satisfied.
+    """
+    violations: list[str] = []
+    for binding in manifest.capabilities:
+        descriptor = capability_catalog.get(binding.descriptor_id)
+        if descriptor is None:
+            continue  # already reported by the AUTH/POLICY gates
+        operation = descriptor.operation(binding.operation)
+        if operation is None or not operation.requires_approval:
+            continue
+        destination = f"{binding.descriptor_id}.{binding.operation}"
+        matching = [
+            record
+            for record in capability_approvals
+            if record.kind == ApprovalKind.CAPABILITY_OPERATION and record.destination == destination
+        ]
+        approved = next((record for record in matching if record.state == ApprovalState.APPROVED), None)
+        if approved is None:
+            violations.append(
+                f"capability binding '{destination}' requires approval but no approved record was found"
+            )
+        elif approved.content_hash != manifest_hash:
+            violations.append(
+                f"capability binding '{destination}' approval is bound to a different manifest content hash"
+            )
+        elif approved.expires_at is not None and approved.expires_at <= now:
+            violations.append(f"capability binding '{destination}' approval has expired")
+    if violations:
+        return GateResult(name=GateName.APPROVAL, status=GateStatus.FAILED, detail="; ".join(violations))
+    return GateResult(
+        name=GateName.APPROVAL, status=GateStatus.PASSED, detail="All required capability approvals are satisfied."
+    )
+
+
 def _contains_secret(value: object) -> bool:
     if isinstance(value, str):
         return any(pattern.search(value) for pattern in _SECRET_PATTERNS)
@@ -191,24 +265,35 @@ def run_gates(
     version_id: str,
     report_id: str,
     manifest: AgentManifest,
+    manifest_hash: str,
     capability_catalog: Mapping[str, CapabilityDescriptor],
     evidence: GateEvidence,
     runtime_target: RuntimeTarget | None = None,
+    capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+    schema_resolver: SchemaRefResolver | None = None,
+    now: datetime | None = None,
 ) -> ReleaseGateReport:
-    """Run all seven hard gates deterministically and assemble a report.
+    """Run all eight hard gates deterministically and assemble a report.
 
     ``runtime_target`` makes the BUILD gate runtime-aware: a Managed Foundry
     agent has no separate build step, so BUILD is deterministically
     ``NOT_APPLICABLE`` rather than requiring synthetic build evidence. All
     other gates (including SMOKE, which still hard-blocks activation on
     deployment smoke failure) apply uniformly regardless of runtime.
+    ``manifest_hash`` and ``capability_approvals`` feed the APPROVAL gate
+    (missing/expired/mismatched capability-operation approvals hard-block);
+    ``schema_resolver`` feeds the SCHEMA gate's independent digest
+    verification of ``input_schema_ref``/``output_schema_ref``.
     """
+    resolver = schema_resolver if schema_resolver is not None else InlineSchemaRefResolver()
+    effective_now = now if now is not None else utc_now()
     results = (
-        _schema_gate(manifest),
+        _schema_gate(manifest, resolver),
         _build_gate(evidence, runtime_target),
         _test_gate(evidence),
         _auth_gate(manifest, capability_catalog),
         _policy_gate(manifest, capability_catalog),
+        _approval_gate(manifest, capability_catalog, manifest_hash, capability_approvals, effective_now),
         _security_gate(manifest, capability_catalog),
         _smoke_gate(evidence),
     )

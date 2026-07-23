@@ -80,6 +80,17 @@ class EscalationRequest(BaseModel):
     risk: str = Field(default="high")
 
 
+class CapabilityApprovalRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    descriptor_id: str = Field(min_length=1, max_length=200)
+    operation: str = Field(min_length=1, max_length=200)
+    evidence_summary: str = Field(min_length=1, max_length=4000)
+    risk: str = Field(default="medium")
+    permissions_policy_ref: str | None = None
+    destination_policy_ref: str | None = None
+
+
 class DeployRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

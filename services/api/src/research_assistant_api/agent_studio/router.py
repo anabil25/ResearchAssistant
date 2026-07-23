@@ -72,6 +72,7 @@ from research_assistant_api.agent_studio.schemas import (
     BuilderApplyRequest,
     BuilderMessageRequest,
     BuilderRejectRequest,
+    CapabilityApprovalRequest,
     CapabilityDiscoverySnapshot,
     CorrectMemoryRequest,
     CreateAgentRequest,
@@ -440,6 +441,33 @@ def request_promotion(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
+@router.post("/versions/{version_id}/capability-approvals", response_model=StudioApprovalRecord)
+def request_capability_approval(
+    request: Request,
+    version_id: str,
+    payload: CapabilityApprovalRequest,
+) -> StudioApprovalRecord:
+    identity = _identity(request)
+    version = _store(request).get_version(identity.tenant_id, version_id)
+    if version is None:
+        raise _not_found(f"Version '{version_id}' was not found.")
+    try:
+        return _release_service(request).request_capability_approval(
+            tenant_id=identity.tenant_id,
+            version_id=version_id,
+            descriptor_id=payload.descriptor_id,
+            operation=payload.operation,
+            actor_id=identity.user_id,
+            actor_role=_actor_role(request, identity, version.logical_agent_id),
+            evidence_summary=payload.evidence_summary,
+            risk=payload.risk,
+            permissions_policy_ref=payload.permissions_policy_ref,
+            destination_policy_ref=payload.destination_policy_ref,
+        )
+    except ReleaseServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
 @router.post("/approvals/{approval_id}/decision", response_model=StudioApprovalRecord)
 def decide_approval_route(
     request: Request,
@@ -453,8 +481,9 @@ def decide_approval_route(
     if record is None:
         raise _not_found(f"Approval '{approval_id}' was not found.")
     # Admin escalation records reuse ``version_id`` as the logical_agent_id
-    # (there is no version yet to escalate against); promotion records carry
-    # a real ``version_id`` that must be dereferenced to find the agent.
+    # (there is no version yet to escalate against); promotion and
+    # capability-operation records carry a real ``version_id`` that must be
+    # dereferenced to find the agent.
     if record.kind is ApprovalKind.ADMIN_ESCALATION:
         logical_agent_id = record.version_id
     else:
@@ -470,6 +499,15 @@ def decide_approval_route(
     try:
         if record.kind is ApprovalKind.ADMIN_ESCALATION:
             return service.decide_role_escalation(
+                tenant_id=identity.tenant_id,
+                approval_id=approval_id,
+                approver_id=identity.user_id,
+                approver_role=approver_role,
+                approve=payload.approve,
+                rationale=payload.rationale,
+            )
+        if record.kind is ApprovalKind.CAPABILITY_OPERATION:
+            return service.decide_capability_approval(
                 tenant_id=identity.tenant_id,
                 approval_id=approval_id,
                 approver_id=identity.user_id,

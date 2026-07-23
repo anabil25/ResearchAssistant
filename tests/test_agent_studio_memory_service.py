@@ -38,18 +38,20 @@ BASE_TIME = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
 
 
 def _manifest(
-    scopes: tuple[MemoryScopeBinding, ...] = (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION),),
+    scopes: tuple[MemoryScopeBinding, ...] | None = None,
     *,
     enabled: bool = True,
     logical_agent_id: str = "agent-memory-test",
 ) -> AgentManifest:
+    if scopes is None:
+        scopes = (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=enabled),)
     return AgentManifest(
         logical_agent_id=logical_agent_id,
         tenant_id="demo",
         display_name="Memory Test Agent",
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",
-        memory_policy=MemoryPolicy(enabled=enabled, scopes=scopes),
+        memory_policy=MemoryPolicy(scopes=scopes),
     )
 
 
@@ -100,26 +102,40 @@ def test_memory_policy_defaults_to_disabled_with_no_scopes() -> None:
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",
     )
-    assert manifest.memory_policy.enabled is False
     assert manifest.memory_policy.scopes == ()
+    assert manifest.memory_policy.is_enabled(MemoryScopeKind.CONVERSATION) is False
 
 
 def test_validate_memory_scopes_rejects_when_policy_disabled() -> None:
     manifest = _manifest(enabled=False)
-    with pytest.raises(MemoryPolicyError, match="disabled"):
-        validate_memory_scopes(manifest)
+    with pytest.raises(MemoryPolicyError, match="does not have"):
+        validate_memory_scopes(manifest, MemoryScopeKind.CONVERSATION)
+
+
+def test_validate_memory_scopes_rejects_undeclared_scope() -> None:
+    manifest = _manifest(scopes=())
+    with pytest.raises(MemoryPolicyError, match="does not have"):
+        validate_memory_scopes(manifest, MemoryScopeKind.CONVERSATION)
 
 
 def test_validate_memory_scopes_accepts_ga_mechanisms() -> None:
-    validate_memory_scopes(_manifest())
+    binding = validate_memory_scopes(_manifest(), MemoryScopeKind.CONVERSATION)
+    assert binding.kind is MemoryScopeKind.CONVERSATION
+    assert binding.enabled is True
 
 
 def test_validate_memory_scopes_rejects_non_ga_mechanism() -> None:
     manifest = _manifest(
-        (MemoryScopeBinding(kind=MemoryScopeKind.USER, mechanism=MemoryMechanism.FOUNDRY_NATIVE_MEMORY_STORE),)
+        (
+            MemoryScopeBinding(
+                kind=MemoryScopeKind.USER,
+                enabled=True,
+                mechanism=MemoryMechanism.FOUNDRY_NATIVE_MEMORY_STORE,
+            ),
+        )
     )
     with pytest.raises(MemoryPolicyError, match="is not GA"):
-        validate_memory_scopes(manifest)
+        validate_memory_scopes(manifest, MemoryScopeKind.USER)
 
 
 @pytest.mark.parametrize("actor_id, expected", [("creator-1", True), ("reader-1", False), ("stranger", False)])
@@ -381,7 +397,7 @@ def test_memory_service_rejects_all_operations_when_policy_disabled(operation: s
     manifest = _manifest(enabled=False)
     store.append(_entry())
 
-    with pytest.raises(MemoryPolicyError, match="disabled"):
+    with pytest.raises(MemoryPolicyError, match="does not have"):
         if operation == "remember":
             service.remember(manifest, _entry(entry_id="remember"))
         elif operation == "recall":
@@ -417,14 +433,20 @@ def test_memory_service_rejects_all_operations_when_policy_disabled(operation: s
 def test_memory_service_remember_requires_declared_scope() -> None:
     service = MemoryService(InMemoryMemoryStore())
     manifest = _manifest(scopes=())
-    with pytest.raises(MemoryPolicyError, match="does not declare"):
+    with pytest.raises(MemoryPolicyError, match="does not have"):
         service.remember(manifest, _entry())
 
 
 def test_memory_service_remember_rejects_non_ga_manifest() -> None:
     service = MemoryService(InMemoryMemoryStore())
     manifest = _manifest(
-        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, mechanism=MemoryMechanism.FOUNDRY_NATIVE_MEMORY_STORE),)
+        (
+            MemoryScopeBinding(
+                kind=MemoryScopeKind.CONVERSATION,
+                enabled=True,
+                mechanism=MemoryMechanism.FOUNDRY_NATIVE_MEMORY_STORE,
+            ),
+        )
     )
     with pytest.raises(MemoryPolicyError, match="is not GA"):
         service.remember(manifest, _entry())
@@ -518,7 +540,8 @@ def test_memory_service_inspect_returns_entry_for_authorized_reader() -> None:
 
     inspected = service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="reader-1")
 
-    assert inspected == entry
+    assert inspected.id == entry.id
+    assert inspected.content == entry.content
 
 
 def test_memory_service_inspect_rejects_missing_forgotten_and_unauthorized_entries() -> None:
@@ -635,3 +658,103 @@ def test_memory_service_cross_agent_entries_are_treated_as_not_found(method: str
             )
         else:
             service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+
+
+def test_memory_service_inspect_rejects_when_scope_disallows_user_inspect() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_inspect=False),))
+    service.remember(manifest, _entry())
+
+    with pytest.raises(MemoryAccessError, match="does not allow user-initiated inspect"):
+        service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+
+
+def test_memory_service_forget_rejects_when_scope_disallows_user_forget() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_forget=False),))
+    service.remember(manifest, _entry())
+
+    with pytest.raises(MemoryAccessError, match="does not allow user-initiated forget"):
+        service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+
+
+def test_memory_service_export_rejects_when_scope_disallows_user_export() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_export=False),))
+    service.remember(manifest, _entry())
+
+    with pytest.raises(MemoryAccessError, match="does not allow user-initiated export"):
+        service.export(
+            manifest,
+            tenant_id="demo",
+            scope_kind=MemoryScopeKind.CONVERSATION,
+            scope_id="conv-1",
+            actor_id="creator-1",
+        )
+
+
+def test_memory_service_remember_ttl_uses_persistent_scope_retention_days() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest(
+        (
+            MemoryScopeBinding(
+                kind=MemoryScopeKind.CONVERSATION,
+                enabled=True,
+                persistent=True,
+                retention_days=30,
+            ),
+        )
+    )
+
+    stored = service.remember(manifest, _entry())
+
+    assert stored.ttl_days == 30
+    assert stored.expires_at == BASE_TIME + timedelta(days=30)
+
+
+def test_memory_service_remember_ttl_persistent_scope_without_retention_leaves_expiry_unset() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest(
+        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, persistent=True),)
+    )
+
+    stored = service.remember(manifest, _entry())
+
+    assert stored.ttl_days is None
+    assert stored.expires_at is None
+
+
+def test_memory_service_remember_ttl_non_persistent_scope_uses_declared_retention_days() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest(
+        (
+            MemoryScopeBinding(
+                kind=MemoryScopeKind.CONVERSATION,
+                enabled=True,
+                persistent=False,
+                retention_days=3,
+            ),
+        )
+    )
+
+    stored = service.remember(manifest, _entry())
+
+    assert stored.ttl_days == 3
+    assert stored.expires_at == BASE_TIME + timedelta(days=3)
+
+
+def test_memory_service_remember_ttl_non_persistent_scope_falls_back_to_default() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+
+    stored = service.remember(manifest, _entry())
+
+    assert stored.ttl_days == 1
+    assert stored.expires_at == BASE_TIME + timedelta(days=1)

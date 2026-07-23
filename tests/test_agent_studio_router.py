@@ -447,8 +447,7 @@ def _enable_memory_scope(
 ) -> dict[str, Any]:
     draft = _get_draft(client, logical_agent_id, headers=headers)
     draft["manifest"]["memory_policy"] = {
-        "enabled": True,
-        "scopes": [{"kind": scope_kind, "mechanism": mechanism}],
+        "scopes": [{"kind": scope_kind, "enabled": True, "mechanism": mechanism}],
     }
     return _update_manifest(
         client,
@@ -1128,6 +1127,115 @@ def test_promotion_routes_cover_ungated_and_missing_version_decision_path(
     assert response.status_code == 404
 
 
+def test_capability_approval_routes_gate_release_until_approved(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    _create_agent(client, logical_agent_id="agent-capability-approval", headers=USER_HEADERS)
+    _grant_role(
+        store,
+        logical_agent_id="agent-capability-approval",
+        principal_id="requester-1",
+        role=AgentRole.CONTRIBUTOR,
+    )
+    requester_headers = _headers(tenant_id="demo", user_id="requester-1")
+    attach_response = client.post(
+        "/v1/agent-studio/capabilities/attach",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "connection_ref": "conn-azure-functions",
+            "policy_ref": "policy.capability-approval.write-irreversible.v1",
+        },
+        headers=USER_HEADERS,
+    )
+    assert attach_response.status_code == 200, attach_response.text
+    binding = attach_response.json()
+
+    draft = _get_draft(client, "agent-capability-approval", headers=USER_HEADERS)
+    draft["manifest"]["capabilities"] = [binding]
+    _update_manifest(client, "agent-capability-approval", draft["manifest"], headers=USER_HEADERS)
+
+    version = _cut_version(client, "agent-capability-approval", headers=USER_HEADERS)
+
+    missing_version_request = client.post(
+        "/v1/agent-studio/versions/missing/capability-approvals",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "evidence_summary": "reviewed",
+        },
+        headers=USER_HEADERS,
+    )
+    assert missing_version_request.status_code == 404
+
+    gated_before_approval = _run_gates(
+        client,
+        version["id"],
+        headers=USER_HEADERS,
+        evidence=GATED_EVIDENCE,
+    )
+    approval_gate = next(r for r in gated_before_approval["results"] if r["name"] == "approval")
+    assert approval_gate["status"] == "failed"
+
+    request_response = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/capability-approvals",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "evidence_summary": "Reviewed the destination and scopes.",
+        },
+        headers=requester_headers,
+    )
+    assert request_response.status_code == 200, request_response.text
+    approval = request_response.json()
+    assert approval["kind"] == "capability_operation"
+    assert approval["state"] == "pending"
+    assert approval["destination"] == "foundry.azure_functions.invoke"
+
+    bad_descriptor_request = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/capability-approvals",
+        json={
+            "descriptor_id": "foundry.web_search",
+            "operation": "search",
+            "evidence_summary": "no such binding on this version",
+        },
+        headers=USER_HEADERS,
+    )
+    assert bad_descriptor_request.status_code == 409
+
+    viewer_decision = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json={"approve": True},
+        headers=VIEWER_HEADERS,
+    )
+    assert viewer_decision.status_code == 409
+
+    decision = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json={"approve": True, "rationale": "approved for release"},
+        headers=USER_HEADERS,
+    )
+    assert decision.status_code == 200
+    assert decision.json()["state"] == "approved"
+
+    gated_after_approval = _run_gates(
+        client,
+        version["id"],
+        headers=USER_HEADERS,
+        evidence=GATED_EVIDENCE,
+    )
+    approval_gate_after = next(r for r in gated_after_approval["results"] if r["name"] == "approval")
+    assert approval_gate_after["status"] == "passed"
+
+    decided_again = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json={"approve": False},
+        headers=USER_HEADERS,
+    )
+    assert decided_again.status_code == 409
+
+
 def test_escalation_routes_cover_pending_approval_and_owner_only_decision(
     client: TestClient,
     store: AgentStudioStore,
@@ -1281,11 +1389,13 @@ def test_resolve_contract_and_catalog_routes_cover_full_happy_path(
     draft = _get_draft(client, "agent-contract", headers=USER_HEADERS)
     draft["manifest"]["input_schema_ref"] = {
         "ref": "schema://contract-input",
-        "digest": "sha256:" + "a" * 64,
+        "digest": "sha256:f77bc2fc512ca730ea20e2430db5ef5c916f09991900625b84002bbbd9947b69",
+        "inline_schema": {"type": "object", "title": "contract-input"},
     }
     draft["manifest"]["output_schema_ref"] = {
         "ref": "schema://contract-output",
-        "digest": "sha256:" + "b" * 64,
+        "digest": "sha256:8f52ff8dd5564f348111007b76a61a2edeb97600048b040cd109468db67fc4ca",
+        "inline_schema": {"type": "object", "title": "contract-output"},
     }
     draft["manifest"]["capabilities"] = [
         client.post(
