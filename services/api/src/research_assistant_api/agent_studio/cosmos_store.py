@@ -29,6 +29,7 @@ proposal decisions).
 
 from __future__ import annotations
 
+import contextlib
 from collections.abc import Callable
 from typing import Any
 
@@ -454,6 +455,10 @@ class CosmosAgentStudioStore(AgentStudioStore):
     def _approval_id(approval_id: str) -> str:
         return f"approval::{approval_id}"
 
+    @staticmethod
+    def _approval_dedup_id(dedup_key: str) -> str:
+        return f"approval_dedup::{dedup_key}"
+
     def _sync_approvals(self, scope: ScopeContext) -> None:
         documents = self._query_partition(scope.scope_key, "approval")
         for document in documents:
@@ -461,13 +466,52 @@ class CosmosAgentStudioStore(AgentStudioStore):
             self._approvals[approval.id] = approval
 
     def create_approval(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        """Create a pending approval, deduplicating by idempotency key using a
+        Cosmos-native create-if-absent guard document -- never a client-side
+        scan-then-write.
+
+        A dedicated ``approval_dedup::{hash}`` document (id derived from
+        ``AgentStudioStore._approval_dedup_key``, keyed on scope + kind +
+        idempotency key) is written via ``create_item`` and carries the
+        *full* winning approval payload. Cosmos itself rejects a duplicate
+        ``create_item`` with a 409 Conflict, so two concurrent callers --
+        even across separate processes/instances -- can never both "win":
+        the loser's ``create_item`` fails atomically server-side and it
+        decodes the exact payload the winner just committed directly from
+        the conflicting document, with no read-after-write race window
+        (unlike a query-then-write scan, which both callers could pass
+        before either had written anything). ``save_approval_decision``
+        deletes the guard document once the approval is decided, so a fresh
+        request for the same idempotency key after a prior decision is free
+        to create a new pending approval rather than being blocked forever.
+        """
         self._require_scope_match(scope, record.tenant_id, record.project_id)
-        self._sync_approvals(scope)
-        existing = self.find_pending_approval(scope, record.idempotency_key)
-        if existing is not None:
-            return existing
+        dedup_key = self._approval_dedup_key(scope, record.kind, record.idempotency_key)
+        dedup_id = self._approval_dedup_id(dedup_key)
+        payload = record.model_dump(mode="json")
+        try:
+            self._container.create_item(
+                {
+                    "id": dedup_id,
+                    "documentType": "approval_dedup",
+                    "scope_key": scope.scope_key,
+                    "payload": payload,
+                }
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            document = self._read(scope.scope_key, dedup_id)
+            if document is None:
+                raise AgentStudioStoreError(
+                    f"Approval dedup guard for idempotency key '{record.idempotency_key}' conflicted "
+                    "but the winning record could not be read back."
+                ) from exc
+            winner = StudioApprovalRecord.model_validate(document["payload"])
+            self._approvals[winner.id] = winner
+            return winner
         AgentStudioStore.create_approval(self, scope, record)
-        self._upsert(scope.scope_key, self._approval_id(record.id), "approval", record.model_dump(mode="json"))
+        self._upsert(scope.scope_key, self._approval_id(record.id), "approval", payload)
         return record
 
     def list_approvals(self, scope: ScopeContext, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
@@ -499,6 +543,10 @@ class CosmosAgentStudioStore(AgentStudioStore):
                 raise
             raise AgentStudioStoreError(f"Approval '{record.id}' was decided concurrently.") from exc
         self._approvals[record.id] = record
+        dedup_key = self._approval_dedup_key(scope, record.kind, record.idempotency_key)
+        with contextlib.suppress(CosmosResourceNotFoundError):
+            self._container.delete_item(item=self._approval_dedup_id(dedup_key), partition_key=scope.scope_key)
+        self._approval_dedup.pop(dedup_key, None)
         return record
 
     # -- Deployments ------------------------------------------------------

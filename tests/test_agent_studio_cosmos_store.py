@@ -394,6 +394,16 @@ class FakeContainer:
             self.documents[key] = stored
             return deepcopy(stored)
 
+    def delete_item(self, *, item: str, partition_key: str) -> None:
+        key = (partition_key, item)
+        with self._lock:
+            if key not in self.documents:
+                raise CosmosResourceNotFoundError(  # type: ignore[no-untyped-call]
+                    status_code=404,
+                    message="missing",
+                )
+            del self.documents[key]
+
     def get_document(self, scope_key: str, document_id: str) -> dict[str, Any]:
         return deepcopy(self.documents[(scope_key, document_id)])
 
@@ -1098,6 +1108,126 @@ def test_save_approval_decision_handles_success_missing_decided_and_conflicts(
             ),
         )
     container.fail_replace_status = None
+
+
+def test_create_approval_raises_when_dedup_conflict_document_vanishes(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Defensive branch: if ``create_item`` reports a 409 conflict for the
+    dedup guard document but a subsequent point-read can't find it (an
+    extremely narrow window that should never occur in practice -- e.g. the
+    guard was deleted by a concurrent ``save_approval_decision`` between the
+    conflict and this read), the store must fail loudly rather than
+    silently fabricate a winner from nothing."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_conflict(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_dedup":
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409, message="conflict: document already exists"
+            )
+        return original_create_item(body)
+
+    container.create_item = _always_conflict  # type: ignore[method-assign]
+
+    with pytest.raises(AgentStudioStoreError, match="could not be read back"):
+        store.create_approval(SCOPE, _approval())
+
+
+def test_create_approval_propagates_non_conflict_dedup_guard_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A non-409 failure creating the dedup guard document (e.g. a genuine
+    service error) must propagate unchanged rather than being swallowed or
+    misinterpreted as "someone else already won the race"."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_fail(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_dedup":
+            raise CosmosHttpResponseError(status_code=500, message="simulated service error")  # type: ignore[no-untyped-call]
+        return original_create_item(body)
+
+    container.create_item = _always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.create_approval(SCOPE, _approval())
+
+
+def test_save_approval_decision_tolerates_already_removed_dedup_guard(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Deciding an approval whose dedup guard document is already gone (e.g.
+    it was already cleaned up, or this data was seeded without ever going
+    through ``create_approval``) must still succeed -- the guard removal is
+    best-effort cleanup, not a precondition for a valid decision."""
+    store = _new_store(fake_client_factory)
+    pending = _approval()
+    store.create_approval(SCOPE, pending)
+
+    container = _metadata_container(fake_client_factory)
+    dedup_key = store._approval_dedup_key(SCOPE, pending.kind, pending.idempotency_key)
+    container.delete_item(item=store._approval_dedup_id(dedup_key), partition_key=SCOPE.scope_key)
+
+    approved = pending.model_copy(update={"state": ApprovalState.APPROVED, "approver_id": "approver-1"})
+    assert store.save_approval_decision(SCOPE, approved) == approved
+    assert store.get_approval(SCOPE, pending.id) == approved
+
+
+def test_create_approval_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances/processes racing to request the same
+    logical approval (identical idempotency key). Each thread uses its OWN
+    ``CosmosAgentStudioStore`` instance (its own in-memory cache), but all
+    instances share the same underlying ``FakeContainer`` documents --
+    mirroring multiple API replicas hitting the same Cosmos container
+    concurrently. Exactly one distinct approval record must result; every
+    caller (winner and losers alike) must observe that same record."""
+    thread_count = 12
+    results: list[StudioApprovalRecord] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _request(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        candidate = _approval(approval_id=f"approval-race-{worker_index}", idempotency_key="race-key")
+        barrier.wait()
+        try:
+            record = store.create_approval(SCOPE, candidate)
+        except BaseException as exc:  # capture every failure mode for the assertion below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(record)
+
+    threads = [threading.Thread(target=_request, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(results) == thread_count
+    assert len({record.id for record in results}) == 1, (
+        f"expected exactly one distinct approval record, got: {sorted({r.id for r in results})}"
+    )
+
+    final_store = _new_store(fake_client_factory)
+    assert len(final_store.list_approvals(SCOPE)) == 1
+
+    winner = results[0]
+    decided = winner.model_copy(update={"state": ApprovalState.APPROVED, "approver_id": "approver-1"})
+    final_store.save_approval_decision(SCOPE, decided)
+
+    replacement = _approval(approval_id="approval-race-replacement", idempotency_key="race-key")
+    reopened_store = _new_store(fake_client_factory)
+    assert reopened_store.create_approval(SCOPE, replacement) == replacement
 
 
 def test_deployments_create_list_get_update_and_scope_guards(

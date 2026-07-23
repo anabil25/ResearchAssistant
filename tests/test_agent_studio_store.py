@@ -540,6 +540,35 @@ def test_approvals_are_idempotent_only_while_pending_and_scope_isolation_holds()
         store.save_approval_decision(SCOPE, _approval(approval_id="missing-approval", idempotency_key="key-missing"))
 
 
+def test_create_approval_is_atomic_for_concurrent_calls() -> None:
+    """Concurrent ``create_approval`` calls sharing the same idempotency key
+    must all observe the exact same winning record -- never two distinct
+    approval documents for one logical request (the check-then-act race
+    this guards against: two threads both scanning for "no existing
+    pending approval" before either has written anything)."""
+    store = AgentStudioStore()
+
+    def request(index: int) -> StudioApprovalRecord:
+        candidate = _approval(approval_id=f"approval-race-{index}", idempotency_key="race-key")
+        return store.create_approval(SCOPE, candidate)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(request, range(8)))
+
+    assert len({record.id for record in results}) == 1
+    assert store.list_approvals(SCOPE) == (results[0],)
+
+    winner = results[0]
+    decided = winner.model_copy(update={"state": ApprovalState.APPROVED, "approver_id": "approver-1"})
+    store.save_approval_decision(SCOPE, decided)
+
+    # The dedup guard is released once decided -- a fresh request for the
+    # same idempotency key now creates a brand new approval rather than
+    # being blocked forever.
+    replacement = _approval(approval_id="approval-race-replacement", idempotency_key="race-key")
+    assert store.create_approval(SCOPE, replacement) == replacement
+
+
 def test_deployments_round_trip_update_and_scope_guards() -> None:
     store = AgentStudioStore()
     deployment = _deployment()

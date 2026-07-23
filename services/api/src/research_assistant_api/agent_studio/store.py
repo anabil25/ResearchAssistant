@@ -19,6 +19,7 @@ whether operations succeed.
 
 from __future__ import annotations
 
+import hashlib
 import threading
 from collections.abc import Callable
 
@@ -27,6 +28,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalKind,
     ApprovalState,
     BuilderProposal,
     BuilderProposalState,
@@ -80,6 +82,8 @@ class AgentStudioStore:
         self._releases: dict[str, AgentRelease] = {}
         self._releases_by_version: dict[str, list[str]] = {}
         self._approvals: dict[str, StudioApprovalRecord] = {}
+        self._approval_dedup: dict[str, StudioApprovalRecord] = {}
+        self._approval_lock = threading.Lock()
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
@@ -285,6 +289,23 @@ class AgentStudioStore:
 
     # -- Approvals ------------------------------------------------------
 
+    @staticmethod
+    def _approval_dedup_key(scope: ScopeContext, kind: ApprovalKind, idempotency_key: str) -> str:
+        """Deterministic dedup guard key for a would-be pending approval.
+
+        Combines the partition (``scope.scope_key``), the approval ``kind``,
+        and the caller-computed ``idempotency_key`` (see
+        ``approvals.idempotency_key``) into a single stable digest, so two
+        concurrent ``create_approval`` calls for the *same logical request*
+        always resolve to the exact same guard slot. This is the basis for
+        atomic create-if-absent deduplication (see ``create_approval``)
+        rather than a client-side scan-then-write race that could let two
+        racing callers both observe "no existing pending approval" and both
+        persist a distinct duplicate record.
+        """
+        payload = "|".join((scope.scope_key, kind.value, idempotency_key))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
     def find_pending_approval(self, scope: ScopeContext, idempotency_key: str) -> StudioApprovalRecord | None:
         return next(
             (
@@ -299,12 +320,29 @@ class AgentStudioStore:
         )
 
     def create_approval(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        """Atomically create a pending approval, deduplicating by idempotency key.
+
+        Two concurrent callers requesting the same logical approval (same
+        scope, ``kind``, and ``idempotency_key``) while a prior request is
+        still ``PENDING`` are guaranteed to observe the exact same resulting
+        record -- the existence check and the write happen atomically under
+        a single lock, so this can never persist two distinct approval
+        records for one logical request (the in-memory equivalent of the
+        Cosmos-native create-if-absent guard document used by
+        ``CosmosAgentStudioStore``). The guard is released as soon as the
+        request is decided (see ``save_approval_decision``), so a fresh
+        request for the same idempotency key after a prior decision
+        correctly creates a new approval rather than being blocked forever.
+        """
         self._require_scope_match(scope, record.tenant_id, record.project_id)
-        existing = self.find_pending_approval(scope, record.idempotency_key)
-        if existing is not None:
-            return existing
-        self._approvals[record.id] = record
-        return record
+        dedup_key = self._approval_dedup_key(scope, record.kind, record.idempotency_key)
+        with self._approval_lock:
+            existing = self._approval_dedup.get(dedup_key)
+            if existing is not None:
+                return existing
+            self._approvals[record.id] = record
+            self._approval_dedup[dedup_key] = record
+            return record
 
     def get_approval(self, scope: ScopeContext, approval_id: str) -> StudioApprovalRecord | None:
         record = self._approvals.get(approval_id)
@@ -314,13 +352,16 @@ class AgentStudioStore:
 
     def save_approval_decision(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
         self._require_scope_match(scope, record.tenant_id, record.project_id)
-        current = self._approvals.get(record.id)
-        if current is None:
-            raise AgentStudioStoreError(f"Approval '{record.id}' not found.")
-        if current.state != ApprovalState.PENDING:
-            raise AgentStudioStoreError(f"Approval '{record.id}' has already been decided.")
-        self._approvals[record.id] = record
-        return record
+        dedup_key = self._approval_dedup_key(scope, record.kind, record.idempotency_key)
+        with self._approval_lock:
+            current = self._approvals.get(record.id)
+            if current is None:
+                raise AgentStudioStoreError(f"Approval '{record.id}' not found.")
+            if current.state != ApprovalState.PENDING:
+                raise AgentStudioStoreError(f"Approval '{record.id}' has already been decided.")
+            self._approvals[record.id] = record
+            self._approval_dedup.pop(dedup_key, None)
+            return record
 
     def list_approvals(self, scope: ScopeContext, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
         return tuple(
