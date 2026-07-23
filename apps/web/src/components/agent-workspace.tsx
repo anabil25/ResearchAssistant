@@ -533,6 +533,13 @@ export function VersionsTab({
               <small>
                 {version.created_by} · {formatTime(version.created_at)}
               </small>
+              <small className="agent-version-lineage">
+                {version.derived_from
+                  ? `Forked from ${version.derived_from}`
+                  : "Original release"}{" "}
+                · model {version.model_version} · hash{" "}
+                {version.content_hash.slice(0, 12)}
+              </small>
             </li>
           ))}
         </ul>
@@ -637,7 +644,8 @@ export function AgentWorkspaceView({
             <div>
               <dt>Memory</dt>
               <dd>
-                Persistent memory is off by default. When enabled, scope,
+                Persistent memory is off by default. When enabled, its scope
+                is one of conversation, user, project, or private-agent, and
                 retention, inspect, correct, forget, and export controls are
                 available under Advanced.
               </dd>

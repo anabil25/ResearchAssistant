@@ -712,13 +712,30 @@ describe("VersionsTab", () => {
         created_by: "platform-team",
         status: "active",
         changelog: "Improved citation coverage.",
+        derived_from: "1.1.0",
+        content_hash: "sha256:abcdef1234567890",
+        model_version: "gpt-4o-2026-05-01",
+        capability_versions: { "web-search": "3.2.0" },
+      },
+      {
+        version: "1.0.0",
+        created_at: "2026-01-01T00:00:00Z",
+        created_by: "platform-team",
+        status: "active",
+        changelog: "Initial release.",
+        derived_from: null,
+        content_hash: "sha256:0011223344556677",
+        model_version: "gpt-4o-2026-01-01",
+        capability_versions: {},
       },
     ]);
     render(<VersionsTab agentId="literature" ownerKind="platform" />);
 
     await waitFor(() => expect(screen.getByText("1.2.0")).toBeInTheDocument());
     expect(screen.getByText("Improved citation coverage.")).toBeInTheDocument();
-    expect(screen.getByText(/platform-team/)).toBeInTheDocument();
+    expect(screen.getAllByText(/platform-team/).length).toBe(2);
+    expect(screen.getByText(/Forked from 1\.1\.0/)).toBeInTheDocument();
+    expect(screen.getByText(/Original release/)).toBeInTheDocument();
   });
 
   it("shows an empty state when there is no version history", async () => {

@@ -201,10 +201,18 @@ export async function uploadLibraryItem(
 // ---------------------------------------------------------------------------
 // Proposed Agent Registry / Agent Workspace contract — PENDING BACKEND.
 // See the "Proposed Agent Registry / Agent Workspace contract" section in
-// lib/types.ts for the rationale. Every function below issues a real request
-// through the existing `/api/backend/api` proxy; until the backend ships
-// these routes they will reject with a real error that callers must surface
-// as an explicit unavailable state (never a fabricated success).
+// lib/types.ts for the rationale. Types were aligned 2026-07-23 with the
+// coordinating "Workflow page redesign" session's shared contract direction:
+// runtime-neutral AgentManifest with schema refs; capabilities split into
+// CapabilityDescriptor/CapabilityInstance/CapabilityBinding; operation risk
+// classes (pure/read/write_reversible/write_irreversible/privileged) tracked
+// separately from destination/approval state; memory scopes constrained to
+// conversation/user/project/private-agent; and immutable AgentVersionRecord
+// releases carrying lineage (derived_from), content_hash, model_version, and
+// capability_versions. Every function below issues a real request through
+// the existing `/api/backend/api` proxy; until the backend ships these
+// routes they will reject with a real error that callers must surface as an
+// explicit unavailable state (never a fabricated success).
 // ---------------------------------------------------------------------------
 
 export async function getAgentManifest(agentId: string): Promise<AgentManifest> {

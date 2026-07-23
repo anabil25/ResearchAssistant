@@ -98,6 +98,51 @@ export type AgentLifecycleState =
   | "deprecated"
   | "archived";
 
+/**
+ * Operation risk classification shared with the Workflow page redesign
+ * contract. Distinct from capability maturity (ga/preview/experimental):
+ * risk class governs approval requirements, maturity governs availability.
+ */
+export type CapabilityRiskClass =
+  | "pure"
+  | "read"
+  | "write_reversible"
+  | "write_irreversible"
+  | "privileged";
+
+export type CapabilityApprovalState =
+  | "not_required"
+  | "required"
+  | "pending"
+  | "granted";
+
+/** Provider-driven catalog entry for a capability family + operation. */
+export interface CapabilityDescriptor {
+  id: string;
+  family: string;
+  operation: string;
+  risk_class: CapabilityRiskClass;
+  description: string;
+}
+
+/** A concrete, discovered deployment of a descriptor in this project. */
+export interface CapabilityInstance {
+  id: string;
+  descriptor_id: string;
+  maturity: "ga" | "preview" | "experimental";
+  provider: string;
+  destination: string | null;
+  available: boolean;
+}
+
+/** How a specific agent is bound to a discovered capability instance. */
+export interface CapabilityBinding {
+  instance_id: string;
+  enabled: boolean;
+  approval_state: CapabilityApprovalState;
+}
+
+/** @deprecated Use CapabilityDescriptor + CapabilityInstance + CapabilityBinding. Kept for the transitional UI summary view. */
 export interface AgentCapabilityRef {
   id: string;
   family: string;
@@ -124,8 +169,12 @@ export interface AgentEvaluationSummary {
   claim_entailment: number | null;
   retrieval_completeness: number | null;
   last_run_at: string | null;
+  /** Objective, blocking release gates — evaluated separately from advisory metrics above. */
   hard_gates: AgentEvaluationGate[];
 }
+
+/** Memory scopes shared with the Workflow page redesign contract. */
+export type MemoryScope = "conversation" | "user" | "project" | "private-agent";
 
 export interface AgentVersionRecord {
   version: string;
@@ -133,6 +182,14 @@ export interface AgentVersionRecord {
   created_by: string;
   status: AgentLifecycleState;
   changelog: string;
+  /** Immutable release lineage: parent version this release was cut from, if any. */
+  derived_from: string | null;
+  /** Content-addressed hash of the frozen manifest for this release. */
+  content_hash: string;
+  /** Exact discovered model deployment this release was pinned to. */
+  model_version: string;
+  /** Exact capability instance versions bound at release time, by capability id. */
+  capability_versions: Record<string, string>;
 }
 
 export interface AgentUsageSummary {
@@ -142,6 +199,8 @@ export interface AgentUsageSummary {
 }
 
 export interface AgentManifest {
+  /** Runtime-neutral canonical manifest — no Python/runtime implementation details. */
+  schema_ref: string;
   id: string;
   owner_kind: "platform" | "researcher";
   purpose: string;
@@ -152,7 +211,7 @@ export interface AgentManifest {
   public_web_boundary: "none" | "read_only" | "read_write";
   memory: {
     enabled: boolean;
-    scope: string | null;
+    scope: MemoryScope | null;
     retention_days: number | null;
   };
   connections: string[];

@@ -252,6 +252,10 @@ describe("AgentRegistryCard", () => {
         created_by: "platform",
         status: "active",
         changelog: "Initial release.",
+        derived_from: null,
+        content_hash: "sha256:0000000000000000",
+        model_version: "gpt-4o-2026-05-01",
+        capability_versions: {},
       },
     ]);
     render(
