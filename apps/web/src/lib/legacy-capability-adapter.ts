@@ -11,8 +11,8 @@ import type { AgentCapabilityRef, CapabilityBindingView } from "@/lib/types";
  * file under `src/` references `AgentCapabilityRef`.
  *
  * The adapted view is always marked stale: a legacy ref carries no real
- * fingerprint, schema digest, or approval record, so it can never be
- * presented as a live, reconciled binding.
+ * descriptor/instance digests, fingerprint, or approval record, so it can
+ * never be presented as a live, reconciled binding.
  */
 export function adaptLegacyCapabilityRef(
   ref: AgentCapabilityRef,
@@ -21,11 +21,15 @@ export function adaptLegacyCapabilityRef(
     binding: {
       descriptor_id: ref.id,
       descriptor_version: "unknown",
+      descriptor_digest: null,
       operation: ref.operation,
       instance_id: null,
+      instance_fingerprint: null,
       pinned_provider_version: null,
-      schema_digest: null,
+      input_schema_digest: null,
+      output_schema_digest: null,
       config: {},
+      config_hash: null,
       connection_ref: null,
       policy_ref: null,
       attached_by: "unknown",
@@ -49,6 +53,8 @@ export function adaptLegacyCapabilityRef(
           source_url: null,
           source_version: null,
           last_verified_at: null,
+          input_schema_digest: null,
+          output_schema_digest: null,
         },
       ],
       auth_requirements: [],

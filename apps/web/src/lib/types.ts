@@ -164,7 +164,11 @@ export type CapabilityOperationClass =
  * `requires_approval` are all operation-level, not descriptor-level: two
  * operations on the same descriptor can have entirely different maturity
  * and risk profiles. `source_url`/`source_version`/`last_verified_at` are
- * the provenance trail for the maturity claim.
+ * the provenance trail for the maturity claim. `input_schema_digest`/
+ * `output_schema_digest` are operation-level (verified against backend
+ * commit `a23b73e`, which added these directly to `CapabilityOperation`)
+ * because a single descriptor's operations can have distinct I/O shapes;
+ * a `CapabilityBinding` copies both digests at attach time (see below).
  */
 export interface CapabilityOperation {
   name: string;
@@ -177,6 +181,8 @@ export interface CapabilityOperation {
   source_url: string | null;
   source_version: string | null;
   last_verified_at: string | null;
+  input_schema_digest: string | null;
+  output_schema_digest: string | null;
 }
 
 /**
@@ -188,10 +194,14 @@ export interface CapabilityOperation {
  * rejected at attach time. `version` is the descriptor's own catalog
  * version, pinned by any `CapabilityBinding` that attaches it, so a later
  * catalog update never silently changes an already-released agent's
- * behavior. There is deliberately no descriptor-level `digest` field in the
- * real backend model — drift is detected via `version` comparison, not a
- * content hash, at this level (schema-level drift is instead carried on the
- * binding's own `schema_digest`).
+ * behavior. There is deliberately no descriptor-level `digest` field on this
+ * wire type — the backend computes a content digest of the descriptor only
+ * at attach time (`compute_descriptor_digest`) and stores the result on the
+ * attaching `CapabilityBinding.descriptor_digest`, never on the descriptor
+ * itself; this UI therefore uses `version` comparison as its own drift
+ * proxy (see `resolveCapabilityBindingView`). Per-operation I/O schema
+ * digests live on `CapabilityOperation.input_schema_digest`/
+ * `output_schema_digest`, copied onto the binding at attach time.
  */
 export interface CapabilityDescriptor {
   id: string;
@@ -227,16 +237,28 @@ export type CapabilityHealthStatus =
  * time. Scope is `tenant_id` + `project_id` (never a bare "workspace" id —
  * a workspace is a display alias over `project_id`, not a distinct scope
  * dimension). Never carries secrets/credentials.
+ *
+ * `descriptor_version` (the exact `CapabilityDescriptor.version` consulted
+ * at discovery) and `instance_fingerprint` (a canonical digest pinning
+ * provider/descriptor/operation identity, operation definitions/versions,
+ * side-effect destinations, tenant/data boundaries, and non-secret
+ * discovered config — excluding health/timestamps/secrets) were verified
+ * against backend commit `a23b73e`. A `CapabilityBinding` that attaches this
+ * instance copies `instance_fingerprint` at attach time so later
+ * reconfiguration (not just a health/readiness flap) is independently
+ * detectable — see `resolveCapabilityBindingView`'s fingerprint-drift check.
  */
 export interface CapabilityInstance {
   id: string;
   tenant_id: string;
   project_id: string;
   descriptor_id: string;
+  descriptor_version: string;
   discovered_provider_version: string | null;
   readiness: CapabilityInstanceReadiness;
   health_status: CapabilityHealthStatus;
   config_fingerprint: string | null;
+  instance_fingerprint: string | null;
   unavailable_reason: string | null;
   discovered_at: string;
   registered_by: string;
@@ -335,33 +357,86 @@ export function isCapabilityAttachable(
 /**
  * Persisted, immutable-manifest-embedded attachment of one capability
  * operation to a specific agent version/draft — verified field-for-field
- * against the backend's real `CapabilityBinding` Pydantic model (commit
- * `d6df0fe`). This is a flat set of pinned identity refs plus an attach
- * audit trail: `descriptor_id`/`descriptor_version` pin the catalog entry,
- * `operation` names the specific operation, `instance_id` optionally pins a
- * discovered resource, `pinned_provider_version`/`schema_digest` pin the
- * upstream contract/schema, `connection_ref`/`policy_ref` are flat resource
- * references, and `config` is this binding's own inline configuration data.
- * There is deliberately no `enabled` toggle and no approval status on this
- * row — approval is a declarative `requires_approval` flag on the resolved
- * `CapabilityOperation`, and any actual authorization decision lives in a
- * separate, version-scoped `StudioApprovalRecord` — never a field here.
- * Never embeds the full descriptor or any volatile instance health/readiness
- * (see `CapabilityBindingView` for the derived, resolved-for-display
- * expansion of this row, kept strictly separate from this persisted shape).
+ * against the backend's real `CapabilityBinding` Pydantic model, most
+ * recently against commit `a23b73e` ("Phase 1 schema corrections: binding
+ * digests, instance fingerprint, ToolRegistrationSpec"). This is a flat set
+ * of pinned identity refs plus an attach audit trail: `descriptor_id`/
+ * `descriptor_version` pin the catalog entry, `descriptor_digest` pins the
+ * descriptor's *content* (not just its version string) so a catalog edit
+ * that bumps content without bumping the version string can't silently
+ * change an already-attached binding's behavior, `operation` names the
+ * specific operation, `instance_id` optionally pins a discovered resource
+ * and `instance_fingerprint` (copied from the resolved `CapabilityInstance`
+ * at attach time) detects later reconfiguration independent of a health/
+ * readiness flap, `pinned_provider_version`/`input_schema_digest`/
+ * `output_schema_digest` pin the upstream contract/schema (two independent
+ * digests, copied from the resolved `CapabilityOperation`, since a
+ * descriptor's operations can have distinct I/O shapes), `config_hash` is a
+ * canonical digest of this binding's own `config` computed at attach time so
+ * config drift is independently detectable, and `connection_ref`/
+ * `policy_ref` are flat resource references. There is deliberately no
+ * `enabled` toggle and no approval status on this row — approval is a
+ * declarative `requires_approval` flag on the resolved `CapabilityOperation`,
+ * and any actual authorization decision lives in a separate, version-scoped
+ * `StudioApprovalRecord` — never a field here. Never embeds the full
+ * descriptor or any volatile instance health/readiness (see
+ * `CapabilityBindingView` for the derived, resolved-for-display expansion of
+ * this row, kept strictly separate from this persisted shape).
+ *
+ * The digest/fingerprint fields are the backend's own recomputed values, not
+ * anything the UI derives — see `resolveCapabilityBindingView` for how the
+ * `instance_fingerprint` comparison is used to detect drift client-side
+ * (mirroring the backend's `check_binding_freshness`, which is a registry
+ * primitive not yet wired into a formal release/invoke hard gate).
  */
 export interface CapabilityBinding {
   descriptor_id: string;
   descriptor_version: string;
+  descriptor_digest: string | null;
   operation: string;
   instance_id: string | null;
+  instance_fingerprint: string | null;
   pinned_provider_version: string | null;
-  schema_digest: string | null;
+  input_schema_digest: string | null;
+  output_schema_digest: string | null;
   config: Record<string, unknown>;
+  config_hash: string | null;
   connection_ref: string | null;
   policy_ref: string | null;
   attached_by: string;
   attached_at: string;
+}
+
+/**
+ * How a bound capability operation is actually invoked at runtime —
+ * verified against the backend's real `ToolRegistrationKind` enum
+ * (commit `a23b73e`).
+ */
+export type ToolRegistrationKind = "managed_foundry_native" | "custom_handler";
+
+/**
+ * Persisted *spec* declaring how a `CapabilityBinding` is dispatched —
+ * verified against the backend's real `ToolRegistrationSpec` model. This is
+ * data, not a runtime handler: `handler_ref` is an opaque reference the
+ * harness/provider compiler resolves into the actual non-serializable
+ * callable at dispatch time; this backend (and this UI) never constructs or
+ * serializes a callable handler, only this spec. Immutable once created.
+ * The backend renamed the persisted-spec type from `ToolRegistration` to
+ * `ToolRegistrationSpec` specifically to free the `ToolRegistration` name for
+ * that future non-serializable runtime object — the UI must never introduce
+ * a competing runtime-handler read model under either name. Surfaced only
+ * behind Advanced (non-devs never need this).
+ */
+export interface ToolRegistrationSpec {
+  id: string;
+  tenant_id: string;
+  logical_agent_id: string;
+  descriptor_id: string;
+  operation: string;
+  kind: ToolRegistrationKind;
+  handler_ref: string;
+  registered_by: string;
+  registered_at: string;
 }
 
 /**
@@ -388,6 +463,24 @@ export interface CapabilityBindingView {
  * producing the derived `CapabilityBindingView` shown in the Workspace. This
  * is the one place staleness/attachability is computed — never store
  * `stale_reason`/`attachable` on the persisted binding itself.
+ *
+ * The check order mirrors the backend's real `CapabilityRegistry
+ * .check_binding_freshness(binding)` (verified against commit `a23b73e`):
+ * descriptor resolvability, then instance resolvability/unavailability/
+ * fingerprint drift. Two differences from the backend function, both
+ * intentional: (1) this also flags a vanished *operation* name on an
+ * otherwise-resolvable descriptor — a UI-only rendering concern the backend
+ * gate doesn't need to check; (2) descriptor *content*-digest drift
+ * (`descriptor_digest`) is checked by the backend against a live-recomputed
+ * hash the wire `CapabilityDescriptor` type doesn't expose, so this uses the
+ * descriptor's `version` string as the closest available proxy signal
+ * instead of reimplementing the backend's canonical-JSON digest algorithm
+ * client-side. `instance_fingerprint`, by contrast, IS already a plain
+ * string on both the binding and the resolved instance, so that comparison
+ * mirrors the backend exactly. `check_binding_freshness` is a registry
+ * primitive, not yet wired into a formal backend release/invoke hard gate —
+ * this client-side mirror is display-only reconciliation, not a substitute
+ * for that gate.
  */
 export function resolveCapabilityBindingView(
   binding: CapabilityBinding,
@@ -410,6 +503,19 @@ export function resolveCapabilityBindingView(
   } else if (binding.instance_id && !instance) {
     staleReason =
       "This binding's discovered instance is no longer resolvable — it may have been removed or is unavailable.";
+  } else if (binding.instance_id && instance?.readiness === "unavailable") {
+    staleReason = `This binding's discovered instance is unavailable: ${
+      instance.unavailable_reason ?? "no reason supplied"
+    }.`;
+  } else if (
+    binding.instance_id &&
+    instance &&
+    binding.instance_fingerprint &&
+    instance.instance_fingerprint &&
+    binding.instance_fingerprint !== instance.instance_fingerprint
+  ) {
+    staleReason =
+      "This binding's discovered instance has been reconfigured since attach (fingerprint mismatch) — rebind and re-review before release.";
   }
   return {
     binding,

@@ -346,6 +346,54 @@ export async function uploadLibraryItem(
 //     checks `maturity === "ga"` plus instance readiness only when an
 //     instance is actually pinned.
 //
+//   Round 10 — the sibling asked to "rename or strengthen isCapabilityAttachable"
+//     to require a `BindabilityDecision.bindable === true` from a
+//     backend/provider decision object covering scope/consent/config/schema/
+//     connection/policy/destination, with structured reason codes for
+//     needs_consent/unauthorized/misconfigured/stale/policy/lifecycle states,
+//     failing closed when that decision is missing. Before implementing,
+//     grepped the entire `agent_studio` backend module tree (through the
+//     latest commit on the backend branch, `a23b73e`) for "bindab" in any
+//     casing: zero matches. `OperationMaturity` is still the same single
+//     five-value enum (`ga|preview|unavailable|retired|unknown`, docstring:
+//     "Only GA is ever attachable") with no lifecycle split, and
+//     `InstanceReadiness` is still exactly three values
+//     (`ready|degraded|unavailable`) with no `unauthorized`/`needs_consent`/
+//     `misconfigured` variants. No `BindabilityDecision` type, field, or
+//     reason-code taxonomy exists anywhere in the real backend. Declined to
+//     implement it as invented/speculative.
+//
+//     `a23b73e` DID land real, independently-discovered (not sibling-
+//     reported) schema corrections directly relevant to binding robustness:
+//     `CapabilityBinding` gained `descriptor_digest` (content digest of the
+//     attached descriptor, pinned at attach time), `instance_fingerprint`
+//     (copied from the resolved `CapabilityInstance` at attach time),
+//     `input_schema_digest`/`output_schema_digest` (replacing the old
+//     singular `schema_digest`, now operation-level, copied at attach time),
+//     and `config_hash`; `CapabilityInstance` gained `descriptor_version` and
+//     its own `instance_fingerprint`; `CapabilityOperation` gained
+//     `input_schema_digest`/`output_schema_digest`; a persisted
+//     `ToolRegistrationSpec` type was added (backend renamed the old
+//     `ToolRegistration` model to free that name for the future
+//     non-serializable runtime handler object — this UI must never build a
+//     runtime-handler read model under either name). Adopted all of these
+//     field-for-field in `lib/types.ts`.
+//
+//     Also strengthened `resolveCapabilityBindingView` to mirror the
+//     backend's real (registry-level, not-yet-a-hard-gate)
+//     `CapabilityRegistry.check_binding_freshness(binding)`: a resolved
+//     instance whose `readiness` is `unavailable` is now itself a stale
+//     reason (previously only a missing/unresolvable instance was staleness;
+//     an unavailable-but-still-resolvable one was silently just
+//     non-attachable-but-"fresh"), and a mismatched `instance_fingerprint`
+//     between the binding and the live instance now surfaces a
+//     "reconfigured since attach" stale reason. Descriptor *content*-digest
+//     drift (`descriptor_digest`) is NOT reproduced client-side — the wire
+//     `CapabilityDescriptor` type carries no live-recomputed digest to
+//     compare against, and reimplementing the backend's canonical-JSON
+//     digest algorithm in TS would be an invented, unverifiable duplicate;
+//     `version` comparison remains the UI's proxy signal for that case.
+//
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`
 // proxy used everywhere else (just a different sub-path than `apiFetch`).

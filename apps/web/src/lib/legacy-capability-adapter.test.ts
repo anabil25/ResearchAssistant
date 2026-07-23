@@ -24,7 +24,11 @@ describe("adaptLegacyCapabilityRef", () => {
     expect(view.binding.operation).toBe("search");
     expect(view.binding.instance_id).toBeNull();
     expect(view.binding.pinned_provider_version).toBeNull();
-    expect(view.binding.schema_digest).toBeNull();
+    expect(view.binding.descriptor_digest).toBeNull();
+    expect(view.binding.instance_fingerprint).toBeNull();
+    expect(view.binding.input_schema_digest).toBeNull();
+    expect(view.binding.output_schema_digest).toBeNull();
+    expect(view.binding.config_hash).toBeNull();
     expect(view.binding.connection_ref).toBeNull();
     expect(view.binding.policy_ref).toBeNull();
     expect(view.resolved_descriptor).toEqual({
@@ -45,6 +49,8 @@ describe("adaptLegacyCapabilityRef", () => {
           source_url: null,
           source_version: null,
           last_verified_at: null,
+          input_schema_digest: null,
+          output_schema_digest: null,
         },
       ],
       auth_requirements: [],

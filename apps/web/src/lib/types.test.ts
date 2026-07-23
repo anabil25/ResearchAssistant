@@ -1,15 +1,19 @@
 /**
  * Direct unit tests for the pure reconciliation helpers in `lib/types.ts`.
  * These field shapes are verified field-for-field against the backend's real
- * committed Pydantic models (`agent_studio/models.py`, commit `d6df0fe`):
- * `CapabilityBinding` (flat pinned refs, no `enabled`/approval),
+ * committed Pydantic models (`agent_studio/models.py`, most recently commit
+ * `a23b73e` on top of `d6df0fe`): `CapabilityBinding` (flat pinned refs, no
+ * `enabled`/approval, plus `descriptor_digest`/`instance_fingerprint`/
+ * `input_schema_digest`/`output_schema_digest`/`config_hash`),
  * `CapabilityDescriptor`/`CapabilityOperation` (five-value `maturity`, no
- * separate lifecycle), `CapabilityInstance` (three-value `readiness`,
- * tenant/project scope), and `StudioApprovalRecord` (version-scoped
- * approval, never per-binding). These are exercised indirectly through
- * component tests too, but are covered here directly against every branch:
- * stale descriptor version, missing operation, unavailable instance, unknown
- * maturity, expired version-level approval, and expanded-vs-canonical reads.
+ * separate lifecycle; per-operation I/O schema digests), `CapabilityInstance`
+ * (three-value `readiness`, tenant/project scope, `instance_fingerprint`),
+ * and `StudioApprovalRecord` (version-scoped approval, never per-binding).
+ * These are exercised indirectly through component tests too, but are
+ * covered here directly against every branch: stale descriptor version,
+ * missing operation, unavailable instance, unknown maturity, expired
+ * version-level approval, instance-fingerprint reconfiguration drift, and
+ * expanded-vs-canonical reads.
  */
 import {
   defaultPublicBoundary,
@@ -36,6 +40,8 @@ function operation(overrides: Partial<CapabilityOperation> = {}): CapabilityOper
     source_url: null,
     source_version: null,
     last_verified_at: null,
+    input_schema_digest: "sha256:input1",
+    output_schema_digest: "sha256:output1",
     ...overrides,
   };
 }
@@ -62,10 +68,12 @@ function instance(overrides: Partial<CapabilityInstance> = {}): CapabilityInstan
     tenant_id: "tenant-demo",
     project_id: "project-demo",
     descriptor_id: "web-search",
+    descriptor_version: "1.0.0",
     discovered_provider_version: "3.2.0",
     readiness: "ready",
     health_status: "healthy",
     config_fingerprint: "fp-1",
+    instance_fingerprint: "sha256:instance1",
     unavailable_reason: null,
     discovered_at: "2026-01-01T00:00:00Z",
     registered_by: "platform",
@@ -77,11 +85,15 @@ function binding(overrides: Partial<CapabilityBinding> = {}): CapabilityBinding 
   return {
     descriptor_id: "web-search",
     descriptor_version: "1.0.0",
+    descriptor_digest: "sha256:descriptor1",
     operation: "search",
     instance_id: "web-search-instance-1",
+    instance_fingerprint: "sha256:instance1",
     pinned_provider_version: "2024-06-01",
-    schema_digest: "sha256:schema1",
+    input_schema_digest: "sha256:input1",
+    output_schema_digest: "sha256:output1",
     config: {},
+    config_hash: "sha256:config1",
     connection_ref: "conn-bing",
     policy_ref: null,
     attached_by: "researcher@example.com",
@@ -262,11 +274,65 @@ describe("resolveCapabilityBindingView", () => {
     expect(view.attachable).toBe(false);
   });
 
-  it("is non-attachable when the resolved required instance is unavailable, independent of staleness", () => {
+  it("is stale (unavailable, per the backend's check_binding_freshness) when the resolved required instance's readiness is unavailable, and correspondingly non-attachable", () => {
     const view = resolveCapabilityBindingView(
       binding(),
       descriptor(),
-      instance({ readiness: "unavailable" }),
+      instance({ readiness: "unavailable", unavailable_reason: "quota exceeded" }),
+    );
+    expect(view.stale_reason).toMatch(/unavailable: quota exceeded/);
+    expect(view.attachable).toBe(false);
+  });
+
+  it("surfaces a generic reason when an unavailable instance carries no unavailable_reason", () => {
+    const view = resolveCapabilityBindingView(
+      binding(),
+      descriptor(),
+      instance({ readiness: "unavailable", unavailable_reason: null }),
+    );
+    expect(view.stale_reason).toMatch(/unavailable: no reason supplied/);
+  });
+
+  it("is stale when the resolved instance's instance_fingerprint no longer matches what the binding pinned at attach time (reconfiguration drift)", () => {
+    const view = resolveCapabilityBindingView(
+      binding({ instance_fingerprint: "sha256:instance1" }),
+      descriptor(),
+      instance({ instance_fingerprint: "sha256:instance2-reconfigured" }),
+    );
+    expect(view.stale_reason).toMatch(/reconfigured since attach \(fingerprint mismatch\)/);
+    expect(view.attachable).toBe(true);
+  });
+
+  it("is not stale on a matching instance_fingerprint", () => {
+    const view = resolveCapabilityBindingView(
+      binding({ instance_fingerprint: "sha256:instance1" }),
+      descriptor(),
+      instance({ instance_fingerprint: "sha256:instance1" }),
+    );
+    expect(view.stale_reason).toBeNull();
+  });
+
+  it("skips the fingerprint-drift check when either side never recorded a fingerprint (nullable, not fabricated)", () => {
+    const bindingSide = resolveCapabilityBindingView(
+      binding({ instance_fingerprint: null }),
+      descriptor(),
+      instance({ instance_fingerprint: "sha256:instance1" }),
+    );
+    expect(bindingSide.stale_reason).toBeNull();
+
+    const instanceSide = resolveCapabilityBindingView(
+      binding({ instance_fingerprint: "sha256:instance1" }),
+      descriptor(),
+      instance({ instance_fingerprint: null }),
+    );
+    expect(instanceSide.stale_reason).toBeNull();
+  });
+
+  it("is non-attachable when the resolved required instance is degraded, independent of staleness (degraded is not unavailable — only readiness gates attachability here)", () => {
+    const view = resolveCapabilityBindingView(
+      binding(),
+      descriptor(),
+      instance({ readiness: "degraded" }),
     );
     expect(view.stale_reason).toBeNull();
     expect(view.attachable).toBe(false);
