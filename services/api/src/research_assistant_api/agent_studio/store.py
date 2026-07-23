@@ -2,11 +2,19 @@
 
 ``AgentStudioStore`` is the in-memory base implementation (used directly in
 tests and as the superclass ``CosmosAgentStudioStore`` overrides). Every
-read/write method takes an explicit ``tenant_id`` and filters strictly on it,
-so cross-tenant access is structurally impossible rather than merely
-policy-enforced. System-owned agents are still tenant-scoped by the tenant
-that registered them; sharing across tenants (if ever needed) is an explicit
-higher-level concern, not a store-level default.
+read/write method takes an explicit, non-optional ``ScopeContext`` (never a
+bare ``tenant_id``) and partitions strictly on ``scope.scope_key``, so
+cross-tenant *and* cross-project access are structurally impossible rather
+than merely policy-enforced. System-owned agents are still scope-partitioned,
+under ``scope.PLATFORM_PROJECT_ID`` by convention (see ``scope.py``); sharing
+across tenants/projects is an explicit higher-level concern, never a
+store-level default.
+
+Every record's own ``(tenant_id, project_id)`` is validated against the
+``ScopeContext`` used to address it on writes (``_require_scope_match``), and
+point reads/lookups-by-id treat a scope mismatch identically to "not found" —
+this store never leaks the *existence* of a record outside its scope, only
+whether operations succeed.
 """
 
 from __future__ import annotations
@@ -32,6 +40,7 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistrationSpec,
     role_at_least,
 )
+from research_assistant_api.agent_studio.scope import ScopeContext
 
 _ROLE_PRECEDENCE: tuple[AgentRole, ...] = (
     AgentRole.OWNER,
@@ -69,49 +78,51 @@ class AgentStudioStore:
         self._builder_proposals: dict[str, BuilderProposal] = {}
         self._builder_proposals_by_agent: dict[tuple[str, str], list[str]] = {}
 
+    @staticmethod
+    def _require_scope_match(scope: ScopeContext, tenant_id: str, project_id: str) -> None:
+        """Defense-in-depth: reject persisting a record under a ``ScopeContext``
+        whose ``(tenant_id, project_id)`` disagrees with the record's own
+        declared scope fields. A caller-side bug that constructs a record for
+        one project but addresses the store with another project's
+        ``ScopeContext`` fails loudly here instead of silently mis-filing the
+        record into the wrong partition."""
+        if tenant_id != scope.tenant_id or project_id != scope.project_id:
+            raise AgentStudioStoreError(
+                f"Record scope (tenant={tenant_id!r}, project={project_id!r}) does not match "
+                f"requested scope (tenant={scope.tenant_id!r}, project={scope.project_id!r})."
+            )
+
     # -- Drafts -----------------------------------------------------------
 
-    def save_draft(self, draft: AgentDraft) -> AgentDraft:
-        self._drafts[(draft.tenant_id, draft.logical_agent_id)] = draft
+    def save_draft(self, scope: ScopeContext, draft: AgentDraft) -> AgentDraft:
+        self._require_scope_match(scope, draft.tenant_id, draft.project_id)
+        self._drafts[(scope.scope_key, draft.logical_agent_id)] = draft
         return draft
 
-    def get_draft(self, tenant_id: str, logical_agent_id: str) -> AgentDraft | None:
-        return self._drafts.get((tenant_id, logical_agent_id))
+    def get_draft(self, scope: ScopeContext, logical_agent_id: str) -> AgentDraft | None:
+        return self._drafts.get((scope.scope_key, logical_agent_id))
 
-    def list_drafts(self, tenant_id: str) -> tuple[AgentDraft, ...]:
-        return tuple(draft for (tid, _), draft in self._drafts.items() if tid == tenant_id)
+    def list_drafts(self, scope: ScopeContext) -> tuple[AgentDraft, ...]:
+        return tuple(draft for (key, _), draft in self._drafts.items() if key == scope.scope_key)
 
     # -- Ownership ----------------------------------------------------------
 
-    def grant_ownership(self, grant: OwnershipGrant) -> OwnershipGrant:
-        self._ownership.setdefault((grant.tenant_id, grant.logical_agent_id), []).append(grant)
+    def grant_ownership(self, scope: ScopeContext, grant: OwnershipGrant) -> OwnershipGrant:
+        self._require_scope_match(scope, grant.tenant_id, grant.project_id)
+        self._ownership.setdefault((scope.scope_key, grant.logical_agent_id), []).append(grant)
         return grant
 
-    def role_for(
-        self,
-        tenant_id: str,
-        logical_agent_id: str,
-        principal_id: str,
-        *,
-        project_id: str | None = None,
-    ) -> AgentRole | None:
-        """Resolve ``principal_id``'s effective role on this agent.
+    def role_for(self, scope: ScopeContext, logical_agent_id: str, principal_id: str) -> AgentRole | None:
+        """Resolve ``principal_id``'s effective role on this agent within ``scope``.
 
-        When ``project_id`` is omitted (default), every grant for the
-        principal counts, exactly matching pre-Phase-2 behavior. When a
-        caller opts in by supplying ``project_id``, only grants scoped to
-        that project *or* to no project at all (``OwnershipGrant.project_id
-        is None``, i.e. tenant-wide/legacy) count — a grant scoped to a
-        *different* project is excluded. This lets cross-project isolation
-        be enforced without any change for existing tenant-only call sites.
+        Only grants whose own ``(tenant_id, project_id)`` matches ``scope``
+        exactly are considered — a grant scoped to a different project (even
+        within the same tenant) never counts, closing the cross-project
+        privilege-leak this store previously tolerated via an optional
+        ``project_id``.
         """
-        grants = self._ownership.get((tenant_id, logical_agent_id), [])
-        roles = {
-            grant.role
-            for grant in grants
-            if grant.principal_id == principal_id
-            and (project_id is None or grant.project_id is None or grant.project_id == project_id)
-        }
+        grants = self._ownership.get((scope.scope_key, logical_agent_id), [])
+        roles = {grant.role for grant in grants if grant.principal_id == principal_id}
         if not roles:
             return None
         for candidate in _ROLE_PRECEDENCE:
@@ -119,23 +130,23 @@ class AgentStudioStore:
                 return candidate
         return None
 
-    def list_ownership(self, tenant_id: str, logical_agent_id: str) -> tuple[OwnershipGrant, ...]:
-        return tuple(self._ownership.get((tenant_id, logical_agent_id), []))
+    def list_ownership(self, scope: ScopeContext, logical_agent_id: str) -> tuple[OwnershipGrant, ...]:
+        return tuple(self._ownership.get((scope.scope_key, logical_agent_id), []))
 
     # -- Versions -------------------------------------------------------
 
-    def next_sequence(self, tenant_id: str, logical_agent_id: str) -> int:
+    def next_sequence(self, scope: ScopeContext, logical_agent_id: str) -> int:
         """Advisory next-sequence read (e.g. for UI/preview display).
 
         Not atomic on its own when called separately from persistence — use
         ``allocate_version`` to actually cut a version, which holds a single
         lock across sequence computation *and* persistence.
         """
-        return len(self._versions_by_agent.get((tenant_id, logical_agent_id), [])) + 1
+        return len(self._versions_by_agent.get((scope.scope_key, logical_agent_id), [])) + 1
 
     def allocate_version(
         self,
-        tenant_id: str,
+        scope: ScopeContext,
         logical_agent_id: str,
         builder: Callable[[int], AgentVersion],
     ) -> AgentVersion:
@@ -149,8 +160,10 @@ class AgentStudioStore:
         sequence number.
         """
         with self._version_lock:
-            sequence = len(self._versions_by_agent.get((tenant_id, logical_agent_id), [])) + 1
+            key = (scope.scope_key, logical_agent_id)
+            sequence = len(self._versions_by_agent.get(key, [])) + 1
             version = builder(sequence)
+            self._require_scope_match(scope, version.tenant_id, version.project_id)
             if version.sequence != sequence:
                 raise AgentStudioStoreError(
                     f"Builder returned sequence {version.sequence}, expected atomically-reserved {sequence}."
@@ -158,10 +171,10 @@ class AgentStudioStore:
             if version.id in self._versions:
                 raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
             self._versions[version.id] = version
-            self._versions_by_agent.setdefault((tenant_id, logical_agent_id), []).append(version.id)
+            self._versions_by_agent.setdefault(key, []).append(version.id)
             return version
 
-    def create_version(self, version: AgentVersion) -> AgentVersion:
+    def create_version(self, scope: ScopeContext, version: AgentVersion) -> AgentVersion:
         """Direct persistence path for an already sequence-assigned version.
 
         Used by tests, by ``CosmosAgentStudioStore`` read-through caching,
@@ -169,38 +182,44 @@ class AgentStudioStore:
         ``AgentVersion``. Real cut flows should prefer ``allocate_version``
         for atomic sequence allocation.
         """
+        self._require_scope_match(scope, version.tenant_id, version.project_id)
         with self._version_lock:
             if version.id in self._versions:
                 raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
             self._versions[version.id] = version
-            self._versions_by_agent.setdefault((version.tenant_id, version.logical_agent_id), []).append(version.id)
+            self._versions_by_agent.setdefault((scope.scope_key, version.logical_agent_id), []).append(version.id)
             return version
 
-    def get_version(self, tenant_id: str, version_id: str) -> AgentVersion | None:
+    def get_version(self, scope: ScopeContext, version_id: str) -> AgentVersion | None:
         version = self._versions.get(version_id)
-        if version is None or version.tenant_id != tenant_id:
+        if version is None or version.tenant_id != scope.tenant_id or version.project_id != scope.project_id:
             return None
         return version
 
-    def list_versions(self, tenant_id: str, logical_agent_id: str) -> tuple[AgentVersion, ...]:
-        ids = self._versions_by_agent.get((tenant_id, logical_agent_id), [])
+    def list_versions(self, scope: ScopeContext, logical_agent_id: str) -> tuple[AgentVersion, ...]:
+        ids = self._versions_by_agent.get((scope.scope_key, logical_agent_id), [])
         return tuple(self._versions[version_id] for version_id in ids)
 
     # -- Lineage --------------------------------------------------------
 
-    def add_lineage_edge(self, edge: LineageEdge) -> LineageEdge:
+    def add_lineage_edge(self, scope: ScopeContext, edge: LineageEdge) -> LineageEdge:
+        self._require_scope_match(scope, edge.tenant_id, edge.project_id)
         self._lineage.append(edge)
         return edge
 
-    def list_lineage(self, tenant_id: str, logical_agent_id: str) -> tuple[LineageEdge, ...]:
+    def list_lineage(self, scope: ScopeContext, logical_agent_id: str) -> tuple[LineageEdge, ...]:
         return tuple(
             edge
             for edge in self._lineage
-            if edge.tenant_id == tenant_id
+            if edge.tenant_id == scope.tenant_id
+            and edge.project_id == scope.project_id
             and (edge.child_logical_agent_id == logical_agent_id or edge.parent_logical_agent_id == logical_agent_id)
         )
 
     # -- Gate reports -----------------------------------------------------
+    # Gate reports are keyed by opaque ``version_id``-derived ``id`` only; the
+    # owning version has already been scope-checked by the caller (see
+    # ``release_service``), so no separate scope parameter is threaded here.
 
     def save_gate_report(self, report: ReleaseGateReport) -> ReleaseGateReport:
         self._gate_reports[report.id] = report
@@ -211,62 +230,70 @@ class AgentStudioStore:
 
     # -- Releases (append-only lifecycle for an immutable version) ---------
 
-    def create_release(self, release: AgentRelease) -> AgentRelease:
+    def create_release(self, scope: ScopeContext, release: AgentRelease) -> AgentRelease:
         """Append a new lifecycle transition for a version.
 
         Never mutates an existing ``AgentRelease``; every transition
         (gated/approved/active/deprecated/rolled_back) is a brand-new record
         chained via ``previous_release_id``.
         """
+        self._require_scope_match(scope, release.tenant_id, release.project_id)
         self._releases[release.id] = release
         self._releases_by_version.setdefault(release.version_id, []).append(release.id)
         return release
 
-    def get_release(self, tenant_id: str, release_id: str) -> AgentRelease | None:
+    def get_release(self, scope: ScopeContext, release_id: str) -> AgentRelease | None:
         release = self._releases.get(release_id)
-        if release is None or release.tenant_id != tenant_id:
+        if release is None or release.tenant_id != scope.tenant_id or release.project_id != scope.project_id:
             return None
         return release
 
-    def list_releases_for_version(self, tenant_id: str, version_id: str) -> tuple[AgentRelease, ...]:
+    def list_releases_for_version(self, scope: ScopeContext, version_id: str) -> tuple[AgentRelease, ...]:
         ids = self._releases_by_version.get(version_id, [])
-        return tuple(release for release in (self._releases[i] for i in ids) if release.tenant_id == tenant_id)
+        return tuple(
+            release
+            for release in (self._releases[i] for i in ids)
+            if release.tenant_id == scope.tenant_id and release.project_id == scope.project_id
+        )
 
-    def latest_release_for_version(self, tenant_id: str, version_id: str) -> AgentRelease | None:
+    def latest_release_for_version(self, scope: ScopeContext, version_id: str) -> AgentRelease | None:
         """The most recent lifecycle transition for a version, or ``None``
         if the version has never had a release cut (i.e. it has not yet
         passed hard gates)."""
-        releases = self.list_releases_for_version(tenant_id, version_id)
+        releases = self.list_releases_for_version(scope, version_id)
         return releases[-1] if releases else None
 
     # -- Approvals ------------------------------------------------------
 
-    def find_pending_approval(self, tenant_id: str, idempotency_key: str) -> StudioApprovalRecord | None:
+    def find_pending_approval(self, scope: ScopeContext, idempotency_key: str) -> StudioApprovalRecord | None:
         return next(
             (
                 approval
                 for approval in self._approvals.values()
-                if approval.tenant_id == tenant_id
+                if approval.tenant_id == scope.tenant_id
+                and approval.project_id == scope.project_id
                 and approval.idempotency_key == idempotency_key
                 and approval.state == ApprovalState.PENDING
             ),
             None,
         )
 
-    def create_approval(self, record: StudioApprovalRecord) -> StudioApprovalRecord:
-        existing = self.find_pending_approval(record.tenant_id, record.idempotency_key)
+    def create_approval(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        existing = self.find_pending_approval(scope, record.idempotency_key)
         if existing is not None:
             return existing
         self._approvals[record.id] = record
         return record
 
-    def get_approval(self, tenant_id: str, approval_id: str) -> StudioApprovalRecord | None:
+    def get_approval(self, scope: ScopeContext, approval_id: str) -> StudioApprovalRecord | None:
         record = self._approvals.get(approval_id)
-        if record is None or record.tenant_id != tenant_id:
+        if record is None or record.tenant_id != scope.tenant_id or record.project_id != scope.project_id:
             return None
         return record
 
-    def save_approval_decision(self, record: StudioApprovalRecord) -> StudioApprovalRecord:
+    def save_approval_decision(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
         current = self._approvals.get(record.id)
         if current is None:
             raise AgentStudioStoreError(f"Approval '{record.id}' not found.")
@@ -275,31 +302,35 @@ class AgentStudioStore:
         self._approvals[record.id] = record
         return record
 
-    def list_approvals(self, tenant_id: str, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
+    def list_approvals(self, scope: ScopeContext, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
         return tuple(
             approval
             for approval in self._approvals.values()
-            if approval.tenant_id == tenant_id and (version_id is None or approval.version_id == version_id)
+            if approval.tenant_id == scope.tenant_id
+            and approval.project_id == scope.project_id
+            and (version_id is None or approval.version_id == version_id)
         )
 
     # -- Deployments ------------------------------------------------------
 
-    def create_deployment(self, record: DeploymentRecord) -> DeploymentRecord:
+    def create_deployment(self, scope: ScopeContext, record: DeploymentRecord) -> DeploymentRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
         self._deployments[record.id] = record
-        self._deployments_by_agent.setdefault((record.tenant_id, record.logical_agent_id), []).append(record.id)
+        self._deployments_by_agent.setdefault((scope.scope_key, record.logical_agent_id), []).append(record.id)
         return record
 
-    def get_deployment(self, tenant_id: str, deployment_id: str) -> DeploymentRecord | None:
+    def get_deployment(self, scope: ScopeContext, deployment_id: str) -> DeploymentRecord | None:
         record = self._deployments.get(deployment_id)
-        if record is None or record.tenant_id != tenant_id:
+        if record is None or record.tenant_id != scope.tenant_id or record.project_id != scope.project_id:
             return None
         return record
 
-    def list_deployments(self, tenant_id: str, logical_agent_id: str) -> tuple[DeploymentRecord, ...]:
-        ids = self._deployments_by_agent.get((tenant_id, logical_agent_id), [])
+    def list_deployments(self, scope: ScopeContext, logical_agent_id: str) -> tuple[DeploymentRecord, ...]:
+        ids = self._deployments_by_agent.get((scope.scope_key, logical_agent_id), [])
         return tuple(self._deployments[deployment_id] for deployment_id in ids)
 
-    def update_deployment(self, record: DeploymentRecord) -> DeploymentRecord:
+    def update_deployment(self, scope: ScopeContext, record: DeploymentRecord) -> DeploymentRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
         if record.id not in self._deployments:
             raise AgentStudioStoreError(f"Deployment '{record.id}' not found.")
         self._deployments[record.id] = record
@@ -307,51 +338,57 @@ class AgentStudioStore:
 
     # -- Logical agent bindings ----------------------------------------
 
-    def set_binding(self, binding: LogicalAgentBinding) -> LogicalAgentBinding:
-        self._bindings[(binding.tenant_id, binding.logical_agent_id, binding.environment.value)] = binding
+    def set_binding(self, scope: ScopeContext, binding: LogicalAgentBinding) -> LogicalAgentBinding:
+        self._require_scope_match(scope, binding.tenant_id, binding.project_id)
+        self._bindings[(scope.scope_key, binding.logical_agent_id, binding.environment.value)] = binding
         return binding
 
     def get_binding(
         self,
-        tenant_id: str,
+        scope: ScopeContext,
         logical_agent_id: str,
         environment: DeploymentEnvironment,
     ) -> LogicalAgentBinding | None:
-        return self._bindings.get((tenant_id, logical_agent_id, environment.value))
+        return self._bindings.get((scope.scope_key, logical_agent_id, environment.value))
 
     # -- Tool registrations (runtime handler wiring) -----------------------
 
-    def create_tool_registration(self, registration: ToolRegistrationSpec) -> ToolRegistrationSpec:
+    def create_tool_registration(
+        self, scope: ScopeContext, registration: ToolRegistrationSpec
+    ) -> ToolRegistrationSpec:
+        self._require_scope_match(scope, registration.tenant_id, registration.project_id)
         self._tool_registrations[registration.id] = registration
         self._tool_registrations_by_agent.setdefault(
-            (registration.tenant_id, registration.logical_agent_id), []
+            (scope.scope_key, registration.logical_agent_id), []
         ).append(registration.id)
         return registration
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
-        ids = self._tool_registrations_by_agent.get((tenant_id, logical_agent_id), [])
+    def list_tool_registrations(self, scope: ScopeContext, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
+        ids = self._tool_registrations_by_agent.get((scope.scope_key, logical_agent_id), [])
         return tuple(self._tool_registrations[registration_id] for registration_id in ids)
 
     # -- Builder proposals --------------------------------------------------
 
-    def create_builder_proposal(self, proposal: BuilderProposal) -> BuilderProposal:
+    def create_builder_proposal(self, scope: ScopeContext, proposal: BuilderProposal) -> BuilderProposal:
+        self._require_scope_match(scope, proposal.tenant_id, proposal.project_id)
         self._builder_proposals[proposal.id] = proposal
         self._builder_proposals_by_agent.setdefault(
-            (proposal.tenant_id, proposal.logical_agent_id), []
+            (scope.scope_key, proposal.logical_agent_id), []
         ).append(proposal.id)
         return proposal
 
-    def get_builder_proposal(self, tenant_id: str, proposal_id: str) -> BuilderProposal | None:
+    def get_builder_proposal(self, scope: ScopeContext, proposal_id: str) -> BuilderProposal | None:
         proposal = self._builder_proposals.get(proposal_id)
-        if proposal is None or proposal.tenant_id != tenant_id:
+        if proposal is None or proposal.tenant_id != scope.tenant_id or proposal.project_id != scope.project_id:
             return None
         return proposal
 
-    def list_builder_proposals(self, tenant_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
-        ids = self._builder_proposals_by_agent.get((tenant_id, logical_agent_id), [])
+    def list_builder_proposals(self, scope: ScopeContext, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
+        ids = self._builder_proposals_by_agent.get((scope.scope_key, logical_agent_id), [])
         return tuple(self._builder_proposals[proposal_id] for proposal_id in ids)
 
-    def save_builder_proposal_decision(self, proposal: BuilderProposal) -> BuilderProposal:
+    def save_builder_proposal_decision(self, scope: ScopeContext, proposal: BuilderProposal) -> BuilderProposal:
+        self._require_scope_match(scope, proposal.tenant_id, proposal.project_id)
         current = self._builder_proposals.get(proposal.id)
         if current is None:
             raise AgentStudioStoreError(f"Proposal '{proposal.id}' not found.")

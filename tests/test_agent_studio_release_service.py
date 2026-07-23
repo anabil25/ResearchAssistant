@@ -1,9 +1,20 @@
 from __future__ import annotations
 
-from collections.abc import Mapping
+# ruff: noqa: E402
+import sys
+import types
+from collections.abc import Callable, Mapping
 from datetime import UTC, datetime
+from pathlib import Path
 
 import pytest
+
+PACKAGE_ROOT = Path(__file__).resolve().parents[1] / "services" / "api" / "src" / "research_assistant_api"
+if "research_assistant_api" not in sys.modules:
+    package = types.ModuleType("research_assistant_api")
+    package.__path__ = [str(PACKAGE_ROOT)]
+    sys.modules["research_assistant_api"] = package
+
 import research_assistant_api.agent_studio.release_service as release_service_module
 from research_assistant_api.agent_studio.approvals import ApprovalError, idempotency_key
 from research_assistant_api.agent_studio.capability_registry import CapabilityAttachmentError, default_registry
@@ -42,23 +53,36 @@ from research_assistant_api.agent_studio.release_service import (
     manifest_hash,
     resolve_actor_role,
 )
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
+
+TEST_PROJECT_ID = "proj-1"
+OTHER_PROJECT_ID = "proj-2"
+
+
+def _scope(tenant_id: str = "demo", project_id: str = TEST_PROJECT_ID) -> ScopeContext:
+    return ScopeContext(tenant_id=tenant_id, project_id=project_id)
 
 
 class SpyAllocateStore(AgentStudioStore):
     def __init__(self) -> None:
         super().__init__()
-        self.allocate_calls: list[tuple[str, str]] = []
+        self.allocate_calls: list[tuple[str, str, str]] = []
         self.built_version: AgentVersion | None = None
 
-    def next_sequence(self, tenant_id: str, logical_agent_id: str) -> int:  # pragma: no cover - defensive
+    def next_sequence(self, scope: ScopeContext, logical_agent_id: str) -> int:  # pragma: no cover - defensive
         raise AssertionError("cut_version should use allocate_version(), not next_sequence().")
 
-    def allocate_version(self, tenant_id: str, logical_agent_id: str, builder):  # type: ignore[override]
-        self.allocate_calls.append((tenant_id, logical_agent_id))
+    def allocate_version(
+        self,
+        scope: ScopeContext,
+        logical_agent_id: str,
+        builder: Callable[[int], AgentVersion],
+    ) -> AgentVersion:
+        self.allocate_calls.append((scope.tenant_id, scope.project_id, logical_agent_id))
         version = builder(7)
         self.built_version = version
-        return self.create_version(version)
+        return self.create_version(scope, version)
 
 
 @pytest.fixture
@@ -76,6 +100,7 @@ def _create_agent(
     service: ReleaseService,
     *,
     tenant_id: str = "demo",
+    project_id: str = TEST_PROJECT_ID,
     logical_agent_id: str = "agent-one",
     owner_id: str = "user-1",
     requested_by: str | None = None,
@@ -84,6 +109,7 @@ def _create_agent(
 ) -> None:
     service.create_agent(
         tenant_id=tenant_id,
+        project_id=project_id,
         logical_agent_id=logical_agent_id,
         display_name=logical_agent_id,
         owner_kind=owner_kind,
@@ -97,16 +123,24 @@ def _gated_version(
     service: ReleaseService,
     *,
     tenant_id: str = "demo",
+    project_id: str = TEST_PROJECT_ID,
     logical_agent_id: str = "agent-one",
     owner_id: str = "user-1",
     manifest_updates: dict[str, object] | None = None,
 ) -> AgentVersion:
-    _create_agent(service, tenant_id=tenant_id, logical_agent_id=logical_agent_id, owner_id=owner_id)
+    _create_agent(
+        service,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        logical_agent_id=logical_agent_id,
+        owner_id=owner_id,
+    )
     if manifest_updates is not None:
-        draft = service._store.get_draft(tenant_id, logical_agent_id)
+        draft = service._store.get_draft(_scope(tenant_id, project_id), logical_agent_id)
         assert draft is not None
         service.update_draft(
             tenant_id=tenant_id,
+            project_id=project_id,
             logical_agent_id=logical_agent_id,
             manifest=draft.manifest.model_copy(update=manifest_updates),
             updated_by=owner_id,
@@ -114,12 +148,14 @@ def _gated_version(
         )
     version = service.cut_version(
         tenant_id=tenant_id,
+        project_id=project_id,
         logical_agent_id=logical_agent_id,
         actor_id=owner_id,
         actor_role=AgentRole.OWNER,
     )
     service.run_release_gates(
         tenant_id=tenant_id,
+        project_id=project_id,
         version_id=version.id,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
@@ -127,13 +163,19 @@ def _gated_version(
 
 
 def _release_statuses(service: ReleaseService, version: AgentVersion) -> list[ReleaseStatus]:
-    return [release.status for release in service._store.list_releases_for_version(version.tenant_id, version.id)]
+    return [
+        release.status
+        for release in service._store.list_releases_for_version(
+            _scope(version.tenant_id, version.project_id),
+            version.id,
+        )
+    ]
 
 
 def test_manifest_hash_is_deterministic() -> None:
     local_service = ReleaseService(AgentStudioStore(), default_registry())
     _create_agent(local_service, logical_agent_id="agent-hash")
-    draft = local_service._store.get_draft("demo", "agent-hash")
+    draft = local_service._store.get_draft(_scope(), "agent-hash")
     assert draft is not None
 
     assert manifest_hash(draft.manifest) == manifest_hash(draft.manifest)
@@ -144,6 +186,7 @@ def test_manifest_hash_is_deterministic() -> None:
 def test_create_agent_user_owned_grants_owner_role(service: ReleaseService) -> None:
     draft = service.create_agent(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         display_name="Agent One",
         owner_kind=AgentOwnerKind.USER,
@@ -156,6 +199,7 @@ def test_create_agent_user_owned_grants_owner_role(service: ReleaseService) -> N
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         principal_id="user-1",
     ) is AgentRole.OWNER
@@ -165,6 +209,7 @@ def test_create_agent_system_owned_requires_platform_owner(service: ReleaseServi
     with pytest.raises(AuthorizationError, match="platform owners"):
         service.create_agent(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-sys",
             display_name="System Agent",
             owner_kind=AgentOwnerKind.SYSTEM,
@@ -177,6 +222,7 @@ def test_create_agent_system_owned_requires_platform_owner(service: ReleaseServi
 def test_create_agent_system_owned_succeeds_for_platform_owner(service: ReleaseService) -> None:
     draft = service.create_agent(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-sys",
         display_name="System Agent",
         owner_kind=AgentOwnerKind.SYSTEM,
@@ -189,6 +235,7 @@ def test_create_agent_system_owned_succeeds_for_platform_owner(service: ReleaseS
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-sys",
         principal_id="platform",
     ) is AgentRole.OWNER
@@ -203,12 +250,13 @@ def test_create_agent_rejects_duplicate_logical_agent_id(service: ReleaseService
 
 def test_update_draft_requires_contributor_role(service: ReleaseService) -> None:
     _create_agent(service)
-    draft = service._store.get_draft("demo", "agent-one")
+    draft = service._store.get_draft(_scope(), "agent-one")
     assert draft is not None
 
     with pytest.raises(AuthorizationError, match="does not meet the minimum"):
         service.update_draft(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-one",
             manifest=draft.manifest.model_copy(update={"display_name": "Renamed"}),
             updated_by="user-2",
@@ -218,12 +266,13 @@ def test_update_draft_requires_contributor_role(service: ReleaseService) -> None
 
 def test_update_draft_rejects_mismatched_manifest_identity(service: ReleaseService) -> None:
     _create_agent(service)
-    draft = service._store.get_draft("demo", "agent-one")
+    draft = service._store.get_draft(_scope(), "agent-one")
     assert draft is not None
 
     with pytest.raises(ReleaseServiceError, match="must match"):
         service.update_draft(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-one",
             manifest=draft.manifest.model_copy(update={"logical_agent_id": "agent-other"}),
             updated_by="user-1",
@@ -235,6 +284,7 @@ def test_update_draft_raises_when_no_draft_exists(service: ReleaseService) -> No
     manifest = AgentManifest(
         logical_agent_id="agent-missing",
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         display_name="Missing",
         owner_kind=AgentOwnerKind.USER,
         owner_id="user-1",
@@ -243,6 +293,7 @@ def test_update_draft_raises_when_no_draft_exists(service: ReleaseService) -> No
     with pytest.raises(ReleaseServiceError, match="has no draft"):
         service.update_draft(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-missing",
             manifest=manifest,
             updated_by="user-1",
@@ -252,11 +303,12 @@ def test_update_draft_raises_when_no_draft_exists(service: ReleaseService) -> No
 
 def test_update_draft_succeeds_with_contributor_role(service: ReleaseService) -> None:
     _create_agent(service)
-    draft = service._store.get_draft("demo", "agent-one")
+    draft = service._store.get_draft(_scope(), "agent-one")
     assert draft is not None
 
     updated = service.update_draft(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         manifest=draft.manifest.model_copy(update={"display_name": "Renamed Agent"}),
         updated_by="user-1",
@@ -273,6 +325,7 @@ def test_fork_rejects_unknown_source_version(service: ReleaseService) -> None:
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.fork(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             source_logical_agent_id="agent-parent",
             source_version_id="missing-version",
             new_logical_agent_id="agent-fork",
@@ -284,6 +337,7 @@ def test_fork_rejects_cross_tenant_source_version(service: ReleaseService) -> No
     _create_agent(service, tenant_id="tenant-a", logical_agent_id="agent-parent")
     version = service.cut_version(
         tenant_id="tenant-a",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-parent",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -292,6 +346,28 @@ def test_fork_rejects_cross_tenant_source_version(service: ReleaseService) -> No
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.fork(
             tenant_id="tenant-b",
+            project_id=TEST_PROJECT_ID,
+            source_logical_agent_id="agent-parent",
+            source_version_id=version.id,
+            new_logical_agent_id="agent-fork",
+            requested_by="user-2",
+        )
+
+
+def test_fork_rejects_cross_project_source_version(service: ReleaseService) -> None:
+    _create_agent(service, project_id=TEST_PROJECT_ID, logical_agent_id="agent-parent")
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-parent",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    with pytest.raises(ReleaseServiceError, match="not found"):
+        service.fork(
+            tenant_id="demo",
+            project_id=OTHER_PROJECT_ID,
             source_logical_agent_id="agent-parent",
             source_version_id=version.id,
             new_logical_agent_id="agent-fork",
@@ -310,6 +386,7 @@ def test_fork_succeeds_and_creates_private_user_owned_draft(service: ReleaseServ
     )
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-parent",
         actor_id="admin-1",
         actor_role=AgentRole.OWNER,
@@ -317,6 +394,7 @@ def test_fork_succeeds_and_creates_private_user_owned_draft(service: ReleaseServ
 
     forked = service.fork(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         source_logical_agent_id="agent-parent",
         source_version_id=version.id,
         new_logical_agent_id="agent-fork",
@@ -330,6 +408,7 @@ def test_fork_succeeds_and_creates_private_user_owned_draft(service: ReleaseServ
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-fork",
         principal_id="researcher-1",
     ) is AgentRole.OWNER
@@ -339,6 +418,7 @@ def test_fork_rejects_duplicate_new_logical_agent_id(service: ReleaseService) ->
     _create_agent(service, logical_agent_id="agent-parent")
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-parent",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -348,6 +428,7 @@ def test_fork_rejects_duplicate_new_logical_agent_id(service: ReleaseService) ->
     with pytest.raises(ReleaseServiceError, match="already exists"):
         service.fork(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             source_logical_agent_id="agent-parent",
             source_version_id=version.id,
             new_logical_agent_id="agent-fork",
@@ -361,6 +442,7 @@ def test_cut_version_requires_contributor_role(service: ReleaseService) -> None:
     with pytest.raises(AuthorizationError, match="does not meet the minimum"):
         service.cut_version(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-one",
             actor_id="user-2",
             actor_role=AgentRole.VIEWER,
@@ -371,7 +453,21 @@ def test_cut_version_raises_when_no_draft_exists(service: ReleaseService) -> Non
     with pytest.raises(ReleaseServiceError, match="has no draft"):
         service.cut_version(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-missing",
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_cut_version_rejects_cross_project_draft(service: ReleaseService) -> None:
+    _create_agent(service, project_id=TEST_PROJECT_ID, logical_agent_id="agent-scoped")
+
+    with pytest.raises(ReleaseServiceError, match="has no draft"):
+        service.cut_version(
+            tenant_id="demo",
+            project_id=OTHER_PROJECT_ID,
+            logical_agent_id="agent-scoped",
             actor_id="user-1",
             actor_role=AgentRole.OWNER,
         )
@@ -387,7 +483,7 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
         ),
     )
     _create_agent(service, logical_agent_id="agent-cut-fields")
-    draft = store.get_draft("demo", "agent-cut-fields")
+    draft = store.get_draft(_scope(), "agent-cut-fields")
     assert draft is not None
     binding = service._registry.attach(
         descriptor_id="foundry.web_search",
@@ -406,6 +502,7 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     )
     service.update_draft(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-cut-fields",
         manifest=updated_manifest,
         updated_by="user-1",
@@ -414,12 +511,13 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
 
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-cut-fields",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
     )
 
-    assert store.allocate_calls == [("demo", "agent-cut-fields")]
+    assert store.allocate_calls == [("demo", TEST_PROJECT_ID, "agent-cut-fields")]
     assert store.built_version == version
     assert version.sequence == 7
     assert version.manifest == updated_manifest
@@ -437,12 +535,14 @@ def test_cut_version_sets_sequence_parent_and_fork_lineage_once(service: Release
     _create_agent(service, logical_agent_id="agent-parent")
     first = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-parent",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
     )
     second = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-parent",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -455,6 +555,7 @@ def test_cut_version_sets_sequence_parent_and_fork_lineage_once(service: Release
 
     service.fork(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         source_logical_agent_id="agent-parent",
         source_version_id=first.id,
         new_logical_agent_id="agent-fork",
@@ -462,18 +563,20 @@ def test_cut_version_sets_sequence_parent_and_fork_lineage_once(service: Release
     )
     fork_v1 = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-fork",
         actor_id="user-2",
         actor_role=AgentRole.OWNER,
     )
     fork_v2 = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-fork",
         actor_id="user-2",
         actor_role=AgentRole.OWNER,
     )
 
-    lineage = service._store.list_lineage("demo", "agent-fork")
+    lineage = service._store.list_lineage(_scope(), "agent-fork")
     assert fork_v1.fork_of_version_id == first.id
     assert fork_v2.fork_of_version_id is None
     assert len(lineage) == 1
@@ -483,27 +586,48 @@ def test_cut_version_sets_sequence_parent_and_fork_lineage_once(service: Release
 
 def test_cut_version_skips_lineage_when_fork_source_is_missing(service: ReleaseService) -> None:
     _create_agent(service)
-    draft = service._store.get_draft("demo", "agent-one")
+    draft = service._store.get_draft(_scope(), "agent-one")
     assert draft is not None
-    service._store.save_draft(draft.model_copy(update={"based_on_version_id": "ghost-version"}))
+    service._store.save_draft(_scope(), draft.model_copy(update={"based_on_version_id": "ghost-version"}))
 
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
     )
 
     assert version.fork_of_version_id == "ghost-version"
-    assert service._store.list_lineage("demo", "agent-one") == ()
+    assert service._store.list_lineage(_scope(), "agent-one") == ()
 
 
 def test_run_release_gates_raises_for_missing_version(service: ReleaseService) -> None:
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.run_release_gates(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id="missing",
             evidence=GateEvidence(),
+        )
+
+
+def test_run_release_gates_rejects_cross_project_version(service: ReleaseService) -> None:
+    _create_agent(service, project_id=TEST_PROJECT_ID, logical_agent_id="agent-cross-project-version")
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-cross-project-version",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    with pytest.raises(ReleaseServiceError, match="not found"):
+        service.run_release_gates(
+            tenant_id="demo",
+            project_id=OTHER_PROJECT_ID,
+            version_id=version.id,
+            evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
         )
 
 
@@ -555,16 +679,18 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
 
     first = service.run_release_gates(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
     second = service.run_release_gates(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
 
-    releases = service._store.list_releases_for_version("demo", version.id)
+    releases = service._store.list_releases_for_version(_scope(), version.id)
     assert calls == [RuntimeTarget.CUSTOM_HOSTED, RuntimeTarget.CUSTOM_HOSTED]
     assert first.evaluations[0].summary == "Advisory evaluation warning."
     assert [release.status for release in releases] == [ReleaseStatus.GATED, ReleaseStatus.GATED]
@@ -581,6 +707,7 @@ def test_run_release_gates_failed_report_creates_no_release(
     _create_agent(service)
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -607,19 +734,21 @@ def test_run_release_gates_failed_report_creates_no_release(
 
     report = service.run_release_gates(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         evidence=GateEvidence(),
     )
 
     assert not report.passed
     assert service._store.get_gate_report("report-fail") == report
-    assert service._store.list_releases_for_version("demo", version.id) == ()
+    assert service._store.list_releases_for_version(_scope(), version.id) == ()
 
 
 def test_request_promotion_raises_for_missing_version(service: ReleaseService) -> None:
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.request_promotion(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id="missing",
             actor_id="user-1",
             actor_role=AgentRole.OWNER,
@@ -632,6 +761,7 @@ def test_request_promotion_raises_when_version_has_not_been_gated(service: Relea
     _create_agent(service)
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -640,6 +770,7 @@ def test_request_promotion_raises_when_version_has_not_been_gated(service: Relea
     with pytest.raises(ReleaseServiceError, match="status 'none'"):
         service.request_promotion(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id=version.id,
             actor_id="user-1",
             actor_role=AgentRole.OWNER,
@@ -653,6 +784,7 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(serv
 
     result = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-1",
         actor_role=AgentRole.MAINTAINER,
@@ -660,9 +792,9 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(serv
         evidence_summary="All hard gates green.",
     )
 
-    releases = service._store.list_releases_for_version("demo", version.id)
+    releases = service._store.list_releases_for_version(_scope(), version.id)
     assert result == version
-    assert service._store.list_approvals("demo", version.id) == ()
+    assert service._store.list_approvals(_scope(), version.id) == ()
     assert [release.status for release in releases] == [
         ReleaseStatus.GATED,
         ReleaseStatus.APPROVED,
@@ -674,6 +806,7 @@ def test_request_promotion_auto_promotes_and_blocks_repromotion_once_active(serv
     with pytest.raises(ReleaseServiceError, match="status 'active'"):
         service.request_promotion(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id=version.id,
             actor_id="user-1",
             actor_role=AgentRole.MAINTAINER,
@@ -687,6 +820,7 @@ def test_request_promotion_creates_idempotent_context_bound_approval(service: Re
 
     first = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -699,6 +833,7 @@ def test_request_promotion_creates_idempotent_context_bound_approval(service: Re
     )
     second = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -711,6 +846,7 @@ def test_request_promotion_creates_idempotent_context_bound_approval(service: Re
     )
 
     assert first == second
+    assert isinstance(first, StudioApprovalRecord)
     assert first.kind is ApprovalKind.RELEASE_PROMOTION
     assert first.state is ApprovalState.PENDING
     assert first.content_hash == version.manifest_hash
@@ -730,6 +866,7 @@ def test_request_promotion_uses_fork_promotion_kind_for_forked_versions(service:
     parent = _gated_version(service, logical_agent_id="agent-parent")
     service.fork(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         source_logical_agent_id="agent-parent",
         source_version_id=parent.id,
         new_logical_agent_id="agent-fork",
@@ -737,18 +874,21 @@ def test_request_promotion_uses_fork_promotion_kind_for_forked_versions(service:
     )
     fork_version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-fork",
         actor_id="user-2",
         actor_role=AgentRole.OWNER,
     )
     service.run_release_gates(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=fork_version.id,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
 
     approval = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=fork_version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -756,6 +896,7 @@ def test_request_promotion_uses_fork_promotion_kind_for_forked_versions(service:
         evidence_summary="Forked agent ready.",
     )
 
+    assert isinstance(approval, StudioApprovalRecord)
     assert approval.kind is ApprovalKind.FORK_PROMOTION
 
 
@@ -763,6 +904,7 @@ def test_decide_promotion_raises_for_missing_approval(service: ReleaseService) -
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.decide_promotion(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id="missing",
             approver_id="approver-1",
             approver_role=AgentRole.OWNER,
@@ -774,6 +916,7 @@ def test_decide_promotion_approves_and_promotes(service: ReleaseService) -> None
     version = _gated_version(service)
     request = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -783,6 +926,7 @@ def test_decide_promotion_approves_and_promotes(service: ReleaseService) -> None
 
     decided = service.decide_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         approval_id=request.id,
         approver_id="maintainer-1",
         approver_role=AgentRole.MAINTAINER,
@@ -790,8 +934,8 @@ def test_decide_promotion_approves_and_promotes(service: ReleaseService) -> None
         rationale="LGTM",
     )
 
-    stored = service._store.get_approval("demo", request.id)
-    releases = service._store.list_releases_for_version("demo", version.id)
+    stored = service._store.get_approval(_scope(), request.id)
+    releases = service._store.list_releases_for_version(_scope(), version.id)
     assert decided.state is ApprovalState.APPROVED
     assert stored == decided
     assert stored is not None and stored.approver_id == "maintainer-1"
@@ -809,6 +953,7 @@ def test_decide_promotion_rejection_does_not_promote(service: ReleaseService) ->
     version = _gated_version(service)
     request = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -818,6 +963,7 @@ def test_decide_promotion_rejection_does_not_promote(service: ReleaseService) ->
 
     decided = service.decide_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         approval_id=request.id,
         approver_id="maintainer-1",
         approver_role=AgentRole.MAINTAINER,
@@ -830,29 +976,32 @@ def test_decide_promotion_rejection_does_not_promote(service: ReleaseService) ->
 
 def test_promote_internal_validates_version_and_gated_release(service: ReleaseService) -> None:
     with pytest.raises(ReleaseServiceError, match="not found"):
-        service._promote("demo", "missing")
+        service._promote(_scope(), "missing")
 
     _create_agent(service)
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
     )
     with pytest.raises(ReleaseServiceError, match="no gated release"):
-        service._promote("demo", version.id)
+        service._promote(_scope(), version.id)
 
 
 def test_decide_promotion_bubbles_up_expired_approval_error(service: ReleaseService) -> None:
     version = _gated_version(service)
     request = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
         destination="production",
         evidence_summary="Ready.",
     )
+    assert isinstance(request, StudioApprovalRecord)
     service._store._approvals[request.id] = request.model_copy(
         update={"expires_at": datetime(2026, 1, 1, tzinfo=UTC)}
     )
@@ -860,10 +1009,27 @@ def test_decide_promotion_bubbles_up_expired_approval_error(service: ReleaseServ
     with pytest.raises(ApprovalError, match="expired at"):
         service.decide_promotion(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id=request.id,
             approver_id="maintainer-1",
             approver_role=AgentRole.MAINTAINER,
             approve=True,
+        )
+
+
+def test_build_scoped_approval_request_rejects_admin_escalation_without_requested_role() -> None:
+    with pytest.raises(ApprovalError, match="must specify requested_role"):
+        release_service_module._build_scoped_approval_request(
+            approval_id="approval-1",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id="agent-one",
+            kind=ApprovalKind.ADMIN_ESCALATION,
+            gated_action="grant_role",
+            destination="agent-one",
+            requested_by="user-2",
+            evidence_summary="Needs owner grant.",
+            risk="high",
         )
 
 
@@ -872,6 +1038,7 @@ def test_request_role_escalation_creates_pending_approval(service: ReleaseServic
 
     record = service.request_role_escalation(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         requested_by="user-2",
         requested_role=AgentRole.MAINTAINER,
@@ -887,6 +1054,7 @@ def test_decide_role_escalation_raises_for_missing_approval(service: ReleaseServ
     with pytest.raises(ReleaseServiceError, match="not found"):
         service.decide_role_escalation(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id="missing",
             approver_id="owner-1",
             approver_role=AgentRole.OWNER,
@@ -898,6 +1066,7 @@ def test_decide_role_escalation_rejects_non_escalation_approval(service: Release
     version = _gated_version(service)
     promotion = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -908,6 +1077,7 @@ def test_decide_role_escalation_rejects_non_escalation_approval(service: Release
     with pytest.raises(ReleaseServiceError, match="not an admin escalation"):
         service.decide_role_escalation(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id=promotion.id,
             approver_id="owner-1",
             approver_role=AgentRole.OWNER,
@@ -919,6 +1089,7 @@ def test_decide_role_escalation_approved_grants_role(service: ReleaseService) ->
     _create_agent(service)
     record = service.request_role_escalation(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         requested_by="user-2",
         requested_role=AgentRole.MAINTAINER,
@@ -927,6 +1098,7 @@ def test_decide_role_escalation_approved_grants_role(service: ReleaseService) ->
 
     decided = service.decide_role_escalation(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         approval_id=record.id,
         approver_id="user-1",
         approver_role=AgentRole.OWNER,
@@ -934,11 +1106,12 @@ def test_decide_role_escalation_approved_grants_role(service: ReleaseService) ->
         rationale="approved",
     )
 
-    grants = service._store.list_ownership("demo", "agent-one")
+    grants = service._store.list_ownership(_scope(), "agent-one")
     assert decided.state is ApprovalState.APPROVED
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         principal_id="user-2",
     ) is AgentRole.MAINTAINER
@@ -950,6 +1123,7 @@ def test_decide_role_escalation_rejected_does_not_grant_role(service: ReleaseSer
     _create_agent(service)
     record = service.request_role_escalation(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         requested_by="user-2",
         requested_role=AgentRole.MAINTAINER,
@@ -958,6 +1132,7 @@ def test_decide_role_escalation_rejected_does_not_grant_role(service: ReleaseSer
 
     decided = service.decide_role_escalation(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         approval_id=record.id,
         approver_id="user-1",
         approver_role=AgentRole.OWNER,
@@ -968,8 +1143,21 @@ def test_decide_role_escalation_rejected_does_not_grant_role(service: ReleaseSer
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-one",
         principal_id="user-2",
+    ) is AgentRole.VIEWER
+
+
+def test_resolve_actor_role_rejects_cross_project_grant(service: ReleaseService) -> None:
+    _create_agent(service, project_id=TEST_PROJECT_ID, logical_agent_id="agent-scope-role")
+
+    assert resolve_actor_role(
+        service._store,
+        tenant_id="demo",
+        project_id=OTHER_PROJECT_ID,
+        logical_agent_id="agent-scope-role",
+        principal_id="user-1",
     ) is AgentRole.VIEWER
 
 
@@ -977,6 +1165,7 @@ def test_resolve_actor_role_defaults_to_viewer_for_unknown_principal(service: Re
     assert resolve_actor_role(
         service._store,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-unknown",
         principal_id="ghost",
     ) is AgentRole.VIEWER
@@ -988,6 +1177,7 @@ def test_register_tool_requires_contributor_role(service: ReleaseService) -> Non
     with pytest.raises(AuthorizationError, match="does not meet the minimum"):
         service.register_tool(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-tool",
             descriptor_id="foundry.web_search",
             operation="search",
@@ -1004,6 +1194,7 @@ def test_register_tool_rejects_non_ga_operation(service: ReleaseService) -> None
     with pytest.raises(CapabilityAttachmentError, match="Cannot attach"):
         service.register_tool(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id="agent-tool-nonga",
             descriptor_id="foundry.memory",
             operation="recall",
@@ -1019,6 +1210,7 @@ def test_register_tool_succeeds_and_lists_registrations(service: ReleaseService)
 
     registration = service.register_tool(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-tool-ok",
         descriptor_id="foundry.web_search",
         operation="search",
@@ -1029,8 +1221,8 @@ def test_register_tool_succeeds_and_lists_registrations(service: ReleaseService)
     )
 
     assert registration.descriptor_id == "foundry.web_search"
-    assert service.list_tool_registrations("demo", "agent-tool-ok") == (registration,)
-    assert service.list_tool_registrations("demo", "agent-tool-other") == ()
+    assert service.list_tool_registrations("demo", TEST_PROJECT_ID, "agent-tool-ok") == (registration,)
+    assert service.list_tool_registrations("demo", TEST_PROJECT_ID, "agent-tool-other") == ()
 
 
 def _service_with_model_deployment_manifest(
@@ -1043,10 +1235,11 @@ def _service_with_model_deployment_manifest(
     ``cut_version`` to trigger ``_revalidate_model_deployment``."""
     local_service = ReleaseService(AgentStudioStore(), default_registry(), model_discovery=model_discovery)
     _create_agent(local_service, logical_agent_id=logical_agent_id)
-    draft = local_service._store.get_draft("demo", logical_agent_id)
+    draft = local_service._store.get_draft(_scope(), logical_agent_id)
     assert draft is not None
     local_service.update_draft(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id=logical_agent_id,
         manifest=draft.manifest.model_copy(
             update={
@@ -1072,6 +1265,7 @@ def test_cut_version_hard_fails_when_model_discovery_is_unavailable() -> None:
     with pytest.raises(ReleaseServiceError, match="Cannot revalidate model deployment"):
         local_service.cut_version(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id=logical_agent_id,
             actor_id="user-1",
             actor_role=AgentRole.OWNER,
@@ -1087,6 +1281,7 @@ def test_cut_version_hard_fails_when_declared_deployment_is_not_live() -> None:
     with pytest.raises(ReleaseServiceError, match="was not found among the project's live deployed models"):
         local_service.cut_version(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             logical_agent_id=logical_agent_id,
             actor_id="user-1",
             actor_role=AgentRole.OWNER,
@@ -1097,6 +1292,7 @@ def test_request_capability_approval_raises_for_missing_version(service: Release
     with pytest.raises(ReleaseServiceError, match="Version 'missing' not found"):
         service.request_capability_approval(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id="missing",
             descriptor_id="foundry.azure_functions",
             operation="invoke",
@@ -1112,6 +1308,7 @@ def test_request_capability_approval_raises_when_binding_absent_from_version(ser
     with pytest.raises(ReleaseServiceError, match="has no capability binding for"):
         service.request_capability_approval(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             version_id=version.id,
             descriptor_id="foundry.azure_functions",
             operation="invoke",
@@ -1125,6 +1322,7 @@ def test_decide_capability_approval_raises_for_missing_approval(service: Release
     with pytest.raises(ReleaseServiceError, match="Approval 'missing' not found"):
         service.decide_capability_approval(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id="missing",
             approver_id="user-1",
             approver_role=AgentRole.OWNER,
@@ -1136,6 +1334,7 @@ def test_decide_capability_approval_rejects_non_capability_operation_approval(se
     version = _gated_version(service, logical_agent_id="agent-wrong-kind")
     promotion_record = service.request_promotion(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         actor_id="user-2",
         actor_role=AgentRole.CONTRIBUTOR,
@@ -1147,6 +1346,7 @@ def test_decide_capability_approval_rejects_non_capability_operation_approval(se
     with pytest.raises(ReleaseServiceError, match="is not a capability-operation approval"):
         service.decide_capability_approval(
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             approval_id=promotion_record.id,
             approver_id="user-1",
             approver_role=AgentRole.OWNER,
@@ -1163,10 +1363,11 @@ def test_request_and_decide_capability_approval_happy_path(service: ReleaseServi
         connection_ref="conn-azure-functions",
         policy_ref="policy.capability-approval.write-irreversible.v1",
     )
-    draft = service._store.get_draft("demo", "agent-capability-approval-service")
+    draft = service._store.get_draft(_scope(), "agent-capability-approval-service")
     assert draft is not None
     service.update_draft(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-capability-approval-service",
         manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
         updated_by="user-1",
@@ -1174,6 +1375,7 @@ def test_request_and_decide_capability_approval_happy_path(service: ReleaseServi
     )
     version = service.cut_version(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-capability-approval-service",
         actor_id="user-1",
         actor_role=AgentRole.OWNER,
@@ -1181,6 +1383,7 @@ def test_request_and_decide_capability_approval_happy_path(service: ReleaseServi
 
     requested = service.request_capability_approval(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         version_id=version.id,
         descriptor_id="foundry.azure_functions",
         operation="invoke",
@@ -1196,6 +1399,7 @@ def test_request_and_decide_capability_approval_happy_path(service: ReleaseServi
 
     decided = service.decide_capability_approval(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         approval_id=requested.id,
         approver_id="user-1",
         approver_role=AgentRole.OWNER,

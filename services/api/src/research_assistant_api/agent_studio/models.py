@@ -82,13 +82,12 @@ class OwnershipGrant(BaseModel):
     role: AgentRole
     granted_by: str = Field(min_length=1, max_length=200)
     granted_at: datetime = Field(default_factory=utc_now)
-    #: Optional workspace/project membership boundary (Phase 2 of the tenant+
-    #: workspace scoping correction). ``None`` means "tenant-wide" (the
-    #: legacy behavior every existing grant/test relies on); when set, the
-    #: grant is only honored for role resolution scoped to that same
-    #: ``project_id`` (see ``AgentStudioStore.role_for``). Full per-container
-    #: partition scoping is deferred pending a Cosmos partition-key decision.
-    project_id: str | None = None
+    #: Workspace/project membership boundary. Every grant is scoped to an
+    #: exact ``(tenant_id, project_id)`` partition (see ``scope.py``); there
+    #: is no "tenant-wide" grant. Platform owners hold grants scoped to
+    #: ``scope.PLATFORM_PROJECT_ID`` for system-agent ownership rather than a
+    #: null/optional project.
+    project_id: str = Field(min_length=1, max_length=200)
 
 
 class HealthStatus(StrEnum):
@@ -373,6 +372,7 @@ class ToolRegistrationSpec(BaseModel):
 
     id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     logical_agent_id: str
     descriptor_id: str = Field(min_length=1, max_length=160)
     operation: str = Field(min_length=1, max_length=120)
@@ -517,6 +517,7 @@ class MemoryEntry(BaseModel):
 
     id: str
     tenant_id: str = Field(min_length=1)
+    project_id: str = Field(min_length=1, max_length=200)
     scope_kind: MemoryScopeKind
     scope_id: str = Field(min_length=1, max_length=200)
     logical_agent_id: str
@@ -555,6 +556,7 @@ class MemoryAuditRecord(BaseModel):
 
     id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     entry_id: str
     action: MemoryAuditAction
     actor_id: str = Field(min_length=1, max_length=200)
@@ -737,6 +739,7 @@ class AgentDraft(BaseModel):
 
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     manifest: AgentManifest
     updated_by: str
     updated_at: datetime = Field(default_factory=utc_now)
@@ -748,6 +751,7 @@ class LineageEdge(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     child_logical_agent_id: str
     child_version_id: str
     parent_logical_agent_id: str
@@ -793,6 +797,7 @@ class AgentVersion(BaseModel):
     id: str
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     sequence: int = Field(ge=1)
     manifest: AgentManifest
     manifest_hash: str
@@ -843,6 +848,7 @@ class AgentRelease(BaseModel):
     version_id: str
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     status: ReleaseStatus
     environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT
     gate_report_id: str | None = None
@@ -867,6 +873,7 @@ class ResolvedAgentContract(BaseModel):
 
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     environment: DeploymentEnvironment
     version_id: str
     release_id: str
@@ -994,6 +1001,7 @@ class StudioApprovalRecord(BaseModel):
     id: str
     version_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     kind: ApprovalKind
     state: ApprovalState = ApprovalState.PENDING
     gated_action: str
@@ -1038,6 +1046,7 @@ class DeploymentRecord(BaseModel):
     id: str
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     version_id: str
     environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT
     runtime_target: RuntimeTarget
@@ -1053,6 +1062,7 @@ class LogicalAgentBinding(BaseModel):
 
     logical_agent_id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     environment: DeploymentEnvironment
     resolved_version_id: str
     updated_at: datetime = Field(default_factory=utc_now)
@@ -1155,6 +1165,7 @@ class BuilderProposal(BaseModel):
 
     id: str
     tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     logical_agent_id: str
     draft_base_etag: str
     """The draft ``etag`` this proposal was generated against. ``apply`` fails
@@ -1181,3 +1192,58 @@ class BuilderProposal(BaseModel):
     rejection_reason: str | None = None
     applied_draft_etag: str | None = None
     """The new draft ``etag`` minted at apply time (set only once APPLIED)."""
+
+
+# --------------------------------------------------------------------------
+# Platform audit trail (dedicated ``agentStudioAuditV1`` container)
+# --------------------------------------------------------------------------
+
+
+class AuditEventKind(StrEnum):
+    """Structured category of a platform-level governance event.
+
+    Distinct from ``MemoryAuditAction``, which audits governance actions on
+    an individual ``MemoryEntry`` and stays colocated with memory records in
+    ``agentStudioMemoryV1``. ``AuditEvent`` covers cross-cutting platform
+    governance: ownership, approvals, deployments, and policy/deletion
+    events, independent of any single memory entry's lifecycle.
+    """
+
+    OWNERSHIP_GRANTED = "ownership_granted"
+    OWNERSHIP_REVOKED = "ownership_revoked"
+    APPROVAL_REQUESTED = "approval_requested"
+    APPROVAL_DECIDED = "approval_decided"
+    APPROVAL_REVOKED = "approval_revoked"
+    RELEASE_CUT = "release_cut"
+    DEPLOYMENT_ACTIVATED = "deployment_activated"
+    DEPLOYMENT_DEPRECATED = "deployment_deprecated"
+    DEPLOYMENT_ROLLED_BACK = "deployment_rolled_back"
+    POLICY_GATE_FAILED = "policy_gate_failed"
+    ARTIFACT_DELETED = "artifact_deleted"
+
+
+class AuditEvent(BaseModel):
+    """A single append-only platform governance event.
+
+    Never mutated or deleted once written (retention/expiry is handled by
+    the dedicated ``agentStudioAuditV1`` container's own TTL policy,
+    independent from the metadata container). ``detail`` is a small,
+    non-secret structured payload (already-JSON-safe primitives only, since
+    ``AuditEvent`` itself is persisted verbatim) describing the event; never
+    holds credential material.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    logical_agent_id: str | None = None
+    kind: AuditEventKind
+    actor_id: str = Field(min_length=1, max_length=200)
+    subject_id: str
+    """The id of the record this event is about (approval id, deployment id,
+    release id, ownership-grant key, memory entry id, ...); the specific
+    meaning is determined by ``kind``."""
+    created_at: datetime = Field(default_factory=utc_now)
+    detail: dict[str, str] = Field(default_factory=dict)

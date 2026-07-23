@@ -28,6 +28,7 @@ from research_assistant_api.agent_studio.models import (
     MemoryScopeBinding,
     MemoryScopeKind,
 )
+from research_assistant_api.agent_studio.scope import compute_scope_key
 from research_assistant_api.config import Settings
 
 if TYPE_CHECKING:
@@ -35,6 +36,7 @@ if TYPE_CHECKING:
 
 
 BASE_TIME = datetime(2030, 1, 1, 12, 0, tzinfo=UTC)
+TEST_PROJECT_ID = "proj-1"
 
 
 def _manifest(
@@ -59,6 +61,7 @@ def _entry(
     *,
     entry_id: str = "entry-1",
     tenant_id: str = "demo",
+    project_id: str = TEST_PROJECT_ID,
     scope_kind: MemoryScopeKind = MemoryScopeKind.CONVERSATION,
     scope_id: str = "conv-1",
     logical_agent_id: str = "agent-memory-test",
@@ -75,6 +78,7 @@ def _entry(
     return MemoryEntry(
         id=entry_id,
         tenant_id=tenant_id,
+        project_id=project_id,
         scope_kind=scope_kind,
         scope_id=scope_id,
         logical_agent_id=logical_agent_id,
@@ -183,23 +187,25 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
 
     matches = store.list_entries(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         scope_kind=MemoryScopeKind.CONVERSATION,
         scope_id="conv-1",
         logical_agent_id="agent-memory-test",
         limit=1,
     )
     assert [entry.id for entry in matches] == ["entry-2"]
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == older
-    assert store.get_entry(tenant_id="other", entry_id="entry-1") is None
-    assert store.get_entry(tenant_id="demo", entry_id="missing") is None
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == older
+    assert store.get_entry(tenant_id="other", project_id=TEST_PROJECT_ID, entry_id="entry-1") is None
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="missing") is None
 
     replaced = older.model_copy(update={"content": "updated"})
     assert store.replace_entry(replaced).content == "updated"
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == replaced
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == replaced
 
     late = MemoryAuditRecord(
         id="audit-2",
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         action=MemoryAuditAction.CORRECT,
         actor_id="writer-1",
@@ -208,6 +214,7 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
     early = MemoryAuditRecord(
         id="audit-1",
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         action=MemoryAuditAction.REMEMBER,
         actor_id="creator-1",
@@ -216,9 +223,38 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
     store.record_audit(late)
     store.record_audit(early)
 
-    audit = store.list_audit(tenant_id="demo", entry_id="entry-1")
+    audit = store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
     assert [record.id for record in audit] == ["audit-1", "audit-2"]
-    assert store.list_audit(tenant_id="demo", entry_id="entry-3") == ()
+    assert store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-3") == ()
+
+
+def test_in_memory_store_project_isolation_for_entries_and_audit() -> None:
+    store = InMemoryMemoryStore()
+    store.append(_entry())
+    store.record_audit(
+        MemoryAuditRecord(
+            id="audit-project-1",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id="entry-1",
+            action=MemoryAuditAction.REMEMBER,
+            actor_id="creator-1",
+            created_at=BASE_TIME,
+        )
+    )
+
+    assert store.get_entry(tenant_id="demo", project_id="proj-2", entry_id="entry-1") is None
+    assert (
+        store.list_entries(
+            tenant_id="demo",
+            project_id="proj-2",
+            scope_kind=MemoryScopeKind.CONVERSATION,
+            scope_id="conv-1",
+            logical_agent_id="agent-memory-test",
+        )
+        == ()
+    )
+    assert store.list_audit(tenant_id="demo", project_id="proj-2", entry_id="entry-1") == ()
 
 
 class FakeMemoryContainer:
@@ -228,16 +264,24 @@ class FakeMemoryContainer:
     def upsert_item(self, item: dict[str, Any]) -> None:
         self.documents[item["id"]] = item
 
+    def read_item(self, *, item: str, partition_key: str) -> dict[str, Any]:
+        document = self.documents.get(item)
+        if document is None or document.get("scope_key") != partition_key:
+            from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
+            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        return document
+
     def query_items(
-        self, *, query: str, parameters: list[dict[str, Any]], enable_cross_partition_query: bool
+        self, *, query: str, parameters: list[dict[str, Any]], partition_key: str
     ) -> list[dict[str, Any]]:
-        del query, enable_cross_partition_query
+        del query
         filters = {item["name"]: item["value"] for item in parameters}
         results: list[dict[str, Any]] = []
         for document in self.documents.values():
-            if "@documentType" in filters and document.get("documentType") != filters["@documentType"]:
+            if document.get("scope_key") != partition_key:
                 continue
-            if "@tenantId" in filters and document.get("tenantId") != filters["@tenantId"]:
+            if "@documentType" in filters and document.get("documentType") != filters["@documentType"]:
                 continue
             if "@scopeKind" in filters and document.get("scopeKind") != filters["@scopeKind"]:
                 continue
@@ -258,7 +302,7 @@ class FakeMemoryDatabase:
         self.container = FakeMemoryContainer()
 
     def get_container_client(self, name: str) -> FakeMemoryContainer:
-        assert name == "memory"
+        assert name == "agentStudioMemoryV1"
         return self.container
 
 
@@ -287,22 +331,34 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
 
     matches = store.list_entries(
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         scope_kind=MemoryScopeKind.CONVERSATION,
         scope_id="conv-1",
         logical_agent_id="agent-memory-test",
         limit=1,
     )
     assert [entry.id for entry in matches] == ["entry-2"]
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == first
-    assert store.get_entry(tenant_id="demo", entry_id="missing") is None
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == first
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="missing") is None
+
+    # A document id that resolves via point read but is not an "entry" (e.g. an
+    # audit record id collision) must never be returned by get_entry.
+    container = cast(FakeMemoryContainer, store._container)
+    container.documents["not-an-entry"] = {
+        "id": "not-an-entry",
+        "documentType": "audit",
+        "scope_key": compute_scope_key("demo", TEST_PROJECT_ID),
+    }
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="not-an-entry") is None
 
     updated = first.model_copy(update={"content": "patched"})
     store.replace_entry(updated)
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == updated
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == updated
 
     remember = MemoryAuditRecord(
         id="audit-1",
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         action=MemoryAuditAction.REMEMBER,
         actor_id="creator-1",
@@ -311,6 +367,7 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
     forget = MemoryAuditRecord(
         id="audit-2",
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         action=MemoryAuditAction.FORGET,
         actor_id="creator-1",
@@ -319,9 +376,9 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
     store.record_audit(forget)
     store.record_audit(remember)
 
-    audit = store.list_audit(tenant_id="demo", entry_id="entry-1")
+    audit = store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
     assert [record.id for record in audit] == ["audit-1", "audit-2"]
-    assert store.list_audit(tenant_id="demo", entry_id="missing") == ()
+    assert store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="missing") == ()
 
     container = cast(FakeMemoryContainer, store._container)
     entry_document = container.documents["entry-1"]
@@ -404,26 +461,33 @@ def test_memory_service_rejects_all_operations_when_policy_disabled(operation: s
             service.recall(
                 manifest,
                 tenant_id="demo",
+                project_id=TEST_PROJECT_ID,
                 scope_kind=MemoryScopeKind.CONVERSATION,
                 scope_id="conv-1",
                 actor_id="creator-1",
             )
         elif operation == "inspect":
-            service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+            service.inspect(
+                manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+            )
         elif operation == "correct":
             service.correct(
                 manifest,
                 tenant_id="demo",
+                project_id=TEST_PROJECT_ID,
                 entry_id="entry-1",
                 actor_id="creator-1",
                 content="fixed",
             )
         elif operation == "forget":
-            service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+            service.forget(
+                manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+            )
         else:
             service.export(
                 manifest,
                 tenant_id="demo",
+                project_id=TEST_PROJECT_ID,
                 scope_kind=MemoryScopeKind.CONVERSATION,
                 scope_id="conv-1",
                 actor_id="creator-1",
@@ -461,7 +525,7 @@ def test_memory_service_remember_computes_ttl_and_records_audit() -> None:
     stored = service.remember(manifest, entry)
 
     assert stored.expires_at == BASE_TIME + timedelta(days=7)
-    trail = service.audit_trail(tenant_id="demo", entry_id="entry-1")
+    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
     assert len(trail) == 1
     assert trail[0].action is MemoryAuditAction.REMEMBER
     assert trail[0].actor_id == "creator-1"
@@ -511,6 +575,7 @@ def test_memory_service_recall_and_export_filter_inactive_and_acl_and_record_sco
     recalled = service.recall(
         manifest,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         scope_kind=MemoryScopeKind.CONVERSATION,
         scope_id="conv-1",
         actor_id="reader-1",
@@ -518,6 +583,7 @@ def test_memory_service_recall_and_export_filter_inactive_and_acl_and_record_sco
     exported = service.export(
         manifest,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         scope_kind=MemoryScopeKind.CONVERSATION,
         scope_id="conv-1",
         actor_id="reader-1",
@@ -526,9 +592,34 @@ def test_memory_service_recall_and_export_filter_inactive_and_acl_and_record_sco
     assert [entry.id for entry in recalled] == ["entry-acl"]
     assert [entry.id for entry in exported] == ["entry-acl"]
 
-    scope_trail = service.audit_trail(tenant_id="demo", entry_id=_scope_sentinel())
+    scope_trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id=_scope_sentinel())
     assert [record.action for record in scope_trail] == [MemoryAuditAction.RECALL, MemoryAuditAction.EXPORT]
     assert [record.detail for record in scope_trail] == ["count=1", "count=1"]
+
+
+def test_memory_service_recall_returns_empty_across_projects() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(manifest, _entry())
+
+    recalled = service.recall(
+        manifest,
+        tenant_id="demo",
+        project_id="proj-2",
+        scope_kind=MemoryScopeKind.CONVERSATION,
+        scope_id="conv-1",
+        actor_id="creator-1",
+    )
+
+    trail = service.audit_trail(tenant_id="demo", project_id="proj-2", entry_id=_scope_sentinel())
+
+    assert recalled == ()
+    assert len(trail) == 1
+    assert trail[0].project_id == "proj-2"
+    assert trail[0].action is MemoryAuditAction.RECALL
+    assert trail[0].actor_id == "creator-1"
+    assert trail[0].detail == "count=0"
 
 
 def test_memory_service_inspect_returns_entry_for_authorized_reader() -> None:
@@ -538,7 +629,9 @@ def test_memory_service_inspect_returns_entry_for_authorized_reader() -> None:
     entry = _entry(read_acl=("reader-1",))
     service.remember(manifest, entry)
 
-    inspected = service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="reader-1")
+    inspected = service.inspect(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="reader-1"
+    )
 
     assert inspected.id == entry.id
     assert inspected.content == entry.content
@@ -552,11 +645,15 @@ def test_memory_service_inspect_rejects_missing_forgotten_and_unauthorized_entri
     service.remember(_manifest(), _entry(entry_id="entry-forgotten", deleted_at=BASE_TIME + timedelta(minutes=1)))
 
     with pytest.raises(MemoryPolicyError, match="not found"):
-        service.inspect(manifest, tenant_id="demo", entry_id="missing", actor_id="creator-1")
+        service.inspect(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="missing", actor_id="creator-1"
+        )
     with pytest.raises(MemoryPolicyError, match="forgotten"):
-        service.inspect(manifest, tenant_id="demo", entry_id="entry-forgotten", actor_id="creator-1")
+        service.inspect(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-forgotten", actor_id="creator-1"
+        )
     with pytest.raises(MemoryAccessError, match="read access"):
-        service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="reader-1")
+        service.inspect(manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="reader-1")
 
 
 def test_memory_service_correct_updates_content_and_records_audit() -> None:
@@ -568,6 +665,7 @@ def test_memory_service_correct_updates_content_and_records_audit() -> None:
     corrected = service.correct(
         manifest,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         actor_id="writer-1",
         content="corrected value",
@@ -575,8 +673,8 @@ def test_memory_service_correct_updates_content_and_records_audit() -> None:
 
     assert corrected.content == "corrected value"
     assert corrected.provenance == "operator_correction"
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == corrected
-    trail = service.audit_trail(tenant_id="demo", entry_id="entry-1")
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == corrected
+    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
     assert [record.action for record in trail] == [MemoryAuditAction.REMEMBER, MemoryAuditAction.CORRECT]
     assert trail[-1].detail == "content corrected"
 
@@ -590,11 +688,32 @@ def test_memory_service_correct_rejects_missing_forgotten_and_unauthorized_entri
     service.remember(_manifest(), _entry(entry_id="entry-reader", read_acl=("reader-1",)))
 
     with pytest.raises(MemoryPolicyError, match="not found"):
-        service.correct(manifest, tenant_id="demo", entry_id="missing", actor_id="creator-1", content="fixed")
+        service.correct(
+            manifest,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id="missing",
+            actor_id="creator-1",
+            content="fixed",
+        )
     with pytest.raises(MemoryPolicyError, match="forgotten"):
-        service.correct(manifest, tenant_id="demo", entry_id="entry-forgotten", actor_id="creator-1", content="fixed")
+        service.correct(
+            manifest,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id="entry-forgotten",
+            actor_id="creator-1",
+            content="fixed",
+        )
     with pytest.raises(MemoryAccessError, match="write access"):
-        service.correct(manifest, tenant_id="demo", entry_id="entry-reader", actor_id="reader-1", content="fixed")
+        service.correct(
+            manifest,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id="entry-reader",
+            actor_id="reader-1",
+            content="fixed",
+        )
 
 
 def test_memory_service_forget_soft_deletes_and_records_audit(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -608,14 +727,15 @@ def test_memory_service_forget_soft_deletes_and_records_audit(monkeypatch: pytes
     forgotten = service.forget(
         manifest,
         tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
         entry_id="entry-1",
         actor_id="writer-1",
         reason="user requested deletion",
     )
 
     assert forgotten.deleted_at == forgotten_at
-    assert store.get_entry(tenant_id="demo", entry_id="entry-1") == forgotten
-    trail = service.audit_trail(tenant_id="demo", entry_id="entry-1")
+    assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == forgotten
+    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
     assert [record.action for record in trail] == [MemoryAuditAction.REMEMBER, MemoryAuditAction.FORGET]
     assert trail[-1].detail == "user requested deletion"
 
@@ -631,11 +751,48 @@ def test_memory_service_forget_rejects_unauthorized_actor_but_allows_already_del
     service.remember(manifest, _entry(deleted_at=first_deleted_at))
 
     with pytest.raises(MemoryAccessError, match="write access"):
-        service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="writer-1")
+        service.forget(manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="writer-1")
 
     monkeypatch.setattr("research_assistant_api.agent_studio.memory_service.utc_now", lambda: second_deleted_at)
-    forgotten = service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+    forgotten = service.forget(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+    )
     assert forgotten.deleted_at == second_deleted_at
+
+
+@pytest.mark.parametrize("method", ["inspect", "correct", "forget"])
+def test_memory_service_cross_project_entries_are_treated_as_not_found(method: str) -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(manifest, _entry())
+
+    with pytest.raises(MemoryPolicyError, match="not found"):
+        if method == "inspect":
+            service.inspect(
+                manifest,
+                tenant_id="demo",
+                project_id="proj-2",
+                entry_id="entry-1",
+                actor_id="creator-1",
+            )
+        elif method == "correct":
+            service.correct(
+                manifest,
+                tenant_id="demo",
+                project_id="proj-2",
+                entry_id="entry-1",
+                actor_id="creator-1",
+                content="fixed",
+            )
+        else:
+            service.forget(
+                manifest,
+                tenant_id="demo",
+                project_id="proj-2",
+                entry_id="entry-1",
+                actor_id="creator-1",
+            )
 
 
 @pytest.mark.parametrize("method", ["inspect", "correct", "forget"])
@@ -647,49 +804,63 @@ def test_memory_service_cross_agent_entries_are_treated_as_not_found(method: str
 
     with pytest.raises(MemoryPolicyError, match="not found"):
         if method == "inspect":
-            service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+            service.inspect(
+                manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+            )
         elif method == "correct":
             service.correct(
                 manifest,
                 tenant_id="demo",
+                project_id=TEST_PROJECT_ID,
                 entry_id="entry-1",
                 actor_id="creator-1",
                 content="fixed",
             )
         else:
-            service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+            service.forget(
+                manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+            )
 
 
 def test_memory_service_inspect_rejects_when_scope_disallows_user_inspect() -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
-    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_inspect=False),))
+    manifest = _manifest(
+        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_inspect=False),)
+    )
     service.remember(manifest, _entry())
 
     with pytest.raises(MemoryAccessError, match="does not allow user-initiated inspect"):
-        service.inspect(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+        service.inspect(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+        )
 
 
 def test_memory_service_forget_rejects_when_scope_disallows_user_forget() -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
-    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_forget=False),))
+    manifest = _manifest(
+        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_forget=False),)
+    )
     service.remember(manifest, _entry())
 
     with pytest.raises(MemoryAccessError, match="does not allow user-initiated forget"):
-        service.forget(manifest, tenant_id="demo", entry_id="entry-1", actor_id="creator-1")
+        service.forget(manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1")
 
 
 def test_memory_service_export_rejects_when_scope_disallows_user_export() -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
-    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_export=False),))
+    manifest = _manifest(
+        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_export=False),)
+    )
     service.remember(manifest, _entry())
 
     with pytest.raises(MemoryAccessError, match="does not allow user-initiated export"):
         service.export(
             manifest,
             tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
             scope_kind=MemoryScopeKind.CONVERSATION,
             scope_id="conv-1",
             actor_id="creator-1",
@@ -719,9 +890,7 @@ def test_memory_service_remember_ttl_uses_persistent_scope_retention_days() -> N
 def test_memory_service_remember_ttl_persistent_scope_without_retention_leaves_expiry_unset() -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
-    manifest = _manifest(
-        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, persistent=True),)
-    )
+    manifest = _manifest((MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, persistent=True),))
 
     stored = service.remember(manifest, _entry())
 

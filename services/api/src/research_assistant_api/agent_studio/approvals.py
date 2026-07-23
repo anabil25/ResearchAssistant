@@ -78,6 +78,7 @@ def build_approval_request(
     *,
     approval_id: str,
     tenant_id: str,
+    project_id: str,
     version_id: str,
     kind: ApprovalKind,
     gated_action: str,
@@ -98,6 +99,7 @@ def build_approval_request(
     return StudioApprovalRecord(
         id=approval_id,
         tenant_id=tenant_id,
+        project_id=project_id,
         version_id=version_id,
         kind=kind,
         gated_action=gated_action,

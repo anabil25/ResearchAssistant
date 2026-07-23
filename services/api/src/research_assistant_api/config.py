@@ -64,6 +64,22 @@ class Settings(BaseSettings):
         default="agent-studio",
         validation_alias="AZURE_COSMOS_AGENT_STUDIO_DATABASE",
     )
+    agent_studio_metadata_container: str = Field(
+        default="agentStudioMetadataV1",
+        validation_alias="AZURE_COSMOS_AGENT_STUDIO_METADATA_CONTAINER",
+    )
+    agent_studio_memory_container: str = Field(
+        default="agentStudioMemoryV1",
+        validation_alias="AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER",
+    )
+    agent_studio_audit_container: str = Field(
+        default="agentStudioAuditV1",
+        validation_alias="AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER",
+    )
+    agent_studio_catalog_container: str = Field(
+        default="agentStudioCatalogV1",
+        validation_alias="AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER",
+    )
     search_endpoint: str | None = Field(
         default=None,
         validation_alias="AZURE_SEARCH_ENDPOINT",

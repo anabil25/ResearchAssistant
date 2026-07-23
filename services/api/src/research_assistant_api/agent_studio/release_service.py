@@ -15,8 +15,10 @@ import json
 from uuid import uuid4
 
 from research_assistant_api.agent_studio.approvals import (
-    build_approval_request,
+    DEFAULT_APPROVAL_VALIDITY,
+    ApprovalError,
     decide_approval,
+    idempotency_key,
     requires_approval,
 )
 from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
@@ -53,6 +55,7 @@ from research_assistant_api.agent_studio.release_artifact_metadata import (
     ReleaseArtifactSource,
 )
 from research_assistant_api.agent_studio.runtime_selection import select_runtime
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
 
@@ -68,6 +71,52 @@ def manifest_hash(manifest: AgentManifest) -> str:
     """Deterministic content hash for a manifest (stable key ordering)."""
     canonical = json.dumps(manifest.model_dump(mode="json"), sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _build_scoped_approval_request(
+    *,
+    approval_id: str,
+    tenant_id: str,
+    project_id: str,
+    version_id: str,
+    kind: ApprovalKind,
+    gated_action: str,
+    destination: str,
+    requested_by: str,
+    evidence_summary: str,
+    risk: str,
+    requested_role: AgentRole | None = None,
+    content_hash: str | None = None,
+    environment: DeploymentEnvironment | None = None,
+    permissions_policy_ref: str | None = None,
+    destination_policy_ref: str | None = None,
+) -> StudioApprovalRecord:
+    if kind is ApprovalKind.ADMIN_ESCALATION and requested_role is None:
+        raise ApprovalError("Admin escalation requests must specify requested_role.")
+    return StudioApprovalRecord(
+        id=approval_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        version_id=version_id,
+        kind=kind,
+        gated_action=gated_action,
+        destination=destination,
+        requested_by=requested_by,
+        evidence_summary=evidence_summary,
+        risk=risk,
+        idempotency_key=idempotency_key(
+            kind=kind,
+            version_id=version_id,
+            requested_by=requested_by,
+            destination=destination,
+        ),
+        requested_role=requested_role,
+        content_hash=content_hash,
+        environment=environment,
+        permissions_policy_ref=permissions_policy_ref,
+        destination_policy_ref=destination_policy_ref,
+        expires_at=utc_now() + DEFAULT_APPROVAL_VALIDITY,
+    )
 
 
 class ReleaseService:
@@ -99,6 +148,7 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         display_name: str,
         owner_kind: AgentOwnerKind,
@@ -114,13 +164,15 @@ class ReleaseService:
         owners version system agents``); user agents may be created by any
         authenticated principal, who becomes the initial ``OWNER``.
         """
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         if owner_kind is AgentOwnerKind.SYSTEM and not is_platform_owner:
             raise AuthorizationError("Only platform owners may create system agents.")
-        if self._store.get_draft(tenant_id, logical_agent_id) is not None:
+        if self._store.get_draft(scope, logical_agent_id) is not None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' already exists.")
         manifest = AgentManifest(
             logical_agent_id=logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             display_name=display_name,
             description=description,
             owner_kind=owner_kind,
@@ -130,13 +182,16 @@ class ReleaseService:
         draft = AgentDraft(
             logical_agent_id=logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             manifest=manifest,
             updated_by=requested_by,
         )
-        self._store.save_draft(draft)
+        self._store.save_draft(scope, draft)
         self._store.grant_ownership(
+            scope,
             OwnershipGrant(
                 tenant_id=tenant_id,
+                project_id=project_id,
                 logical_agent_id=logical_agent_id,
                 principal_id=owner_id,
                 role=AgentRole.OWNER,
@@ -149,15 +204,21 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         manifest: AgentManifest,
         updated_by: str,
         actor_role: AgentRole,
     ) -> AgentDraft:
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
-        if manifest.logical_agent_id != logical_agent_id or manifest.tenant_id != tenant_id:
-            raise ReleaseServiceError("Manifest logical_agent_id/tenant_id must match the target agent.")
-        existing = self._store.get_draft(tenant_id, logical_agent_id)
+        if (
+            manifest.logical_agent_id != logical_agent_id
+            or manifest.tenant_id != tenant_id
+            or manifest.project_id != project_id
+        ):
+            raise ReleaseServiceError("Manifest logical_agent_id/tenant_id/project_id must match the target agent.")
+        existing = self._store.get_draft(scope, logical_agent_id)
         if existing is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to update.")
         updated = existing.model_copy(
@@ -168,7 +229,7 @@ class ReleaseService:
                 "etag": str(uuid4()),
             }
         )
-        return self._store.save_draft(updated)
+        return self._store.save_draft(scope, updated)
 
     # -- Forking (private specialists) ------------------------------------
 
@@ -176,6 +237,7 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         source_logical_agent_id: str,
         source_version_id: str,
         new_logical_agent_id: str,
@@ -183,15 +245,17 @@ class ReleaseService:
     ) -> AgentDraft:
         """Fork a released version into a new private, user-owned draft.
 
-        Only same-tenant forking is supported: the source version must be
-        resolvable in the caller's own tenant. Cross-tenant template sharing
-        is out of scope for this implementation and must be handled by an
-        explicit export/import flow, not silent cross-tenant reads.
+        Only same-scope forking is supported: the source version must be
+        resolvable in the caller's own tenant/project. Cross-tenant or
+        cross-project template sharing is out of scope for this
+        implementation and must be handled by an explicit export/import
+        flow, not silent cross-scope reads.
         """
-        source_version = self._store.get_version(tenant_id, source_version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        source_version = self._store.get_version(scope, source_version_id)
         if source_version is None or source_version.logical_agent_id != source_logical_agent_id:
-            raise ReleaseServiceError(f"Source version '{source_version_id}' was not found in this tenant.")
-        if self._store.get_draft(tenant_id, new_logical_agent_id) is not None:
+            raise ReleaseServiceError(f"Source version '{source_version_id}' was not found in this scope.")
+        if self._store.get_draft(scope, new_logical_agent_id) is not None:
             raise ReleaseServiceError(f"Agent '{new_logical_agent_id}' already exists.")
         forked_manifest = source_version.manifest.model_copy(
             update={
@@ -204,14 +268,17 @@ class ReleaseService:
         draft = AgentDraft(
             logical_agent_id=new_logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             manifest=forked_manifest,
             updated_by=requested_by,
             based_on_version_id=source_version_id,
         )
-        self._store.save_draft(draft)
+        self._store.save_draft(scope, draft)
         self._store.grant_ownership(
+            scope,
             OwnershipGrant(
                 tenant_id=tenant_id,
+                project_id=project_id,
                 logical_agent_id=new_logical_agent_id,
                 principal_id=requested_by,
                 role=AgentRole.OWNER,
@@ -260,16 +327,18 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         actor_id: str,
         actor_role: AgentRole,
     ) -> AgentVersion:
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
-        draft = self._store.get_draft(tenant_id, logical_agent_id)
+        draft = self._store.get_draft(scope, logical_agent_id)
         if draft is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to cut.")
         self._revalidate_model_deployment(draft.manifest)
-        previous_versions = self._store.list_versions(tenant_id, logical_agent_id)
+        previous_versions = self._store.list_versions(scope, logical_agent_id)
         parent_version_id = previous_versions[-1].id if previous_versions else None
 
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
@@ -287,6 +356,7 @@ class ReleaseService:
                 id=str(uuid4()),
                 logical_agent_id=logical_agent_id,
                 tenant_id=tenant_id,
+                project_id=project_id,
                 sequence=sequence,
                 manifest=draft.manifest,
                 manifest_hash=manifest_hash(draft.manifest),
@@ -301,14 +371,16 @@ class ReleaseService:
                 protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
             )
 
-        version = self._store.allocate_version(tenant_id, logical_agent_id, _build)
+        version = self._store.allocate_version(scope, logical_agent_id, _build)
 
         if version.fork_of_version_id is not None:
-            parent = self._store.get_version(tenant_id, version.fork_of_version_id)
+            parent = self._store.get_version(scope, version.fork_of_version_id)
             if parent is not None:
                 self._store.add_lineage_edge(
+                    scope,
                     LineageEdge(
                         tenant_id=tenant_id,
+                        project_id=project_id,
                         child_logical_agent_id=logical_agent_id,
                         child_version_id=version.id,
                         parent_logical_agent_id=parent.logical_agent_id,
@@ -323,10 +395,12 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         version_id: str,
         evidence: GateEvidence,
     ) -> ReleaseGateReport:
-        version = self._store.get_version(tenant_id, version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
         report = run_gates(
@@ -337,26 +411,27 @@ class ReleaseService:
             capability_catalog=self._registry.as_mapping(),
             evidence=evidence,
             runtime_target=version.runtime_target,
-            capability_approvals=self._store.list_approvals(tenant_id, version_id),
+            capability_approvals=self._store.list_approvals(scope, version_id),
         )
         self._store.save_gate_report(report)
         if report.passed:
             # Only a passing gate run produces a durable ``AgentRelease``
             # row; a failed attempt leaves the immutable ``ReleaseGateReport``
             # as the sole audit record and the version stays un-released.
-            previous = self._store.latest_release_for_version(tenant_id, version_id)
+            previous = self._store.latest_release_for_version(scope, version_id)
             release = AgentRelease(
                 id=str(uuid4()),
                 version_id=version_id,
                 logical_agent_id=version.logical_agent_id,
                 tenant_id=tenant_id,
+                project_id=project_id,
                 status=ReleaseStatus.GATED,
                 gate_report_id=report.id,
                 previous_release_id=previous.id if previous is not None else None,
                 created_by=version.created_by,
                 detail="Passed all applicable hard gates.",
             )
-            self._store.create_release(release)
+            self._store.create_release(scope, release)
         return report
 
     # -- Promotion / approvals --------------------------------------------
@@ -365,6 +440,7 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         version_id: str,
         actor_id: str,
         actor_role: AgentRole,
@@ -375,10 +451,11 @@ class ReleaseService:
         permissions_policy_ref: str | None = None,
         destination_policy_ref: str | None = None,
     ) -> StudioApprovalRecord | AgentVersion:
-        version = self._store.get_version(tenant_id, version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
-        latest_release = self._store.latest_release_for_version(tenant_id, version_id)
+        latest_release = self._store.latest_release_for_version(scope, version_id)
         if latest_release is None or latest_release.status != ReleaseStatus.GATED:
             current_status = latest_release.status.value if latest_release is not None else "none"
             raise ReleaseServiceError(
@@ -387,9 +464,10 @@ class ReleaseService:
             )
         kind = ApprovalKind.FORK_PROMOTION if version.fork_of_version_id else ApprovalKind.RELEASE_PROMOTION
         if requires_approval(actor_role=actor_role, kind=kind):
-            record = build_approval_request(
+            record = _build_scoped_approval_request(
                 approval_id=str(uuid4()),
                 tenant_id=tenant_id,
+                project_id=project_id,
                 version_id=version_id,
                 kind=kind,
                 gated_action="promote_version",
@@ -402,20 +480,22 @@ class ReleaseService:
                 permissions_policy_ref=permissions_policy_ref,
                 destination_policy_ref=destination_policy_ref,
             )
-            return self._store.create_approval(record)
-        return self._promote(tenant_id, version_id)
+            return self._store.create_approval(scope, record)
+        return self._promote(scope, version_id)
 
     def decide_promotion(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         approval_id: str,
         approver_id: str,
         approver_role: AgentRole,
         approve: bool,
         rationale: str | None = None,
     ) -> StudioApprovalRecord:
-        record = self._store.get_approval(tenant_id, approval_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        record = self._store.get_approval(scope, approval_id)
         if record is None:
             raise ReleaseServiceError(f"Approval '{approval_id}' not found.")
         decided = decide_approval(
@@ -425,9 +505,9 @@ class ReleaseService:
             approve=approve,
             rationale=rationale,
         )
-        self._store.save_approval_decision(decided)
+        self._store.save_approval_decision(scope, decided)
         if decided.state == ApprovalState.APPROVED:
-            self._promote(tenant_id, decided.version_id)
+            self._promote(scope, decided.version_id)
         return decided
 
     # -- Capability-operation approvals -----------------------------------
@@ -436,6 +516,7 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         version_id: str,
         descriptor_id: str,
         operation: str,
@@ -454,7 +535,8 @@ class ReleaseService:
         to the ``descriptor_id.operation`` destination, so it can never be
         reused to approve a different manifest or a different operation.
         """
-        version = self._store.get_version(tenant_id, version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
         destination = f"{descriptor_id}.{operation}"
@@ -468,9 +550,10 @@ class ReleaseService:
         )
         if binding is None:
             raise ReleaseServiceError(f"Version '{version_id}' has no capability binding for '{destination}'.")
-        record = build_approval_request(
+        record = _build_scoped_approval_request(
             approval_id=str(uuid4()),
             tenant_id=tenant_id,
+            project_id=project_id,
             version_id=version_id,
             kind=ApprovalKind.CAPABILITY_OPERATION,
             gated_action="attach_capability_operation",
@@ -482,19 +565,21 @@ class ReleaseService:
             permissions_policy_ref=permissions_policy_ref,
             destination_policy_ref=destination_policy_ref,
         )
-        return self._store.create_approval(record)
+        return self._store.create_approval(scope, record)
 
     def decide_capability_approval(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         approval_id: str,
         approver_id: str,
         approver_role: AgentRole,
         approve: bool,
         rationale: str | None = None,
     ) -> StudioApprovalRecord:
-        record = self._store.get_approval(tenant_id, approval_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        record = self._store.get_approval(scope, approval_id)
         if record is None:
             raise ReleaseServiceError(f"Approval '{approval_id}' not found.")
         if record.kind is not ApprovalKind.CAPABILITY_OPERATION:
@@ -506,23 +591,25 @@ class ReleaseService:
             approve=approve,
             rationale=rationale,
         )
-        return self._store.save_approval_decision(decided)
+        return self._store.save_approval_decision(scope, decided)
 
-    def _promote(self, tenant_id: str, version_id: str) -> AgentVersion:
-        version = self._store.get_version(tenant_id, version_id)
+    def _promote(self, scope: ScopeContext, version_id: str) -> AgentVersion:
+        version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
-        gated = self._store.latest_release_for_version(tenant_id, version_id)
+        gated = self._store.latest_release_for_version(scope, version_id)
         if gated is None:
             raise ReleaseServiceError(f"Version '{version_id}' has no gated release to promote.")
         # Each transition is its own append-only record, chained via
         # ``previous_release_id`` — never an in-place mutation of ``gated``.
         approved = self._store.create_release(
+            scope,
             AgentRelease(
                 id=str(uuid4()),
                 version_id=version_id,
                 logical_agent_id=version.logical_agent_id,
-                tenant_id=tenant_id,
+                tenant_id=scope.tenant_id,
+                project_id=scope.project_id,
                 status=ReleaseStatus.APPROVED,
                 gate_report_id=gated.gate_report_id,
                 previous_release_id=gated.id,
@@ -531,11 +618,13 @@ class ReleaseService:
             )
         )
         active = self._store.create_release(
+            scope,
             AgentRelease(
                 id=str(uuid4()),
                 version_id=version_id,
                 logical_agent_id=version.logical_agent_id,
-                tenant_id=tenant_id,
+                tenant_id=scope.tenant_id,
+                project_id=scope.project_id,
                 status=ReleaseStatus.ACTIVE,
                 gate_report_id=gated.gate_report_id,
                 previous_release_id=approved.id,
@@ -552,15 +641,18 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         requested_by: str,
         requested_role: AgentRole,
         evidence_summary: str,
         risk: str = "high",
     ) -> StudioApprovalRecord:
-        record = build_approval_request(
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        record = _build_scoped_approval_request(
             approval_id=str(uuid4()),
             tenant_id=tenant_id,
+            project_id=project_id,
             version_id=logical_agent_id,
             kind=ApprovalKind.ADMIN_ESCALATION,
             gated_action="grant_role",
@@ -570,19 +662,21 @@ class ReleaseService:
             risk=risk,
             requested_role=requested_role,
         )
-        return self._store.create_approval(record)
+        return self._store.create_approval(scope, record)
 
     def decide_role_escalation(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         approval_id: str,
         approver_id: str,
         approver_role: AgentRole,
         approve: bool,
         rationale: str | None = None,
     ) -> StudioApprovalRecord:
-        record = self._store.get_approval(tenant_id, approval_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        record = self._store.get_approval(scope, approval_id)
         if record is None:
             raise ReleaseServiceError(f"Approval '{approval_id}' not found.")
         if record.kind is not ApprovalKind.ADMIN_ESCALATION:
@@ -594,11 +688,13 @@ class ReleaseService:
             approve=approve,
             rationale=rationale,
         )
-        self._store.save_approval_decision(decided)
+        self._store.save_approval_decision(scope, decided)
         if decided.state == ApprovalState.APPROVED and decided.requested_role is not None:
             self._store.grant_ownership(
+                scope,
                 OwnershipGrant(
                     tenant_id=tenant_id,
+                    project_id=project_id,
                     logical_agent_id=decided.destination,
                     principal_id=decided.requested_by,
                     role=decided.requested_role,
@@ -618,6 +714,7 @@ class ReleaseService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         descriptor_id: str,
         operation: str,
@@ -633,11 +730,13 @@ class ReleaseService:
         runtime (Managed Foundry native resolution vs. a Custom Hosted
         handler reference), and is independently authorized/persisted.
         """
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
         self._registry.validate_attachment(descriptor_id=descriptor_id, operation=operation)
         registration = ToolRegistrationSpec(
             id=str(uuid4()),
             tenant_id=tenant_id,
+            project_id=project_id,
             logical_agent_id=logical_agent_id,
             descriptor_id=descriptor_id,
             operation=operation,
@@ -645,19 +744,27 @@ class ReleaseService:
             handler_ref=handler_ref,
             registered_by=registered_by,
         )
-        return self._store.create_tool_registration(registration)
+        return self._store.create_tool_registration(scope, registration)
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
-        return self._store.list_tool_registrations(tenant_id, logical_agent_id)
+    def list_tool_registrations(
+        self,
+        tenant_id: str,
+        project_id: str,
+        logical_agent_id: str,
+    ) -> tuple[ToolRegistrationSpec, ...]:
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        return self._store.list_tool_registrations(scope, logical_agent_id)
 
 
 def resolve_actor_role(
     store: AgentStudioStore,
     *,
     tenant_id: str,
+    project_id: str,
     logical_agent_id: str,
     principal_id: str,
 ) -> AgentRole:
     """Resolve the effective role of ``principal_id`` on an agent, defaulting to VIEWER."""
-    role = store.role_for(tenant_id, logical_agent_id, principal_id)
+    scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+    role = store.role_for(scope, logical_agent_id, principal_id)
     return role if role is not None else AgentRole.VIEWER

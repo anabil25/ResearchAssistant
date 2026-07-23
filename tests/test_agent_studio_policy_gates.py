@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from research_assistant_api.agent_studio.capability_registry import default_registry
@@ -49,7 +49,7 @@ def _manifest(**overrides: object) -> AgentManifest:
         "owner_id": "user-1",
     }
     base.update(overrides)
-    return AgentManifest(**base)
+    return AgentManifest(**base)  # type: ignore[arg-type]
 
 
 def _binding(
@@ -154,6 +154,7 @@ def _approval_record(
         id="approval-1",
         version_id="version-1",
         tenant_id="tenant-1",
+        project_id="project-1",
         kind=ApprovalKind.CAPABILITY_OPERATION,
         state=state,
         gated_action="attach",

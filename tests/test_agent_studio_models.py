@@ -245,6 +245,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     tool_registration = ToolRegistrationSpec(
         id="tool-1",
         tenant_id="tenant-1",
+        project_id="project-1",
         logical_agent_id=manifest.logical_agent_id,
         descriptor_id="custom.hosted_code",
         operation="run",
@@ -262,6 +263,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     memory_entry = MemoryEntry(
         id="memory-1",
         tenant_id="tenant-1",
+        project_id="project-1",
         scope_kind=MemoryScopeKind.USER,
         scope_id="user-1",
         logical_agent_id=manifest.logical_agent_id,
@@ -272,6 +274,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     memory_audit = MemoryAuditRecord(
         id="audit-1",
         tenant_id="tenant-1",
+        project_id="project-1",
         entry_id=memory_entry.id,
         action=MemoryAuditAction.EXPORT,
         actor_id="user-1",
@@ -279,11 +282,13 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     draft = AgentDraft(
         logical_agent_id=manifest.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         manifest=manifest,
         updated_by="user-1",
     )
     lineage = LineageEdge(
         tenant_id="tenant-1",
+        project_id="project-1",
         child_logical_agent_id=manifest.logical_agent_id,
         child_version_id="version-2",
         parent_logical_agent_id="agent-parent",
@@ -293,6 +298,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         id="version-2",
         logical_agent_id=manifest.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         sequence=2,
         manifest=manifest,
         manifest_hash="sha256:manifest",
@@ -311,12 +317,14 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         version_id=version.id,
         logical_agent_id=version.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         status=ReleaseStatus.ACTIVE,
         created_by="user-1",
     )
     resolved = ResolvedAgentContract(
         logical_agent_id=version.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         environment=DeploymentEnvironment.DEVELOPMENT,
         version_id=version.id,
         release_id=release.id,
@@ -339,6 +347,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         id="approval-1",
         version_id=version.id,
         tenant_id="tenant-1",
+        project_id="project-1",
         kind=ApprovalKind.RELEASE_PROMOTION,
         gated_action="promote",
         destination="development",
@@ -351,6 +360,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         id="deployment-1",
         logical_agent_id=version.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         version_id=version.id,
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
         deployed_by="user-1",
@@ -358,6 +368,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
     logical_binding = LogicalAgentBinding(
         logical_agent_id=version.logical_agent_id,
         tenant_id="tenant-1",
+        project_id="project-1",
         environment=DeploymentEnvironment.DEVELOPMENT,
         resolved_version_id=version.id,
         updated_by="user-1",

@@ -21,7 +21,7 @@ def _manifest(**overrides: object) -> AgentManifest:
         "owner_id": "user-1",
     }
     base.update(overrides)
-    return AgentManifest(**base)
+    return AgentManifest(**base)  # type: ignore[arg-type]
 
 
 def test_select_runtime_managed_foundry_when_no_disqualifiers() -> None:

@@ -44,6 +44,7 @@ from research_assistant_api.agent_studio.models import (
     utc_now,
 )
 from research_assistant_api.agent_studio.release_service import AuthorizationError, manifest_hash
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.config import Settings
 
@@ -236,6 +237,7 @@ class BuilderService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         message: str,
         base_etag: str,
@@ -243,7 +245,8 @@ class BuilderService:
         actor_role: AgentRole,
     ) -> BuilderProposal:
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
-        draft = self._store.get_draft(tenant_id, logical_agent_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        draft = self._store.get_draft(scope, logical_agent_id)
         if draft is None:
             raise BuilderNotFoundError(f"Agent '{logical_agent_id}' has no draft to propose changes against.")
         if draft.etag != base_etag:
@@ -260,6 +263,7 @@ class BuilderService:
         if result.source_bundle_content is not None:
             stored = self._bundle_store.put(
                 tenant_id=tenant_id,
+                project_id=project_id,
                 logical_agent_id=logical_agent_id,
                 content=result.source_bundle_content,
             )
@@ -267,6 +271,7 @@ class BuilderService:
         proposal = BuilderProposal(
             id=str(uuid4()),
             tenant_id=tenant_id,
+            project_id=project_id,
             logical_agent_id=logical_agent_id,
             draft_base_etag=draft.etag,
             before_manifest=draft.manifest,
@@ -284,19 +289,25 @@ class BuilderService:
                 requested_by=requested_by,
             ),
         )
-        return self._store.create_builder_proposal(proposal)
+        return self._store.create_builder_proposal(scope, proposal)
 
-    def list_proposals(self, tenant_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
-        return self._store.list_builder_proposals(tenant_id, logical_agent_id)
+    def list_proposals(self, tenant_id: str, project_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        return self._store.list_builder_proposals(scope, logical_agent_id)
 
-    def get_proposal(self, tenant_id: str, logical_agent_id: str, proposal_id: str) -> BuilderProposal | None:
-        proposal = self._store.get_builder_proposal(tenant_id, proposal_id)
+    def get_proposal(
+        self, tenant_id: str, project_id: str, logical_agent_id: str, proposal_id: str
+    ) -> BuilderProposal | None:
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        proposal = self._store.get_builder_proposal(scope, proposal_id)
         if proposal is None or proposal.logical_agent_id != logical_agent_id:
             return None
         return proposal
 
-    def _require_pending(self, tenant_id: str, logical_agent_id: str, proposal_id: str) -> BuilderProposal:
-        proposal = self.get_proposal(tenant_id, logical_agent_id, proposal_id)
+    def _require_pending(
+        self, tenant_id: str, project_id: str, logical_agent_id: str, proposal_id: str
+    ) -> BuilderProposal:
+        proposal = self.get_proposal(tenant_id, project_id, logical_agent_id, proposal_id)
         if proposal is None:
             raise BuilderNotFoundError(f"Proposal '{proposal_id}' was not found.")
         if proposal.state != BuilderProposalState.PENDING:
@@ -307,6 +318,7 @@ class BuilderService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         proposal_id: str,
         base_etag: str,
@@ -323,8 +335,9 @@ class BuilderService:
         if the caller's ``base_etag`` happens to match the current draft.
         """
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
-        proposal = self._require_pending(tenant_id, logical_agent_id, proposal_id)
-        draft = self._store.get_draft(tenant_id, logical_agent_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        proposal = self._require_pending(tenant_id, project_id, logical_agent_id, proposal_id)
+        draft = self._store.get_draft(scope, logical_agent_id)
         if draft is None:
             raise BuilderNotFoundError(f"Agent '{logical_agent_id}' has no draft to apply this proposal to.")
         if draft.etag != base_etag:
@@ -344,7 +357,7 @@ class BuilderService:
                 "etag": new_etag,
             }
         )
-        self._store.save_draft(updated_draft)
+        self._store.save_draft(scope, updated_draft)
         decided = proposal.model_copy(
             update={
                 "state": BuilderProposalState.APPLIED,
@@ -353,13 +366,14 @@ class BuilderService:
                 "applied_draft_etag": new_etag,
             }
         )
-        self._store.save_builder_proposal_decision(decided)
+        self._store.save_builder_proposal_decision(scope, decided)
         return updated_draft
 
     def reject(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         proposal_id: str,
         rejected_by: str,
@@ -367,7 +381,8 @@ class BuilderService:
         actor_role: AgentRole,
     ) -> BuilderProposal:
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
-        proposal = self._require_pending(tenant_id, logical_agent_id, proposal_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        proposal = self._require_pending(tenant_id, project_id, logical_agent_id, proposal_id)
         decided = proposal.model_copy(
             update={
                 "state": BuilderProposalState.REJECTED,
@@ -376,4 +391,4 @@ class BuilderService:
                 "rejection_reason": reason,
             }
         )
-        return self._store.save_builder_proposal_decision(decided)
+        return self._store.save_builder_proposal_decision(scope, decided)

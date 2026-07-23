@@ -31,6 +31,7 @@ def _pending_record(
     return build_approval_request(
         approval_id="approval-1",
         tenant_id="tenant-a",
+        project_id="project-a",
         version_id="version-1",
         kind=kind,
         gated_action="promote_version" if kind is not ApprovalKind.ADMIN_ESCALATION else "grant_role",
@@ -81,6 +82,7 @@ def test_build_approval_request_binds_context_and_default_expiry(monkeypatch: py
     record = build_approval_request(
         approval_id="approval-1",
         tenant_id="tenant-a",
+        project_id="project-a",
         version_id="version-1",
         kind=ApprovalKind.RELEASE_PROMOTION,
         gated_action="promote_version",
@@ -114,6 +116,7 @@ def test_build_approval_request_admin_escalation_requires_requested_role() -> No
         build_approval_request(
             approval_id="approval-1",
             tenant_id="tenant-a",
+            project_id="project-a",
             version_id="agent-one",
             kind=ApprovalKind.ADMIN_ESCALATION,
             gated_action="grant_role",
@@ -130,6 +133,7 @@ def test_build_approval_request_admin_escalation_preserves_explicit_expiry() -> 
     record = build_approval_request(
         approval_id="approval-1",
         tenant_id="tenant-a",
+        project_id="project-a",
         version_id="agent-one",
         kind=ApprovalKind.ADMIN_ESCALATION,
         gated_action="grant_role",

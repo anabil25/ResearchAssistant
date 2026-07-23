@@ -31,6 +31,7 @@ class CreateAgentRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     logical_agent_id: str = Field(pattern=r"^agent-[a-z0-9-]{3,80}$")
+    project_id: str = Field(min_length=1, max_length=200)
     display_name: str = Field(min_length=1, max_length=200)
     description: str = Field(default="", max_length=4000)
     owner_kind: AgentOwnerKind = AgentOwnerKind.USER
@@ -47,6 +48,7 @@ class UpdateDraftRequest(BaseModel):
 class ForkRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     source_version_id: str
     new_logical_agent_id: str = Field(pattern=r"^agent-[a-z0-9-]{3,80}$")
 
@@ -54,12 +56,14 @@ class ForkRequest(BaseModel):
 class RunGatesRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     evidence: GateEvidence = Field(default_factory=GateEvidence)
 
 
 class PromotionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     destination: str = Field(min_length=1, max_length=200)
     evidence_summary: str = Field(min_length=1, max_length=4000)
     risk: str = Field(default="medium")
@@ -68,6 +72,7 @@ class PromotionRequest(BaseModel):
 class ApprovalDecisionRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     approve: bool
     rationale: str | None = None
 
@@ -75,6 +80,7 @@ class ApprovalDecisionRequest(BaseModel):
 class EscalationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     requested_role: AgentRole
     evidence_summary: str = Field(min_length=1, max_length=4000)
     risk: str = Field(default="high")
@@ -83,6 +89,7 @@ class EscalationRequest(BaseModel):
 class CapabilityApprovalRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     descriptor_id: str = Field(min_length=1, max_length=200)
     operation: str = Field(min_length=1, max_length=200)
     evidence_summary: str = Field(min_length=1, max_length=4000)
@@ -94,6 +101,7 @@ class CapabilityApprovalRequest(BaseModel):
 class DeployRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     version_id: str
     trace_ref: str | None = None
 
@@ -101,6 +109,7 @@ class DeployRequest(BaseModel):
 class HealthUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     status: HealthStatus
     detail: str = ""
     trace_ref: str | None = None
@@ -109,6 +118,7 @@ class HealthUpdateRequest(BaseModel):
 class RollbackRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     deployment_id: str
     target_version_id: str
 
@@ -127,6 +137,7 @@ class AttachCapabilityRequest(BaseModel):
 class RememberRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     scope_kind: MemoryScopeKind
     scope_id: str = Field(min_length=1, max_length=200)
     role: str = Field(default="note", max_length=40)
@@ -139,18 +150,21 @@ class RememberRequest(BaseModel):
 class CorrectMemoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     content: str = Field(min_length=1, max_length=20000)
 
 
 class ForgetMemoryRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     reason: str = Field(default="", max_length=2000)
 
 
 class RegisterToolRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     descriptor_id: str = Field(min_length=1, max_length=160)
     operation: str = Field(min_length=1, max_length=120)
     kind: ToolRegistrationKind
@@ -168,6 +182,7 @@ class BuilderMessageRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     message: str = Field(min_length=1, max_length=8000)
     base_etag: str = Field(min_length=1, max_length=200)
 
@@ -182,12 +197,14 @@ class BuilderApplyRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     base_etag: str = Field(min_length=1, max_length=200)
 
 
 class BuilderRejectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
+    project_id: str = Field(min_length=1, max_length=200)
     reason: str = Field(default="", max_length=2000)
 
 

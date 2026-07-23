@@ -277,7 +277,7 @@ def test_attach_returns_binding_with_instance_pin_and_copied_config() -> None:
             version="2026.07",
         )
     )
-    config = {"index": "docs"}
+    config: dict[str, object] = {"index": "docs"}
 
     binding = registry.attach(
         descriptor_id="foundry.azure_ai_search",

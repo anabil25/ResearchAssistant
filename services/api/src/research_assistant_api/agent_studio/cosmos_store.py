@@ -1,11 +1,31 @@
 """Cosmos DB-backed persistence for the Agent Studio metadata store.
 
+Phase 2 partitioning: all project-scoped documents live in a single
+dedicated container (``Settings.agent_studio_metadata_container``, default
+``agentStudioMetadataV1``) whose partition key path is ``/scope_key`` —
+the same synthetic, collision-resistant key computed by
+``ScopeContext.scope_key`` for every ``(tenant_id, project_id)`` pair. This
+is a brand-new container for a brand-new feature: there is no dual-read
+fallback to the legacy ``manifests``/``versions``/``governance`` containers
+used before Phase 2, and no cross-partition query is ever issued for
+project-scoped data — every query and read is scoped to exactly one
+partition (``partition_key=scope.scope_key``), and single-document lookups
+prefer a true point ``read_item`` over a query wherever the document id is
+deterministic.
+
+``ReleaseGateReport`` is the one document type with no owning
+``ScopeContext`` (mirroring ``AgentStudioStore``, which does not scope-check
+it either — the caller already validated the owning version's scope before
+saving/loading a report). It is stored under a fixed sentinel partition
+key so it still fits the single-container/single-partition-key design
+without ever being treated as tenant/project data in its own right.
+
 Follows the same pattern as ``cosmos_workspace.CosmosWorkspaceStore``:
 subclass the in-memory store, override each method to read-through/
-write-through named containers, and use optimistic concurrency
+write-through the container, and use optimistic concurrency
 (``MatchConditions.IfNotModified`` + etag) for updates that mutate an
-existing document (version status transitions, approval decisions,
-deployment health/rollback).
+existing document (approval decisions, deployment updates, builder
+proposal decisions).
 """
 
 from __future__ import annotations
@@ -16,8 +36,7 @@ from typing import Any
 from azure.core import MatchConditions
 from azure.core.credentials import TokenCredential
 from azure.cosmos import CosmosClient
-from azure.cosmos.container import ContainerProxy
-from azure.cosmos.exceptions import CosmosHttpResponseError
+from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 
 from research_assistant_api.agent_studio.models import (
@@ -36,191 +55,199 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
     ToolRegistrationSpec,
 )
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
 from research_assistant_api.config import Settings
+
+#: Fixed sentinel partition for ``ReleaseGateReport`` documents, which have
+#: no owning tenant/project of their own (see module docstring). This is a
+#: single, well-known partition — reading/writing it is still a point
+#: operation, never a cross-partition fan-out.
+_GATE_REPORT_SCOPE_KEY = "sk_shared_gate_reports"
 
 
 class CosmosAgentStudioStore(AgentStudioStore):
     persistence = "Azure Cosmos DB"
 
-    def __init__(self, endpoint: str, database_name: str, credential: TokenCredential) -> None:
+    def __init__(
+        self,
+        endpoint: str,
+        database_name: str,
+        credential: TokenCredential,
+        metadata_container_name: str = "agentStudioMetadataV1",
+    ) -> None:
         super().__init__()
         client = CosmosClient(endpoint, credential=credential)
         database = client.get_database_client(database_name)
-        self._manifests_container = database.get_container_client("manifests")
-        self._versions_container = database.get_container_client("versions")
-        self._governance_container = database.get_container_client("governance")
+        self._container = database.get_container_client(metadata_container_name)
 
-    def _query(self, container: ContainerProxy, document_type: str, tenant_id: str) -> list[dict[str, Any]]:
+    # -- Low-level helpers ---------------------------------------------
+
+    def _read(self, scope_key: str, document_id: str) -> dict[str, Any] | None:
+        """True point read: a single document by id within a single
+        partition. Never a query, never cross-partition."""
+        try:
+            return dict(self._container.read_item(item=document_id, partition_key=scope_key))
+        except CosmosResourceNotFoundError:
+            return None
+
+    def _query_partition(self, scope_key: str, document_type: str) -> list[dict[str, Any]]:
+        """Single-partition query (``partition_key=`` pins it to exactly one
+        logical partition) filtered by document type. This is a point query
+        within a known partition, not a cross-partition scan."""
         return list(
-            container.query_items(
-                query="SELECT * FROM c WHERE c.documentType = @documentType AND c.tenantId = @tenantId",
-                parameters=[
-                    {"name": "@documentType", "value": document_type},
-                    {"name": "@tenantId", "value": tenant_id},
-                ],
-                enable_cross_partition_query=True,
+            self._container.query_items(
+                query="SELECT * FROM c WHERE c.documentType = @documentType",
+                parameters=[{"name": "@documentType", "value": document_type}],
+                partition_key=scope_key,
             )
+        )
+
+    def _upsert(self, scope_key: str, document_id: str, document_type: str, payload: dict[str, Any]) -> None:
+        self._container.upsert_item(
+            {
+                "id": document_id,
+                "documentType": document_type,
+                "scope_key": scope_key,
+                "payload": payload,
+            }
         )
 
     # -- Drafts -----------------------------------------------------------
 
-    def save_draft(self, draft: AgentDraft) -> AgentDraft:
-        super().save_draft(draft)
-        self._manifests_container.upsert_item(
-            {
-                "id": f"draft::{draft.tenant_id}::{draft.logical_agent_id}",
-                "documentType": "draft",
-                "tenantId": draft.tenant_id,
-                "logicalAgentId": draft.logical_agent_id,
-                "payload": draft.model_dump(mode="json"),
-            }
-        )
+    @staticmethod
+    def _draft_id(logical_agent_id: str) -> str:
+        return f"draft::{logical_agent_id}"
+
+    def save_draft(self, scope: ScopeContext, draft: AgentDraft) -> AgentDraft:
+        super().save_draft(scope, draft)
+        self._upsert(scope.scope_key, self._draft_id(draft.logical_agent_id), "draft", draft.model_dump(mode="json"))
         return draft
 
-    def get_draft(self, tenant_id: str, logical_agent_id: str) -> AgentDraft | None:
-        documents = self._query(self._manifests_container, "draft", tenant_id)
-        for document in documents:
-            AgentStudioStore.save_draft(self, AgentDraft.model_validate(document["payload"]))
-        return super().get_draft(tenant_id, logical_agent_id)
+    def get_draft(self, scope: ScopeContext, logical_agent_id: str) -> AgentDraft | None:
+        document = self._read(scope.scope_key, self._draft_id(logical_agent_id))
+        if document is None:
+            return None
+        draft = AgentDraft.model_validate(document["payload"])
+        AgentStudioStore.save_draft(self, scope, draft)
+        return draft
 
-    def list_drafts(self, tenant_id: str) -> tuple[AgentDraft, ...]:
-        documents = self._query(self._manifests_container, "draft", tenant_id)
+    def list_drafts(self, scope: ScopeContext) -> tuple[AgentDraft, ...]:
+        documents = self._query_partition(scope.scope_key, "draft")
         for document in documents:
-            AgentStudioStore.save_draft(self, AgentDraft.model_validate(document["payload"]))
-        return super().list_drafts(tenant_id)
+            AgentStudioStore.save_draft(self, scope, AgentDraft.model_validate(document["payload"]))
+        return super().list_drafts(scope)
 
     # -- Ownership ----------------------------------------------------------
 
-    def grant_ownership(self, grant: OwnershipGrant) -> OwnershipGrant:
-        super().grant_ownership(grant)
-        document_id = (
-            f"ownership::{grant.tenant_id}::{grant.logical_agent_id}::{grant.principal_id}::{grant.role.value}"
-        )
-        self._manifests_container.upsert_item(
-            {
-                "id": document_id,
-                "documentType": "ownership",
-                "tenantId": grant.tenant_id,
-                "logicalAgentId": grant.logical_agent_id,
-                "payload": grant.model_dump(mode="json"),
-            }
-        )
+    @staticmethod
+    def _ownership_id(grant: OwnershipGrant) -> str:
+        return f"ownership::{grant.logical_agent_id}::{grant.principal_id}::{grant.role.value}"
+
+    def grant_ownership(self, scope: ScopeContext, grant: OwnershipGrant) -> OwnershipGrant:
+        super().grant_ownership(scope, grant)
+        self._upsert(scope.scope_key, self._ownership_id(grant), "ownership", grant.model_dump(mode="json"))
         return grant
 
-    def list_ownership(self, tenant_id: str, logical_agent_id: str) -> tuple[OwnershipGrant, ...]:
-        documents = self._query(self._manifests_container, "ownership", tenant_id)
+    def list_ownership(self, scope: ScopeContext, logical_agent_id: str) -> tuple[OwnershipGrant, ...]:
+        documents = self._query_partition(scope.scope_key, "ownership")
+        existing = super().list_ownership(scope, logical_agent_id)
         for document in documents:
             grant = OwnershipGrant.model_validate(document["payload"])
-            if grant not in self._ownership.get((grant.tenant_id, grant.logical_agent_id), []):
-                AgentStudioStore.grant_ownership(self, grant)
-        return super().list_ownership(tenant_id, logical_agent_id)
+            if grant.logical_agent_id == logical_agent_id and grant not in existing:
+                AgentStudioStore.grant_ownership(self, scope, grant)
+        return super().list_ownership(scope, logical_agent_id)
 
-    def role_for(
-        self,
-        tenant_id: str,
-        logical_agent_id: str,
-        principal_id: str,
-        *,
-        project_id: str | None = None,
-    ) -> AgentRole | None:
-        self.list_ownership(tenant_id, logical_agent_id)
-        return super().role_for(tenant_id, logical_agent_id, principal_id, project_id=project_id)
+    def role_for(self, scope: ScopeContext, logical_agent_id: str, principal_id: str) -> AgentRole | None:
+        self.list_ownership(scope, logical_agent_id)
+        return super().role_for(scope, logical_agent_id, principal_id)
 
     # -- Versions -------------------------------------------------------
 
-    def create_version(self, version: AgentVersion) -> AgentVersion:
-        super().create_version(version)
-        self._versions_container.upsert_item(
-            {
-                "id": version.id,
-                "documentType": "version",
-                "tenantId": version.tenant_id,
-                "logicalAgentId": version.logical_agent_id,
-                "payload": version.model_dump(mode="json"),
-            }
-        )
-        return version
+    @staticmethod
+    def _version_id(version_id: str) -> str:
+        return f"version::{version_id}"
+
+    def _sync_versions(self, scope: ScopeContext, logical_agent_id: str) -> None:
+        documents = self._query_partition(scope.scope_key, "version")
+        for document in documents:
+            version = AgentVersion.model_validate(document["payload"])
+            if version.logical_agent_id == logical_agent_id and version.id not in self._versions:
+                AgentStudioStore.create_version(self, scope, version)
 
     def allocate_version(
         self,
-        tenant_id: str,
+        scope: ScopeContext,
         logical_agent_id: str,
         builder: Callable[[int], AgentVersion],
     ) -> AgentVersion:
-        """Atomic sequence allocation, then write-through to Cosmos.
+        """Sync any Cosmos-persisted versions into the in-memory cache first
+        so the atomic in-process sequence lock reserves a sequence number
+        that actually accounts for versions written by prior process
+        lifetimes, then delegate to the base class for the atomic
+        reserve-and-build step, then write through to Cosmos.
 
-        Reuses the in-memory lock-guarded allocation for the actual sequence
-        reservation (single-process atomicity), then persists the resulting
-        version the same way ``create_version`` does. Multi-process
-        allocation races are out of scope for this pass — see the Phase 1
-        coordination note on atomic sequence allocation.
+        Multi-process allocation races remain out of scope for this pass —
+        see the Phase 1 coordination note on atomic sequence allocation.
         """
-        version = super().allocate_version(tenant_id, logical_agent_id, builder)
-        self._versions_container.upsert_item(
-            {
-                "id": version.id,
-                "documentType": "version",
-                "tenantId": version.tenant_id,
-                "logicalAgentId": version.logical_agent_id,
-                "payload": version.model_dump(mode="json"),
-            }
-        )
+        self._sync_versions(scope, logical_agent_id)
+        version = super().allocate_version(scope, logical_agent_id, builder)
+        self._upsert(scope.scope_key, self._version_id(version.id), "version", version.model_dump(mode="json"))
         return version
 
-    def list_versions(self, tenant_id: str, logical_agent_id: str) -> tuple[AgentVersion, ...]:
-        documents = self._query(self._versions_container, "version", tenant_id)
-        for document in documents:
-            version = AgentVersion.model_validate(document["payload"])
-            if version.id not in self._versions:
-                AgentStudioStore.create_version(self, version)
-        return super().list_versions(tenant_id, logical_agent_id)
+    def create_version(self, scope: ScopeContext, version: AgentVersion) -> AgentVersion:
+        super().create_version(scope, version)
+        self._upsert(scope.scope_key, self._version_id(version.id), "version", version.model_dump(mode="json"))
+        return version
 
-    def get_version(self, tenant_id: str, version_id: str) -> AgentVersion | None:
-        cached = super().get_version(tenant_id, version_id)
+    def get_version(self, scope: ScopeContext, version_id: str) -> AgentVersion | None:
+        cached = super().get_version(scope, version_id)
         if cached is not None:
             return cached
-        documents = self._query(self._versions_container, "version", tenant_id)
-        document = next((item for item in documents if item["id"] == version_id), None)
+        document = self._read(scope.scope_key, self._version_id(version_id))
         if document is None:
             return None
         version = AgentVersion.model_validate(document["payload"])
-        AgentStudioStore.create_version(self, version)
+        if version.tenant_id != scope.tenant_id or version.project_id != scope.project_id:
+            return None
+        AgentStudioStore.create_version(self, scope, version)
         return version
+
+    def list_versions(self, scope: ScopeContext, logical_agent_id: str) -> tuple[AgentVersion, ...]:
+        self._sync_versions(scope, logical_agent_id)
+        return super().list_versions(scope, logical_agent_id)
 
     # -- Lineage --------------------------------------------------------
 
-    def add_lineage_edge(self, edge: LineageEdge) -> LineageEdge:
-        super().add_lineage_edge(edge)
-        self._versions_container.upsert_item(
-            {
-                "id": f"lineage::{edge.tenant_id}::{edge.child_version_id}::{edge.parent_version_id}",
-                "documentType": "lineage",
-                "tenantId": edge.tenant_id,
-                "payload": edge.model_dump(mode="json"),
-            }
-        )
+    @staticmethod
+    def _lineage_id(edge: LineageEdge) -> str:
+        return f"lineage::{edge.child_version_id}::{edge.parent_version_id}"
+
+    def add_lineage_edge(self, scope: ScopeContext, edge: LineageEdge) -> LineageEdge:
+        super().add_lineage_edge(scope, edge)
+        self._upsert(scope.scope_key, self._lineage_id(edge), "lineage", edge.model_dump(mode="json"))
         return edge
 
-    def list_lineage(self, tenant_id: str, logical_agent_id: str) -> tuple[LineageEdge, ...]:
-        documents = self._query(self._versions_container, "lineage", tenant_id)
+    def list_lineage(self, scope: ScopeContext, logical_agent_id: str) -> tuple[LineageEdge, ...]:
+        documents = self._query_partition(scope.scope_key, "lineage")
         for document in documents:
             edge = LineageEdge.model_validate(document["payload"])
             if edge not in self._lineage:
-                AgentStudioStore.add_lineage_edge(self, edge)
-        return super().list_lineage(tenant_id, logical_agent_id)
+                AgentStudioStore.add_lineage_edge(self, scope, edge)
+        return super().list_lineage(scope, logical_agent_id)
 
     # -- Gate reports -----------------------------------------------------
+    # No owning ScopeContext (see module docstring) — stored under a fixed
+    # sentinel partition key, still a true point read/write.
+
+    @staticmethod
+    def _gate_report_id(report_id: str) -> str:
+        return f"gate_report::{report_id}"
 
     def save_gate_report(self, report: ReleaseGateReport) -> ReleaseGateReport:
         super().save_gate_report(report)
-        self._versions_container.upsert_item(
-            {
-                "id": f"gate::{report.id}",
-                "documentType": "gate_report",
-                "tenantId": "_shared",
-                "payload": report.model_dump(mode="json"),
-            }
+        self._upsert(
+            _GATE_REPORT_SCOPE_KEY, self._gate_report_id(report.id), "gate_report", report.model_dump(mode="json")
         )
         return report
 
@@ -228,111 +255,85 @@ class CosmosAgentStudioStore(AgentStudioStore):
         cached = super().get_gate_report(report_id)
         if cached is not None:
             return cached
-        documents = list(
-            self._versions_container.query_items(
-                query="SELECT * FROM c WHERE c.documentType = @documentType AND c.id = @id",
-                parameters=[
-                    {"name": "@documentType", "value": "gate_report"},
-                    {"name": "@id", "value": f"gate::{report_id}"},
-                ],
-                enable_cross_partition_query=True,
-            )
-        )
-        if not documents:
+        document = self._read(_GATE_REPORT_SCOPE_KEY, self._gate_report_id(report_id))
+        if document is None:
             return None
-        report = ReleaseGateReport.model_validate(documents[0]["payload"])
+        report = ReleaseGateReport.model_validate(document["payload"])
         AgentStudioStore.save_gate_report(self, report)
         return report
 
     # -- Releases (append-only lifecycle for an immutable version) ---------
 
-    def create_release(self, release: AgentRelease) -> AgentRelease:
-        super().create_release(release)
-        self._versions_container.upsert_item(
-            {
-                "id": f"release::{release.id}",
-                "documentType": "release",
-                "tenantId": release.tenant_id,
-                "versionId": release.version_id,
-                "payload": release.model_dump(mode="json"),
-            }
-        )
+    @staticmethod
+    def _release_id(release_id: str) -> str:
+        return f"release::{release_id}"
+
+    def create_release(self, scope: ScopeContext, release: AgentRelease) -> AgentRelease:
+        super().create_release(scope, release)
+        self._upsert(scope.scope_key, self._release_id(release.id), "release", release.model_dump(mode="json"))
         return release
 
-    def _sync_releases(self, tenant_id: str, version_id: str) -> None:
-        documents = self._query(self._versions_container, "release", tenant_id)
+    def _sync_releases(self, scope: ScopeContext, version_id: str) -> None:
+        documents = self._query_partition(scope.scope_key, "release")
         for document in documents:
             release = AgentRelease.model_validate(document["payload"])
-            if release.version_id != version_id:
-                continue
-            if release.id not in self._releases:
-                AgentStudioStore.create_release(self, release)
+            if release.version_id == version_id and release.id not in self._releases:
+                AgentStudioStore.create_release(self, scope, release)
 
-    def get_release(self, tenant_id: str, release_id: str) -> AgentRelease | None:
-        cached = super().get_release(tenant_id, release_id)
+    def get_release(self, scope: ScopeContext, release_id: str) -> AgentRelease | None:
+        cached = super().get_release(scope, release_id)
         if cached is not None:
             return cached
-        documents = list(
-            self._versions_container.query_items(
-                query=(
-                    "SELECT * FROM c WHERE c.documentType = @documentType "
-                    "AND c.id = @id AND c.tenantId = @tenantId"
-                ),
-                parameters=[
-                    {"name": "@documentType", "value": "release"},
-                    {"name": "@id", "value": f"release::{release_id}"},
-                    {"name": "@tenantId", "value": tenant_id},
-                ],
-                enable_cross_partition_query=True,
-            )
-        )
-        if not documents:
+        document = self._read(scope.scope_key, self._release_id(release_id))
+        if document is None:
             return None
-        release = AgentRelease.model_validate(documents[0]["payload"])
-        AgentStudioStore.create_release(self, release)
+        release = AgentRelease.model_validate(document["payload"])
+        if release.tenant_id != scope.tenant_id or release.project_id != scope.project_id:
+            return None
+        AgentStudioStore.create_release(self, scope, release)
         return release
 
-    def list_releases_for_version(self, tenant_id: str, version_id: str) -> tuple[AgentRelease, ...]:
-        self._sync_releases(tenant_id, version_id)
-        return super().list_releases_for_version(tenant_id, version_id)
+    def list_releases_for_version(self, scope: ScopeContext, version_id: str) -> tuple[AgentRelease, ...]:
+        self._sync_releases(scope, version_id)
+        return super().list_releases_for_version(scope, version_id)
 
-    def latest_release_for_version(self, tenant_id: str, version_id: str) -> AgentRelease | None:
-        self._sync_releases(tenant_id, version_id)
-        return super().latest_release_for_version(tenant_id, version_id)
+    def latest_release_for_version(self, scope: ScopeContext, version_id: str) -> AgentRelease | None:
+        self._sync_releases(scope, version_id)
+        return super().latest_release_for_version(scope, version_id)
 
     # -- Approvals ------------------------------------------------------
 
-    def create_approval(self, record: StudioApprovalRecord) -> StudioApprovalRecord:
-        self.list_approvals(record.tenant_id)
-        existing = self.find_pending_approval(record.tenant_id, record.idempotency_key)
-        if existing is not None:
-            return existing
-        AgentStudioStore.create_approval(self, record)
-        self._governance_container.upsert_item(
-            {
-                "id": record.id,
-                "documentType": "approval",
-                "tenantId": record.tenant_id,
-                "versionId": record.version_id,
-                "payload": record.model_dump(mode="json"),
-            }
-        )
-        return record
+    @staticmethod
+    def _approval_id(approval_id: str) -> str:
+        return f"approval::{approval_id}"
 
-    def list_approvals(self, tenant_id: str, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
-        documents = self._query(self._governance_container, "approval", tenant_id)
+    def _sync_approvals(self, scope: ScopeContext) -> None:
+        documents = self._query_partition(scope.scope_key, "approval")
         for document in documents:
             approval = StudioApprovalRecord.model_validate(document["payload"])
             self._approvals[approval.id] = approval
-        return super().list_approvals(tenant_id, version_id)
 
-    def get_approval(self, tenant_id: str, approval_id: str) -> StudioApprovalRecord | None:
-        self.list_approvals(tenant_id)
-        return super().get_approval(tenant_id, approval_id)
+    def create_approval(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        self._sync_approvals(scope)
+        existing = self.find_pending_approval(scope, record.idempotency_key)
+        if existing is not None:
+            return existing
+        AgentStudioStore.create_approval(self, scope, record)
+        self._upsert(scope.scope_key, self._approval_id(record.id), "approval", record.model_dump(mode="json"))
+        return record
 
-    def save_approval_decision(self, record: StudioApprovalRecord) -> StudioApprovalRecord:
-        documents = self._query(self._governance_container, "approval", record.tenant_id)
-        document = next((item for item in documents if item["id"] == record.id), None)
+    def list_approvals(self, scope: ScopeContext, version_id: str | None = None) -> tuple[StudioApprovalRecord, ...]:
+        self._sync_approvals(scope)
+        return super().list_approvals(scope, version_id)
+
+    def get_approval(self, scope: ScopeContext, approval_id: str) -> StudioApprovalRecord | None:
+        self._sync_approvals(scope)
+        return super().get_approval(scope, approval_id)
+
+    def save_approval_decision(self, scope: ScopeContext, record: StudioApprovalRecord) -> StudioApprovalRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        document = self._read(scope.scope_key, self._approval_id(record.id))
         if document is None:
             raise AgentStudioStoreError(f"Approval '{record.id}' not found.")
         current = StudioApprovalRecord.model_validate(document["payload"])
@@ -340,7 +341,7 @@ class CosmosAgentStudioStore(AgentStudioStore):
             raise AgentStudioStoreError(f"Approval '{record.id}' has already been decided.")
         document["payload"] = record.model_dump(mode="json")
         try:
-            self._governance_container.replace_item(
+            self._container.replace_item(
                 item=document["id"],
                 body=document,
                 etag=document.get("_etag"),
@@ -355,47 +356,44 @@ class CosmosAgentStudioStore(AgentStudioStore):
 
     # -- Deployments ------------------------------------------------------
 
-    def create_deployment(self, record: DeploymentRecord) -> DeploymentRecord:
-        super().create_deployment(record)
-        self._governance_container.upsert_item(
-            {
-                "id": record.id,
-                "documentType": "deployment",
-                "tenantId": record.tenant_id,
-                "logicalAgentId": record.logical_agent_id,
-                "payload": record.model_dump(mode="json"),
-            }
-        )
+    @staticmethod
+    def _deployment_id(deployment_id: str) -> str:
+        return f"deployment::{deployment_id}"
+
+    def create_deployment(self, scope: ScopeContext, record: DeploymentRecord) -> DeploymentRecord:
+        super().create_deployment(scope, record)
+        self._upsert(scope.scope_key, self._deployment_id(record.id), "deployment", record.model_dump(mode="json"))
         return record
 
-    def list_deployments(self, tenant_id: str, logical_agent_id: str) -> tuple[DeploymentRecord, ...]:
-        documents = self._query(self._governance_container, "deployment", tenant_id)
+    def list_deployments(self, scope: ScopeContext, logical_agent_id: str) -> tuple[DeploymentRecord, ...]:
+        documents = self._query_partition(scope.scope_key, "deployment")
         for document in documents:
             deployment = DeploymentRecord.model_validate(document["payload"])
-            if deployment.id not in self._deployments:
-                AgentStudioStore.create_deployment(self, deployment)
-        return super().list_deployments(tenant_id, logical_agent_id)
+            if deployment.logical_agent_id == logical_agent_id and deployment.id not in self._deployments:
+                AgentStudioStore.create_deployment(self, scope, deployment)
+        return super().list_deployments(scope, logical_agent_id)
 
-    def get_deployment(self, tenant_id: str, deployment_id: str) -> DeploymentRecord | None:
-        cached = super().get_deployment(tenant_id, deployment_id)
+    def get_deployment(self, scope: ScopeContext, deployment_id: str) -> DeploymentRecord | None:
+        cached = super().get_deployment(scope, deployment_id)
         if cached is not None:
             return cached
-        documents = self._query(self._governance_container, "deployment", tenant_id)
-        document = next((item for item in documents if item["id"] == deployment_id), None)
+        document = self._read(scope.scope_key, self._deployment_id(deployment_id))
         if document is None:
             return None
         deployment = DeploymentRecord.model_validate(document["payload"])
-        AgentStudioStore.create_deployment(self, deployment)
+        if deployment.tenant_id != scope.tenant_id or deployment.project_id != scope.project_id:
+            return None
+        AgentStudioStore.create_deployment(self, scope, deployment)
         return deployment
 
-    def update_deployment(self, record: DeploymentRecord) -> DeploymentRecord:
-        documents = self._query(self._governance_container, "deployment", record.tenant_id)
-        document = next((item for item in documents if item["id"] == record.id), None)
+    def update_deployment(self, scope: ScopeContext, record: DeploymentRecord) -> DeploymentRecord:
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        document = self._read(scope.scope_key, self._deployment_id(record.id))
         if document is None:
             raise AgentStudioStoreError(f"Deployment '{record.id}' not found.")
         document["payload"] = record.model_dump(mode="json")
         try:
-            self._governance_container.replace_item(
+            self._container.replace_item(
                 item=document["id"],
                 body=document,
                 etag=document.get("_etag"),
@@ -410,99 +408,102 @@ class CosmosAgentStudioStore(AgentStudioStore):
 
     # -- Logical agent bindings ----------------------------------------
 
-    def set_binding(self, binding: LogicalAgentBinding) -> LogicalAgentBinding:
-        super().set_binding(binding)
-        self._governance_container.upsert_item(
-            {
-                "id": f"binding::{binding.tenant_id}::{binding.logical_agent_id}::{binding.environment.value}",
-                "documentType": "binding",
-                "tenantId": binding.tenant_id,
-                "logicalAgentId": binding.logical_agent_id,
-                "payload": binding.model_dump(mode="json"),
-            }
+    @staticmethod
+    def _binding_id(logical_agent_id: str, environment: DeploymentEnvironment) -> str:
+        return f"binding::{logical_agent_id}::{environment.value}"
+
+    def set_binding(self, scope: ScopeContext, binding: LogicalAgentBinding) -> LogicalAgentBinding:
+        super().set_binding(scope, binding)
+        self._upsert(
+            scope.scope_key,
+            self._binding_id(binding.logical_agent_id, binding.environment),
+            "binding",
+            binding.model_dump(mode="json"),
         )
         return binding
 
     def get_binding(
         self,
-        tenant_id: str,
+        scope: ScopeContext,
         logical_agent_id: str,
         environment: DeploymentEnvironment,
     ) -> LogicalAgentBinding | None:
-        cached = super().get_binding(tenant_id, logical_agent_id, environment)
+        cached = super().get_binding(scope, logical_agent_id, environment)
         if cached is not None:
             return cached
-        documents = self._query(self._governance_container, "binding", tenant_id)
-        document = next(
-            (
-                item
-                for item in documents
-                if item["id"] == f"binding::{tenant_id}::{logical_agent_id}::{environment.value}"
-            ),
-            None,
-        )
+        document = self._read(scope.scope_key, self._binding_id(logical_agent_id, environment))
         if document is None:
             return None
         binding = LogicalAgentBinding.model_validate(document["payload"])
-        AgentStudioStore.set_binding(self, binding)
+        AgentStudioStore.set_binding(self, scope, binding)
         return binding
 
     # -- Tool registrations (runtime handler wiring) -----------------------
 
-    def create_tool_registration(self, registration: ToolRegistrationSpec) -> ToolRegistrationSpec:
-        super().create_tool_registration(registration)
-        self._governance_container.upsert_item(
-            {
-                "id": registration.id,
-                "documentType": "tool_registration",
-                "tenantId": registration.tenant_id,
-                "logicalAgentId": registration.logical_agent_id,
-                "payload": registration.model_dump(mode="json"),
-            }
+    @staticmethod
+    def _tool_registration_id(registration_id: str) -> str:
+        return f"tool_registration::{registration_id}"
+
+    def create_tool_registration(
+        self, scope: ScopeContext, registration: ToolRegistrationSpec
+    ) -> ToolRegistrationSpec:
+        super().create_tool_registration(scope, registration)
+        self._upsert(
+            scope.scope_key,
+            self._tool_registration_id(registration.id),
+            "tool_registration",
+            registration.model_dump(mode="json"),
         )
         return registration
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
-        documents = self._query(self._governance_container, "tool_registration", tenant_id)
+    def list_tool_registrations(self, scope: ScopeContext, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
+        documents = self._query_partition(scope.scope_key, "tool_registration")
         for document in documents:
             registration = ToolRegistrationSpec.model_validate(document["payload"])
-            if registration.id not in self._tool_registrations:
-                AgentStudioStore.create_tool_registration(self, registration)
-        return super().list_tool_registrations(tenant_id, logical_agent_id)
+            if registration.logical_agent_id == logical_agent_id and registration.id not in self._tool_registrations:
+                AgentStudioStore.create_tool_registration(self, scope, registration)
+        return super().list_tool_registrations(scope, logical_agent_id)
 
     # -- Builder proposals --------------------------------------------------
 
-    def create_builder_proposal(self, proposal: BuilderProposal) -> BuilderProposal:
-        super().create_builder_proposal(proposal)
-        self._governance_container.upsert_item(
-            {
-                "id": proposal.id,
-                "documentType": "builder_proposal",
-                "tenantId": proposal.tenant_id,
-                "logicalAgentId": proposal.logical_agent_id,
-                "payload": proposal.model_dump(mode="json"),
-            }
+    @staticmethod
+    def _builder_proposal_id(proposal_id: str) -> str:
+        return f"builder_proposal::{proposal_id}"
+
+    def create_builder_proposal(self, scope: ScopeContext, proposal: BuilderProposal) -> BuilderProposal:
+        super().create_builder_proposal(scope, proposal)
+        self._upsert(
+            scope.scope_key,
+            self._builder_proposal_id(proposal.id),
+            "builder_proposal",
+            proposal.model_dump(mode="json"),
         )
         return proposal
 
-    def _reload_builder_proposals(self, tenant_id: str) -> None:
-        documents = self._query(self._governance_container, "builder_proposal", tenant_id)
+    def list_builder_proposals(self, scope: ScopeContext, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
+        documents = self._query_partition(scope.scope_key, "builder_proposal")
         for document in documents:
             proposal = BuilderProposal.model_validate(document["payload"])
-            if proposal.id not in self._builder_proposals:
-                AgentStudioStore.create_builder_proposal(self, proposal)
+            if proposal.logical_agent_id == logical_agent_id and proposal.id not in self._builder_proposals:
+                AgentStudioStore.create_builder_proposal(self, scope, proposal)
+        return super().list_builder_proposals(scope, logical_agent_id)
 
-    def list_builder_proposals(self, tenant_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
-        self._reload_builder_proposals(tenant_id)
-        return super().list_builder_proposals(tenant_id, logical_agent_id)
+    def get_builder_proposal(self, scope: ScopeContext, proposal_id: str) -> BuilderProposal | None:
+        cached = super().get_builder_proposal(scope, proposal_id)
+        if cached is not None:
+            return cached
+        document = self._read(scope.scope_key, self._builder_proposal_id(proposal_id))
+        if document is None:
+            return None
+        proposal = BuilderProposal.model_validate(document["payload"])
+        if proposal.tenant_id != scope.tenant_id or proposal.project_id != scope.project_id:
+            return None
+        AgentStudioStore.create_builder_proposal(self, scope, proposal)
+        return proposal
 
-    def get_builder_proposal(self, tenant_id: str, proposal_id: str) -> BuilderProposal | None:
-        self._reload_builder_proposals(tenant_id)
-        return super().get_builder_proposal(tenant_id, proposal_id)
-
-    def save_builder_proposal_decision(self, proposal: BuilderProposal) -> BuilderProposal:
-        documents = self._query(self._governance_container, "builder_proposal", proposal.tenant_id)
-        document = next((item for item in documents if item["id"] == proposal.id), None)
+    def save_builder_proposal_decision(self, scope: ScopeContext, proposal: BuilderProposal) -> BuilderProposal:
+        self._require_scope_match(scope, proposal.tenant_id, proposal.project_id)
+        document = self._read(scope.scope_key, self._builder_proposal_id(proposal.id))
         if document is None:
             raise AgentStudioStoreError(f"Proposal '{proposal.id}' not found.")
         current = BuilderProposal.model_validate(document["payload"])
@@ -510,7 +511,7 @@ class CosmosAgentStudioStore(AgentStudioStore):
             raise AgentStudioStoreError(f"Proposal '{proposal.id}' has already been decided.")
         document["payload"] = proposal.model_dump(mode="json")
         try:
-            self._governance_container.replace_item(
+            self._container.replace_item(
                 item=document["id"],
                 body=document,
                 etag=document.get("_etag"),
@@ -546,4 +547,11 @@ def build_agent_studio_store(settings: Settings) -> AgentStudioStore:
         settings.cosmos_endpoint,
         settings.agent_studio_cosmos_database,
         _credential(settings.managed_identity_client_id),
+        settings.agent_studio_metadata_container,
     )
+
+
+__all__ = [
+    "CosmosAgentStudioStore",
+    "build_agent_studio_store",
+]

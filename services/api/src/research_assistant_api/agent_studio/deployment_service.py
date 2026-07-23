@@ -27,6 +27,7 @@ from research_assistant_api.agent_studio.models import (
     role_at_least,
     utc_now,
 )
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
 _DEPLOYABLE_RELEASE_STATUSES = frozenset(
@@ -85,11 +86,11 @@ class DeploymentService:
                 "stale, or unavailable; deployment smoke-check cannot proceed."
             )
 
-    def _revalidate_capability_approvals(self, tenant_id: str, version: AgentVersion) -> None:
+    def _revalidate_capability_approvals(self, scope: ScopeContext, version: AgentVersion) -> None:
         if self._registry is None:
             return
         catalog = self._registry.as_mapping()
-        approvals = self._store.list_approvals(tenant_id, version.id)
+        approvals = self._store.list_approvals(scope, version.id)
         for binding in version.manifest.capabilities:
             descriptor = catalog.get(binding.descriptor_id)
             if descriptor is None:
@@ -123,6 +124,7 @@ class DeploymentService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         version_id: str,
         deployed_by: str,
@@ -142,10 +144,11 @@ class DeploymentService:
         """
         if not role_at_least(actor_role, AgentRole.CONTRIBUTOR):
             raise DeploymentServiceError(f"Role '{actor_role.value}' cannot create deployments.")
-        version = self._store.get_version(tenant_id, version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
         if version is None or version.logical_agent_id != logical_agent_id:
             raise DeploymentServiceError(f"Version '{version_id}' not found for agent '{logical_agent_id}'.")
-        latest_release = self._store.latest_release_for_version(tenant_id, version_id)
+        latest_release = self._store.latest_release_for_version(scope, version_id)
         if latest_release is None or latest_release.status not in _DEPLOYABLE_RELEASE_STATUSES:
             current_status = latest_release.status.value if latest_release is not None else "none"
             raise DeploymentServiceError(
@@ -153,7 +156,7 @@ class DeploymentService:
                 "before it can be deployed."
             )
         self._revalidate_model_deployment(version)
-        self._revalidate_capability_approvals(tenant_id, version)
+        self._revalidate_capability_approvals(scope, version)
         runtime_target = version.runtime_target
         if runtime_target is None:
             raise DeploymentServiceError(f"Version '{version_id}' has no runtime_target resolved.")
@@ -161,16 +164,19 @@ class DeploymentService:
             id=str(uuid4()),
             logical_agent_id=logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             version_id=version_id,
             runtime_target=runtime_target,
             deployed_by=deployed_by,
             trace_ref=trace_ref,
         )
-        self._store.create_deployment(record)
+        self._store.create_deployment(scope, record)
         self._store.set_binding(
+            scope,
             LogicalAgentBinding(
                 logical_agent_id=logical_agent_id,
                 tenant_id=tenant_id,
+                project_id=project_id,
                 environment=DeploymentEnvironment.DEVELOPMENT,
                 resolved_version_id=version_id,
                 updated_by=deployed_by,
@@ -182,24 +188,27 @@ class DeploymentService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         deployment_id: str,
         status: HealthStatus,
         detail: str = "",
         trace_ref: str | None = None,
     ) -> DeploymentRecord:
-        deployment = self._store.get_deployment(tenant_id, deployment_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        deployment = self._store.get_deployment(scope, deployment_id)
         if deployment is None:
             raise DeploymentServiceError(f"Deployment '{deployment_id}' not found.")
         updates: dict[str, object] = {"health": DeploymentHealth(status=status, detail=detail)}
         if trace_ref is not None:
             updates["trace_ref"] = trace_ref
         updated = deployment.model_copy(update=updates)
-        return self._store.update_deployment(updated)
+        return self._store.update_deployment(scope, updated)
 
     def rollback(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         deployment_id: str,
         target_version_id: str,
@@ -213,31 +222,35 @@ class DeploymentService:
         """
         if not role_at_least(actor_role, AgentRole.MAINTAINER):
             raise DeploymentServiceError(f"Role '{actor_role.value}' cannot perform a rollback.")
-        failing = self._store.get_deployment(tenant_id, deployment_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        failing = self._store.get_deployment(scope, deployment_id)
         if failing is None or failing.logical_agent_id != logical_agent_id:
             raise DeploymentServiceError(f"Deployment '{deployment_id}' not found for agent '{logical_agent_id}'.")
-        history = self._store.list_deployments(tenant_id, logical_agent_id)
+        history = self._store.list_deployments(scope, logical_agent_id)
         if not any(deployment.version_id == target_version_id for deployment in history):
             raise DeploymentServiceError(
                 f"Version '{target_version_id}' has no prior deployment history for agent '{logical_agent_id}'."
             )
-        target_version = self._store.get_version(tenant_id, target_version_id)
+        target_version = self._store.get_version(scope, target_version_id)
         if target_version is None:
             raise DeploymentServiceError(f"Version '{target_version_id}' not found.")
         record = DeploymentRecord(
             id=str(uuid4()),
             logical_agent_id=logical_agent_id,
             tenant_id=tenant_id,
+            project_id=project_id,
             version_id=target_version_id,
             runtime_target=target_version.runtime_target or failing.runtime_target,
             deployed_by=deployed_by,
             rollback_of_deployment_id=deployment_id,
         )
-        self._store.create_deployment(record)
+        self._store.create_deployment(scope, record)
         self._store.set_binding(
+            scope,
             LogicalAgentBinding(
                 logical_agent_id=logical_agent_id,
                 tenant_id=tenant_id,
+                project_id=project_id,
                 environment=DeploymentEnvironment.DEVELOPMENT,
                 resolved_version_id=target_version_id,
                 updated_by=deployed_by,
@@ -249,6 +262,7 @@ class DeploymentService:
         self,
         *,
         tenant_id: str,
+        project_id: str,
         logical_agent_id: str,
         environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
     ) -> ResolvedAgentContract | None:
@@ -260,18 +274,20 @@ class DeploymentService:
         time and execution must read them back verbatim, never silently
         re-resolving to "whatever is latest now".
         """
-        binding = self._store.get_binding(tenant_id, logical_agent_id, environment)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        binding = self._store.get_binding(scope, logical_agent_id, environment)
         if binding is None:
             return None
-        version = self._store.get_version(tenant_id, binding.resolved_version_id)
+        version = self._store.get_version(scope, binding.resolved_version_id)
         if version is None:
             return None
-        return self._build_contract(tenant_id, version, environment)
+        return self._build_contract(scope, version, environment)
 
     def contract_for_version(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         version_id: str,
         environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
     ) -> ResolvedAgentContract | None:
@@ -282,15 +298,17 @@ class DeploymentService:
         node) without depending on "whatever is currently bound" for an
         environment.
         """
-        version = self._store.get_version(tenant_id, version_id)
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
+        version = self._store.get_version(scope, version_id)
         if version is None:
             return None
-        return self._build_contract(tenant_id, version, environment)
+        return self._build_contract(scope, version, environment)
 
     def catalog(
         self,
         *,
         tenant_id: str,
+        project_id: str,
         environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
     ) -> tuple[ResolvedAgentContract, ...]:
         """Released-agent catalog for the future node palette/compiler.
@@ -299,10 +317,12 @@ class DeploymentService:
         for every logical agent this tenant has a draft/manifest for.
         Agents with no environment binding yet are omitted (nothing to pin).
         """
+        scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         contracts: list[ResolvedAgentContract] = []
-        for draft in self._store.list_drafts(tenant_id):
+        for draft in self._store.list_drafts(scope):
             contract = self.resolve(
                 tenant_id=tenant_id,
+                project_id=project_id,
                 logical_agent_id=draft.logical_agent_id,
                 environment=environment,
             )
@@ -312,18 +332,19 @@ class DeploymentService:
 
     def _build_contract(
         self,
-        tenant_id: str,
+        scope: ScopeContext,
         version: AgentVersion,
         environment: DeploymentEnvironment,
     ) -> ResolvedAgentContract | None:
         if version.runtime_target is None:
             return None
-        release = self._store.latest_release_for_version(tenant_id, version.id)
+        release = self._store.latest_release_for_version(scope, version.id)
         if release is None:
             return None
         return ResolvedAgentContract(
             logical_agent_id=version.logical_agent_id,
-            tenant_id=tenant_id,
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
             environment=environment,
             version_id=version.id,
             release_id=release.id,
@@ -336,5 +357,4 @@ class DeploymentService:
             artifact_metadata=version.artifact_metadata,
             protocol_version=version.protocol_version,
         )
-
 
