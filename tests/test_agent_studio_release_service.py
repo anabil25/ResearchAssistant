@@ -251,6 +251,9 @@ def test_update_draft_succeeds_with_contributor_role(service: ReleaseService) ->
     )
 
     assert updated.manifest.display_name == "Renamed Agent"
+    # Regression: each successful update must mint a fresh etag so callers
+    # can detect concurrent modification; it must never be reused verbatim.
+    assert updated.etag != draft.etag
 
 
 def test_fork_rejects_unknown_source_version(service: ReleaseService) -> None:

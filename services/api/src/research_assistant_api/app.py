@@ -30,6 +30,11 @@ from research_assistant_core.studio_models import (
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
+from research_assistant_api.agent_studio.builder_service import (
+    BuilderService,
+    build_manifest_proposal_generator,
+)
 from research_assistant_api.agent_studio.capability_registry import default_registry
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
@@ -147,10 +152,16 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_store = None
         application.state.agent_studio_release_service = None
         application.state.agent_studio_deployment_service = None
+        application.state.agent_studio_builder_service = None
     else:
         application.state.agent_studio_store = store
         application.state.agent_studio_release_service = ReleaseService(store, registry)
         application.state.agent_studio_deployment_service = DeploymentService(store)
+        application.state.agent_studio_builder_service = BuilderService(
+            store,
+            build_manifest_proposal_generator(settings),
+            build_artifact_bundle_store(settings),
+        )
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:

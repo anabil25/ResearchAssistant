@@ -40,6 +40,7 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistration,
     ToolRegistrationKind,
     role_at_least,
+    utc_now,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence, run_gates
 from research_assistant_api.agent_studio.runtime_selection import select_runtime
@@ -132,7 +133,14 @@ class ReleaseService:
         existing = self._store.get_draft(tenant_id, logical_agent_id)
         if existing is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to update.")
-        updated = existing.model_copy(update={"manifest": manifest, "updated_by": updated_by})
+        updated = existing.model_copy(
+            update={
+                "manifest": manifest,
+                "updated_by": updated_by,
+                "updated_at": utc_now(),
+                "etag": str(uuid4()),
+            }
+        )
         return self._store.save_draft(updated)
 
     # -- Forking (private specialists) ------------------------------------

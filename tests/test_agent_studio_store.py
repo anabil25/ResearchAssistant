@@ -13,6 +13,9 @@ from research_assistant_api.agent_studio.models import (
     AgentVersion,
     ApprovalKind,
     ApprovalState,
+    BuilderProposal,
+    BuilderProposalState,
+    BuilderProvenance,
     DeploymentEnvironment,
     DeploymentRecord,
     LineageEdge,
@@ -145,6 +148,32 @@ def _deployment(
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
         deployed_by=USER_ID,
         trace_ref=trace_ref,
+    )
+
+
+def _proposal(
+    *,
+    proposal_id: str = "proposal-1",
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    state: BuilderProposalState = BuilderProposalState.PENDING,
+) -> BuilderProposal:
+    manifest = _manifest(tenant_id=tenant_id, logical_agent_id=logical_agent_id)
+    return BuilderProposal(
+        id=proposal_id,
+        tenant_id=tenant_id,
+        logical_agent_id=logical_agent_id,
+        draft_base_etag="etag-1",
+        before_manifest=manifest,
+        after_manifest=manifest,
+        before_manifest_hash="hash-before",
+        after_manifest_hash="hash-after",
+        provenance=BuilderProvenance(
+            generator="test-generator",
+            message="Add a search tool.",
+            requested_by=USER_ID,
+        ),
+        state=state,
     )
 
 
@@ -361,6 +390,27 @@ def test_approvals_are_idempotent_only_while_pending_and_decisions_validate_stat
         store.save_approval_decision(approved)
     with pytest.raises(AgentStudioStoreError, match="not found"):
         store.save_approval_decision(_approval(approval_id="missing"))
+
+
+def test_builder_proposals_round_trip_and_decisions_validate_state() -> None:
+    store = AgentStudioStore()
+    pending = _proposal()
+
+    assert store.create_builder_proposal(pending) == pending
+    assert store.get_builder_proposal(TENANT, pending.id) == pending
+    assert store.get_builder_proposal(OTHER_TENANT, pending.id) is None
+    assert store.get_builder_proposal(TENANT, "missing-proposal") is None
+    assert store.list_builder_proposals(TENANT, AGENT_ID) == (pending,)
+    assert store.list_builder_proposals(OTHER_TENANT, AGENT_ID) == ()
+
+    decided = pending.model_copy(update={"state": BuilderProposalState.APPLIED})
+    assert store.save_builder_proposal_decision(decided) == decided
+    assert store.get_builder_proposal(TENANT, pending.id) == decided
+
+    with pytest.raises(AgentStudioStoreError, match="already been decided"):
+        store.save_builder_proposal_decision(decided)
+    with pytest.raises(AgentStudioStoreError, match="not found"):
+        store.save_builder_proposal_decision(_proposal(proposal_id="missing-proposal"))
 
 
 def test_deployments_update_and_missing_errors() -> None:

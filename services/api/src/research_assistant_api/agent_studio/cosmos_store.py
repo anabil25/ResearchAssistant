@@ -25,6 +25,8 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    BuilderProposal,
+    BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
     LineageEdge,
@@ -467,6 +469,59 @@ class CosmosAgentStudioStore(AgentStudioStore):
             if registration.id not in self._tool_registrations:
                 AgentStudioStore.create_tool_registration(self, registration)
         return super().list_tool_registrations(tenant_id, logical_agent_id)
+
+    # -- Builder proposals --------------------------------------------------
+
+    def create_builder_proposal(self, proposal: BuilderProposal) -> BuilderProposal:
+        super().create_builder_proposal(proposal)
+        self._governance_container.upsert_item(
+            {
+                "id": proposal.id,
+                "documentType": "builder_proposal",
+                "tenantId": proposal.tenant_id,
+                "logicalAgentId": proposal.logical_agent_id,
+                "payload": proposal.model_dump(mode="json"),
+            }
+        )
+        return proposal
+
+    def _reload_builder_proposals(self, tenant_id: str) -> None:
+        documents = self._query(self._governance_container, "builder_proposal", tenant_id)
+        for document in documents:
+            proposal = BuilderProposal.model_validate(document["payload"])
+            if proposal.id not in self._builder_proposals:
+                AgentStudioStore.create_builder_proposal(self, proposal)
+
+    def list_builder_proposals(self, tenant_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
+        self._reload_builder_proposals(tenant_id)
+        return super().list_builder_proposals(tenant_id, logical_agent_id)
+
+    def get_builder_proposal(self, tenant_id: str, proposal_id: str) -> BuilderProposal | None:
+        self._reload_builder_proposals(tenant_id)
+        return super().get_builder_proposal(tenant_id, proposal_id)
+
+    def save_builder_proposal_decision(self, proposal: BuilderProposal) -> BuilderProposal:
+        documents = self._query(self._governance_container, "builder_proposal", proposal.tenant_id)
+        document = next((item for item in documents if item["id"] == proposal.id), None)
+        if document is None:
+            raise AgentStudioStoreError(f"Proposal '{proposal.id}' not found.")
+        current = BuilderProposal.model_validate(document["payload"])
+        if current.state != BuilderProposalState.PENDING:
+            raise AgentStudioStoreError(f"Proposal '{proposal.id}' has already been decided.")
+        document["payload"] = proposal.model_dump(mode="json")
+        try:
+            self._governance_container.replace_item(
+                item=document["id"],
+                body=document,
+                etag=document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 412:
+                raise
+            raise AgentStudioStoreError(f"Proposal '{proposal.id}' was decided concurrently.") from exc
+        self._builder_proposals[proposal.id] = proposal
+        return proposal
 
 
 def _credential(client_id: str | None) -> TokenCredential:

@@ -18,6 +18,9 @@ from research_assistant_api.agent_studio.models import (
     AgentVersion,
     ApprovalKind,
     ApprovalState,
+    BuilderProposal,
+    BuilderProposalState,
+    BuilderProvenance,
     DeploymentEnvironment,
     DeploymentRecord,
     LineageEdge,
@@ -478,6 +481,76 @@ def test_save_approval_decision_wraps_cosmos_conflicts(fake_client: FakeCosmosCl
     fake_client.database.containers["governance"].fail_replace_status = 500
     with pytest.raises(CosmosHttpResponseError):
         store.save_approval_decision(decided)
+
+
+def _proposal(
+    *,
+    proposal_id: str = "proposal-1",
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    state: BuilderProposalState = BuilderProposalState.PENDING,
+) -> BuilderProposal:
+    manifest = _manifest(tenant_id=tenant_id, logical_agent_id=logical_agent_id)
+    return BuilderProposal(
+        id=proposal_id,
+        tenant_id=tenant_id,
+        logical_agent_id=logical_agent_id,
+        draft_base_etag="etag-1",
+        before_manifest=manifest,
+        after_manifest=manifest,
+        before_manifest_hash="hash-before",
+        after_manifest_hash="hash-after",
+        provenance=BuilderProvenance(
+            generator="test-generator",
+            message="Add a search tool.",
+            requested_by=USER_ID,
+        ),
+        state=state,
+    )
+
+
+def test_builder_proposals_persist_and_decisions_validate_state(fake_client: FakeCosmosClient) -> None:
+    first = _new_store(fake_client)
+    pending = _proposal()
+    assert first.create_builder_proposal(pending) == pending
+
+    second = _new_store(fake_client)
+    assert second.get_builder_proposal(TENANT, pending.id) == pending
+    assert second.get_builder_proposal(OTHER_TENANT, pending.id) is None
+    assert second.list_builder_proposals(TENANT, AGENT_ID) == (pending,)
+    decided = pending.model_copy(update={"state": BuilderProposalState.APPLIED})
+    assert second.save_builder_proposal_decision(decided) == decided
+
+    third = _new_store(fake_client)
+    assert third.get_builder_proposal(TENANT, pending.id) == decided
+    with pytest.raises(AgentStudioStoreError, match="already been decided"):
+        third.save_builder_proposal_decision(decided)
+
+    missing = _new_store(fake_client)
+    with pytest.raises(AgentStudioStoreError, match="not found"):
+        missing.save_builder_proposal_decision(_proposal(proposal_id="missing-proposal"))
+
+
+def test_save_builder_proposal_decision_wraps_cosmos_conflicts(fake_client: FakeCosmosClient) -> None:
+    store = _new_store(fake_client)
+    store.create_builder_proposal(_proposal())
+    decided = _proposal().model_copy(update={"state": BuilderProposalState.APPLIED})
+
+    fake_client.database.containers["governance"].fail_replace_status = 412
+    with pytest.raises(AgentStudioStoreError, match="decided concurrently"):
+        store.save_builder_proposal_decision(decided)
+
+    fake_client.database.containers["governance"].fail_replace_status = 500
+    with pytest.raises(CosmosHttpResponseError):
+        store.save_builder_proposal_decision(decided)
+
+
+def test_builder_proposals_list_avoids_duplicate_cache_entries(fake_client: FakeCosmosClient) -> None:
+    store = _new_store(fake_client)
+    store.create_builder_proposal(_proposal())
+    assert len(store.list_builder_proposals(TENANT, AGENT_ID)) == 1
+    # Re-listing must not duplicate the cached id (covers the "already cached" guard).
+    assert len(store.list_builder_proposals(TENANT, AGENT_ID)) == 1
 
 
 def test_deployments_reload_update_and_conflict_handling(fake_client: FakeCosmosClient) -> None:

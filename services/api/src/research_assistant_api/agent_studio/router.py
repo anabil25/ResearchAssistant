@@ -17,6 +17,13 @@ from uuid import uuid4
 from fastapi import APIRouter, HTTPException, Request, status
 
 from research_assistant_api.agent_studio.approvals import ApprovalError
+from research_assistant_api.agent_studio.builder_service import (
+    BuilderConcurrencyError,
+    BuilderNotFoundError,
+    BuilderService,
+    BuilderServiceError,
+    BuilderUnavailableError,
+)
 from research_assistant_api.agent_studio.capability_registry import (
     CapabilityAttachmentError,
     CapabilityRegistry,
@@ -38,6 +45,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    BuilderProposal,
     CapabilityBinding,
     CapabilityDescriptor,
     DeploymentEnvironment,
@@ -60,6 +68,9 @@ from research_assistant_api.agent_studio.release_service import (
 from research_assistant_api.agent_studio.schemas import (
     ApprovalDecisionRequest,
     AttachCapabilityRequest,
+    BuilderApplyRequest,
+    BuilderMessageRequest,
+    BuilderRejectRequest,
     CorrectMemoryRequest,
     CreateAgentRequest,
     DeployRequest,
@@ -122,6 +133,13 @@ def _memory_service(request: Request) -> MemoryService:
     if service is None:
         raise _unavailable("Agent Studio memory persistence is unavailable (no Cosmos DB configured).")
     return cast(MemoryService, service)
+
+
+def _builder_service(request: Request) -> BuilderService:
+    service = request.app.state.agent_studio_builder_service
+    if service is None:
+        raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
+    return cast(BuilderService, service)
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
@@ -756,3 +774,124 @@ def memory_audit_trail(request: Request, logical_agent_id: str, entry_id: str) -
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
     return list(_memory_service(request).audit_trail(tenant_id=identity.tenant_id, entry_id=entry_id))
+
+
+# -- Builder Agent: stored proposals (propose -> researcher review -> apply) --
+#
+# The Builder Agent never mutates a draft, authorizes, attaches connections,
+# approves, or deploys anything through these routes. ``/builder/messages``
+# only ever produces a stored ``BuilderProposal``; applying/rejecting it is a
+# separate, explicit, optimistic-concurrency-guarded researcher action. There
+# is no patch-shaped request body anywhere below.
+
+
+def _builder_error_response(exc: BuilderServiceError) -> HTTPException:
+    if isinstance(exc, BuilderNotFoundError):
+        return _not_found(str(exc))
+    if isinstance(exc, BuilderConcurrencyError):
+        return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+    if isinstance(exc, BuilderUnavailableError):
+        return _unavailable(str(exc))
+    return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc))
+
+
+@router.post(
+    "/agents/{logical_agent_id}/builder/messages",
+    response_model=BuilderProposal,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_builder_proposal(
+    request: Request,
+    logical_agent_id: str,
+    payload: BuilderMessageRequest,
+) -> BuilderProposal:
+    """Produce a stored manifest-change proposal from a natural-language message.
+
+    Never mutates the draft directly. The request body is a free-form
+    ``message`` and a ``base_etag`` acknowledgement only -- never a patch.
+    """
+    identity = _identity(request)
+    role = _actor_role(request, identity, logical_agent_id)
+    try:
+        return _builder_service(request).propose(
+            tenant_id=identity.tenant_id,
+            logical_agent_id=logical_agent_id,
+            message=payload.message,
+            base_etag=payload.base_etag,
+            requested_by=identity.user_id,
+            actor_role=role,
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except BuilderServiceError as exc:
+        raise _builder_error_response(exc) from exc
+
+
+@router.get("/agents/{logical_agent_id}/proposals", response_model=list[BuilderProposal])
+def list_builder_proposals(request: Request, logical_agent_id: str) -> list[BuilderProposal]:
+    """Proposal history for an agent (pending, applied, and rejected)."""
+    identity = _identity(request)
+    return list(_builder_service(request).list_proposals(identity.tenant_id, logical_agent_id))
+
+
+@router.get("/agents/{logical_agent_id}/proposals/{proposal_id}", response_model=BuilderProposal)
+def get_builder_proposal(request: Request, logical_agent_id: str, proposal_id: str) -> BuilderProposal:
+    identity = _identity(request)
+    proposal = _builder_service(request).get_proposal(identity.tenant_id, logical_agent_id, proposal_id)
+    if proposal is None:
+        raise _not_found(f"Proposal '{proposal_id}' was not found.")
+    return proposal
+
+
+@router.post("/agents/{logical_agent_id}/proposals/{proposal_id}/apply", response_model=AgentDraft)
+def apply_builder_proposal(
+    request: Request,
+    logical_agent_id: str,
+    proposal_id: str,
+    payload: BuilderApplyRequest,
+) -> AgentDraft:
+    """Apply a stored proposal after researcher review.
+
+    Never accepts a patch body: only a ``base_etag`` acknowledgement. Fails
+    closed with a 409 if the draft changed since the proposal was generated,
+    or since the caller last read it.
+    """
+    identity = _identity(request)
+    role = _actor_role(request, identity, logical_agent_id)
+    try:
+        return _builder_service(request).apply(
+            tenant_id=identity.tenant_id,
+            logical_agent_id=logical_agent_id,
+            proposal_id=proposal_id,
+            base_etag=payload.base_etag,
+            applied_by=identity.user_id,
+            actor_role=role,
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except BuilderServiceError as exc:
+        raise _builder_error_response(exc) from exc
+
+
+@router.post("/agents/{logical_agent_id}/proposals/{proposal_id}/reject", response_model=BuilderProposal)
+def reject_builder_proposal(
+    request: Request,
+    logical_agent_id: str,
+    proposal_id: str,
+    payload: BuilderRejectRequest,
+) -> BuilderProposal:
+    identity = _identity(request)
+    role = _actor_role(request, identity, logical_agent_id)
+    try:
+        return _builder_service(request).reject(
+            tenant_id=identity.tenant_id,
+            logical_agent_id=logical_agent_id,
+            proposal_id=proposal_id,
+            rejected_by=identity.user_id,
+            reason=payload.reason,
+            actor_role=role,
+        )
+    except AuthorizationError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except BuilderServiceError as exc:
+        raise _builder_error_response(exc) from exc

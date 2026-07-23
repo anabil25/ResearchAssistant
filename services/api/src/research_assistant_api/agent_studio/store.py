@@ -20,6 +20,8 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalState,
+    BuilderProposal,
+    BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
     LineageEdge,
@@ -64,6 +66,8 @@ class AgentStudioStore:
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
         self._tool_registrations: dict[str, ToolRegistration] = {}
         self._tool_registrations_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._builder_proposals: dict[str, BuilderProposal] = {}
+        self._builder_proposals_by_agent: dict[tuple[str, str], list[str]] = {}
 
     # -- Drafts -----------------------------------------------------------
 
@@ -327,6 +331,34 @@ class AgentStudioStore:
     def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
         ids = self._tool_registrations_by_agent.get((tenant_id, logical_agent_id), [])
         return tuple(self._tool_registrations[registration_id] for registration_id in ids)
+
+    # -- Builder proposals --------------------------------------------------
+
+    def create_builder_proposal(self, proposal: BuilderProposal) -> BuilderProposal:
+        self._builder_proposals[proposal.id] = proposal
+        self._builder_proposals_by_agent.setdefault(
+            (proposal.tenant_id, proposal.logical_agent_id), []
+        ).append(proposal.id)
+        return proposal
+
+    def get_builder_proposal(self, tenant_id: str, proposal_id: str) -> BuilderProposal | None:
+        proposal = self._builder_proposals.get(proposal_id)
+        if proposal is None or proposal.tenant_id != tenant_id:
+            return None
+        return proposal
+
+    def list_builder_proposals(self, tenant_id: str, logical_agent_id: str) -> tuple[BuilderProposal, ...]:
+        ids = self._builder_proposals_by_agent.get((tenant_id, logical_agent_id), [])
+        return tuple(self._builder_proposals[proposal_id] for proposal_id in ids)
+
+    def save_builder_proposal_decision(self, proposal: BuilderProposal) -> BuilderProposal:
+        current = self._builder_proposals.get(proposal.id)
+        if current is None:
+            raise AgentStudioStoreError(f"Proposal '{proposal.id}' not found.")
+        if current.state != BuilderProposalState.PENDING:
+            raise AgentStudioStoreError(f"Proposal '{proposal.id}' has already been decided.")
+        self._builder_proposals[proposal.id] = proposal
+        return proposal
 
 
 __all__ = [

@@ -140,3 +140,37 @@ class RegisterToolRequest(BaseModel):
     operation: str = Field(min_length=1, max_length=120)
     kind: ToolRegistrationKind
     handler_ref: str = Field(min_length=1, max_length=500)
+
+
+class BuilderMessageRequest(BaseModel):
+    """Request body for the Builder Agent's ``/builder/messages`` endpoint.
+
+    Deliberately opaque: a free-form natural-language ``message`` string,
+    never a JSON patch. This is the first of two structural safeguards
+    against "arbitrary client-authored path patches" -- there is simply no
+    patch-shaped input surface here at all.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    message: str = Field(min_length=1, max_length=8000)
+    base_etag: str = Field(min_length=1, max_length=200)
+
+
+class BuilderApplyRequest(BaseModel):
+    """Request body to apply a stored proposal. Never accepts a patch body:
+
+    the server applies the proposal's own already-validated, already-stored
+    ``after_manifest`` -- the second structural safeguard against arbitrary
+    client-authored patches.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    base_etag: str = Field(min_length=1, max_length=200)
+
+
+class BuilderRejectRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=2000)

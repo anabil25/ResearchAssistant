@@ -938,3 +938,127 @@ class LogicalAgentBinding(BaseModel):
     resolved_version_id: str
     updated_at: datetime = Field(default_factory=utc_now)
     updated_by: str
+
+
+# --------------------------------------------------------------------------
+# Builder Agent: stored proposals (propose -> researcher review -> apply)
+# --------------------------------------------------------------------------
+# The conversational Builder Agent itself lives outside this codebase (owned
+# by the harness's ``agents/**`` surface). It never mutates a draft, attaches
+# a connection, approves, or deploys anything directly: it only ever
+# produces a *stored proposal* via ``builder_service.BuilderService.propose``.
+# A human researcher must explicitly ``apply`` (or ``reject``) it through a
+# separate, optimistic-concurrency-guarded endpoint. The client-facing
+# request surface for both sides is deliberately opaque -- a free-form
+# ``message`` string to propose, a bare ``base_etag`` to apply/reject --
+# there is no JSON-patch-shaped input anywhere in this contract, so
+# "arbitrary client-authored path patches" are structurally impossible
+# rather than merely rejected by validation.
+
+
+class BuilderProposalState(StrEnum):
+    PENDING = "pending"
+    APPLIED = "applied"
+    REJECTED = "rejected"
+
+
+class ManifestFieldChangeKind(StrEnum):
+    ADDED = "added"
+    REMOVED = "removed"
+    MODIFIED = "modified"
+
+
+class ManifestChangeSummary(BaseModel):
+    """One deterministic, top-level ``AgentManifest`` field-level change.
+
+    Computed server-side from the canonical before/after manifest dumps
+    (``model_dump(mode="json")``); capability-binding changes are reported
+    separately via ``CapabilityChangeSummary`` since they have their own
+    natural identity (``descriptor_id``/``operation``) rather than a single
+    scalar value.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    field: str
+    kind: ManifestFieldChangeKind
+    before: Any | None = None
+    after: Any | None = None
+
+
+class CapabilityChangeKind(StrEnum):
+    ATTACHED = "attached"
+    DETACHED = "detached"
+    RECONFIGURED = "reconfigured"
+
+
+class CapabilityChangeSummary(BaseModel):
+    """One deterministic capability-binding change.
+
+    Keyed by ``(descriptor_id, operation)`` -- the natural identity of a
+    ``CapabilityBinding`` within a manifest's ``capabilities`` tuple -- so a
+    reconfiguration of an existing binding is reported distinctly from an
+    attach/detach.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    descriptor_id: str
+    operation: str
+    kind: CapabilityChangeKind
+    before: CapabilityBinding | None = None
+    after: CapabilityBinding | None = None
+
+
+class BuilderProvenance(BaseModel):
+    """Where a proposal's content came from: which generator, what request."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    generator: str = Field(min_length=1, max_length=200)
+    generator_version: str | None = None
+    message: str = Field(min_length=1, max_length=8000)
+    requested_by: str = Field(min_length=1, max_length=200)
+    requested_at: datetime = Field(default_factory=utc_now)
+
+
+class BuilderProposal(BaseModel):
+    """A stored, reviewable manifest-change proposal from the Builder Agent.
+
+    Immutable content (``before_manifest``/``after_manifest``/diff summaries/
+    hashes/provenance) plus a mutable decision envelope (``state``/``decided_*``)
+    -- the same request/decision split already used by ``StudioApprovalRecord``.
+    Never carries a client-authored patch: ``after_manifest`` is always the
+    generator's own typed, canonical ``AgentManifest`` output.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    logical_agent_id: str
+    draft_base_etag: str
+    """The draft ``etag`` this proposal was generated against. ``apply`` fails
+    closed with a concurrency error if the draft has since changed, even if
+    the caller's own ``base_etag`` happens to still match the *current*
+    draft -- the proposal itself is stale and must be regenerated."""
+    before_manifest: AgentManifest
+    after_manifest: AgentManifest
+    before_manifest_hash: str
+    after_manifest_hash: str
+    changes: tuple[ManifestChangeSummary, ...] = Field(default_factory=tuple)
+    capability_changes: tuple[CapabilityChangeSummary, ...] = Field(default_factory=tuple)
+    validation_warnings: tuple[str, ...] = Field(default_factory=tuple)
+    source_bundle_ref: str | None = None
+    """Content-addressed, immutable reference (see ``artifact_bundle_store``)
+    to any generated source/code bundle backing this proposal. Never a raw,
+    freely-editable string -- generated code changes are always stored
+    immutably and referenced by hash/URI."""
+    provenance: BuilderProvenance
+    state: BuilderProposalState = BuilderProposalState.PENDING
+    created_at: datetime = Field(default_factory=utc_now)
+    decided_by: str | None = None
+    decided_at: datetime | None = None
+    rejection_reason: str | None = None
+    applied_draft_etag: str | None = None
+    """The new draft ``etag`` minted at apply time (set only once APPLIED)."""

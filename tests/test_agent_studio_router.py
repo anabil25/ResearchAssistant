@@ -11,6 +11,13 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
+from research_assistant_api.agent_studio.builder_service import (
+    BuilderService,
+    InMemoryManifestProposalGenerator,
+    ProposedManifestChange,
+    UnavailableManifestProposalGenerator,
+)
 from research_assistant_api.agent_studio.capability_registry import (
     CapabilityRegistry,
     default_registry,
@@ -98,6 +105,7 @@ def _build_app(
     release_service: ReleaseService | None,
     deployment_service: DeploymentService | None,
     memory_service: MemoryService | None,
+    builder_service: BuilderService | None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -108,6 +116,7 @@ def _build_app(
     app.state.agent_studio_release_service = release_service
     app.state.agent_studio_deployment_service = deployment_service
     app.state.agent_studio_memory_service = memory_service
+    app.state.agent_studio_builder_service = builder_service
     return app
 
 
@@ -155,6 +164,17 @@ def memory_service() -> MemoryService:
 
 
 @pytest.fixture
+def builder_service(store: AgentStudioStore) -> BuilderService:
+    def _transform(manifest: AgentManifest, message: str) -> ProposedManifestChange:
+        return ProposedManifestChange(
+            after_manifest=manifest.model_copy(update={"description": message}),
+            generator="test-builder-generator",
+        )
+
+    return BuilderService(store, InMemoryManifestProposalGenerator(_transform), InMemoryArtifactBundleStore())
+
+
+@pytest.fixture
 def model_discovery() -> InMemoryModelDiscovery:
     return InMemoryModelDiscovery(
         (
@@ -177,6 +197,7 @@ def client(
     release_service: ReleaseService,
     deployment_service: DeploymentService,
     memory_service: MemoryService,
+    builder_service: BuilderService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -186,6 +207,7 @@ def client(
         release_service=release_service,
         deployment_service=deployment_service,
         memory_service=memory_service,
+        builder_service=builder_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -201,6 +223,7 @@ def unavailable_client(settings: Settings, registry: CapabilityRegistry) -> Iter
         release_service=None,
         deployment_service=None,
         memory_service=None,
+        builder_service=None,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -214,6 +237,7 @@ def memory_unavailable_client(
     model_discovery: InMemoryModelDiscovery,
     release_service: ReleaseService,
     deployment_service: DeploymentService,
+    builder_service: BuilderService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -223,6 +247,7 @@ def memory_unavailable_client(
         release_service=release_service,
         deployment_service=deployment_service,
         memory_service=None,
+        builder_service=builder_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -237,6 +262,7 @@ def unauthenticated_client(
     release_service: ReleaseService,
     deployment_service: DeploymentService,
     memory_service: MemoryService,
+    builder_service: BuilderService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         locked_settings,
@@ -246,6 +272,7 @@ def unauthenticated_client(
         release_service=release_service,
         deployment_service=deployment_service,
         memory_service=memory_service,
+        builder_service=builder_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -1516,6 +1543,277 @@ def test_memory_routes_cover_policy_errors_missing_records_and_unavailability(
         headers=USER_HEADERS,
     )
     assert audit_missing_draft.status_code == 404
+
+
+def test_builder_propose_apply_reject_flow_and_history(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-builder", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-builder", headers=USER_HEADERS)
+
+    propose = client.post(
+        "/api/agent-studio/agents/agent-builder/builder/messages",
+        json={"message": "Add a helpful description.", "base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    )
+    assert propose.status_code == 201, propose.text
+    proposal = propose.json()
+    assert proposal["state"] == "pending"
+    assert proposal["logical_agent_id"] == "agent-builder"
+    assert proposal["draft_base_etag"] == draft["etag"]
+    assert proposal["after_manifest"]["description"] == "Add a helpful description."
+    assert proposal["provenance"]["message"] == "Add a helpful description."
+    assert proposal["provenance"]["requested_by"] == "user-1"
+    assert any(change["field"] == "description" for change in proposal["changes"])
+
+    history = client.get("/api/agent-studio/agents/agent-builder/proposals", headers=USER_HEADERS)
+    assert history.status_code == 200
+    assert [item["id"] for item in history.json()] == [proposal["id"]]
+
+    fetched = client.get(
+        f"/api/agent-studio/agents/agent-builder/proposals/{proposal['id']}",
+        headers=USER_HEADERS,
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == proposal
+
+    apply_response = client.post(
+        f"/api/agent-studio/agents/agent-builder/proposals/{proposal['id']}/apply",
+        json={"base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    updated_draft = apply_response.json()
+    assert updated_draft["manifest"]["description"] == "Add a helpful description."
+    assert updated_draft["etag"] != draft["etag"]
+
+    applied_proposal = client.get(
+        f"/api/agent-studio/agents/agent-builder/proposals/{proposal['id']}",
+        headers=USER_HEADERS,
+    ).json()
+    assert applied_proposal["state"] == "applied"
+    assert applied_proposal["decided_by"] == "user-1"
+    assert applied_proposal["applied_draft_etag"] == updated_draft["etag"]
+
+    second_propose = client.post(
+        "/api/agent-studio/agents/agent-builder/builder/messages",
+        json={"message": "Add another change.", "base_etag": updated_draft["etag"]},
+        headers=USER_HEADERS,
+    ).json()
+    reject_response = client.post(
+        f"/api/agent-studio/agents/agent-builder/proposals/{second_propose['id']}/reject",
+        json={"reason": "Not needed right now."},
+        headers=USER_HEADERS,
+    )
+    assert reject_response.status_code == 200, reject_response.text
+    rejected = reject_response.json()
+    assert rejected["state"] == "rejected"
+    assert rejected["rejection_reason"] == "Not needed right now."
+
+    # Rejection must not have mutated the draft.
+    unchanged_draft = _get_draft(client, "agent-builder", headers=USER_HEADERS)
+    assert unchanged_draft["etag"] == updated_draft["etag"]
+
+    full_history = client.get("/api/agent-studio/agents/agent-builder/proposals", headers=USER_HEADERS)
+    assert {item["id"] for item in full_history.json()} == {proposal["id"], second_propose["id"]}
+
+
+def test_builder_propose_rejects_stale_etag_and_insufficient_role(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-builder-guard", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-builder-guard", headers=USER_HEADERS)
+
+    stale = client.post(
+        "/api/agent-studio/agents/agent-builder-guard/builder/messages",
+        json={"message": "hello", "base_etag": "stale-etag"},
+        headers=USER_HEADERS,
+    )
+    assert stale.status_code == 409
+
+    forbidden = client.post(
+        "/api/agent-studio/agents/agent-builder-guard/builder/messages",
+        json={"message": "hello", "base_etag": draft["etag"]},
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden.status_code == 403
+
+    # Role resolution runs before existence checks, and there is no grant for
+    # this unknown agent, so the actor resolves to a role below CONTRIBUTOR.
+    missing_agent = client.post(
+        "/api/agent-studio/agents/agent-does-not-exist/builder/messages",
+        json={"message": "hello", "base_etag": "any-etag"},
+        headers=USER_HEADERS,
+    )
+    assert missing_agent.status_code == 403
+
+
+def test_builder_apply_and_reject_cover_not_found_conflict_and_role_errors(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-builder-errors", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-builder-errors", headers=USER_HEADERS)
+
+    missing_apply = client.post(
+        "/api/agent-studio/agents/agent-builder-errors/proposals/missing-proposal/apply",
+        json={"base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    )
+    assert missing_apply.status_code == 404
+
+    missing_reject = client.post(
+        "/api/agent-studio/agents/agent-builder-errors/proposals/missing-proposal/reject",
+        json={"reason": "n/a"},
+        headers=USER_HEADERS,
+    )
+    assert missing_reject.status_code == 404
+
+    missing_get = client.get(
+        "/api/agent-studio/agents/agent-builder-errors/proposals/missing-proposal",
+        headers=USER_HEADERS,
+    )
+    assert missing_get.status_code == 404
+
+    proposal = client.post(
+        "/api/agent-studio/agents/agent-builder-errors/builder/messages",
+        json={"message": "Change it.", "base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    ).json()
+
+    forbidden_apply = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{proposal['id']}/apply",
+        json={"base_etag": draft["etag"]},
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden_apply.status_code == 403
+
+    stale_apply = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{proposal['id']}/apply",
+        json={"base_etag": "stale-etag"},
+        headers=USER_HEADERS,
+    )
+    assert stale_apply.status_code == 409
+
+    apply_response = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{proposal['id']}/apply",
+        json={"base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+
+    already_decided = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{proposal['id']}/apply",
+        json={"base_etag": apply_response.json()["etag"]},
+        headers=USER_HEADERS,
+    )
+    assert already_decided.status_code == 409
+
+    already_decided_reject = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{proposal['id']}/reject",
+        json={"reason": "too late"},
+        headers=USER_HEADERS,
+    )
+    assert already_decided_reject.status_code == 409
+
+    forbidden_reject_headers_proposal = client.post(
+        "/api/agent-studio/agents/agent-builder-errors/builder/messages",
+        json={"message": "Another change.", "base_etag": apply_response.json()["etag"]},
+        headers=USER_HEADERS,
+    ).json()
+    forbidden_reject = client.post(
+        f"/api/agent-studio/agents/agent-builder-errors/proposals/{forbidden_reject_headers_proposal['id']}/reject",
+        json={"reason": "n/a"},
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden_reject.status_code == 403
+
+
+def test_builder_routes_return_503_when_unavailable(unavailable_client: TestClient) -> None:
+    propose = unavailable_client.post(
+        "/api/agent-studio/agents/agent-builder-unavailable/builder/messages",
+        json={"message": "hello", "base_etag": "etag-1"},
+        headers=USER_HEADERS,
+    )
+    assert propose.status_code == 503
+
+    history = unavailable_client.get(
+        "/api/agent-studio/agents/agent-builder-unavailable/proposals",
+        headers=USER_HEADERS,
+    )
+    assert history.status_code == 503
+
+    fetch = unavailable_client.get(
+        "/api/agent-studio/agents/agent-builder-unavailable/proposals/missing",
+        headers=USER_HEADERS,
+    )
+    assert fetch.status_code == 503
+
+    apply_response = unavailable_client.post(
+        "/api/agent-studio/agents/agent-builder-unavailable/proposals/missing/apply",
+        json={"base_etag": "etag-1"},
+        headers=USER_HEADERS,
+    )
+    assert apply_response.status_code == 503
+
+    reject_response = unavailable_client.post(
+        "/api/agent-studio/agents/agent-builder-unavailable/proposals/missing/reject",
+        json={"reason": "n/a"},
+        headers=USER_HEADERS,
+    )
+    assert reject_response.status_code == 503
+
+
+def test_builder_proposals_are_tenant_isolated(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-builder-tenant", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-builder-tenant", headers=USER_HEADERS)
+    proposal = client.post(
+        "/api/agent-studio/agents/agent-builder-tenant/builder/messages",
+        json={"message": "hello", "base_etag": draft["etag"]},
+        headers=USER_HEADERS,
+    ).json()
+
+    other_tenant_history = client.get(
+        "/api/agent-studio/agents/agent-builder-tenant/proposals",
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert other_tenant_history.status_code == 200
+    assert other_tenant_history.json() == []
+
+    other_tenant_fetch = client.get(
+        f"/api/agent-studio/agents/agent-builder-tenant/proposals/{proposal['id']}",
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert other_tenant_fetch.status_code == 404
+
+
+def test_builder_propose_returns_503_when_generator_unavailable(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+) -> None:
+    unavailable_generator_service = BuilderService(
+        store,
+        UnavailableManifestProposalGenerator(),
+        InMemoryArtifactBundleStore(),
+    )
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=unavailable_generator_service,
+    )
+    with TestClient(app) as no_generator_client:
+        _create_agent(no_generator_client, logical_agent_id="agent-builder-no-generator", headers=USER_HEADERS)
+        draft = _get_draft(no_generator_client, "agent-builder-no-generator", headers=USER_HEADERS)
+
+        response = no_generator_client.post(
+            "/api/agent-studio/agents/agent-builder-no-generator/builder/messages",
+            json={"message": "hello", "base_etag": draft["etag"]},
+            headers=USER_HEADERS,
+        )
+        assert response.status_code == 503
 
 
 def test_tenant_isolation_holds_for_tenant_scoped_routes(
