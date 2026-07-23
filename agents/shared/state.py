@@ -31,12 +31,17 @@ class MemoryRecord(BaseModel):
 
 
 class ConversationStore(Protocol):
+    is_durable: bool
+
     async def load(self, tenant_id: str, session_id: str) -> ConversationRecord | None: ...
 
     async def save(self, record: ConversationRecord) -> None: ...
 
 
 class InMemoryConversationStore:
+    is_durable = False
+    is_test_only = True
+
     def __init__(self) -> None:
         self._records: dict[tuple[str, str], ConversationRecord] = {}
         self._session_tenants: dict[str, str] = {}
@@ -55,7 +60,27 @@ class InMemoryConversationStore:
         self._records[(record.tenant_id, record.session_id)] = record
 
 
+class LongTermMemoryStore(Protocol):
+    is_durable: bool
+
+    async def remember(
+        self,
+        record: MemoryRecord,
+        *,
+        allowed_sensitivities: tuple[Sensitivity, ...],
+    ) -> None: ...
+
+    async def recall(
+        self,
+        tenant_id: str,
+        principal_id: str,
+    ) -> tuple[MemoryRecord, ...]: ...
+
+
 class InMemoryLongTermMemory:
+    is_durable = False
+    is_test_only = True
+
     def __init__(self, *, max_records: int = 100) -> None:
         if max_records < 1:
             raise ValueError("max_records must be positive")

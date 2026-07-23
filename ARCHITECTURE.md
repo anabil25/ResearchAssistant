@@ -54,6 +54,27 @@ flowchart LR
 - Each specialist declares a distinct workflow and output contract. The API
   owns typed artifacts; free-form Hosted Agent text is supplemental analysis.
 
+### Runtime governance boundary
+
+- Hosted startup fails before constructing or serving an agent unless an
+  application-owned durable release attestor confirms the immutable release,
+  schemas, source bundle, model/provider pins, and every objective hard gate.
+  Evaluator scores are advisory and never substitute for these gates.
+- Consequential capabilities claim durable idempotency first, atomically
+  consume an exact-bound one-time `approval_decision_id`, persist the receipt,
+  and only then resolve the runtime handler. Client booleans are never
+  authorization.
+- Governance telemetry emits hashed tenant, actor, approval, and idempotency
+  identifiers plus release/capability/outcome metadata. Payloads, queries,
+  credentials, evidence content, and raw decision references are excluded.
+- In-memory state, approval, idempotency, and attestation providers are local
+  or test-only. Hosted conversation, user, project, or private-agent
+  persistence stays disabled unless an application-owned durable provider is
+  injected.
+- `agent-framework-foundry-hosting==1.0.0b260721` remains an exact-pinned beta
+  serving dependency. Agent Framework workflow orchestration is separately
+  recorded as preview risk; neither is represented as GA.
+
 ## Online source layer
 
 - Three dedicated public-online profiles receive Foundry Web Search only for

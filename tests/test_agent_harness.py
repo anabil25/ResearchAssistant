@@ -100,6 +100,7 @@ from shared.errors import (
     ApprovalMismatchError,
     ApprovalRequiredError,
     ApprovalResultInvalidError,
+    ApprovalRevokedError,
     ApprovalStoreUnavailableError,
     AuthorizationError,
     CapabilityNotFoundError,
@@ -117,6 +118,7 @@ from shared.errors import (
     IdempotencyStoreUnavailableError,
     InvocationError,
     IsolationError,
+    ReleaseAttestationError,
     RetryableInvocationError,
     StaleCapabilityBindingError,
     error_from_exception,
@@ -146,9 +148,13 @@ from shared.middleware import (
 )
 from shared.profiles import get_manifest, get_profile, list_manifests
 from shared.release import (
+    InMemoryReleaseAttestor,
+    ReleaseAttestationStatus,
     build_release_metadata,
     manifest_digest,
+    release_attestation_contract_schema_digest,
     source_bundle_digest,
+    validate_release_attestation,
 )
 from shared.settings import HarnessSettings
 from shared.state import (
@@ -159,7 +165,12 @@ from shared.state import (
     from_agent_session,
     to_agent_session,
 )
-from shared.telemetry import redact_attributes
+from shared.telemetry import (
+    GovernanceAuditEvent,
+    OpenTelemetryGovernanceAuditSink,
+    redact_attributes,
+    telemetry_identity_digest,
+)
 from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
 from shared.workflows import (
     CoordinatorRouter,
@@ -207,6 +218,14 @@ def _settings(**overrides: Any) -> HarnessSettings:
     }
     values.update(overrides)
     return HarnessSettings.model_validate(values)
+
+
+class _DurableTestReleaseAttestor(InMemoryReleaseAttestor):
+    is_durable = True
+
+
+def _release_attestor(manifest: AgentManifest) -> _DurableTestReleaseAttestor:
+    return _DurableTestReleaseAttestor(manifest.evaluation.objective_hard_gates)
 
 
 def _binding(capability_id: str) -> CapabilityBinding:
@@ -546,7 +565,7 @@ def test_public_and_specialist_contracts_are_strict() -> None:
         _request(
             dataset_id="dataset.csv",
             approved_compute=False,
-            approval_id="approval-a",
+            approval_decision_id="approval-a",
             invocation_id="invocation-a",
             idempotency_key="stable-key",
         )
@@ -568,7 +587,9 @@ def test_public_and_specialist_contracts_are_strict() -> None:
     with pytest.raises(ValidationError, match="Input should be False"):
         DatasetRequest.model_validate(_request(dataset_id="dataset.csv", approved_compute=True))
     with pytest.raises(ValidationError, match="supplied together"):
-        DatasetRequest.model_validate(_request(dataset_id="dataset.csv", approval_id="approval-a"))
+        DatasetRequest.model_validate(
+            _request(dataset_id="dataset.csv", approval_decision_id="approval-a")
+        )
     with pytest.raises(ValidationError, match="caller-supplied evidence"):
         SpecialistRequest.model_validate(
             {
@@ -863,7 +884,7 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
         "principal_id": "principal",
         "scopes": frozenset({"write"}),
         "destination": "approved.example",
-        "approval_id": "approval-a",
+        "approval_decision_id": "approval-a",
         "invocation_id": "invocation-a",
         "idempotency_key": "key",
         "operation_fingerprint": "a" * 64,
@@ -882,7 +903,7 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
     with pytest.raises(ApprovalRequiredError):
         policy.authorize(
             capability,
-            InvocationContext.model_validate({**base, "approval_id": None}),
+            InvocationContext.model_validate({**base, "approval_decision_id": None}),
         )
     with pytest.raises(IdempotencyRequiredError):
         policy.authorize(
@@ -1497,7 +1518,7 @@ def _external_context(**updates: Any) -> InvocationContext:
         "principal_id": "actor-a",
         "scopes": frozenset({"write"}),
         "destination": "destination-a",
-        "approval_id": "approval-a",
+        "approval_decision_id": "approval-a",
         "invocation_id": "invocation-a",
         "idempotency_key": "caller-key",
         "operation_fingerprint": "a" * 64,
@@ -1530,10 +1551,10 @@ def _approval_request(
     release_id: str,
 ) -> ApprovalConsumptionRequest:
     key = _durable_key(binding, context)
-    assert context.approval_id is not None
+    assert context.approval_decision_id is not None
     assert context.invocation_id is not None
     return ApprovalConsumptionRequest(
-        approval_id=context.approval_id,
+        approval_decision_id=context.approval_decision_id,
         tenant_id=context.tenant_id,
         project_id=binding.project_scope,
         actor_id=context.principal_id,
@@ -1563,7 +1584,7 @@ def _approval_adapter(
     effective_backend = backend or InMemoryApprovalBackend()
     request = _approval_request(binding, context, release_id)
     now = datetime(2000, 1, 1, tzinfo=UTC)
-    effective_backend.grants[request.approval_id] = ApprovalGrant(
+    effective_backend.grants[request.approval_decision_id] = ApprovalGrant(
         request=request,
         request_digest=request.digest,
         version="1",
@@ -1577,7 +1598,7 @@ def _approval_adapter(
 def _approval_provenance() -> IdempotencyApprovalProvenance:
     now = datetime.now(UTC)
     return IdempotencyApprovalProvenance(
-        approval_id="approval-a",
+        approval_decision_id="approval-a",
         request_digest="a" * 64,
         receipt_digest="b" * 64,
         approval_version="1",
@@ -1600,7 +1621,7 @@ class _AutoApprovalAdapter:
         request: ApprovalConsumptionRequest,
     ) -> ApprovalConsumptionResult:
         self.calls += 1
-        prior = self.requests.get(request.approval_id)
+        prior = self.requests.get(request.approval_decision_id)
         if prior is not None:
             disposition = (
                 ApprovalConsumptionDisposition.ALREADY_CONSUMED
@@ -1609,15 +1630,15 @@ class _AutoApprovalAdapter:
             )
             return ApprovalConsumptionResult(
                 disposition=disposition,
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 reason_code=disposition.value,
             )
-        self.requests[request.approval_id] = request.digest
+        self.requests[request.approval_decision_id] = request.digest
         now = datetime(2000, 1, 1, tzinfo=UTC)
         receipt = ApprovalReceipt(
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
             approval_version="1",
             consumption_id=f"consumption-{self.calls}",
@@ -1628,7 +1649,7 @@ class _AutoApprovalAdapter:
         )
         return ApprovalConsumptionResult(
             disposition=ApprovalConsumptionDisposition.CONSUMED,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
             approval_version="1",
             receipt=receipt,
@@ -1676,7 +1697,7 @@ def test_approval_contracts_are_canonical_and_strict() -> None:
 
     now = datetime(2026, 7, 24, tzinfo=UTC)
     receipt = ApprovalReceipt(
-        approval_id=request.approval_id,
+        approval_decision_id=request.approval_decision_id,
         request_digest=request.digest,
         approval_version="1",
         consumption_id="consumption-a",
@@ -1702,7 +1723,7 @@ def test_approval_contracts_are_canonical_and_strict() -> None:
     with pytest.raises(ValidationError, match="only consumed"):
         ApprovalConsumptionResult(
             disposition=ApprovalConsumptionDisposition.DENIED,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
             receipt=receipt,
             reason_code="denied",
@@ -1710,19 +1731,19 @@ def test_approval_contracts_are_canonical_and_strict() -> None:
     with pytest.raises(ValidationError, match="carry a receipt"):
         ApprovalConsumptionResult(
             disposition=ApprovalConsumptionDisposition.CONSUMED,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
         )
     with pytest.raises(ValidationError, match="require a reason code"):
         ApprovalConsumptionResult(
             disposition=ApprovalConsumptionDisposition.DENIED,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
         )
     with pytest.raises(ValidationError, match="denial reason"):
         ApprovalConsumptionResult(
             disposition=ApprovalConsumptionDisposition.CONSUMED,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
             receipt=receipt,
             reason_code="invalid",
@@ -1785,12 +1806,12 @@ async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
     assert consumed.receipt is not None
     assert consumed.receipt.request_digest == request.digest
 
-    missing = request.model_copy(update={"approval_id": "missing"})
+    missing = request.model_copy(update={"approval_decision_id": "missing"})
     assert (await first.consume(missing)).disposition == ApprovalConsumptionDisposition.NOT_FOUND
     mismatched = request.model_copy(update={"actor_id": "other-actor"})
     assert (await first.consume(mismatched)).disposition == ApprovalConsumptionDisposition.MISMATCH
 
-    denied = request.model_copy(update={"approval_id": "denied"})
+    denied = request.model_copy(update={"approval_decision_id": "denied"})
     await first.issue(
         _approval_grant(
             denied,
@@ -1802,7 +1823,7 @@ async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
     assert denial.disposition == ApprovalConsumptionDisposition.DENIED
     assert denial.reason_code == "policy_denied"
 
-    expired = request.model_copy(update={"approval_id": "expired"})
+    expired = request.model_copy(update={"approval_decision_id": "expired"})
     await first.issue(
         _approval_grant(
             expired,
@@ -1811,6 +1832,14 @@ async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
     )
     assert (await first.consume(expired)).disposition == ApprovalConsumptionDisposition.EXPIRED
     assert (await first.consume(expired)).disposition == ApprovalConsumptionDisposition.EXPIRED
+    revoked = request.model_copy(update={"approval_decision_id": "revoked"})
+    await first.issue(
+        _approval_grant(
+            revoked,
+            state=ApprovalGrantState.REVOKED,
+        )
+    )
+    assert (await first.consume(revoked)).disposition == ApprovalConsumptionDisposition.REVOKED
 
 
 @pytest.mark.asyncio
@@ -1833,12 +1862,12 @@ async def test_executor_consumes_exact_approval_and_persists_receipt() -> None:
     assert await executor.invoke(capability.id, {"value": 1}, context) == {"value": 1}
     record = idempotency.record_for(_durable_key(binding, context))
     assert record is not None and record.approval is not None
-    grant = backend.grants[cast(str, context.approval_id)]
+    grant = backend.grants[cast(str, context.approval_decision_id)]
     assert grant.receipt is not None
     assert record.approval.request_digest == grant.receipt.request_digest
     assert record.approval.receipt_digest == grant.receipt.digest
     assert await executor.invoke(capability.id, {"value": 999}, context) == {"value": 1}
-    assert grant == backend.grants[cast(str, context.approval_id)]
+    assert grant == backend.grants[cast(str, context.approval_decision_id)]
 
 
 @pytest.mark.asyncio
@@ -1850,6 +1879,7 @@ async def test_executor_consumes_exact_approval_and_persists_receipt() -> None:
         (ApprovalConsumptionDisposition.NOT_FOUND, ApprovalRequiredError),
         (ApprovalConsumptionDisposition.MISMATCH, ApprovalMismatchError),
         (ApprovalConsumptionDisposition.ALREADY_CONSUMED, ApprovalAlreadyConsumedError),
+        (ApprovalConsumptionDisposition.REVOKED, ApprovalRevokedError),
     ),
 )
 async def test_executor_maps_terminal_approval_results_without_calling_handler(
@@ -1872,7 +1902,7 @@ async def test_executor_maps_terminal_approval_results_without_calling_handler(
         ) -> ApprovalConsumptionResult:
             return ApprovalConsumptionResult(
                 disposition=disposition,
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 reason_code=disposition.value,
@@ -1925,7 +1955,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
         is_durable = True
 
         async def consume(self, request: ApprovalConsumptionRequest) -> ApprovalConsumptionResult:
-            raise RuntimeError(request.approval_id)
+            raise RuntimeError(request.approval_decision_id)
 
     with pytest.raises(ApprovalStoreUnavailableError):
         await CapabilityExecutor(
@@ -1960,7 +1990,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
         ) -> ApprovalConsumptionResult:
             return ApprovalConsumptionResult(
                 disposition=ApprovalConsumptionDisposition.DENIED,
-                approval_id="other-approval",
+                approval_decision_id="other-approval",
                 request_digest=request.digest,
                 approval_version="1",
                 reason_code="denied",
@@ -1983,7 +2013,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
             request: ApprovalConsumptionRequest,
         ) -> ApprovalConsumptionResult:
             receipt = ApprovalReceipt.model_construct(
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 consumption_id="consumption-invalid-contract",
@@ -1995,7 +2025,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
             )
             return ApprovalConsumptionResult.model_construct(
                 disposition=ApprovalConsumptionDisposition.CONSUMED,
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 receipt=receipt,
@@ -2020,7 +2050,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
         ) -> ApprovalConsumptionResult:
             now = datetime.now(UTC)
             receipt = ApprovalReceipt.model_construct(
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 consumption_id="consumption-invalid",
@@ -2032,7 +2062,7 @@ async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval
             )
             return ApprovalConsumptionResult.model_construct(
                 disposition=ApprovalConsumptionDisposition.CONSUMED,
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version="1",
                 receipt=receipt,
@@ -2090,7 +2120,7 @@ async def test_uncertain_approval_consumption_blocks_fresh_approval_and_handler(
             adapter_calls += 1
             entered.set()
             await asyncio.Event().wait()
-            raise AssertionError(request.approval_id)
+            raise AssertionError(request.approval_decision_id)
 
     capability = _external_capability(timeout_seconds=0.01)
     registry, _ = _external_registry(capability, handler)
@@ -2127,7 +2157,7 @@ async def test_cancelled_approval_consumption_is_terminal_for_idempotency() -> N
             adapter_calls += 1
             entered.set()
             await asyncio.Event().wait()
-            raise AssertionError(request.approval_id)
+            raise AssertionError(request.approval_decision_id)
 
     capability = _external_capability()
     registry, _ = _external_registry(capability, lambda payload: payload)
@@ -2372,7 +2402,7 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
     other_tenant = context.model_copy(
         update={
             "tenant_id": "tenant-b",
-            "approval_id": "approval-tenant-b",
+            "approval_decision_id": "approval-tenant-b",
             "invocation_id": "invocation-tenant-b",
         }
     )
@@ -2380,7 +2410,7 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
     other_argument = context.model_copy(
         update={
             "operation_fingerprint": "b" * 64,
-            "approval_id": "approval-argument-b",
+            "approval_decision_id": "approval-argument-b",
             "invocation_id": "invocation-argument-b",
         }
     )
@@ -2388,7 +2418,7 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
     other_destination = context.model_copy(
         update={
             "destination": "destination-b",
-            "approval_id": "approval-destination-b",
+            "approval_decision_id": "approval-destination-b",
             "invocation_id": "invocation-destination-b",
         }
     )
@@ -3190,6 +3220,8 @@ async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit
 @pytest.mark.asyncio
 async def test_conversation_and_long_term_memory_enforce_tenant_boundary() -> None:
     store = InMemoryConversationStore()
+    assert store.is_durable is False
+    assert store.is_test_only is True
     record = ConversationRecord(tenant_id="tenant-a", session_id="session", state={"turn": 1})
     assert await store.load("tenant-a", "missing") is None
     await store.save(record)
@@ -3202,6 +3234,8 @@ async def test_conversation_and_long_term_memory_enforce_tenant_boundary() -> No
     with pytest.raises(ValueError):
         InMemoryLongTermMemory(max_records=0)
     memory = InMemoryLongTermMemory(max_records=1)
+    assert memory.is_durable is False
+    assert memory.is_test_only is True
     confidential = MemoryRecord(
         tenant_id="tenant-a",
         principal_id="principal",
@@ -3225,6 +3259,308 @@ async def test_conversation_and_long_term_memory_enforce_tenant_boundary() -> No
     recalled = await memory.recall("tenant-a", "principal")
     assert [item.memory_id for item in recalled] == ["m2"]
     assert await memory.recall("tenant-b", "principal") == ()
+
+
+def _manifest_with_persistent_scope(scope: MemoryScope) -> AgentManifest:
+    manifest = get_manifest("literature")
+    scopes = tuple(
+        item.model_copy(
+            update={
+                "enabled": True,
+                "persistent": True,
+                "provider_ref": f"app://memory/{scope.value}",
+                "retention_days": 30,
+                "ttl_seconds": 86_400,
+                "read_roles": ("researchers",),
+                "write_roles": ("researchers",),
+            }
+        )
+        if item.scope == scope
+        else item
+        for item in manifest.memory.scopes
+    )
+    return manifest.model_copy(update={"memory": MemoryPolicy(scopes=scopes)})
+
+
+def test_persistent_memory_requires_app_owned_durable_providers(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class DurableConversationStore(InMemoryConversationStore):
+        is_durable = True
+
+    class DurableLongTermMemory(InMemoryLongTermMemory):
+        is_durable = True
+
+    settings = _settings(
+        model_deployment_name="gpt-5.6-sol",
+        model_deployment_version="2026-07-09",
+    )
+    conversation_manifest = _manifest_with_persistent_scope(MemoryScope.CONVERSATION)
+    conversation_factory = GovernedAgentFactory(conversation_manifest)
+    with pytest.raises(ConfigurationError, match="conversation memory"):
+        conversation_factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+        )
+    with pytest.raises(ConfigurationError, match="conversation memory"):
+        conversation_factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            conversation_store=InMemoryConversationStore(),
+        )
+    assert (
+        conversation_factory.readiness(
+            settings,
+            release_attestor=_release_attestor(conversation_manifest),
+        )["persistent_memory"]
+        is False
+    )
+    assert (
+        conversation_factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            conversation_store=DurableConversationStore(),
+            release_attestor=_release_attestor(conversation_manifest),
+        ).name
+        == conversation_manifest.name
+    )
+
+    user_manifest = _manifest_with_persistent_scope(MemoryScope.USER)
+    user_factory = GovernedAgentFactory(user_manifest)
+    with pytest.raises(ConfigurationError, match="long-term memory"):
+        user_factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            release_attestor=_release_attestor(user_manifest),
+        )
+    assert (
+        user_factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            long_term_memory_store=DurableLongTermMemory(),
+            release_attestor=_release_attestor(user_manifest),
+        ).name
+        == user_manifest.name
+    )
+
+    coordinator_factory = importlib.import_module("coordinator.factory")
+    monkeypatch.setattr(
+        coordinator_factory,
+        "FACTORY",
+        GovernedAgentFactory(conversation_manifest),
+    )
+    with pytest.raises(ConfigurationError, match="conversation memory"):
+        coordinator_factory.build_agent(
+            settings=settings,
+            invoker=cast(Any, lambda request: request),
+        )
+    monkeypatch.setattr(
+        coordinator_factory,
+        "FACTORY",
+        GovernedAgentFactory(user_manifest),
+    )
+    with pytest.raises(ConfigurationError, match="long-term memory"):
+        coordinator_factory.build_agent(
+            settings=settings,
+            invoker=cast(Any, lambda request: request),
+        )
+
+
+@pytest.mark.asyncio
+async def test_contract_middleware_loads_and_saves_persistent_conversation() -> None:
+    class DurableConversationStore(InMemoryConversationStore):
+        is_durable = True
+
+    manifest = _manifest_with_persistent_scope(MemoryScope.CONVERSATION)
+    store = DurableConversationStore()
+    await store.save(
+        ConversationRecord(
+            tenant_id="tenant-a",
+            session_id="session-a",
+            state={"turn": 1},
+        )
+    )
+    request = LiteratureRequest.model_validate(_request())
+    context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[request.model_dump_json()])],
+    )
+
+    async def call_next() -> None:
+        assert context.session is not None
+        assert context.session.state["turn"] == 1
+        context.session.state["turn"] = 2
+
+    await ContractMiddleware(
+        manifest,
+        None,
+        conversation_store=store,
+    ).process(context, call_next)
+    saved = await store.load("tenant-a", "session-a")
+    assert saved is not None and saved.state["turn"] == 2
+
+    mismatched = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[
+            Message(
+                role="user",
+                contents=[
+                    LiteratureRequest.model_validate(
+                        _request(session_id="session-new")
+                    ).model_dump_json()
+                ],
+            )
+        ],
+        session=to_agent_session(
+            ConversationRecord(
+                tenant_id="tenant-a",
+                session_id="other-session",
+            )
+        ),
+    )
+    with pytest.raises(ContractError, match="session"):
+        await ContractMiddleware(
+            manifest,
+            None,
+            conversation_store=store,
+        ).process(mismatched, call_next)
+
+    missing_store_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[request.model_dump_json()])],
+    )
+    with pytest.raises(ConfigurationError, match="not configured"):
+        await ContractMiddleware(manifest, None).process(
+            missing_store_context,
+            call_next,
+        )
+
+    empty_store = DurableConversationStore()
+    new_request = LiteratureRequest.model_validate(
+        _request(session_id="session-new")
+    )
+    new_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[new_request.model_dump_json()])],
+    )
+
+    async def initialize_session() -> None:
+        assert new_context.session is not None
+        new_context.session.state["created"] = True
+
+    await ContractMiddleware(
+        manifest,
+        None,
+        conversation_store=empty_store,
+    ).process(new_context, initialize_session)
+    initialized = await empty_store.load("tenant-a", "session-new")
+    assert initialized is not None and initialized.state["created"] is True
+
+    existing_session_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[new_request.model_dump_json()])],
+        session=to_agent_session(
+            ConversationRecord(
+                tenant_id="tenant-a",
+                session_id="session-new",
+            )
+        ),
+    )
+
+    async def preserve_existing_session() -> None:
+        assert existing_session_context.session is not None
+
+    await ContractMiddleware(
+        manifest,
+        None,
+        conversation_store=DurableConversationStore(),
+    ).process(existing_session_context, preserve_existing_session)
+
+    stream_store = DurableConversationStore()
+    stream_request = LiteratureRequest.model_validate(
+        _request(session_id="stream-session")
+    )
+    stream_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[stream_request.model_dump_json()])],
+        stream=True,
+    )
+
+    async def stream_next() -> None:
+        assert stream_context.session is not None
+        stream_context.session.state["streamed"] = True
+
+        async def updates() -> Any:
+            yield AgentResponseUpdate(
+                contents=[
+                    Content.from_text(
+                        text=LiteratureResponse(summary="streamed").model_dump_json()
+                    )
+                ],
+                role="assistant",
+            )
+
+        stream_context.result = ResponseStream(
+            updates(),
+            finalizer=cast(
+                Any,
+                lambda items: AgentResponse.from_updates(
+                    items,
+                    output_format_type=LiteratureResponse,
+                ),
+            ),
+        )
+
+    await ContractMiddleware(
+        manifest,
+        None,
+        conversation_store=stream_store,
+    ).process(stream_context, stream_next)
+    assert await stream_store.load("tenant-a", "stream-session") is None
+    assert isinstance(stream_context.result, ResponseStream)
+    _ = [update async for update in stream_context.result]
+    streamed = await stream_store.load("tenant-a", "stream-session")
+    assert streamed is not None and streamed.state["streamed"] is True
+
+    failed_stream_store = DurableConversationStore()
+    failed_stream_request = LiteratureRequest.model_validate(
+        _request(session_id="failed-stream")
+    )
+    failed_stream_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[
+            Message(
+                role="user",
+                contents=[failed_stream_request.model_dump_json()],
+            )
+        ],
+        stream=True,
+    )
+
+    async def failed_stream_next() -> None:
+        assert failed_stream_context.session is not None
+        failed_stream_context.session.state["must_not_persist"] = True
+
+        async def updates() -> Any:
+            yield AgentResponseUpdate(
+                contents=[Content.from_text(text='{"invalid":true}')],
+                role="assistant",
+            )
+
+        failed_stream_context.result = ResponseStream(
+            updates(),
+            finalizer=lambda items: AgentResponse.from_updates(items),
+        )
+
+    await ContractMiddleware(
+        manifest,
+        None,
+        conversation_store=failed_stream_store,
+    ).process(failed_stream_context, failed_stream_next)
+    assert isinstance(failed_stream_context.result, ResponseStream)
+    with pytest.raises(ValidationError):
+        _ = [update async for update in failed_stream_context.result]
+    assert await failed_stream_store.load("tenant-a", "failed-stream") is None
 
 
 def test_agent_session_round_trip_uses_ga_session_state() -> None:
@@ -3255,6 +3591,201 @@ def test_telemetry_redacts_secrets_content_and_complex_values() -> None:
     assert redacted["count"].startswith("[REDACTED:")
     assert redacted["safe"] == "visible"
     assert redacted["complex"] == "dict"
+
+    with pytest.raises(ValueError, match="immutable release"):
+        ContractMiddleware(
+            get_manifest("literature"),
+            None,
+            audit_sink=_RecordingAuditSink(),
+        )
+
+
+def test_opentelemetry_audit_sink_records_redacted_attributes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    attributes: dict[str, Any] = {}
+    span_names: list[str] = []
+
+    class Span:
+        def set_attribute(self, key: str, value: Any) -> None:
+            attributes[key] = value
+
+    class SpanContext:
+        def __enter__(self) -> Span:
+            return Span()
+
+        def __exit__(self, *_args: Any) -> None:
+            return None
+
+    class Tracer:
+        def start_as_current_span(self, name: str) -> SpanContext:
+            span_names.append(name)
+            return SpanContext()
+
+    monkeypatch.setattr("shared.telemetry.trace.get_tracer", lambda _name: Tracer())
+    sink = OpenTelemetryGovernanceAuditSink()
+    sink.emit(
+        GovernanceAuditEvent(
+            event_name="agent.invocation",
+            outcome="completed",
+            agent_id="literature",
+            release_id=f"sha256:{'8' * 64}",
+            tenant_digest="a" * 64,
+            principal_digest="b" * 64,
+        )
+    )
+    assert span_names == ["agent.invocation"]
+    assert attributes["governance.agent_id"] == "literature"
+    assert "governance.capability_id" not in attributes
+    assert "governance.occurred_at" in attributes
+
+
+class _RecordingAuditSink:
+    def __init__(self) -> None:
+        self.events: list[GovernanceAuditEvent] = []
+
+    def emit(self, event: GovernanceAuditEvent) -> None:
+        self.events.append(event)
+
+
+@pytest.mark.asyncio
+async def test_governance_audit_emits_only_hashed_structured_metadata() -> None:
+    release_id = f"sha256:{'7' * 64}"
+    request = LiteratureRequest.model_validate(
+        _request(query="private research question")
+    )
+    sink = _RecordingAuditSink()
+    context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[request.model_dump_json()])],
+    )
+    middleware = ContractMiddleware(
+        get_manifest("literature"),
+        None,
+        release_id=release_id,
+        audit_sink=sink,
+    )
+
+    async def call_next() -> None:
+        return None
+
+    await middleware.process(context, call_next)
+    assert [event.outcome for event in sink.events] == ["accepted", "completed"]
+    serialized = json.dumps(
+        [event.model_dump(mode="json") for event in sink.events],
+        sort_keys=True,
+    )
+    for raw in (
+        "tenant-a",
+        "principal-a",
+        "private research question",
+        request.model_dump_json(),
+    ):
+        assert raw not in serialized
+    assert sink.events[0].tenant_digest == telemetry_identity_digest("tenant-a")
+    assert sink.events[0].principal_digest == telemetry_identity_digest("principal-a")
+
+    failed_sink = _RecordingAuditSink()
+    failed_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[request.model_dump_json()])],
+    )
+
+    async def fail() -> None:
+        raise RuntimeError("sensitive failure")
+
+    with pytest.raises(RuntimeError, match="sensitive failure"):
+        await ContractMiddleware(
+            get_manifest("literature"),
+            None,
+            release_id=release_id,
+            audit_sink=failed_sink,
+        ).process(failed_context, fail)
+    assert [event.outcome for event in failed_sink.events] == ["accepted", "failed"]
+    assert failed_sink.events[-1].error_code is not None
+    assert "sensitive failure" not in json.dumps(
+        [event.model_dump(mode="json") for event in failed_sink.events]
+    )
+
+    stream_sink = _RecordingAuditSink()
+    stream_context = AgentContext(
+        agent=cast(Any, SimpleNamespace()),
+        messages=[Message(role="user", contents=[request.model_dump_json()])],
+        stream=True,
+    )
+
+    async def stream_next() -> None:
+        async def failed_updates() -> Any:
+            if False:
+                yield AgentResponseUpdate()
+            raise RuntimeError("sensitive stream failure")
+
+        stream_context.result = ResponseStream(
+            failed_updates(),
+            finalizer=lambda updates: AgentResponse.from_updates(updates),
+        )
+
+    await ContractMiddleware(
+        get_manifest("literature"),
+        None,
+        release_id=release_id,
+        audit_sink=stream_sink,
+    ).process(stream_context, stream_next)
+    assert isinstance(stream_context.result, ResponseStream)
+    with pytest.raises(RuntimeError, match="sensitive stream failure"):
+        _ = [update async for update in stream_context.result]
+    assert [event.outcome for event in stream_sink.events] == ["accepted", "failed"]
+
+    capability = CapabilityDescriptor(
+        id="public.audit",
+        operation=OperationClass.READ,
+    )
+    registration, _ = _runtime_registration(_binding(capability.id))
+    function_sink = _RecordingAuditSink()
+    function_middleware = GovernedFunctionMiddleware(
+        capability,
+        registration,
+        release_id=release_id,
+        agent_id="literature",
+        audit_sink=function_sink,
+    )
+    governance = InvocationContext(
+        tenant_id="tenant-a",
+        principal_id="principal-a",
+    )
+    function_context = FunctionInvocationContext(
+        cast(Any, SimpleNamespace(name=registration.tool_name)),
+        {},
+        kwargs={
+            "governance_context": governance.model_dump(mode="json"),
+            "authorized_tool_evidence": [],
+        },
+    )
+
+    async def function_call() -> None:
+        function_context.result = {"ok": True}
+
+    await function_middleware.process(function_context, function_call)
+    assert [event.outcome for event in function_sink.events] == [
+        "started",
+        "completed",
+    ]
+    failing_function_context = FunctionInvocationContext(
+        cast(Any, SimpleNamespace(name=registration.tool_name)),
+        {},
+        kwargs={
+            "governance_context": governance.model_dump(mode="json"),
+            "authorized_tool_evidence": [],
+        },
+    )
+
+    async def fail_function() -> None:
+        raise RuntimeError("sensitive handler failure")
+
+    with pytest.raises(InvocationError):
+        await function_middleware.process(failing_function_context, fail_function)
+    assert function_sink.events[-1].outcome == "failed"
+    assert function_sink.events[-1].error_code == InvocationError.code
 
 
 def test_release_metadata_is_immutable_and_deterministic(
@@ -3310,6 +3841,8 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert release.dependency_risks[0].package == "agent-framework-foundry-hosting"
     assert release.dependency_risks[0].maturity == "beta"
     assert release.dependency_risks[0].version == "1.0.0b260721"
+    assert release.dependency_risks[1].package == "agent-framework-core"
+    assert release.dependency_risks[1].maturity == "preview"
     assert release.provider_contracts == (
         (
             "microsoft-foundry-toolbox",
@@ -3379,6 +3912,139 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert source_bundle_digest(root) != first_hash
 
 
+def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
+    manifest = get_manifest("literature")
+    release = GovernedAgentFactory(manifest).release(
+        _settings(
+            model_deployment_name=manifest.model_policy.deployment_name,
+            model_deployment_version=manifest.model_policy.pinned_model_version,
+        )
+    )
+    local_attestor = InMemoryReleaseAttestor(
+        manifest.evaluation.objective_hard_gates
+    )
+    with pytest.raises(ReleaseAttestationError, match="app-owned durable"):
+        validate_release_attestation(release, manifest, None)
+    with pytest.raises(ReleaseAttestationError, match="app-owned durable"):
+        validate_release_attestation(release, manifest, local_attestor)
+
+    valid = validate_release_attestation(
+        release,
+        manifest,
+        local_attestor,
+        allow_test_attestor=True,
+    )
+    assert valid.release_id == release.release_id
+    assert tuple(item.gate for item in valid.objective_gates) == tuple(
+        sorted(manifest.evaluation.objective_hard_gates)
+    )
+    assert manifest.evaluation.evaluator_results_advisory is True
+    assert (
+        valid.release_attestation_contract_schema_digest
+        == release_attestation_contract_schema_digest()
+        == release.release_attestation_contract_schema_digest
+    )
+    valid_payload = valid.model_dump(mode="json")
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        type(valid).model_validate(
+            {
+                **valid_payload,
+                "objective_gates": (
+                    valid_payload["objective_gates"][0],
+                    valid_payload["objective_gates"][0],
+                ),
+            }
+        )
+    with pytest.raises(ValidationError, match="provider contracts"):
+        type(valid).model_validate(
+            {
+                **valid_payload,
+                "provider_contracts": (("z", "1"), ("a", "1")),
+            }
+        )
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        type(valid).model_validate(
+            {
+                **valid_payload,
+                "issued_at": valid.issued_at.replace(tzinfo=None),
+            }
+        )
+    with pytest.raises(ValidationError, match="expires before"):
+        type(valid).model_validate(
+            {
+                **valid_payload,
+                "expires_at": valid.issued_at - timedelta(seconds=1),
+            }
+        )
+
+    class Attestor:
+        is_durable = True
+
+        def __init__(self, result: Any) -> None:
+            self.result = result
+
+        def attest(self, _release: Any) -> Any:
+            if isinstance(self.result, BaseException):
+                raise self.result
+            return self.result
+
+    mismatches = (
+        valid.model_copy(update={"release_id": f"sha256:{'0' * 64}"}),
+        valid.model_copy(update={"manifest_digest": "0" * 64}),
+        valid.model_copy(update={"contract_schema_digest": "0" * 64}),
+        valid.model_copy(update={"idempotency_contract_schema_digest": "0" * 64}),
+        valid.model_copy(update={"approval_contract_schema_digest": "0" * 64}),
+        valid.model_copy(update={"release_attestation_contract_schema_digest": "0" * 64}),
+        valid.model_copy(update={"source_bundle_hash": "0" * 64}),
+        valid.model_copy(update={"model_deployment_ref": "app://model/other"}),
+        valid.model_copy(update={"model_version": "other"}),
+        valid.model_copy(update={"provider_contracts": (("other", "v1"),)}),
+        valid.model_copy(update={"objective_gates": ()}),
+    )
+    for mismatch in mismatches:
+        with pytest.raises(ReleaseAttestationError, match="immutable release"):
+            validate_release_attestation(release, manifest, Attestor(mismatch))
+
+    now = datetime.now(UTC)
+    for inactive in (
+        valid.model_copy(update={"status": ReleaseAttestationStatus.REVOKED}),
+        valid.model_copy(
+            update={
+                "issued_at": now - timedelta(seconds=2),
+                "expires_at": now - timedelta(seconds=1),
+            }
+        ),
+        valid.model_copy(
+            update={
+                "issued_at": now + timedelta(minutes=2),
+                "expires_at": now + timedelta(minutes=3),
+            }
+        ),
+    ):
+        with pytest.raises(ReleaseAttestationError, match="revoked or expired"):
+            validate_release_attestation(
+                release,
+                manifest,
+                Attestor(inactive),
+                now=now,
+            )
+    with pytest.raises(ReleaseAttestationError, match="invalid attestation"):
+        validate_release_attestation(release, manifest, Attestor({"invalid": True}))
+    with pytest.raises(ReleaseAttestationError, match="invalid attestation"):
+        validate_release_attestation(
+            release,
+            manifest,
+            Attestor(RuntimeError("backend unavailable")),
+        )
+    attestor_error = ReleaseAttestationError("attestor policy denied")
+    with pytest.raises(ReleaseAttestationError, match="attestor policy denied"):
+        validate_release_attestation(
+            release,
+            manifest,
+            Attestor(attestor_error),
+        )
+
+
 def test_capability_catalog_has_deterministic_risk_boundaries() -> None:
     toolbox = _settings(toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp")
     dataset = capabilities_for_manifest(get_manifest("dataset"), toolbox)
@@ -3416,6 +4082,7 @@ def test_factory_requires_current_provider_attestation() -> None:
             provider_adapter=adapter,
             idempotency_store=DurableStore(),
             approval_adapter=_AutoApprovalAdapter(),
+            release_attestor=_release_attestor(factory.manifest),
         )["ready"]
         is True
     )
@@ -3458,18 +4125,40 @@ def test_governed_factory_builds_typed_hosted_agent(
     agent = factory.build(
         client=_FakeChatClient(),
         settings=literature_settings,
+        release_attestor=_release_attestor(factory.manifest),
     )
     assert agent.name == "literature-agent"
     assert agent.default_options["store"] is False
     assert agent.default_options["response_format"] is LiteratureResponse
     assert agent.context_providers == []
     assert factory.capabilities() == ()
-    assert factory.readiness(literature_settings)["ready"] is True
+    constructed: list[dict[str, Any]] = []
+    with monkeypatch.context() as context:
+        context.setattr(
+            "shared.factory.Agent",
+            lambda **kwargs: constructed.append(kwargs),
+        )
+        with pytest.raises(ReleaseAttestationError, match="release attestor"):
+            factory.build(
+                client=_FakeChatClient(),
+                settings=literature_settings,
+            )
+    assert constructed == []
+    assert (
+        factory.readiness(
+            literature_settings,
+            release_attestor=_release_attestor(factory.manifest),
+        )["ready"]
+        is True
+    )
     assert get_factory("dataset").manifest.id == "dataset"
 
     marker = object()
     monkeypatch.setattr("shared.factory._build_foundry_client", lambda _settings: marker)
-    built = factory.build(settings=literature_settings)
+    built = factory.build(
+        settings=literature_settings,
+        release_attestor=_release_attestor(factory.manifest),
+    )
     assert built.client is marker
     with pytest.raises(ConfigurationError, match="model deployment"):
         factory.build(settings=_settings(model_deployment_name="gpt-5.4-mini"))
@@ -3576,6 +4265,13 @@ def test_runtime_adapter_builds_describes_and_runs_host(
             "provider_adapter": None,
             "idempotency_store": None,
             "approval_adapter": None,
+            "release_attestor": None,
+            "conversation_store": None,
+            "long_term_memory_store": None,
+            "audit_sink": None,
+            "allow_test_idempotency_store": False,
+            "allow_test_approval_adapter": False,
+            "allow_test_release_attestor": False,
         },
     )
     assert runtime.describe_profile("grant").id == "grant"
@@ -3644,6 +4340,7 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
                 {"is_durable": True},
             )(),
             approval_adapter=_AutoApprovalAdapter(),
+            release_attestor=_release_attestor(dataset_factory.manifest),
         )["ready"]
         is True
     )
@@ -3825,7 +4522,7 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
     dataset = DatasetRequest.model_validate(
         _request(
             dataset_id="dataset.csv",
-            approval_id="approval-a",
+            approval_decision_id="approval-a",
             invocation_id="invocation-a",
             idempotency_key="dataset-operation-1",
         )
@@ -3835,7 +4532,7 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
         None,
         monotonic=lambda: 5,
     )._invocation_context(dataset)
-    assert dataset_context.approval_id == "approval-a"
+    assert dataset_context.approval_decision_id == "approval-a"
     assert dataset_context.invocation_id == "invocation-a"
     assert dataset_context.scopes == frozenset()
     assert dataset_context.idempotency_key == "dataset-operation-1"
@@ -3845,7 +4542,7 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
         get_manifest("dataset"),
         None,
     )._invocation_context(unapproved)
-    assert unapproved_context.approval_id is None
+    assert unapproved_context.approval_decision_id is None
     assert unapproved_context.invocation_id is None
 
 
@@ -4472,7 +5169,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         principal_id="principal-a",
         scopes=frozenset({"research.dataset.compute"}),
         destination="toolbox.example",
-        approval_id="approval-1",
+        approval_decision_id="approval-1",
         invocation_id="invocation-1",
         idempotency_key="session-a",
     )
@@ -4485,7 +5182,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
             kwargs={
                 "governance_context": write_governance.model_copy(
                     update={
-                        "approval_id": f"approval-{value}",
+                        "approval_decision_id": f"approval-{value}",
                         "invocation_id": f"invocation-{value}",
                     }
                 ).model_dump(mode="json"),
@@ -4908,6 +5605,7 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
             ),
             idempotency_store=InMemoryIdempotencyStore(),
             approval_adapter=_AutoApprovalAdapter(),
+            release_attestor=_release_attestor(module.MANIFEST),
             allow_test_idempotency_store=True,
             allow_test_approval_adapter=True,
         )
@@ -4927,6 +5625,7 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
         settings=_settings(),
         invoker=invoke,
         provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+        release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     assert ResponsesHostServer(coordinator_agent) is not None
 
@@ -4967,6 +5666,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
                 provider_adapter=provider_adapter,
                 idempotency_store=InMemoryIdempotencyStore(),
                 approval_adapter=_AutoApprovalAdapter(),
+                release_attestor=_release_attestor(module.MANIFEST),
                 allow_test_idempotency_store=True,
                 allow_test_approval_adapter=True,
             ).name
@@ -4992,6 +5692,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
         settings=_settings(),
         invoker=invoke,
         provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+        release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     assert isinstance(coordinator_agent, WorkflowAgent)
     assert coordinator_agent.name == coordinator.MANIFEST.name

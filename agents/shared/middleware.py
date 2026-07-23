@@ -33,15 +33,33 @@ from .contracts import (
     CoordinatorResponse,
     DatasetRequest,
     EvidenceRef,
+    MemoryScope,
     ResearchRequest,
     ResearchResponse,
     bind_contracts,
     canonical_digest,
     resolve_authorized_evidence,
 )
-from .errors import AuthorizationError, ConfigurationError, ContractError
+from .errors import (
+    AuthorizationError,
+    ConfigurationError,
+    ContractError,
+    error_from_exception,
+)
 from .idempotency import IdempotencyStore
 from .settings import HarnessSettings
+from .state import (
+    ConversationRecord,
+    ConversationStore,
+    from_agent_session,
+    to_agent_session,
+)
+from .telemetry import (
+    GovernanceAuditEvent,
+    GovernanceAuditSink,
+    OpenTelemetryGovernanceAuditSink,
+    telemetry_identity_digest,
+)
 
 _GOVERNANCE_CONTEXT_KEY = "governance_context"
 _TOOL_EVIDENCE_KEY = "authorized_tool_evidence"
@@ -73,11 +91,22 @@ class ContractMiddleware(AgentMiddleware):
         settings: HarnessSettings | None,
         *,
         monotonic: Callable[[], float] = time.monotonic,
+        release_id: str | None = None,
+        audit_sink: GovernanceAuditSink | None = None,
+        conversation_store: ConversationStore | None = None,
     ) -> None:
         self._manifest = manifest
         self._contracts = bind_contracts(manifest)
         self._settings = settings
         self._monotonic = monotonic
+        self._release_id = release_id
+        self._audit_sink = audit_sink
+        self._conversation_store = conversation_store
+        self._persistent_conversation = manifest.memory.for_scope(
+            MemoryScope.CONVERSATION
+        ).persistent
+        if audit_sink is not None and release_id is None:
+            raise ValueError("governance audit requires immutable release provenance")
 
     async def process(
         self,
@@ -85,6 +114,8 @@ class ContractMiddleware(AgentMiddleware):
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
         request = self._validate(context.messages)
+        await self._load_conversation(context, request)
+        self._emit_audit("agent.invocation", "accepted", request)
         tool_evidence: list[EvidenceRef] = []
         context.messages = [
             *context.messages[:-1],
@@ -94,21 +125,36 @@ class ContractMiddleware(AgentMiddleware):
             mode="json"
         )
         context.function_invocation_kwargs[_TOOL_EVIDENCE_KEY] = tool_evidence
-        await call_next()
-        if context.stream:
-            if not isinstance(context.result, ResponseStream):
-                raise ContractError("Streaming agent invocation did not return a response stream")
-            context.result = self._buffered_governed_stream(
-                context.result,
-                request.evidence,
-                tool_evidence,
+        try:
+            await call_next()
+            if context.stream:
+                if not isinstance(context.result, ResponseStream):
+                    raise ContractError(
+                        "Streaming agent invocation did not return a response stream"
+                    )
+                context.result = self._buffered_governed_stream(
+                    context.result,
+                    context,
+                    request,
+                    tool_evidence,
+                )
+            elif isinstance(context.result, AgentResponse):
+                context.result = self._normalize_response(
+                    context.result,
+                    request.evidence,
+                    tool_evidence,
+                )
+            if not context.stream:
+                await self._save_conversation(context, request)
+                self._emit_audit("agent.invocation", "completed", request)
+        except BaseException as exc:
+            self._emit_audit(
+                "agent.invocation",
+                "failed",
+                request,
+                error_code=error_from_exception(exc).code,
             )
-        elif isinstance(context.result, AgentResponse):
-            context.result = self._normalize_response(
-                context.result,
-                request.evidence,
-                tool_evidence,
-            )
+            raise
 
     def _validate(self, messages: list[Message]) -> ResearchRequest:
         if not messages or messages[-1].role != "user":
@@ -128,7 +174,7 @@ class ContractMiddleware(AgentMiddleware):
             "principal_id",
             "session_id",
             "approved_compute",
-            "approval_id",
+            "approval_decision_id",
             "invocation_id",
             "idempotency_key",
         }
@@ -189,25 +235,37 @@ class ContractMiddleware(AgentMiddleware):
     def _buffered_governed_stream(
         self,
         source: ResponseStream[AgentResponseUpdate, AgentResponse[Any]],
-        request_evidence: tuple[EvidenceRef, ...],
+        context: AgentContext,
+        request: ResearchRequest,
         tool_evidence: list[EvidenceRef],
     ) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         async def governed_updates() -> AsyncIterator[AgentResponseUpdate]:
-            async for _ in source:
-                pass
-            normalized = self._normalize_response(
-                await source.get_final_response(),
-                request_evidence,
-                tool_evidence,
-            )
-            value = cast(ResearchResponse, normalized.value)
-            yield AgentResponseUpdate(
-                contents=[Content.from_text(text=value.model_dump_json())],
-                role="assistant",
-                agent_id=normalized.agent_id,
-                response_id=normalized.response_id,
-                finish_reason=normalized.finish_reason,
-            )
+            try:
+                async for _ in source:
+                    pass
+                normalized = self._normalize_response(
+                    await source.get_final_response(),
+                    request.evidence,
+                    tool_evidence,
+                )
+                await self._save_conversation(context, request)
+                self._emit_audit("agent.invocation", "completed", request)
+                value = cast(ResearchResponse, normalized.value)
+                yield AgentResponseUpdate(
+                    contents=[Content.from_text(text=value.model_dump_json())],
+                    role="assistant",
+                    agent_id=normalized.agent_id,
+                    response_id=normalized.response_id,
+                    finish_reason=normalized.finish_reason,
+                )
+            except BaseException as exc:
+                self._emit_audit(
+                    "agent.invocation",
+                    "failed",
+                    request,
+                    error_code=error_from_exception(exc).code,
+                )
+                raise
 
         return ResponseStream[AgentResponseUpdate, AgentResponse[Any]](
             governed_updates(),
@@ -241,13 +299,13 @@ class ContractMiddleware(AgentMiddleware):
 
     def _invocation_context(self, request: ResearchRequest) -> InvocationContext:
         scopes: set[str] = set()
-        approval_id: str | None = None
+        approval_decision_id: str | None = None
         invocation_id: str | None = None
         idempotency_key: str | None = None
         if self._manifest.online:
             scopes.add("research.public.read")
         if isinstance(request, DatasetRequest):
-            approval_id = request.approval_id
+            approval_decision_id = request.approval_decision_id
             invocation_id = request.invocation_id
             idempotency_key = request.idempotency_key
         destination = None
@@ -259,10 +317,95 @@ class ContractMiddleware(AgentMiddleware):
             principal_id=request.principal_id,
             scopes=frozenset(scopes),
             destination=destination,
-            approval_id=approval_id,
+            approval_decision_id=approval_decision_id,
             invocation_id=invocation_id,
             idempotency_key=idempotency_key,
             deadline_monotonic=self._monotonic() + timeout_seconds,
+        )
+
+    def _emit_audit(
+        self,
+        event_name: str,
+        outcome: str,
+        request: ResearchRequest,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        if self._audit_sink is None or self._release_id is None:
+            return
+        approval_decision_id = (
+            request.approval_decision_id
+            if isinstance(request, DatasetRequest)
+            else None
+        )
+        idempotency_key = (
+            request.idempotency_key
+            if isinstance(request, DatasetRequest)
+            else None
+        )
+        self._audit_sink.emit(
+            GovernanceAuditEvent(
+                event_name=event_name,
+                outcome=outcome,
+                agent_id=self._manifest.id,
+                release_id=self._release_id,
+                tenant_digest=telemetry_identity_digest(request.tenant_id),
+                principal_digest=telemetry_identity_digest(request.principal_id),
+                approval_decision_digest=(
+                    telemetry_identity_digest(approval_decision_id)
+                    if approval_decision_id is not None
+                    else None
+                ),
+                idempotency_key_digest=(
+                    telemetry_identity_digest(idempotency_key)
+                    if idempotency_key is not None
+                    else None
+                ),
+                error_code=error_code,
+            )
+        )
+
+    async def _load_conversation(
+        self,
+        context: AgentContext,
+        request: ResearchRequest,
+    ) -> None:
+        if not self._persistent_conversation:
+            return
+        if self._conversation_store is None:
+            raise ConfigurationError(
+                "Persistent conversation memory is not configured",
+                context={"agent": self._manifest.id},
+            )
+        record = await self._conversation_store.load(
+            request.tenant_id,
+            request.session_id,
+        )
+        if record is not None:
+            context.session = to_agent_session(record)
+        elif context.session is None:
+            context.session = to_agent_session(
+                ConversationRecord(
+                    tenant_id=request.tenant_id,
+                    session_id=request.session_id,
+                )
+            )
+        elif context.session.session_id != request.session_id:
+            raise ContractError("Invocation session does not match the request envelope")
+
+    async def _save_conversation(
+        self,
+        context: AgentContext,
+        request: ResearchRequest,
+    ) -> None:
+        if (
+            not self._persistent_conversation
+            or self._conversation_store is None
+            or context.session is None
+        ):
+            return
+        await self._conversation_store.save(
+            from_agent_session(request.tenant_id, context.session)
         )
 
 
@@ -278,8 +421,13 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         release_id: str | None = None,
         allow_test_idempotency_store: bool = False,
         allow_test_approval_adapter: bool = False,
+        agent_id: str = "unknown-agent",
+        audit_sink: GovernanceAuditSink | None = None,
     ) -> None:
         self._capability = capability
+        self._agent_id = agent_id
+        self._release_id = release_id
+        self._audit_sink = audit_sink
         self._allowed_connector_sources = allowed_connector_sources
         normalized_registrations = (registrations,) if isinstance(registrations, ToolRegistration) else registrations
         if not normalized_registrations:
@@ -338,11 +486,23 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
                     )
                 }
             )
-        result = await self._executor.invoke_operation(
-            context.function.name,
-            {"context": context, "call_next": call_next},
-            governance,
-        )
+        self._emit_audit("capability.invocation", "started", context.function.name, governance)
+        try:
+            result = await self._executor.invoke_operation(
+                context.function.name,
+                {"context": context, "call_next": call_next},
+                governance,
+            )
+        except BaseException as exc:
+            self._emit_audit(
+                "capability.invocation",
+                "failed",
+                context.function.name,
+                governance,
+                error_code=error_from_exception(exc).code,
+            )
+            raise
+        self._emit_audit("capability.invocation", "completed", context.function.name, governance)
         context.result = result["value"]
         collector = context.kwargs.get(_TOOL_EVIDENCE_KEY)
         if not isinstance(collector, list):
@@ -353,6 +513,41 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         )
         collector.extend(evidence)
         context.result = self._expose_authorized_evidence(context.result, evidence)
+
+    def _emit_audit(
+        self,
+        event_name: str,
+        outcome: str,
+        operation_id: str,
+        governance: InvocationContext,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        if self._audit_sink is None or self._release_id is None:
+            return
+        self._audit_sink.emit(
+            GovernanceAuditEvent(
+                event_name=event_name,
+                outcome=outcome,
+                agent_id=self._agent_id,
+                release_id=self._release_id,
+                tenant_digest=telemetry_identity_digest(governance.tenant_id),
+                principal_digest=telemetry_identity_digest(governance.principal_id),
+                capability_id=self._capability.id,
+                operation_id=operation_id,
+                approval_decision_digest=(
+                    telemetry_identity_digest(governance.approval_decision_id)
+                    if governance.approval_decision_id is not None
+                    else None
+                ),
+                idempotency_key_digest=(
+                    telemetry_identity_digest(governance.idempotency_key)
+                    if governance.idempotency_key is not None
+                    else None
+                ),
+                error_code=error_code,
+            )
+        )
 
     @staticmethod
     async def _invoke_framework_function(payload: dict[str, Any]) -> dict[str, Any]:
@@ -513,8 +708,21 @@ def middleware_for_manifest(
     release_id: str | None = None,
     allow_test_idempotency_store: bool = False,
     allow_test_approval_adapter: bool = False,
+    audit_sink: GovernanceAuditSink | None = None,
+    conversation_store: ConversationStore | None = None,
 ) -> list[AgentMiddleware | FunctionMiddleware]:
-    middleware: list[AgentMiddleware | FunctionMiddleware] = [ContractMiddleware(manifest, settings)]
+    effective_audit_sink = audit_sink or (
+        OpenTelemetryGovernanceAuditSink() if release_id is not None else None
+    )
+    middleware: list[AgentMiddleware | FunctionMiddleware] = [
+        ContractMiddleware(
+            manifest,
+            settings,
+            release_id=release_id,
+            audit_sink=effective_audit_sink,
+            conversation_store=conversation_store,
+        )
+    ]
     if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
         raise ConfigurationError(
             "Runtime registrations do not exactly match manifest capability bindings",
@@ -542,6 +750,8 @@ def middleware_for_manifest(
                 release_id=release_id,
                 allow_test_idempotency_store=allow_test_idempotency_store,
                 allow_test_approval_adapter=allow_test_approval_adapter,
+                agent_id=manifest.id,
+                audit_sink=effective_audit_sink,
             )
             for capability in capabilities
         )

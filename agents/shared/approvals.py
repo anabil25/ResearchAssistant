@@ -19,6 +19,7 @@ class ApprovalConsumptionDisposition(StrEnum):
     NOT_FOUND = "not_found"
     MISMATCH = "mismatch"
     ALREADY_CONSUMED = "already_consumed"
+    REVOKED = "revoked"
 
 
 class ApprovalGrantState(StrEnum):
@@ -26,12 +27,13 @@ class ApprovalGrantState(StrEnum):
     DENIED = "denied"
     CONSUMED = "consumed"
     EXPIRED = "expired"
+    REVOKED = "revoked"
 
 
 class ApprovalConsumptionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    approval_id: str = Field(min_length=1, max_length=512)
+    approval_decision_id: str = Field(min_length=1, max_length=512)
     tenant_id: str = Field(min_length=1, max_length=256)
     project_id: str = Field(min_length=1, max_length=512)
     actor_id: str = Field(min_length=1, max_length=512)
@@ -65,7 +67,7 @@ class ApprovalConsumptionRequest(BaseModel):
 class ApprovalReceipt(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    approval_id: str = Field(min_length=1, max_length=512)
+    approval_decision_id: str = Field(min_length=1, max_length=512)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_version: str = Field(min_length=1, max_length=128)
     consumption_id: str = Field(min_length=1, max_length=512)
@@ -94,7 +96,7 @@ class ApprovalConsumptionResult(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     disposition: ApprovalConsumptionDisposition
-    approval_id: str = Field(min_length=1, max_length=512)
+    approval_decision_id: str = Field(min_length=1, max_length=512)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_version: str | None = Field(default=None, min_length=1, max_length=128)
     receipt: ApprovalReceipt | None = None
@@ -169,16 +171,16 @@ class InMemoryApprovalConsumptionAdapter:
 
     async def issue(self, grant: ApprovalGrant) -> None:
         async with self._backend.lock:
-            if grant.request.approval_id in self._backend.grants:
+            if grant.request.approval_decision_id in self._backend.grants:
                 raise ValueError("approval grant already exists")
-            self._backend.grants[grant.request.approval_id] = grant
+            self._backend.grants[grant.request.approval_decision_id] = grant
 
     async def consume(
         self,
         request: ApprovalConsumptionRequest,
     ) -> ApprovalConsumptionResult:
         async with self._backend.lock:
-            grant = self._backend.grants.get(request.approval_id)
+            grant = self._backend.grants.get(request.approval_decision_id)
             if grant is None:
                 return self._terminal_result(
                     request,
@@ -206,6 +208,13 @@ class InMemoryApprovalConsumptionAdapter:
                     cast(str, grant.denial_reason),
                     version=grant.version,
                 )
+            if grant.state == ApprovalGrantState.REVOKED:
+                return self._terminal_result(
+                    request,
+                    ApprovalConsumptionDisposition.REVOKED,
+                    "approval_revoked",
+                    version=grant.version,
+                )
             now = self._clock()
             if grant.state == ApprovalGrantState.EXPIRED or grant.expires_at <= now:
                 if grant.state != ApprovalGrantState.EXPIRED:
@@ -215,7 +224,7 @@ class InMemoryApprovalConsumptionAdapter:
                             "version": self._next_version(grant.version),
                         }
                     )
-                    self._backend.grants[request.approval_id] = grant
+                    self._backend.grants[request.approval_decision_id] = grant
                 return self._terminal_result(
                     request,
                     ApprovalConsumptionDisposition.EXPIRED,
@@ -223,7 +232,7 @@ class InMemoryApprovalConsumptionAdapter:
                     version=grant.version,
                 )
             receipt = ApprovalReceipt(
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version=grant.version,
                 consumption_id=secrets.token_hex(32),
@@ -239,10 +248,10 @@ class InMemoryApprovalConsumptionAdapter:
                     "receipt": receipt,
                 }
             )
-            self._backend.grants[request.approval_id] = consumed
+            self._backend.grants[request.approval_decision_id] = consumed
             return ApprovalConsumptionResult(
                 disposition=ApprovalConsumptionDisposition.CONSUMED,
-                approval_id=request.approval_id,
+                approval_decision_id=request.approval_decision_id,
                 request_digest=request.digest,
                 approval_version=receipt.approval_version,
                 receipt=receipt,
@@ -258,7 +267,7 @@ class InMemoryApprovalConsumptionAdapter:
     ) -> ApprovalConsumptionResult:
         return ApprovalConsumptionResult(
             disposition=disposition,
-            approval_id=request.approval_id,
+            approval_decision_id=request.approval_decision_id,
             request_digest=request.digest,
             approval_version=version,
             reason_code=reason_code,

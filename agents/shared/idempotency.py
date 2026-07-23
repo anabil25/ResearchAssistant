@@ -72,7 +72,7 @@ class IdempotencyKey(BaseModel):
 class IdempotencyApprovalProvenance(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    approval_id: str = Field(min_length=1, max_length=512)
+    approval_decision_id: str = Field(min_length=1, max_length=512)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_version: str = Field(min_length=1, max_length=128)

@@ -19,14 +19,21 @@ from .capabilities import (
     runtime_attested_registration,
 )
 from .catalog import capabilities_for_manifest
-from .contracts import AgentManifest, bind_contracts
+from .contracts import AgentManifest, MemoryScope, bind_contracts
 from .credentials import get_credential
 from .errors import ConfigurationError, HarnessError
 from .idempotency import IdempotencyStore
 from .middleware import middleware_for_manifest
 from .profiles import get_manifest
-from .release import ReleaseMetadata, build_release_metadata
+from .release import (
+    ReleaseAttestor,
+    ReleaseMetadata,
+    build_release_metadata,
+    validate_release_attestation,
+)
 from .settings import HarnessSettings
+from .state import ConversationStore, LongTermMemoryStore
+from .telemetry import GovernanceAuditSink
 from .tools import tools_for_profile
 
 
@@ -49,8 +56,13 @@ class GovernedAgentFactory:
         provider_adapter: ProviderContractAdapter | None = None,
         idempotency_store: IdempotencyStore | None = None,
         approval_adapter: ApprovalConsumptionAdapter | None = None,
+        release_attestor: ReleaseAttestor | None = None,
+        conversation_store: ConversationStore | None = None,
+        long_term_memory_store: LongTermMemoryStore | None = None,
+        audit_sink: GovernanceAuditSink | None = None,
         allow_test_idempotency_store: bool = False,
         allow_test_approval_adapter: bool = False,
+        allow_test_release_attestor: bool = False,
     ) -> Agent:
         load_dotenv(override=False)
         effective_settings = settings or (HarnessSettings.from_environment() if client is None else None)
@@ -95,10 +107,21 @@ class GovernedAgentFactory:
                 "Approval-gated Hosted Agents require an app-owned durable approval adapter",
                 context={"agent": self.manifest.id},
             )
+        validate_persistent_memory_providers(
+            prepared.manifest,
+            conversation_store,
+            long_term_memory_store,
+        )
         release = build_release_metadata(
             prepared.manifest,
             model_deployment=effective_settings.model_deployment_name,
             registrations=prepared.registrations,
+        )
+        validate_release_attestation(
+            release,
+            prepared.manifest,
+            release_attestor,
+            allow_test_attestor=allow_test_release_attestor,
         )
         contracts = bind_contracts(prepared.manifest)
         return Agent(
@@ -120,6 +143,8 @@ class GovernedAgentFactory:
                 release_id=release.release_id,
                 allow_test_idempotency_store=allow_test_idempotency_store,
                 allow_test_approval_adapter=allow_test_approval_adapter,
+                conversation_store=conversation_store,
+                audit_sink=audit_sink,
             ),
         )
 
@@ -152,6 +177,9 @@ class GovernedAgentFactory:
         provider_adapter: ProviderContractAdapter | None = None,
         idempotency_store: IdempotencyStore | None = None,
         approval_adapter: ApprovalConsumptionAdapter | None = None,
+        release_attestor: ReleaseAttestor | None = None,
+        conversation_store: ConversationStore | None = None,
+        long_term_memory_store: LongTermMemoryStore | None = None,
     ) -> dict[str, str | bool]:
         readiness = settings.readiness(toolbox_required=_requires_toolbox(self.manifest))
         try:
@@ -182,6 +210,33 @@ class GovernedAgentFactory:
             readiness["durable_approval"] = durable_approval
             if not durable_approval:
                 readiness["ready"] = False
+        try:
+            release = build_release_metadata(
+                prepared.manifest,
+                model_deployment=settings.model_deployment_name,
+                registrations=prepared.registrations,
+            )
+            validate_release_attestation(
+                release,
+                prepared.manifest,
+                release_attestor,
+            )
+        except HarnessError:
+            readiness["release_attested"] = False
+            readiness["ready"] = False
+        else:
+            readiness["release_attested"] = True
+        try:
+            validate_persistent_memory_providers(
+                prepared.manifest,
+                conversation_store,
+                long_term_memory_store,
+            )
+        except ConfigurationError:
+            readiness["persistent_memory"] = False
+            readiness["ready"] = False
+        else:
+            readiness["persistent_memory"] = True
         return readiness
 
     def resolved_manifest(
@@ -292,3 +347,35 @@ def _requires_durable_approval(
     capabilities: tuple[CapabilityDescriptor, ...],
 ) -> bool:
     return any(capability.approval != ApprovalMode.NEVER for capability in capabilities)
+
+
+def validate_persistent_memory_providers(
+    manifest: AgentManifest,
+    conversation_store: ConversationStore | None,
+    long_term_memory_store: LongTermMemoryStore | None,
+) -> None:
+    conversation = manifest.memory.for_scope(MemoryScope.CONVERSATION)
+    if conversation.persistent and (
+        conversation_store is None
+        or not getattr(conversation_store, "is_durable", False)
+    ):
+        raise ConfigurationError(
+            "Persistent conversation memory requires an app-owned durable provider",
+            context={"agent": manifest.id},
+        )
+    persistent_long_term = any(
+        manifest.memory.for_scope(scope).persistent
+        for scope in (
+            MemoryScope.USER,
+            MemoryScope.PROJECT,
+            MemoryScope.PRIVATE_AGENT,
+        )
+    )
+    if persistent_long_term and (
+        long_term_memory_store is None
+        or not getattr(long_term_memory_store, "is_durable", False)
+    ):
+        raise ConfigurationError(
+            "Persistent long-term memory requires an app-owned durable provider",
+            context={"agent": manifest.id},
+        )

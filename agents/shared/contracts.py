@@ -176,15 +176,21 @@ class DatasetRequest(ResearchRequest):
         Sensitivity.RESTRICTED,
     ]
     dataset_id: str = Field(min_length=1, max_length=256)
-    approved_compute: Literal[False] = False
-    approval_id: str | None = Field(default=None, min_length=1, max_length=512)
+    approved_compute: Literal[False] = Field(
+        default=False,
+        description=(
+            "Deprecated non-authoritative compatibility field; only an exact-bound "
+            "approval_decision_id can authorize compute."
+        ),
+    )
+    approval_decision_id: str | None = Field(default=None, min_length=1, max_length=512)
     invocation_id: str | None = Field(default=None, min_length=1, max_length=512)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
     @model_validator(mode="after")
     def approval_context_is_complete(self) -> DatasetRequest:
         supplied = (
-            self.approval_id is not None,
+            self.approval_decision_id is not None,
             self.invocation_id is not None,
             self.idempotency_key is not None,
         )

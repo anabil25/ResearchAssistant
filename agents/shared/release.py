@@ -2,16 +2,17 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from enum import StrEnum
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Protocol
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .approvals import approval_contract_schema_digest
 from .capabilities import ToolRegistration
-from .contracts import AgentManifest, canonical_digest
-from .errors import ConfigurationError
+from .contracts import AgentManifest, ObjectiveGate, canonical_digest
+from .errors import ConfigurationError, HarnessError, ReleaseAttestationError
 from .idempotency import idempotency_contract_schema_digest
 
 
@@ -20,9 +21,65 @@ class DependencyRisk(BaseModel):
 
     package: str
     version: str
-    maturity: Literal["beta"]
+    maturity: Literal["beta", "preview"]
     feature: str
     risk: str
+
+
+class ReleaseAttestationStatus(StrEnum):
+    ACTIVE = "active"
+    REVOKED = "revoked"
+
+
+class ObjectiveGateAttestation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    gate: ObjectiveGate
+    passed: Literal[True] = True
+    evidence_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ReleaseAttestation(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    attestation_id: str = Field(min_length=1, max_length=512)
+    issuer: str = Field(min_length=1, max_length=512)
+    version: str = Field(min_length=1, max_length=128)
+    release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
+    manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    release_attestation_contract_schema_digest: str = Field(
+        pattern=r"^[0-9a-f]{64}$"
+    )
+    source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    model_deployment_ref: str = Field(min_length=1, max_length=2048)
+    model_version: str = Field(min_length=1, max_length=128)
+    provider_contracts: tuple[tuple[str, str], ...]
+    objective_gates: tuple[ObjectiveGateAttestation, ...]
+    status: ReleaseAttestationStatus = ReleaseAttestationStatus.ACTIVE
+    issued_at: datetime
+    expires_at: datetime
+
+    @model_validator(mode="after")
+    def attestation_is_canonical(self) -> ReleaseAttestation:
+        gates = tuple(item.gate for item in self.objective_gates)
+        if gates != tuple(sorted(set(gates))):
+            raise ValueError("objective gate attestations must be sorted and unique")
+        if self.provider_contracts != tuple(sorted(set(self.provider_contracts))):
+            raise ValueError("provider contracts must be sorted and unique")
+        if self.issued_at.tzinfo is None or self.expires_at.tzinfo is None:
+            raise ValueError("release attestation timestamps must be timezone-aware")
+        if self.issued_at > self.expires_at:
+            raise ValueError("release attestation expires before issuance")
+        return self
+
+
+class ReleaseAttestor(Protocol):
+    is_durable: bool
+
+    def attest(self, release: ReleaseMetadata) -> ReleaseAttestation: ...
 
 
 class ReleaseMetadata(BaseModel):
@@ -60,6 +117,7 @@ class ReleaseMetadata(BaseModel):
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    release_attestation_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_contracts: tuple[tuple[str, str], ...]
 
 
@@ -83,6 +141,15 @@ def source_bundle_digest(root: Path | None = None) -> str:
         )
     entries.sort(key=lambda item: item[0])
     return canonical_digest(entries)
+
+
+def release_attestation_contract_schema_digest() -> str:
+    return canonical_digest(
+        {
+            "objective_gate": ObjectiveGateAttestation.model_json_schema(),
+            "release_attestation": ReleaseAttestation.model_json_schema(),
+        }
+    )
 
 
 def build_release_metadata(
@@ -138,12 +205,20 @@ def build_release_metadata(
             feature="direct-code Hosted Agent Responses server",
             risk="Beta hosting APIs may change before general availability.",
         ),
+        DependencyRisk(
+            package="agent-framework-core",
+            version=dependency_versions["agent-framework-core"],
+            maturity="preview",
+            feature="deterministic coordinator workflow orchestration",
+            risk="Workflow APIs may change before general availability.",
+        ),
     )
     revision = source_revision or os.getenv("GIT_COMMIT_SHA") or "local"
     manifest_hash = manifest_digest(manifest)
     contract_schema_hash = canonical_digest(AgentManifest.model_json_schema())
     idempotency_schema_hash = idempotency_contract_schema_digest()
     approval_schema_hash = approval_contract_schema_digest()
+    release_attestation_schema_hash = release_attestation_contract_schema_digest()
     bundle_hash = source_bundle_hash or source_bundle_digest()
     capability_versions = tuple(
         sorted((binding.descriptor_ref.id, binding.descriptor_ref.version) for binding in manifest.capability_bindings)
@@ -193,6 +268,7 @@ def build_release_metadata(
         "contract_schema_digest": contract_schema_hash,
         "idempotency_contract_schema_digest": idempotency_schema_hash,
         "approval_contract_schema_digest": approval_schema_hash,
+        "release_attestation_contract_schema_digest": release_attestation_schema_hash,
         "provider_contracts": provider_contracts,
     }
     return ReleaseMetadata(
@@ -220,5 +296,113 @@ def build_release_metadata(
         contract_schema_digest=contract_schema_hash,
         idempotency_contract_schema_digest=idempotency_schema_hash,
         approval_contract_schema_digest=approval_schema_hash,
+        release_attestation_contract_schema_digest=release_attestation_schema_hash,
         provider_contracts=provider_contracts,
     )
+
+
+def validate_release_attestation(
+    release: ReleaseMetadata,
+    manifest: AgentManifest,
+    attestor: ReleaseAttestor | None,
+    *,
+    allow_test_attestor: bool = False,
+    now: datetime | None = None,
+) -> ReleaseAttestation:
+    if attestor is None or (
+        not getattr(attestor, "is_durable", False) and not allow_test_attestor
+    ):
+        raise ReleaseAttestationError(
+            "Hosted serving requires an app-owned durable release attestor",
+            context={"agent": manifest.id},
+        )
+    try:
+        raw = attestor.attest(release)
+        if not isinstance(raw, ReleaseAttestation):
+            raise TypeError("invalid release attestation type")
+        attestation = ReleaseAttestation.model_validate(raw.model_dump(mode="json"))
+    except HarnessError:
+        raise
+    except Exception as exc:
+        raise ReleaseAttestationError(
+            "Release attestor returned an invalid attestation",
+            context={"agent": manifest.id},
+        ) from exc
+    expected_gates = tuple(sorted(manifest.evaluation.objective_hard_gates))
+    actual_gates = tuple(item.gate for item in attestation.objective_gates)
+    if (
+        attestation.release_id != release.release_id
+        or attestation.manifest_digest != release.manifest_digest
+        or attestation.contract_schema_digest != release.contract_schema_digest
+        or attestation.idempotency_contract_schema_digest
+        != release.idempotency_contract_schema_digest
+        or attestation.approval_contract_schema_digest
+        != release.approval_contract_schema_digest
+        or attestation.release_attestation_contract_schema_digest
+        != release.release_attestation_contract_schema_digest
+        or attestation.source_bundle_hash != release.source_bundle_hash
+        or attestation.model_deployment_ref != release.model_deployment_ref
+        or attestation.model_version != release.model_version
+        or attestation.provider_contracts != release.provider_contracts
+        or actual_gates != expected_gates
+    ):
+        raise ReleaseAttestationError(
+            "Release attestation does not match the immutable release",
+            context={"agent": manifest.id},
+        )
+    current = now or datetime.now(UTC)
+    if (
+        attestation.status != ReleaseAttestationStatus.ACTIVE
+        or attestation.issued_at > current
+        or attestation.expires_at <= current
+    ):
+        raise ReleaseAttestationError(
+            "Release attestation is revoked or expired",
+            context={"agent": manifest.id},
+        )
+    return attestation
+
+
+class InMemoryReleaseAttestor:
+    is_durable = False
+    is_test_only = True
+
+    def __init__(self, objective_gates: tuple[ObjectiveGate, ...]) -> None:
+        self._objective_gates = tuple(sorted(objective_gates))
+
+    def attest(self, release: ReleaseMetadata) -> ReleaseAttestation:
+        issued_at = datetime.now(UTC)
+        return ReleaseAttestation(
+            attestation_id=f"local:{release.release_id}",
+            issuer="local-test-harness",
+            version="1",
+            release_id=release.release_id,
+            manifest_digest=release.manifest_digest,
+            contract_schema_digest=release.contract_schema_digest,
+            idempotency_contract_schema_digest=(
+                release.idempotency_contract_schema_digest
+            ),
+            approval_contract_schema_digest=release.approval_contract_schema_digest,
+            release_attestation_contract_schema_digest=(
+                release.release_attestation_contract_schema_digest
+            ),
+            source_bundle_hash=release.source_bundle_hash,
+            model_deployment_ref=release.model_deployment_ref,
+            model_version=release.model_version,
+            provider_contracts=release.provider_contracts,
+            objective_gates=tuple(
+                ObjectiveGateAttestation(
+                    gate=gate,
+                    passed=True,
+                    evidence_digest=canonical_digest(
+                        {
+                            "gate": gate.value,
+                            "release_id": release.release_id,
+                        }
+                    ),
+                )
+                for gate in self._objective_gates
+            ),
+            issued_at=issued_at,
+            expires_at=issued_at + timedelta(hours=1),
+        )

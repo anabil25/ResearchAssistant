@@ -30,6 +30,7 @@ from .errors import (
     ApprovalMismatchError,
     ApprovalRequiredError,
     ApprovalResultInvalidError,
+    ApprovalRevokedError,
     ApprovalStoreUnavailableError,
     AuthorizationError,
     CapabilityNotFoundError,
@@ -454,7 +455,7 @@ class InvocationContext(BaseModel):
     principal_id: str = Field(min_length=1)
     scopes: frozenset[str] = frozenset()
     destination: str | None = None
-    approval_id: str | None = Field(default=None, min_length=1, max_length=512)
+    approval_decision_id: str | None = Field(default=None, min_length=1, max_length=512)
     invocation_id: str | None = Field(default=None, min_length=1, max_length=512)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     operation_fingerprint: str | None = Field(
@@ -495,7 +496,7 @@ class CapabilityPolicy:
             ApprovalMode.ALWAYS,
         }
         if approval_required and (
-            context.approval_id is None
+            context.approval_decision_id is None
             or context.invocation_id is None
             or context.destination is None
         ):
@@ -1094,7 +1095,7 @@ class CapabilityExecutor:
         key: IdempotencyKey,
     ) -> IdempotencyApprovalProvenance:
         request = ApprovalConsumptionRequest(
-            approval_id=cast(str, context.approval_id),
+            approval_decision_id=cast(str, context.approval_decision_id),
             tenant_id=context.tenant_id,
             project_id=registration.binding.project_scope,
             actor_id=context.principal_id,
@@ -1132,7 +1133,7 @@ class CapabilityExecutor:
             ) from exc
         receipt = self._validate_approval_result(capability, request, result)
         return IdempotencyApprovalProvenance(
-            approval_id=receipt.approval_id,
+            approval_decision_id=receipt.approval_decision_id,
             request_digest=receipt.request_digest,
             receipt_digest=receipt.digest,
             approval_version=receipt.approval_version,
@@ -1164,7 +1165,7 @@ class CapabilityExecutor:
             ) from exc
         result = validated
         if (
-            result.approval_id != request.approval_id
+            result.approval_decision_id != request.approval_decision_id
             or result.request_digest != request.digest
         ):
             raise ApprovalResultInvalidError(
@@ -1178,6 +1179,7 @@ class CapabilityExecutor:
                 ApprovalConsumptionDisposition.NOT_FOUND: ApprovalRequiredError,
                 ApprovalConsumptionDisposition.MISMATCH: ApprovalMismatchError,
                 ApprovalConsumptionDisposition.ALREADY_CONSUMED: ApprovalAlreadyConsumedError,
+                ApprovalConsumptionDisposition.REVOKED: ApprovalRevokedError,
             }
             raise errors[result.disposition](
                 "Approval was not consumable for the exact capability invocation",
@@ -1189,7 +1191,7 @@ class CapabilityExecutor:
         receipt = result.receipt
         if (
             not isinstance(receipt, ApprovalReceipt)
-            or receipt.approval_id != request.approval_id
+            or receipt.approval_decision_id != request.approval_decision_id
             or receipt.request_digest != request.digest
             or receipt.approval_version != result.approval_version
             or not receipt.one_time

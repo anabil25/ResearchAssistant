@@ -35,6 +35,10 @@ class ConfigurationError(HarnessError):
     code = "configuration_error"
 
 
+class ReleaseAttestationError(HarnessError):
+    code = "release_attestation_failed"
+
+
 class ContractError(HarnessError):
     code = "contract_error"
 
@@ -57,6 +61,10 @@ class ApprovalDeniedError(HarnessError):
 
 class ApprovalExpiredError(HarnessError):
     code = "approval_expired"
+
+
+class ApprovalRevokedError(HarnessError):
+    code = "approval_revoked"
 
 
 class ApprovalMismatchError(HarnessError):
