@@ -6751,7 +6751,12 @@ button.library-row {
 
 .agent-workspace-main {
   display: grid;
+  grid-template-columns: minmax(0, 1fr);
   gap: 14px;
+}
+
+.agent-workspace-main > * {
+  min-width: 0;
 }
 
 .agent-workspace-tabs {

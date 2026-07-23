@@ -51,9 +51,11 @@ export function getAgentCapability(agentId: string): CapabilityId | null {
  * field `AgentSetting` doesn't carry (purpose, boundary narrative,
  * capability descriptors, releases, etc.) is left `null`/absent here so the
  * UI renders an explicit "Not available yet" rather than fabricated copy.
- * `public_boundary` is the one derived field, computed from the real
- * `web_access` text via `derivePublicBoundaryFromWebAccess` — a heuristic
- * over live data, not invented narrative.
+ * `public_boundary` is always the all-null placeholder from
+ * `derivePublicBoundaryFromWebAccess` — the legacy `web_access` text is
+ * unstructured internal display copy, not a governed boundary, so it is
+ * never used to infer `mode` (see that function's docs for the real
+ * misclassifications a substring heuristic previously caused).
  */
 export function buildLegacyAgentSummaries(
   agents: AgentSetting[],

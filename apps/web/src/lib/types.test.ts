@@ -368,23 +368,56 @@ describe("derivePublicBoundaryFromWebAccess / defaultPublicBoundary", () => {
     expect(derivePublicBoundaryFromWebAccess("")).toEqual(defaultPublicBoundary());
   });
 
-  it("classifies public-facing access as public_online, locked to read-only/approval-gated", () => {
-    const view = derivePublicBoundaryFromWebAccess("Public-only deployment");
-    expect(view.mode).toBe("public_online");
-    expect(view.write_destinations).toEqual([]);
-    expect(view.approval_required).toBe(true);
-    expect(view.outbound_data_boundary).toBe("Public-only deployment");
-  });
-
-  it("classifies explicit denial phrasing as none, with no write destinations/approval", () => {
-    expect(derivePublicBoundaryFromWebAccess("Never direct").mode).toBe("none");
-    const view = derivePublicBoundaryFromWebAccess("none");
-    expect(view.mode).toBe("none");
+  it("never infers public_online for the real internal literature agent's ambiguous, opt-in text", () => {
+    // Real backend text (services/api/.../workspace.py `_seed_agents`) for
+    // the *internal* `literature` agent, not `literature_online`. It reads
+    // as conditional/opt-in, not an unconditional public commitment, but a
+    // naive `includes("public")` substring check previously misclassified
+    // it as `public_online` anyway — this is the exact regression an
+    // independent review caught.
+    const view = derivePublicBoundaryFromWebAccess("Opt-in public only");
+    expect(view.mode).toBeNull();
     expect(view.write_destinations).toBeNull();
-    expect(view.approval_required).toBe(false);
+    expect(view.approval_required).toBeNull();
+    expect(view.outbound_data_boundary).toBe("Opt-in public only");
   });
 
-  it("leaves genuinely ambiguous web_access text as null rather than guessing a mode", () => {
+  it("never infers public_online for the real internal matching agent's ambiguous, conditional text", () => {
+    // Real backend text for the *internal* `matching` agent, not
+    // `matching_online` — "leads" describes a partial/conditional outcome,
+    // not an unconditional public-access commitment.
+    const view = derivePublicBoundaryFromWebAccess("Public metadata leads");
+    expect(view.mode).toBeNull();
+    expect(view.write_destinations).toBeNull();
+    expect(view.approval_required).toBeNull();
+    expect(view.outbound_data_boundary).toBe("Public metadata leads");
+  });
+
+  it("never infers a mode from unambiguous denial phrasing either — legacy text never sets mode", () => {
+    expect(derivePublicBoundaryFromWebAccess("Never direct").mode).toBeNull();
+    expect(derivePublicBoundaryFromWebAccess("Forbidden").mode).toBeNull();
+    expect(derivePublicBoundaryFromWebAccess("No raw data").mode).toBeNull();
+  });
+
+  it("never infers a mode from the real _online agents' explicit public deployment text either", () => {
+    // Even the dedicated `literature_online`/`grant_online`/`matching_online`
+    // agents' real backend text ("Public-only deployment", "Public
+    // opportunity only", "Public metadata only") is legacy free text, not a
+    // structured boundary — the raw text is still shown for context, but
+    // `mode` stays null until a real Agent Studio endpoint supplies one.
+    // The `_online` id suffix itself is never consulted as a signal.
+    for (const text of [
+      "Public-only deployment",
+      "Public opportunity only",
+      "Public metadata only",
+    ]) {
+      const view = derivePublicBoundaryFromWebAccess(text);
+      expect(view.mode).toBeNull();
+      expect(view.outbound_data_boundary).toBe(text);
+    }
+  });
+
+  it("leaves genuinely ambiguous web_access text as null, same as every other case", () => {
     const view = derivePublicBoundaryFromWebAccess("Some custom internal routing");
     expect(view.mode).toBeNull();
     expect(view.write_destinations).toBeNull();

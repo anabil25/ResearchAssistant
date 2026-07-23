@@ -4,6 +4,7 @@ import {
   AlertTriangle,
   Ban,
   CircleDashed,
+  GitMerge,
   Lock,
   PlugZap,
   ShieldAlert,
@@ -19,6 +20,7 @@ export type AsyncErrorKind =
   | "needs_connection"
   | "needs_approval"
   | "degraded"
+  | "conflict"
   | "error";
 
 export interface ClassifiedAsyncError {
@@ -60,12 +62,41 @@ export function classifyAsyncError(error: unknown): ClassifiedAsyncError {
   return { kind: "error", message };
 }
 
+/**
+ * Builder draft-mutation endpoints (`postBuilderMessage`/
+ * `applyBuilderProposal`) always send the client's last-observed
+ * `base_etag`, so a 409 from *these specific* endpoints unambiguously means
+ * an optimistic-concurrency conflict — the draft changed since this client
+ * last read it — never the unrelated governance "needs approval" hold that
+ * `classifyAsyncError` maps generic 409s to elsewhere (e.g. deploy gates).
+ * There is no structured error-code field on the wire yet to distinguish
+ * the two cases generically, so this is an explicit, interim, call-site-
+ * scoped override: it must only ever be applied at the two draft-mutation
+ * call sites, never treated as a replacement for `classifyAsyncError`
+ * generally. Once the real backend returns a structured conflict code this
+ * can be simplified to read it directly instead of inferring from status.
+ */
+export function classifyBuilderMutationError(
+  error: unknown,
+): ClassifiedAsyncError {
+  if (error instanceof ApiError && error.status === 409) {
+    return {
+      kind: "conflict",
+      message:
+        "This draft changed since you last loaded it (etag conflict). " +
+        "Reload the draft and reapply your change.",
+    };
+  }
+  return classifyAsyncError(error);
+}
+
 const ICONS: Record<AsyncErrorKind, ReactNode> = {
   unauthorized: <Lock size={16} />,
   unavailable: <Ban size={16} />,
   needs_connection: <PlugZap size={16} />,
   needs_approval: <ShieldAlert size={16} />,
   degraded: <WifiOff size={16} />,
+  conflict: <GitMerge size={16} />,
   error: <AlertTriangle size={16} />,
 };
 
@@ -75,6 +106,7 @@ const TITLES: Record<AsyncErrorKind, string> = {
   needs_connection: "Needs a connection",
   needs_approval: "Needs approval",
   degraded: "Degraded",
+  conflict: "Conflict",
   error: "Something went wrong",
 };
 
@@ -87,8 +119,9 @@ export function AsyncStateBanner({
   message: string;
   onRetry?: () => void;
 }) {
+  const role = kind === "error" || kind === "conflict" ? "alert" : "status";
   return (
-    <div className="async-state-banner" data-tone={kind} role="status">
+    <div className="async-state-banner" data-tone={kind} role={role}>
       <span className="async-state-icon">{ICONS[kind]}</span>
       <div>
         <strong>{TITLES[kind]}</strong>

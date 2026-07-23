@@ -11,6 +11,7 @@ import {
   Send,
   Sliders,
   Users,
+  X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
 
@@ -21,6 +22,8 @@ import {
   EmptyBlock,
   LoadingBlock,
   classifyAsyncError,
+  classifyBuilderMutationError,
+  type AsyncErrorKind,
 } from "@/components/async-state";
 import { buildLegacyAgentSummaries } from "@/lib/agent-catalog";
 import {
@@ -212,7 +215,11 @@ function useCapabilityDiscovery() {
 
 export function BuildTab({ agentId }: { agentId: string }) {
   const [messages, setMessages] = useState<
-    { role: "user" | "system"; text: string; tone?: "success" | "unavailable" }[]
+    {
+      role: "user" | "system";
+      text: string;
+      tone?: "success" | AsyncErrorKind;
+    }[]
   >([
     {
       role: "system",
@@ -223,33 +230,65 @@ export function BuildTab({ agentId }: { agentId: string }) {
   const [submitting, setSubmitting] = useState(false);
   const [applying, setApplying] = useState(false);
   const [agentDraft, setAgentDraft] = useState<AgentDraftView | null>(null);
+  const [draftStatus, setDraftStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
   const [draftError, setDraftError] = useState<ReturnType<
     typeof classifyAsyncError
   > | null>(null);
   const [proposal, setProposal] = useState<AgentBuilderProposal | null>(null);
 
+  const loadDraft = () => {
+    setDraftStatus("loading");
+    setDraftError(null);
+    return getAgentDraft(agentId)
+      .then((next) => {
+        setAgentDraft(next);
+        setDraftStatus("ready");
+        return next;
+      })
+      .catch((error: unknown) => {
+        setDraftError(classifyAsyncError(error));
+        setDraftStatus("error");
+        return null;
+      });
+  };
+
   useEffect(() => {
     let cancelled = false;
     void getAgentDraft(agentId)
       .then((next) => {
-        if (!cancelled) setAgentDraft(next);
+        if (cancelled) return;
+        setAgentDraft(next);
+        setDraftStatus("ready");
       })
       .catch((error: unknown) => {
-        if (!cancelled) setDraftError(classifyAsyncError(error));
+        if (cancelled) return;
+        setDraftError(classifyAsyncError(error));
+        setDraftStatus("error");
       });
     return () => {
       cancelled = true;
     };
   }, [agentId]);
 
+  // A real, freshly-loaded draft is required before any builder mutation:
+  // this is never allowed to fall back to the read-only agentId, and the
+  // etag is never allowed to fall back to an empty string, because either
+  // fallback would silently send a mutation against the wrong resource or
+  // with a guaranteed-stale concurrency token. If the draft hasn't loaded
+  // (or failed to load), submission stays disabled until it has.
+  const draftReady = draftStatus === "ready" && agentDraft !== null;
+
   const submit = () => {
+    if (!draftReady || !agentDraft) return;
     const intent = intentDraft.trim();
     if (!intent) return;
     setMessages((current) => [...current, { role: "user", text: intent }]);
     setIntentDraft("");
     setSubmitting(true);
-    const draftId = agentDraft?.draft_id ?? agentId;
-    const baseEtag = agentDraft?.etag ?? "";
+    const draftId = agentDraft.draft_id;
+    const baseEtag = agentDraft.etag;
     void postBuilderMessage(draftId, intent, baseEtag)
       .then((next: AgentBuilderProposal) => {
         setProposal(next);
@@ -263,7 +302,7 @@ export function BuildTab({ agentId }: { agentId: string }) {
         ]);
       })
       .catch((error: unknown) => {
-        const classified = classifyAsyncError(error);
+        const classified = classifyBuilderMutationError(error);
         setMessages((current) => [
           ...current,
           {
@@ -272,9 +311,12 @@ export function BuildTab({ agentId }: { agentId: string }) {
               classified.kind === "unavailable"
                 ? "Builder proposals aren't available yet — the backend doesn't expose this endpoint. Your intent is preserved above so you can resubmit once it ships."
                 : classified.message,
-            tone: "unavailable",
+            tone: classified.kind,
           },
         ]);
+        if (classified.kind === "conflict") {
+          void loadDraft();
+        }
       })
       .finally(() => setSubmitting(false));
   };
@@ -288,6 +330,7 @@ export function BuildTab({ agentId }: { agentId: string }) {
     )
       .then((nextDraft) => {
         setAgentDraft(nextDraft);
+        setDraftStatus("ready");
         setProposal(null);
         setMessages((current) => [
           ...current,
@@ -299,7 +342,7 @@ export function BuildTab({ agentId }: { agentId: string }) {
         ]);
       })
       .catch((error: unknown) => {
-        const classified = classifyAsyncError(error);
+        const classified = classifyBuilderMutationError(error);
         setMessages((current) => [
           ...current,
           {
@@ -308,9 +351,12 @@ export function BuildTab({ agentId }: { agentId: string }) {
               classified.kind === "unavailable"
                 ? "Applying this proposal isn't available yet — the backend doesn't expose this endpoint."
                 : classified.message,
-            tone: "unavailable",
+            tone: classified.kind,
           },
         ]);
+        if (classified.kind === "conflict") {
+          void loadDraft();
+        }
       })
       .finally(() => setApplying(false));
   };
@@ -327,9 +373,21 @@ export function BuildTab({ agentId }: { agentId: string }) {
           </p>
         </div>
         <span className="subtle-chip" data-tone={draftError ? "unavailable" : undefined}>
-          Draft status: {agentDraft?.status ?? "not loaded yet"}
+          Draft status:{" "}
+          {draftStatus === "loading"
+            ? "loading…"
+            : draftStatus === "error"
+              ? "unavailable"
+              : agentDraft!.status}
         </span>
       </div>
+      {draftStatus === "error" && draftError ? (
+        <AsyncStateBanner
+          kind={draftError.kind}
+          message={`The draft for this agent couldn't be loaded, so builder changes are disabled. ${draftError.message}`}
+          onRetry={loadDraft}
+        />
+      ) : null}
       <div className="agent-build-chat" role="log" aria-live="polite">
         {messages.map((message, index) => (
           <div
@@ -337,6 +395,11 @@ export function BuildTab({ agentId }: { agentId: string }) {
             className="agent-build-message"
             data-role={message.role}
             data-tone={message.tone}
+            role={
+              message.tone === "error" || message.tone === "conflict"
+                ? "alert"
+                : "status"
+            }
           >
             {message.text}
           </div>
@@ -408,9 +471,14 @@ export function BuildTab({ agentId }: { agentId: string }) {
         <button
           type="submit"
           className="primary-button"
-          disabled={submitting || intentDraft.trim().length === 0}
+          disabled={submitting || !draftReady || intentDraft.trim().length === 0}
         >
-          <Send size={14} /> {submitting ? "Proposing…" : "Propose change"}
+          <Send size={14} />{" "}
+          {submitting
+            ? "Proposing…"
+            : draftReady
+              ? "Propose change"
+              : "Waiting for draft…"}
         </button>
       </form>
     </section>
@@ -849,18 +917,34 @@ function MemoryScopePanel({
   memory: MemoryView;
 }) {
   const [forgetting, setForgetting] = useState<MemoryScope | null>(null);
-  const [forgetResult, setForgetResult] = useState<string | null>(null);
+  const [forgetResult, setForgetResult] = useState<{
+    scope: MemoryScope;
+    message: string;
+    tone: "success" | AsyncErrorKind;
+  } | null>(null);
+  const [confirmScope, setConfirmScope] = useState<MemoryScope | null>(null);
 
-  const forget = (scope: MemoryScope) => {
+  const confirmForget = (scope: MemoryScope) => {
     setForgetting(scope);
-    setForgetResult(null);
+    setConfirmScope(null);
     void forgetAgentMemoryScope(agentId, scope)
-      .then(() => setForgetResult(`Forget requested for ${scope} memory.`))
+      .then(() =>
+        setForgetResult({
+          scope,
+          message: `Forget requested for ${scope} memory. This action was recorded to the audit log.`,
+          tone: "success",
+        }),
+      )
       .catch((error: unknown) => {
-        setForgetResult(classifyAsyncError(error).message);
+        const classified = classifyAsyncError(error);
+        setForgetResult({ scope, message: classified.message, tone: classified.kind });
       })
       .finally(() => setForgetting(null));
   };
+
+  const confirmScopeControl = confirmScope
+    ? memory.scopes.find((scope) => scope.scope === confirmScope)
+    : undefined;
 
   return (
     <div className="agent-memory-panel">
@@ -881,7 +965,7 @@ function MemoryScopePanel({
               type="button"
               className="ghost-button"
               disabled={forgetting === scope.scope}
-              onClick={() => forget(scope.scope)}
+              onClick={() => setConfirmScope(scope.scope)}
             >
               {forgetting === scope.scope ? "Forgetting…" : "Forget"}
             </button>
@@ -894,8 +978,62 @@ function MemoryScopePanel({
         Forget above already calls the real (pending) endpoint.
       </p>
       {forgetResult ? (
-        <div className="save-status" role="status">
-          {forgetResult}
+        <div
+          className="save-status"
+          role={forgetResult.tone === "success" ? "status" : "alert"}
+          data-tone={forgetResult.tone}
+          data-scope={forgetResult.scope}
+        >
+          {forgetResult.message}
+        </div>
+      ) : null}
+      {confirmScope ? (
+        <div className="modal-backdrop" role="presentation" onClick={() => setConfirmScope(null)}>
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="memory-forget-title"
+            onClick={(event) => event.stopPropagation()}
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">Irreversible</span>
+                <h2 id="memory-forget-title">Forget {confirmScope} memory?</h2>
+              </div>
+              <button
+                aria-label="Cancel forget"
+                onClick={() => setConfirmScope(null)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+            <p>
+              This permanently deletes everything stored in the{" "}
+              <strong>{confirmScope}</strong> memory scope
+              {confirmScopeControl?.retention_days
+                ? ` (currently retained for ${confirmScopeControl.retention_days} days)`
+                : ""}
+              . It cannot be undone, and the deletion will be recorded to the
+              audit log.
+            </p>
+            <div className="modal-actions">
+              <button
+                type="button"
+                className="ghost-button"
+                onClick={() => setConfirmScope(null)}
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="primary-button"
+                onClick={() => confirmForget(confirmScope)}
+              >
+                Forget permanently
+              </button>
+            </div>
+          </div>
         </div>
       ) : null}
     </div>

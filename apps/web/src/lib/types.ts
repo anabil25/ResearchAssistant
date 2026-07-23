@@ -643,10 +643,10 @@ export interface SpecialistView {
 
 /**
  * Behavioral/data-boundary summary — not a flat `read_only|read_write` flag.
- * `mode` is derived heuristically from the real `AgentSetting.web_access`
- * text until a real Agent Studio endpoint exists; `null` means the source
- * text was ambiguous and must be shown as "Not available yet" rather than
- * guessed.
+ * `mode` must only ever be set from an explicit, structured boundary
+ * supplied by a real Agent Studio endpoint — never guessed from free text
+ * or an agent's id. `null` means no such structured boundary exists yet and
+ * must be shown as "Not available yet" rather than inferred.
  */
 export interface PublicBoundaryView {
   mode: "none" | "public_online" | null;
@@ -667,37 +667,33 @@ export function defaultPublicBoundary(): PublicBoundaryView {
 }
 
 /**
- * Derives a coarse `none | public_online` mode from the real, live
- * `AgentSetting.web_access` free-text field (e.g. "Never direct",
- * "Public-only deployment"). This is a lightweight heuristic over real data,
- * not fabricated copy: ambiguous text returns `null` rather than guessing,
- * and the raw `web_access` string is always shown verbatim as
- * `outbound_data_boundary` alongside it. Current public-online agents are
- * treated as read-only (no write destinations, approval required) unless a
- * future Agent Studio endpoint says otherwise.
+ * Builds the legacy-fallback public-boundary display from the real, live
+ * `AgentSetting.web_access` free-text field. This field is unstructured
+ * internal-display text, not a governed public-boundary contract, so `mode`
+ * (and every other structured field) is always `null` here regardless of
+ * content — independent review found the previous substring heuristic
+ * (`includes("public")` => `public_online`) genuinely misclassified real
+ * agents: the *internal* `literature` agent's real backend text is
+ * "Opt-in public only" (opt-in, i.e. off by default — not an unconditional
+ * public commitment) and the internal `matching` agent's is "Public metadata
+ * leads" (a conditional/partial description), yet both contain the
+ * substring "public" and were wrongly promoted to `public_online` — the
+ * same claim of unconditional public access that only the dedicated
+ * `literature_online`/`grant_online`/`matching_online` agents actually make.
+ * The agent's `_online` id suffix is also never used as a signal here, for
+ * the same reason: an id naming convention is not a structured boundary
+ * either. The raw `web_access` text is still surfaced verbatim as
+ * `outbound_data_boundary` purely for human context — it never asserts a
+ * boundary. Only a real Agent Studio endpoint (not yet implemented) may
+ * ever set `mode` to a non-null value.
  */
 export function derivePublicBoundaryFromWebAccess(
   webAccess: string | undefined,
 ): PublicBoundaryView {
   if (!webAccess) return defaultPublicBoundary();
-  const normalized = webAccess.toLowerCase();
-  const isNone =
-    normalized.includes("never") ||
-    normalized.includes("forbidden") ||
-    normalized.includes("no raw data") ||
-    normalized === "none";
-  const isPublic = normalized.includes("public");
-  const mode: PublicBoundaryView["mode"] = isNone
-    ? "none"
-    : isPublic
-      ? "public_online"
-      : null;
   return {
-    mode,
-    sources: null,
+    ...defaultPublicBoundary(),
     outbound_data_boundary: webAccess,
-    write_destinations: mode === "public_online" ? [] : null,
-    approval_required: mode === "public_online" ? true : mode === "none" ? false : null,
   };
 }
 

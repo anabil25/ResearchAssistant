@@ -280,27 +280,71 @@ describe("BuildTab", () => {
     jest.mocked(getAgentDraft).mockResolvedValue(draftView());
   });
 
-  it("does not submit when the trimmed intent is empty, even if the form is force-submitted", () => {
+  it("does not submit when the trimmed intent is empty, even if the form is force-submitted", async () => {
     const { container } = render(<BuildTab agentId="literature" />);
     const form = container.querySelector("form") as HTMLFormElement;
     fireEvent.submit(form);
     expect(postBuilderMessage).not.toHaveBeenCalled();
+
+    // Also force-submit after the real draft has loaded, so the empty-intent
+    // guard is exercised with draftReady true, not only blocked upstream by
+    // the not-yet-loaded guard.
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
+    fireEvent.submit(form);
+    expect(postBuilderMessage).not.toHaveBeenCalled();
   });
 
-  it("shows the loaded draft status chip, falling back to 'not loaded yet' while pending", async () => {
+  it("shows a loading draft-status chip, then the loaded draft's real status once it resolves", async () => {
     jest.mocked(getAgentDraft).mockResolvedValue(draftView({ status: "validating" }));
     render(<BuildTab agentId="literature" />);
+    expect(screen.getByText("Draft status: loading…")).toBeInTheDocument();
     await waitFor(() =>
       expect(screen.getByText("Draft status: validating")).toBeInTheDocument(),
     );
   });
 
-  it("shows 'not loaded yet' when the draft fetch fails", async () => {
+  it("shows an unavailable banner with retry and blocks submission when the draft fetch fails", async () => {
+    const user = userEvent.setup();
     jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("no draft endpoint", 404));
     render(<BuildTab agentId="literature" />);
     await waitFor(() =>
-      expect(screen.getByText("Draft status: not loaded yet")).toBeInTheDocument(),
+      expect(screen.getByText("Draft status: unavailable")).toBeInTheDocument(),
     );
+    expect(
+      screen.getByText(/couldn't be loaded, so builder changes are disabled/),
+    ).toBeInTheDocument();
+
+    // Never falls back to a fabricated draftId/etag — submit stays disabled.
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    const submit = screen.getByRole("button", { name: "Waiting for draft…" });
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(postBuilderMessage).not.toHaveBeenCalled();
+
+    // Retrying can fail again — it stays in the unavailable/blocked state
+    // rather than silently unblocking submission.
+    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("still down", 503));
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: unavailable")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: "Waiting for draft…" }),
+    ).toBeDisabled();
+
+    jest.mocked(getAgentDraft).mockResolvedValue(draftView());
+    await user.click(screen.getByRole("button", { name: "Retry" }));
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
+    expect(
+      screen.getByRole("button", { name: /Propose change/ }),
+    ).not.toBeDisabled();
   });
 
   it("submits an intent and renders the proposed change for review, then applies it", async () => {
@@ -372,22 +416,34 @@ describe("BuildTab", () => {
     ).not.toBeInTheDocument();
   });
 
-  it("falls back to the raw agentId and an empty etag when no draft has loaded", async () => {
+  it("keeps submission blocked while the draft is still loading, even if the user types quickly", async () => {
     const user = userEvent.setup();
-    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("nope", 404));
+    const draftPromise = deferred<AgentDraftView>();
+    jest.mocked(getAgentDraft).mockReturnValue(draftPromise.promise);
     jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
     render(<BuildTab agentId="literature" />);
-    await waitFor(() =>
-      expect(screen.getByText("Draft status: not loaded yet")).toBeInTheDocument(),
-    );
+    expect(screen.getByText("Draft status: loading…")).toBeInTheDocument();
 
     await user.type(
       screen.getByLabelText("Describe the change you want"),
       "Add a new rule.",
     );
+    const submit = screen.getByRole("button", { name: "Waiting for draft…" });
+    expect(submit).toBeDisabled();
+    await user.click(submit);
+    expect(postBuilderMessage).not.toHaveBeenCalled();
+
+    draftPromise.resolve(draftView({ draft_id: "draft-42", etag: "etag-42" }));
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
     await user.click(screen.getByRole("button", { name: /Propose change/ }));
     await waitFor(() =>
-      expect(postBuilderMessage).toHaveBeenCalledWith("literature", "Add a new rule.", ""),
+      expect(postBuilderMessage).toHaveBeenCalledWith(
+        "draft-42",
+        "Add a new rule.",
+        "etag-42",
+      ),
     );
   });
 
@@ -449,13 +505,17 @@ describe("BuildTab", () => {
     );
   });
 
-  it("shows the classified message for a non-unavailable apply failure", async () => {
+  it("classifies a 409 from apply as a concurrency conflict, not a generic or governance-approval error, and reloads the draft", async () => {
     const user = userEvent.setup();
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({ draft_id: "draft-42", etag: "etag-42" }),
+    );
     jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
     jest.mocked(applyBuilderProposal).mockRejectedValue(
       new ApiError("Draft was modified concurrently", 409),
     );
     render(<BuildTab agentId="literature" />);
+    await waitFor(() => expect(getAgentDraft).toHaveBeenCalledTimes(1));
 
     await user.type(
       screen.getByLabelText("Describe the change you want"),
@@ -466,11 +526,69 @@ describe("BuildTab", () => {
       expect(screen.getByRole("button", { name: "Approve & apply" })).toBeInTheDocument(),
     );
     await user.click(screen.getByRole("button", { name: "Approve & apply" }));
-    await waitFor(() =>
-      expect(
-        screen.getByText("Draft was modified concurrently"),
-      ).toBeInTheDocument(),
+
+    const conflictMessage = await screen.findByText(
+      /This draft changed since you last loaded it \(etag conflict\)/,
     );
+    // Distinct styling/kind from generic error and from governance
+    // "needs_approval" holds — an ETag conflict is neither.
+    expect(conflictMessage).toHaveAttribute("data-tone", "conflict");
+    expect(conflictMessage).toHaveAttribute("role", "alert");
+    expect(screen.queryByText("Draft was modified concurrently")).not.toBeInTheDocument();
+
+    // The conflict is treated as actionable: the draft is refetched so a
+    // fresh etag is available for the user's next attempt.
+    await waitFor(() => expect(getAgentDraft).toHaveBeenCalledTimes(2));
+  });
+
+  it("classifies a 409 from the builder-message submit as a concurrency conflict with accessible alert styling", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({ draft_id: "draft-42", etag: "etag-42" }),
+    );
+    jest.mocked(postBuilderMessage).mockRejectedValue(
+      new ApiError("stale etag", 409),
+    );
+    render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+
+    const conflictMessage = await screen.findByText(
+      /This draft changed since you last loaded it \(etag conflict\)/,
+    );
+    expect(conflictMessage).toHaveAttribute("data-tone", "conflict");
+    expect(conflictMessage).toHaveAttribute("role", "alert");
+  });
+
+  it("gives non-error/conflict builder messages a status role, not an alert role", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({ draft_id: "draft-42", etag: "etag-42" }),
+    );
+    jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
+    render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+
+    const successMessage = await screen.findByText(
+      /Proposed change proposal-1/,
+    );
+    expect(successMessage).toHaveAttribute("data-tone", "success");
+    expect(successMessage).toHaveAttribute("role", "status");
   });
 
   it("does nothing when Approve & apply is invoked with no active proposal", () => {
@@ -484,6 +602,9 @@ describe("BuildTab", () => {
   it("does not submit an empty or whitespace-only intent", async () => {
     const user = userEvent.setup();
     render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
     const submit = screen.getByRole("button", { name: /Propose change/ });
     expect(submit).toBeDisabled();
 
@@ -2179,7 +2300,7 @@ describe("AgentWorkspaceView", () => {
     );
   });
 
-  it("renders per-scope memory controls and forgets a scope successfully", async () => {
+  it("renders per-scope memory controls and requires an explicit confirmation dialog before forgetting a scope", async () => {
     jest.mocked(forgetAgentMemoryScope).mockResolvedValue({
       scope: "conversation",
       enabled: false,
@@ -2231,16 +2352,94 @@ describe("AgentWorkspaceView", () => {
     );
     await waitFor(() => expect(screen.getByText(/30-day retention/)).toBeInTheDocument());
     expect(screen.getByText("conversation")).toBeInTheDocument();
+
+    // Clicking Forget must never call the API directly — it opens a
+    // confirmation dialog explaining the scope/retention and that the
+    // deletion is irreversible.
     await user.click(screen.getByRole("button", { name: "Forget" }));
+    expect(forgetAgentMemoryScope).not.toHaveBeenCalled();
+    const dialog = screen.getByRole("dialog", { name: /Forget conversation memory\?/ });
+    expect(within(dialog).getByText(/cannot be undone/)).toBeInTheDocument();
+    expect(within(dialog).getByText(/retained for 30 days/)).toBeInTheDocument();
+
+    // Cancel must close the dialog without ever calling the API.
+    await user.click(within(dialog).getByRole("button", { name: "Cancel" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(forgetAgentMemoryScope).not.toHaveBeenCalled();
+
+    // Confirming calls the API exactly once and shows an audited outcome.
+    await user.click(screen.getByRole("button", { name: "Forget" }));
+    await user.click(
+      screen.getByRole("button", { name: "Forget permanently" }),
+    );
     await waitFor(() =>
       expect(
-        screen.getByText("Forget requested for conversation memory."),
+        screen.getByText(/Forget requested for conversation memory\..*recorded to the audit log/),
       ).toBeInTheDocument(),
     );
+    expect(forgetAgentMemoryScope).toHaveBeenCalledTimes(1);
     expect(forgetAgentMemoryScope).toHaveBeenCalledWith("literature", "conversation");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
-  it("shows a classified error message when forgetting a memory scope fails", async () => {
+  it("closing the confirmation dialog via the backdrop never calls the Forget API", async () => {
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          memory: {
+            scopes: [
+              {
+                scope: "conversation",
+                enabled: true,
+                default_enabled: false,
+                retention_days: 30,
+                provider: "workspace-store",
+                access: "Read/write by this agent only",
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() => expect(screen.getByText(/30-day retention/)).toBeInTheDocument());
+    await user.click(screen.getByRole("button", { name: "Forget" }));
+    const backdrop = screen.getByRole("presentation");
+    await user.click(backdrop);
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(forgetAgentMemoryScope).not.toHaveBeenCalled();
+
+    // The dialog's own close (X) button is an equally valid, non-mutating
+    // dismissal path, distinct from the backdrop and the Cancel button.
+    await user.click(screen.getByRole("button", { name: "Forget" }));
+    await user.click(screen.getByRole("button", { name: "Cancel forget" }));
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(forgetAgentMemoryScope).not.toHaveBeenCalled();
+  });
+
+  it("shows a classified error message after confirming a memory forget that fails", async () => {
     jest.mocked(forgetAgentMemoryScope).mockRejectedValue(new ApiError("nope", 404));
     jest.mocked(getAgentDraft).mockResolvedValue(
       draftView({
@@ -2288,11 +2487,14 @@ describe("AgentWorkspaceView", () => {
     );
     expect(screen.getByText("user")).toBeInTheDocument();
     await user.click(screen.getByRole("button", { name: "Forget" }));
-    await waitFor(() =>
-      expect(
-        screen.getByText(/This feature's backend endpoint isn't implemented/),
-      ).toBeInTheDocument(),
+    await user.click(
+      screen.getByRole("button", { name: "Forget permanently" }),
     );
+    const errorMessage = await screen.findByText(
+      /This feature's backend endpoint isn't implemented/,
+    );
+    expect(errorMessage).toHaveAttribute("role", "alert");
+    expect(errorMessage).toHaveAttribute("data-tone", "unavailable");
   });
 
   it("has no detectable accessibility violations", async () => {

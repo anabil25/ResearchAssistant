@@ -256,18 +256,25 @@ test.describe("Agent Workspace", () => {
     }
   });
 
-  test("Build tab proposes a typed manifest change and shows the honest pending-backend state", async ({
+  test("Build tab honestly blocks submission until a real draft loads, showing the pending-backend state", async ({
     page,
   }) => {
     await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Build" }).click();
+    // The real Agent Studio draft endpoint isn't implemented on the backend
+    // yet, so the draft fetch fails — submission must stay blocked rather
+    // than silently falling back to a fabricated draftId/empty etag.
+    await expect(page.getByText("Draft status: unavailable")).toBeVisible({
+      timeout: 10_000,
+    });
+    await expect(
+      page.getByText(/couldn't be loaded, so builder changes are disabled/),
+    ).toBeVisible();
     await page
       .getByLabel("Describe the change you want")
       .fill("Only cite passages published in the last five years.");
-    await page.getByRole("button", { name: /Propose change/ }).click();
-    await expect(
-      page.getByText(/isn't available yet|proposal/i).first(),
-    ).toBeVisible({ timeout: 10_000 });
+    const submit = page.getByRole("button", { name: "Waiting for draft…" });
+    await expect(submit).toBeDisabled();
   });
 
   test("Test tab runs a real studio request end to end", async ({ page }) => {
@@ -514,10 +521,17 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
   test("capture Agent Studio surfaces at desktop, tablet, and mobile", async ({
     page,
   }) => {
+    // Capturing 10 states x 3 viewports (30 mandatory screenshots),
+    // including 3 real end-to-end studio runs, genuinely takes longer than
+    // the suite's default 30s per-test timeout — this is not masking a
+    // hang, just proportional to the larger honest-state surface covered.
+    test.setTimeout(120_000);
+
     // Mandatory release-gate artifact capture: the env var may redirect
-    // *where* the 18 screenshots land, but this test must never be
-    // silently skipped — a missing UX_SCREENSHOT_DIR falls back to a
-    // default in-repo test-results directory rather than skipping.
+    // *where* the 30 screenshots (10 states x 3 viewports) land, but this
+    // test must never be silently skipped — a missing UX_SCREENSHOT_DIR
+    // falls back to a default in-repo test-results directory rather than
+    // skipping.
     const outputDirectory =
       process.env.UX_SCREENSHOT_DIR ??
       path.join(process.cwd(), "test-results", "agent-studio-screenshots");
@@ -541,7 +555,10 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
       await openRegistry(page);
       await capture(`agent-registry-${tag}.png`);
 
-      const card = page.locator(".agent-registry-card").first();
+      const card = page
+        .locator(".agent-registry-card")
+        .filter({ hasText: "Literature synthesis" })
+        .first();
       await card
         .getByRole("button", { name: /Live evaluation, health & versions/ })
         .click();
@@ -559,6 +576,19 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
       await card.click();
       await capture(`agent-workspace-build-${tag}.png`);
 
+      await page.getByRole("tab", { name: "Test" }).click();
+      const studioResponsePromise = page.waitForResponse(
+        (response) =>
+          response.request().method() === "POST" &&
+          response.url().includes("/api/studios/literature/run"),
+      );
+      await page.getByRole("button", { name: "Search & screen evidence" }).click();
+      await studioResponsePromise;
+      await expect(page.locator(".screening-record").first()).toBeVisible({
+        timeout: 10_000,
+      });
+      await capture(`agent-workspace-test-${tag}.png`);
+
       await page.getByRole("tab", { name: "Evaluate" }).click();
       await expect(
         page
@@ -568,6 +598,26 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
         timeout: 10_000,
       });
       await capture(`agent-workspace-evaluate-error-${tag}.png`);
+
+      await page.getByRole("tab", { name: "Deploy" }).click();
+      await expect(
+        page.getByLabel("Deployment").getByText("Not available yet", { exact: true }),
+      ).toBeVisible({ timeout: 10_000 });
+      await capture(`agent-workspace-deploy-error-${tag}.png`);
+
+      await page.getByRole("tab", { name: "Monitor" }).click();
+      await expect(
+        page
+          .getByLabel("Health and usage")
+          .getByText("Not available yet", { exact: true }),
+      ).toBeVisible({ timeout: 10_000 });
+      await capture(`agent-workspace-monitor-${tag}.png`);
+
+      await page.getByRole("tab", { name: "Versions" }).click();
+      await expect(
+        page.getByLabel("Versions").getByText("Not available yet", { exact: true }),
+      ).toBeVisible({ timeout: 10_000 });
+      await capture(`agent-workspace-versions-error-${tag}.png`);
 
       await page.getByRole("button", { name: "Registry", exact: true }).click();
       await ensureNavOpen(page);
