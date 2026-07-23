@@ -1213,6 +1213,36 @@ def test_update_draft_enforces_if_match_optimistic_concurrency(client: TestClien
     assert final["manifest"]["display_name"] == "First Editor"
 
 
+def test_create_agent_rejects_reserved_platform_project_id_for_non_system_owner(client: TestClient) -> None:
+    # A platform owner cannot smuggle a USER-owned agent into the reserved
+    # platform-wide project, even though they otherwise pass the platform
+    # scope's authorization check -- the reserved id is not requestable
+    # client-side unless the agent is truly system-owned.
+    explicit_user_response = client.post(
+        "/v1/agent-studio/agents",
+        json=_body(
+            PLATFORM_PROJECT_ID,
+            logical_agent_id="agent-reserved-user",
+            display_name="Reserved User",
+            owner_kind="user",
+        ),
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert explicit_user_response.status_code == 422
+    assert PLATFORM_PROJECT_ID in explicit_user_response.json()["detail"]
+
+    default_owner_kind_response = client.post(
+        "/v1/agent-studio/agents",
+        json=_body(
+            PLATFORM_PROJECT_ID,
+            logical_agent_id="agent-reserved-default",
+            display_name="Reserved Default",
+        ),
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert default_owner_kind_response.status_code == 422
+
+
 def test_fork_agent_and_lineage_routes_cover_success_and_conflicts(client: TestClient) -> None:
     _create_agent(client, logical_agent_id="agent-fork-source", headers=USER_HEADERS)
     source_version = _cut_gated_version(client, "agent-fork-source", headers=USER_HEADERS)
@@ -1270,6 +1300,27 @@ def test_fork_agent_and_lineage_routes_cover_success_and_conflicts(client: TestC
         headers=USER_HEADERS,
     )
     assert duplicate_response.status_code == 409
+
+
+def test_fork_agent_rejects_reserved_platform_project_id(client: TestClient) -> None:
+    # ``fork`` always produces a USER-owned draft, so the reserved
+    # platform-wide project must never be an acceptable fork target --
+    # even for a platform owner who would otherwise pass ``_scope``'s
+    # platform-owner authorization check.
+    _create_agent(client, logical_agent_id="agent-fork-reserved-source", headers=USER_HEADERS)
+    source_version = _cut_gated_version(client, "agent-fork-reserved-source", headers=USER_HEADERS)
+
+    forbidden_response = client.post(
+        "/v1/agent-studio/agents/agent-fork-reserved-source/fork",
+        json=_body(
+            PLATFORM_PROJECT_ID,
+            source_version_id=source_version["id"],
+            new_logical_agent_id="agent-fork-reserved-child",
+        ),
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert forbidden_response.status_code == 422
+    assert PLATFORM_PROJECT_ID in forbidden_response.json()["detail"]
 
 
 def test_tool_registration_routes_cover_success_role_and_maturity(client: TestClient) -> None:

@@ -347,6 +347,30 @@ def _membership_resolver(request: Request) -> ProjectMembershipResolver:
     return cast(ProjectMembershipResolver, resolver)
 
 
+def _reject_client_supplied_platform_project_id(project_id: str, owner_kind: AgentOwnerKind) -> None:
+    """Reserve ``PLATFORM_PROJECT_ID`` for server-assigned system-agent scope.
+
+    ``PLATFORM_PROJECT_ID`` exists so system-owned agents have a concrete,
+    total partition (never a "project-less" document); it is not a
+    substitute for real per-project scope and must never let a client
+    deposit a non-system-owned draft/version/release/binding into that
+    shared, platform-wide partition. ``create_agent`` already computes
+    ``PLATFORM_PROJECT_ID`` itself for ``owner_kind == SYSTEM`` rather than
+    trusting client input for that case, so this only needs to reject the
+    reserved id when the *client-supplied* ``project_id`` would otherwise
+    be used verbatim for a non-system-owned resource -- which is exactly
+    every other caller of this helper.
+    """
+    if project_id == PLATFORM_PROJECT_ID and owner_kind is not AgentOwnerKind.SYSTEM:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=(
+                f"project_id {PLATFORM_PROJECT_ID!r} is reserved for platform-owned system agents "
+                f"and cannot be requested for a {owner_kind.value}-owned agent."
+            ),
+        )
+
+
 def _scope(request: Request, identity: IdentityContext, project_id: str) -> ScopeContext:
     if project_id == PLATFORM_PROJECT_ID:
         if not _is_platform_owner(identity):
@@ -527,6 +551,7 @@ def get_agent_manifest_schema(request: Request) -> dict[str, object]:
 @router.post("/agents", response_model=AgentDraft, status_code=status.HTTP_201_CREATED)
 def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
     identity = _identity(request)
+    _reject_client_supplied_platform_project_id(payload.project_id, payload.owner_kind)
     scope = _scope(
         request,
         identity,
@@ -630,6 +655,10 @@ def update_draft(
 @router.post("/agents/{logical_agent_id}/fork", response_model=AgentDraft, status_code=status.HTTP_201_CREATED)
 def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) -> AgentDraft:
     identity = _identity(request)
+    # ``release_service.fork`` always assigns ``owner_kind=USER`` to the new
+    # draft regardless of the source agent's ownership, so the reserved
+    # platform project id can never be a legitimate target here.
+    _reject_client_supplied_platform_project_id(payload.project_id, AgentOwnerKind.USER)
     scope = _scope(request, identity, payload.project_id)
     _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
