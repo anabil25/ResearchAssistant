@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import base64
+import binascii
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
@@ -17,6 +19,7 @@ from .contracts import (
     InvocationContext,
     NeedsConsentError,
     ProviderTimeoutError,
+    ProviderValidationError,
     RateLimitError,
     RequestSigningCredential,
     SecretCredential,
@@ -58,9 +61,17 @@ def auth_headers(
     context: InvocationContext,
     *,
     provider_id: str,
+    allow_signature: bool = False,
 ) -> dict[str, str]:
     credential = context.credential
     if auth.mode is AuthMode.NONE:
+        return {}
+    if auth.mode is AuthMode.SIGNATURE:
+        if not allow_signature:
+            raise UnauthorizedError(
+                "Signature authentication is not supported by this provider",
+                provider_id=provider_id,
+            )
         return {}
     if auth.mode in {AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.GITHUB_APP}:
         if not isinstance(credential, TokenCredential) or not auth.token_scope:
@@ -76,7 +87,28 @@ def auth_headers(
         if not secret:
             raise UnauthorizedError("The secret credential returned an empty value", provider_id=provider_id)
         return {auth.header_name: secret}
-    raise UnauthorizedError("The configured authentication mode is not supported here", provider_id=provider_id)
+    raise UnauthorizedError(  # pragma: no cover - AuthMode is exhaustively handled above.
+        "The configured authentication mode is not supported here",
+        provider_id=provider_id,
+    )
+
+
+def base64_encoded_length(decoded_bytes: int) -> int:
+    if decoded_bytes < 0:
+        raise ValueError("Decoded byte limit cannot be negative")
+    return ((decoded_bytes + 2) // 3) * 4
+
+
+def decode_base64_limited(value: str, *, max_bytes: int, provider_id: str) -> bytes:
+    if len(value) > base64_encoded_length(max_bytes):
+        raise ProviderValidationError("content_base64 exceeds the configured upload limit", provider_id=provider_id)
+    try:
+        decoded = base64.b64decode(value, validate=True)
+    except (binascii.Error, ValueError) as exc:
+        raise ProviderValidationError("content_base64 is invalid", provider_id=provider_id) from exc
+    if len(decoded) > max_bytes:
+        raise ProviderValidationError("content_base64 exceeds the configured upload limit", provider_id=provider_id)
+    return decoded
 
 
 def signing_credential(context: InvocationContext, *, provider_id: str) -> SigningCredential:
@@ -139,6 +171,7 @@ def send(
     max_retries: int = 0,
     idempotent: bool,
     consent_on_forbidden: bool = False,
+    passthrough_statuses: frozenset[int] = frozenset(),
 ) -> tuple[httpx.Response, int]:
     attempts = 0
     started = monotonic()
@@ -168,6 +201,12 @@ def send(
             delay = retry_after if retry_after is not None else min(2 ** (attempts - 1), 8)
             _wait_for_retry(context, delay, provider_id=provider_id)
             continue
+        if response.status_code in passthrough_statuses:
+            response.extensions["provider_elapsed_ms"] = round(
+                (monotonic() - started) * 1000,
+                3,
+            )
+            return response, attempts
         if response.status_code == 401:
             raise UnauthorizedError("Provider rejected the credential", provider_id=provider_id)
         if response.status_code == 429 or (

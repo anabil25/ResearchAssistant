@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from ._http import auth_headers, require_endpoint, send, signing_credential
@@ -39,6 +40,22 @@ from .contracts import (
 )
 
 PROVIDER_ID = "webhook"
+HTTP_FIELD_NAME = re.compile(r"^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$")
+TRANSPORT_CONTROLLED_HEADERS = {
+    "connection",
+    "content-length",
+    "content-type",
+    "expect",
+    "host",
+    "idempotency-key",
+    "keep-alive",
+    "proxy-authenticate",
+    "proxy-authorization",
+    "te",
+    "trailer",
+    "transfer-encoding",
+    "upgrade",
+}
 DOCS = ("https://www.rfc-editor.org/rfc/rfc9110",)
 PROVENANCE = official_provenance(
     DOCS,
@@ -50,6 +67,11 @@ PROVENANCE = official_provenance(
 class WebhookProvider:
     def __init__(self, config: WebhookConfig) -> None:
         self._config = config
+        self._auth_modes = (
+            (config.auth.mode,)
+            if not config.signing_algorithm or config.auth.mode is AuthMode.SIGNATURE
+            else (config.auth.mode, AuthMode.SIGNATURE)
+        )
         operation = OperationDescriptor(
             config.operation_id,
             "1.0.0",
@@ -76,9 +98,10 @@ class WebhookProvider:
                     family="webhook",
                     resource_kind="fixed_webhook",
                     name=config.operation_id,
-                    auth_modes=(config.auth.mode,),
+                    auth_modes=self._auth_modes,
                     operations=(operation,),
                     provenance=PROVENANCE,
+                    descriptor_version="1.1.0",
                 ),
             ),
         )
@@ -94,11 +117,35 @@ class WebhookProvider:
             return ValidationReport(Readiness.MISCONFIGURED, ("Webhook tenant boundary is required.",))
         if self._config.method.upper() not in {"POST", "PUT", "PATCH"}:
             return ValidationReport(Readiness.MISCONFIGURED, ("Webhook method must be POST, PUT, or PATCH.",))
+        if self._config.auth.mode is AuthMode.SIGNATURE and not self._config.signing_algorithm:
+            return ValidationReport(
+                Readiness.MISCONFIGURED,
+                ("Signature authentication requires a signing algorithm.",),
+            )
+        if self._config.signing_algorithm:
+            reserved_headers = set(TRANSPORT_CONTROLLED_HEADERS)
+            if self._config.auth.mode in {AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.GITHUB_APP}:
+                reserved_headers.add("authorization")
+            elif self._config.auth.header_name:
+                reserved_headers.add(self._config.auth.header_name.casefold())
+            if (
+                HTTP_FIELD_NAME.fullmatch(self._config.signature_header) is None
+                or self._config.signature_header.casefold() in reserved_headers
+            ):
+                return ValidationReport(
+                    Readiness.MISCONFIGURED,
+                    ("Signature header is invalid or conflicts with a controlled request header.",),
+                )
         if self._config.tenant_id and context.tenant_id != self._config.tenant_id:
             return ValidationReport(Readiness.UNAUTHORIZED, ("Invocation tenant does not match configuration.",))
         try:
             require_endpoint(self._config.destination_url)
-            auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
+            auth_headers(
+                self._config.auth,
+                context,
+                provider_id=PROVIDER_ID,
+                allow_signature=True,
+            )
             if self._config.signing_algorithm:
                 signing_credential(context, provider_id=PROVIDER_ID)
         except ValueError as exc:
@@ -119,8 +166,7 @@ class WebhookProvider:
                 resource_kind="fixed_webhook",
                 name=self._config.operation_id,
                 readiness=validation.readiness,
-                auth_modes=(self._config.auth.mode,)
-                + ((AuthMode.SIGNATURE,) if self._config.signing_algorithm else ()),
+                auth_modes=self._auth_modes,
                 tenant_boundary="configured tenant",
                 data_boundary="single configured destination URL",
                 resource_id=self._config.destination_url or self._config.operation_id,
@@ -128,6 +174,7 @@ class WebhookProvider:
                 provenance=PROVENANCE,
                 status_evidence=("Fixed destination and credential abstraction validated.",),
                 unavailable_reason=reason,
+                descriptor_version="1.1.0",
             ),
         )
 
@@ -150,6 +197,20 @@ class WebhookProvider:
             policy_ref=context.policy_release,
         )
 
+    def _request_headers(self, context: InvocationContext, payload: bytes) -> dict[str, str]:
+        headers = auth_headers(
+            self._config.auth,
+            context,
+            provider_id=PROVIDER_ID,
+            allow_signature=True,
+        )
+        if algorithm := self._config.signing_algorithm:
+            headers[self._config.signature_header] = signing_credential(
+                context,
+                provider_id=PROVIDER_ID,
+            ).sign(payload, algorithm=algorithm)
+        return headers
+
     def health(
         self,
         target: CapabilityInstance | CapabilityBinding,
@@ -171,9 +232,7 @@ class WebhookProvider:
             provider_id=PROVIDER_ID,
             method=self._config.health_method,
             url=require_endpoint(self._config.destination_url),
-            headers=auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
-            if not self._config.signing_algorithm
-            else {},
+            headers=self._request_headers(context, b""),
             idempotent=True,
         )
         return HealthReport(Readiness.READY, (f"Health request returned HTTP {response.status_code}.",))
@@ -187,12 +246,9 @@ class WebhookProvider:
             tenant_id=self._config.tenant_id,
         )
         payload = json.dumps(plain_json(request.arguments), separators=(",", ":"), sort_keys=True).encode()
-        headers = auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
+        headers = self._request_headers(context, payload)
         headers["Content-Type"] = "application/json"
         headers["Idempotency-Key"] = request.idempotency_key or ""
-        if algorithm := self._config.signing_algorithm:
-            signature = signing_credential(context, provider_id=PROVIDER_ID).sign(payload, algorithm=algorithm)
-            headers[self._config.signature_header] = signature
         response, attempts = send(
             context,
             provider_id=PROVIDER_ID,

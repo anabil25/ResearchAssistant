@@ -2,13 +2,22 @@
 
 from __future__ import annotations
 
-import base64
 from collections.abc import Mapping
 from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
-from ._http import auth_headers, collection, json_object, require_endpoint, safe_url, send, stable_resource_id
+from ._http import (
+    auth_headers,
+    base64_encoded_length,
+    collection,
+    decode_base64_limited,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
 from .config import GraphConfig
 from .contracts import (
     ApprovalPolicy,
@@ -43,6 +52,7 @@ from .contracts import (
 PROVIDER_ID = "microsoft_graph"
 DOCS = (
     "https://learn.microsoft.com/graph/api/driveitem-list-children?view=graph-rest-1.0",
+    "https://learn.microsoft.com/graph/api/driveitem-put-content?view=graph-rest-1.0",
     "https://learn.microsoft.com/graph/permissions-selected-overview",
 )
 PROVENANCE = official_provenance(
@@ -90,24 +100,35 @@ ITEM_GET = OperationDescriptor(
     least_privilege_roles=("Files.Read.All (application)",),
     docs=DOCS,
 )
-CONTENT_PUT = OperationDescriptor(
-    "graph.drive.content.put",
-    "1.0.0",
-    Maturity.GA,
-    {
-        "type": "object",
-        "required": ["path", "content_base64"],
-        "properties": {"path": {"type": "string"}, "content_base64": {"type": "string"}},
-        "additionalProperties": False,
-    },
-    {"type": "object"},
-    OperationClass.WRITE_IRREVERSIBLE,
-    ApprovalPolicy.REQUIRED,
-    idempotency=Idempotency.PROVIDER_NATIVE,
-    least_privilege_scopes=("Files.ReadWrite (delegated)",),
-    least_privilege_roles=("Files.ReadWrite.All (application)",),
-    docs=DOCS,
-)
+
+
+def _content_put(max_upload_bytes: int) -> OperationDescriptor:
+    return OperationDescriptor(
+        "graph.drive.content.put",
+        "1.1.0",
+        Maturity.GA,
+        {
+            "type": "object",
+            "required": ["path", "content_base64"],
+            "properties": {
+                "path": {"type": "string"},
+                "content_base64": {
+                    "type": "string",
+                    "maxLength": base64_encoded_length(max_upload_bytes),
+                },
+            },
+            "additionalProperties": False,
+        },
+        {"type": "object"},
+        OperationClass.WRITE_IRREVERSIBLE,
+        ApprovalPolicy.REQUIRED,
+        idempotency=Idempotency.PROVIDER_NATIVE,
+        least_privilege_scopes=("Files.ReadWrite (delegated)",),
+        least_privilege_roles=("Files.ReadWrite.All (application)",),
+        docs=DOCS,
+    )
+
+
 WORK_IQ = OperationDescriptor(
     "graph.work_iq.query",
     "1.0.0",
@@ -128,8 +149,13 @@ def _capability(
     *,
     metadata: Mapping[str, Any],
     endpoint: str,
+    max_upload_bytes: int,
 ) -> CapabilityRecord:
     drive_id = metadata.get("drive_id")
+    has_upload = any(operation.operation_id == "graph.drive.content.put" for operation in operations)
+    configuration = dict(metadata)
+    if has_upload:
+        configuration["max_upload_bytes"] = max_upload_bytes
     bound_operations = tuple(
         replace(
             operation,
@@ -156,7 +182,9 @@ def _capability(
         operations=bound_operations,
         provenance=PROVENANCE,
         status_evidence=("Resource returned by a successful Microsoft Graph v1.0 request.",),
-        configuration=metadata,
+        configuration=configuration,
+        descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}} if has_upload else {},
+        descriptor_version="1.1.0" if has_upload else "1.0.0",
     )
 
 
@@ -262,6 +290,7 @@ class MicrosoftGraphProvider:
                     (SITE_GET,),
                     metadata={"site_id": site_id},
                     endpoint=require_endpoint(self._config.endpoint),
+                    max_upload_bytes=self._config.max_upload_bytes,
                 )
             )
             drives = collection(self._get(f"/sites/{quote(site_id, safe='')}/drives", context))
@@ -278,14 +307,16 @@ class MicrosoftGraphProvider:
                             (DRIVE_LIST,),
                             metadata={"drive_id": drive_id},
                             endpoint=require_endpoint(self._config.endpoint),
+                            max_upload_bytes=self._config.max_upload_bytes,
                         ),
                         _capability(
                             stable_resource_id("graph.drive.write", drive_id),
                             f"{drive.get('name') or drive_id} write",
                             "drive",
-                            (CONTENT_PUT,),
+                            (_content_put(self._config.max_upload_bytes),),
                             metadata={"drive_id": drive_id},
                             endpoint=require_endpoint(self._config.endpoint),
+                            max_upload_bytes=self._config.max_upload_bytes,
                         ),
                     )
                 )
@@ -303,6 +334,7 @@ class MicrosoftGraphProvider:
                                 (ITEM_GET,),
                                 metadata={"drive_id": drive_id, "item_id": item_id},
                                 endpoint=require_endpoint(self._config.endpoint),
+                                max_upload_bytes=self._config.max_upload_bytes,
                             )
                         )
         return tuple(capabilities)
@@ -368,10 +400,11 @@ class MicrosoftGraphProvider:
             drive_id = quote(str(instance.configuration["drive_id"]), safe="")
             drive_path = self._safe_drive_path(str(request.arguments["path"]))
             path = f"/drives/{drive_id}/root:/{drive_path}:/content"
-            try:
-                content = base64.b64decode(str(request.arguments["content_base64"]), validate=True)
-            except ValueError as exc:
-                raise ProviderValidationError("content_base64 is invalid", provider_id=PROVIDER_ID) from exc
+            content = decode_base64_limited(
+                str(request.arguments["content_base64"]),
+                max_bytes=int(instance.configuration["max_upload_bytes"]),
+                provider_id=PROVIDER_ID,
+            )
         response, attempts = send(
             context,
             provider_id=PROVIDER_ID,

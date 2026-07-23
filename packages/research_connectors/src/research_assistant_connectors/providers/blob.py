@@ -14,6 +14,8 @@ from defusedxml import ElementTree
 
 from ._http import (
     auth_headers,
+    base64_encoded_length,
+    decode_base64_limited,
     request_signing_credential,
     require_endpoint,
     safe_url,
@@ -67,10 +69,12 @@ def _operation(
     operation_class: OperationClass,
     input_schema: dict[str, Any],
     idempotency: Idempotency,
+    *,
+    version: str = "1.0.0",
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id,
-        "1.0.0",
+        version,
         Maturity.GA,
         input_schema,
         {},
@@ -101,21 +105,28 @@ GET = _operation(
     {"type": "object", "required": ["blob"], "properties": {"blob": {"type": "string"}}, "additionalProperties": False},
     Idempotency.PROVIDER_NATIVE,
 )
-PUT = _operation(
-    "blob.put",
-    OperationClass.WRITE_IRREVERSIBLE,
-    {
-        "type": "object",
-        "required": ["blob", "content_base64"],
-        "properties": {
-            "blob": {"type": "string"},
-            "content_base64": {"type": "string"},
-            "content_type": {"type": "string"},
+
+
+def _put_operation(max_upload_bytes: int) -> OperationDescriptor:
+    return _operation(
+        "blob.put",
+        OperationClass.WRITE_IRREVERSIBLE,
+        {
+            "type": "object",
+            "required": ["blob", "content_base64"],
+            "properties": {
+                "blob": {"type": "string"},
+                "content_base64": {
+                    "type": "string",
+                    "maxLength": base64_encoded_length(max_upload_bytes),
+                },
+                "content_type": {"type": "string"},
+            },
+            "additionalProperties": False,
         },
-        "additionalProperties": False,
-    },
-    Idempotency.PROVIDER_NATIVE,
-)
+        Idempotency.PROVIDER_NATIVE,
+        version="1.1.0",
+    )
 
 
 def _container_capability(
@@ -124,6 +135,7 @@ def _container_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     endpoint: str,
+    max_upload_bytes: int,
 ) -> CapabilityRecord:
     return capability_instance(
         provider_id=PROVIDER_ID,
@@ -140,7 +152,7 @@ def _container_capability(
             LIST,
             GET,
             replace(
-                PUT,
+                _put_operation(max_upload_bytes),
                 external_side_effect=True,
                 side_effect_destinations=(f"{endpoint.rstrip('/')}/{quote(name, safe='')}",),
             ),
@@ -148,7 +160,9 @@ def _container_capability(
         provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
-        configuration={"container": name},
+        configuration={"container": name, "max_upload_bytes": max_upload_bytes},
+        descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}},
+        descriptor_version="1.1.0",
     )
 
 
@@ -229,6 +243,7 @@ class AzureBlobProvider:
                     "; ".join(validation.reasons),
                     ("No container discovery request was sent.",),
                     self._config.endpoint or "unconfigured:blob-endpoint",
+                    self._config.max_upload_bytes,
                 ),
             )
         endpoint = require_endpoint(self._config.endpoint)
@@ -251,6 +266,7 @@ class AzureBlobProvider:
                 None,
                 ("Container returned by successful Blob service discovery.",),
                 endpoint,
+                self._config.max_upload_bytes,
             )
             for name in self._xml_names(response.content, "Container/Name")
         )
@@ -319,10 +335,11 @@ class AzureBlobProvider:
             url = safe_url(endpoint, self._blob_path(container, str(request.arguments["blob"])))
         if operation.operation_id == "blob.put":
             method = "PUT"
-            try:
-                content = base64.b64decode(str(request.arguments["content_base64"]), validate=True)
-            except ValueError as exc:
-                raise ProviderValidationError("content_base64 is invalid", provider_id=PROVIDER_ID) from exc
+            content = decode_base64_limited(
+                str(request.arguments["content_base64"]),
+                max_bytes=int(instance.configuration["max_upload_bytes"]),
+                provider_id=PROVIDER_ID,
+            )
         signed_url = str(httpx.URL(url, params=params)) if params else url
         extra_headers = None
         if operation.operation_id == "blob.put":

@@ -7,6 +7,9 @@ from typing import Any
 
 from .contracts import ApprovalPolicy, AuthMode, Idempotency, Maturity, OperationClass
 
+DEFAULT_UPLOAD_BYTES = 4 * 1024 * 1024
+GRAPH_SIMPLE_UPLOAD_MAX_BYTES = 250_000_000
+
 
 @dataclass(frozen=True, slots=True)
 class AuthConfig:
@@ -65,6 +68,11 @@ class BlobConfig:
     tenant_id: str | None
     auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://storage.azure.com/.default")
     api_version: str = "2023-11-03"
+    max_upload_bytes: int = DEFAULT_UPLOAD_BYTES
+
+    def __post_init__(self) -> None:
+        if self.max_upload_bytes <= 0:
+            raise ValueError("Blob max_upload_bytes must be positive")
 
 
 @dataclass(frozen=True, slots=True)
@@ -133,6 +141,11 @@ class GraphConfig:
     auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://graph.microsoft.com/.default")
     sites_path: str = "/sites?search=*"
     discover_items: bool = True
+    max_upload_bytes: int = DEFAULT_UPLOAD_BYTES
+
+    def __post_init__(self) -> None:
+        if not 0 < self.max_upload_bytes <= GRAPH_SIMPLE_UPLOAD_MAX_BYTES:
+            raise ValueError("Graph max_upload_bytes must be between 1 and the 250 MB simple-upload limit")
 
 
 ProviderConfig = (

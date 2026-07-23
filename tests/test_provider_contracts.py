@@ -64,6 +64,7 @@ from research_assistant_connectors.providers import (
 from research_assistant_connectors.providers._http import (
     _retry_after,
     auth_headers,
+    base64_encoded_length,
     collection,
     json_object,
     request_signing_credential,
@@ -907,6 +908,17 @@ def test_url_auth_and_collection_helpers() -> None:
 
     ctx = context()
     assert auth_headers(AuthConfig(AuthMode.NONE), ctx, provider_id="p") == {}
+    assert (
+        auth_headers(
+            AuthConfig(AuthMode.SIGNATURE),
+            replace(ctx, credential=object()),
+            provider_id="p",
+            allow_signature=True,
+        )
+        == {}
+    )
+    with pytest.raises(UnauthorizedError, match="not supported"):
+        auth_headers(AuthConfig(AuthMode.SIGNATURE), ctx, provider_id="p")
     assert auth_headers(AuthConfig(AuthMode.OAUTH, "scope"), ctx, provider_id="p")["Authorization"] == "Bearer token"
     assert auth_headers(AuthConfig(AuthMode.GITHUB_APP, "scope"), ctx, provider_id="p")["Authorization"].startswith(
         "Bearer "
@@ -925,7 +937,6 @@ def test_url_auth_and_collection_helpers() -> None:
     for auth in (
         AuthConfig(AuthMode.OAUTH),
         AuthConfig(AuthMode.API_KEY, secret_name="x"),
-        AuthConfig(AuthMode.SIGNATURE),
     ):
         with pytest.raises(UnauthorizedError):
             auth_headers(auth, replace(ctx, credential=object()), provider_id="p")
@@ -941,6 +952,10 @@ def test_url_auth_and_collection_helpers() -> None:
         signing_credential(replace(ctx, credential=object()), provider_id="p")
     with pytest.raises(UnauthorizedError):
         request_signing_credential(replace(ctx, credential=object()), provider_id="p")
+    assert base64_encoded_length(0) == 0
+    assert base64_encoded_length(1) == 4
+    with pytest.raises(ValueError, match="negative"):
+        base64_encoded_length(-1)
     assert collection({"value": [{"id": 1}, "bad"]}) == ({"id": 1},)
     assert collection({"other": []}) == ()
 

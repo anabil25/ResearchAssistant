@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from threading import Lock, RLock
 from typing import Any
 
 import httpx
@@ -18,6 +19,7 @@ from .contracts import (
     CapabilityRecord,
     DiscoveryResult,
     HealthReport,
+    Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
@@ -25,6 +27,7 @@ from .contracts import (
     OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
+    ProviderError,
     Readiness,
     UnauthorizedError,
     UpstreamError,
@@ -86,7 +89,7 @@ def _tool_capability(
         operations=(
             OperationDescriptor(
                 "mcp.tools.call",
-                "1.0.0",
+                "1.1.0",
                 policy.maturity,
                 schema,
                 {},
@@ -95,12 +98,20 @@ def _tool_capability(
                 external_side_effect=policy.operation_class not in {OperationClass.PURE, OperationClass.READ},
                 side_effect_destinations=(destination,),
                 idempotency=policy.idempotency,
+                max_retries=1
+                if policy.operation_class is not OperationClass.WRITE_IRREVERSIBLE
+                and (
+                    policy.operation_class in {OperationClass.PURE, OperationClass.READ}
+                    or policy.idempotency is not Idempotency.NONE
+                )
+                else 0,
                 docs=DOCS,
             ),
         ),
         provenance=PROVENANCE,
         status_evidence=("Tool returned by a protocol-valid tools/list response.",),
         configuration={"tool_name": name, "untrusted_tool_metadata": metadata},
+        descriptor_version="1.1.0",
     )
 
 
@@ -109,7 +120,9 @@ class MCPStreamableHTTPProvider:
         self._config = config
         self._sessions: dict[tuple[str, str, str], str | None] = {}
         self._initialized: set[tuple[str, str, str]] = set()
-        self._next_id = 1
+        self._scope_locks: dict[tuple[str, str, str], RLock] = {}
+        self._state_lock = Lock()
+        self._next_request_id = 1
         self._descriptor = ProviderDescriptor(
             PROVIDER_ID,
             "mcp",
@@ -139,7 +152,21 @@ class MCPStreamableHTTPProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def _headers(self, context: InvocationContext) -> dict[str, str]:
+    @staticmethod
+    def _session_key(context: InvocationContext) -> tuple[str, str, str]:
+        return context.tenant_id, context.project_id, context.principal_id
+
+    def _scope_lock(self, session_key: tuple[str, str, str]) -> RLock:
+        with self._state_lock:
+            return self._scope_locks.setdefault(session_key, RLock())
+
+    def _allocate_request_id(self) -> int:
+        with self._state_lock:
+            request_id = self._next_request_id
+            self._next_request_id += 1
+            return request_id
+
+    def _headers(self, context: InvocationContext, *, include_session: bool = True) -> dict[str, str]:
         headers = auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
         headers.update(
             {
@@ -148,7 +175,9 @@ class MCPStreamableHTTPProvider:
                 "MCP-Protocol-Version": self._config.protocol_version,
             }
         )
-        session_id = self._sessions.get((context.tenant_id, context.project_id, context.principal_id))
+        session_key = self._session_key(context)
+        with self._scope_lock(session_key):
+            session_id = self._sessions.get(session_key) if include_session else None
         if session_id:
             headers["Mcp-Session-Id"] = session_id
         return headers
@@ -180,6 +209,34 @@ class MCPStreamableHTTPProvider:
             raise UpstreamError("MCP response did not contain an object result", provider_id=provider_id)
         return result
 
+    def _rpc_once(
+        self,
+        method: str,
+        params: Mapping[str, Any],
+        context: InvocationContext,
+        *,
+        idempotent: bool,
+        max_retries: int,
+        idempotency_key: str | None = None,
+    ) -> tuple[httpx.Response, int, int, str | None]:
+        request_id = self._allocate_request_id()
+        headers = self._headers(context)
+        session_id = headers.get("Mcp-Session-Id")
+        if idempotency_key is not None:
+            headers["Idempotency-Key"] = idempotency_key
+        response, attempts = send(
+            context,
+            provider_id=PROVIDER_ID,
+            method="POST",
+            url=require_endpoint(self._config.endpoint),
+            headers=headers,
+            json_body={"jsonrpc": "2.0", "id": request_id, "method": method, "params": dict(params)},
+            max_retries=max_retries if idempotent else 0,
+            idempotent=idempotent,
+            passthrough_statuses=frozenset({404}),
+        )
+        return response, attempts, request_id, session_id
+
     def _rpc(
         self,
         method: str,
@@ -187,66 +244,107 @@ class MCPStreamableHTTPProvider:
         context: InvocationContext,
         *,
         idempotent: bool,
+        max_retries: int,
+        idempotency_key: str | None = None,
     ) -> tuple[dict[str, Any], int, httpx.Response]:
-        request_id = self._next_id
-        self._next_id += 1
-        response, attempts = send(
+        response, attempts, request_id, stale_session = self._rpc_once(
+            method,
+            params,
             context,
-            provider_id=PROVIDER_ID,
-            method="POST",
-            url=require_endpoint(self._config.endpoint),
-            headers=self._headers(context),
-            json_body={"jsonrpc": "2.0", "id": request_id, "method": method, "params": dict(params)},
             idempotent=idempotent,
+            max_retries=max_retries,
+            idempotency_key=idempotency_key,
         )
-        return self._rpc_body(response, request_id, PROVIDER_ID), attempts, response
+        if response.status_code != 404:
+            return self._rpc_body(response, request_id, PROVIDER_ID), attempts, response
+        if stale_session is None:
+            raise UpstreamError("MCP endpoint returned HTTP 404", provider_id=PROVIDER_ID)
+
+        session_key = self._session_key(context)
+        with self._scope_lock(session_key):
+            if self._sessions.get(session_key) == stale_session:
+                self._sessions.pop(session_key, None)
+                self._initialized.discard(session_key)
+            if not idempotent:
+                raise UpstreamError(
+                    "MCP session expired; the non-idempotent request was not replayed",
+                    provider_id=PROVIDER_ID,
+                )
+            if attempts > max_retries:
+                raise UpstreamError(
+                    "MCP session expired after the retry budget was exhausted",
+                    provider_id=PROVIDER_ID,
+                )
+            self._initialize_with_session(context)
+
+        retry, retry_attempts, retry_id, retry_session = self._rpc_once(
+            method,
+            params,
+            context,
+            idempotent=True,
+            max_retries=max_retries - attempts,
+            idempotency_key=idempotency_key,
+        )
+        attempts += retry_attempts
+        if retry.status_code == 404:
+            with self._scope_lock(session_key):
+                if self._sessions.get(session_key) == retry_session:
+                    self._sessions.pop(session_key, None)
+                    self._initialized.discard(session_key)
+            raise UpstreamError("MCP session expired after reinitialization", provider_id=PROVIDER_ID)
+        return self._rpc_body(retry, retry_id, PROVIDER_ID), attempts, retry
 
     def _initialize_with_session(self, context: InvocationContext) -> None:
-        session_key = (context.tenant_id, context.project_id, context.principal_id)
-        if session_key in self._initialized:
-            return
-        request_id = self._next_id
-        self._next_id += 1
-        response, _ = send(
-            context,
-            provider_id=PROVIDER_ID,
-            method="POST",
-            url=require_endpoint(self._config.endpoint),
-            headers=self._headers(context),
-            json_body={
-                "jsonrpc": "2.0",
-                "id": request_id,
-                "method": "initialize",
-                "params": {
-                    "protocolVersion": self._config.protocol_version,
-                    "capabilities": {},
-                    "clientInfo": {"name": "research-assistant", "version": "0.1.0"},
+        session_key = self._session_key(context)
+        with self._scope_lock(session_key):
+            if session_key in self._initialized:
+                return
+            self._sessions.pop(session_key, None)
+            request_id = self._allocate_request_id()
+            response, _ = send(
+                context,
+                provider_id=PROVIDER_ID,
+                method="POST",
+                url=require_endpoint(self._config.endpoint),
+                headers=self._headers(context, include_session=False),
+                json_body={
+                    "jsonrpc": "2.0",
+                    "id": request_id,
+                    "method": "initialize",
+                    "params": {
+                        "protocolVersion": self._config.protocol_version,
+                        "capabilities": {},
+                        "clientInfo": {"name": "research-assistant", "version": "0.1.0"},
+                    },
                 },
-            },
-            idempotent=True,
-        )
-        result = self._rpc_body(response, request_id, PROVIDER_ID)
-        if result.get("protocolVersion") != self._config.protocol_version:
-            raise UpstreamError("MCP server negotiated an unexpected protocol version", provider_id=PROVIDER_ID)
-        session_id = response.headers.get("Mcp-Session-Id")
-        if session_id is not None:
-            if not session_id or any(ord(character) < 0x21 or ord(character) > 0x7E for character in session_id):
-                raise UpstreamError("MCP server returned an invalid session identifier", provider_id=PROVIDER_ID)
-            self._sessions[session_key] = session_id
-        else:
-            self._sessions[session_key] = None
-        notification, _ = send(
-            context,
-            provider_id=PROVIDER_ID,
-            method="POST",
-            url=require_endpoint(self._config.endpoint),
-            headers=self._headers(context),
-            json_body={"jsonrpc": "2.0", "method": "notifications/initialized"},
-            idempotent=True,
-        )
-        if notification.status_code != 202:
-            raise UpstreamError("MCP initialized notification was not accepted", provider_id=PROVIDER_ID)
-        self._initialized.add(session_key)
+                idempotent=True,
+            )
+            result = self._rpc_body(response, request_id, PROVIDER_ID)
+            if result.get("protocolVersion") != self._config.protocol_version:
+                raise UpstreamError("MCP server negotiated an unexpected protocol version", provider_id=PROVIDER_ID)
+            session_id = response.headers.get("Mcp-Session-Id")
+            if session_id is not None:
+                if not session_id or any(ord(character) < 0x21 or ord(character) > 0x7E for character in session_id):
+                    raise UpstreamError("MCP server returned an invalid session identifier", provider_id=PROVIDER_ID)
+                self._sessions[session_key] = session_id
+            else:
+                self._sessions[session_key] = None
+            try:
+                notification, _ = send(
+                    context,
+                    provider_id=PROVIDER_ID,
+                    method="POST",
+                    url=require_endpoint(self._config.endpoint),
+                    headers=self._headers(context),
+                    json_body={"jsonrpc": "2.0", "method": "notifications/initialized"},
+                    idempotent=True,
+                )
+                if notification.status_code != 202:
+                    raise UpstreamError("MCP initialized notification was not accepted", provider_id=PROVIDER_ID)
+            except ProviderError:
+                self._sessions.pop(session_key, None)
+                raise
+            self._initialized.add(session_key)
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
@@ -282,7 +380,7 @@ class MCPStreamableHTTPProvider:
                 ),
             )
         self._initialize_with_session(context)
-        result, _, _ = self._rpc("tools/list", {}, context, idempotent=True)
+        result, _, _ = self._rpc("tools/list", {}, context, idempotent=True, max_retries=1)
         tools = result.get("tools")
         if not isinstance(tools, list):
             raise UpstreamError("MCP tools/list result did not contain a tools array", provider_id=PROVIDER_ID)
@@ -357,6 +455,8 @@ class MCPStreamableHTTPProvider:
                 operation,
                 idempotency_key=request.idempotency_key,
             ),
+            max_retries=operation.max_retries,
+            idempotency_key=request.idempotency_key,
         )
         if result.get("isError") is True:
             raise UpstreamError("MCP tool reported an execution error", provider_id=PROVIDER_ID)

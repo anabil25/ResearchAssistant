@@ -432,6 +432,100 @@ def test_mcp_schema_and_initialization_edges() -> None:
             ctx(bad_notification)
         )
 
+    missing_session = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    missing_session_context = ctx(
+        lambda request: (
+            _mcp_response(request)
+            if json.loads(request.content)["method"] in {"initialize", "notifications/initialized"}
+            else httpx.Response(404)
+        )
+    )
+    missing_session._initialize_with_session(missing_session_context)
+    with pytest.raises(UpstreamError, match="endpoint returned HTTP 404"):
+        missing_session._rpc("tools/list", {}, missing_session_context, idempotent=True, max_retries=1)
+
+    sessions = 0
+    list_requests = 0
+
+    def repeatedly_stale(request: httpx.Request) -> httpx.Response:
+        nonlocal sessions, list_requests
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            sessions += 1
+            return _mcp_response(request, session=f"session-{sessions}")
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        list_requests += 1
+        if list_requests == 1:
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}},
+            )
+        return httpx.Response(404)
+
+    repeatedly_stale_provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    repeatedly_stale_context = ctx(repeatedly_stale)
+    repeatedly_stale_provider.discover(repeatedly_stale_context)
+    with pytest.raises(UpstreamError, match="after reinitialization"):
+        repeatedly_stale_provider._rpc(
+            "tools/list",
+            {},
+            repeatedly_stale_context,
+            idempotent=True,
+            max_retries=1,
+        )
+    assert ("tenant", "project", "principal") not in repeatedly_stale_provider._sessions
+
+    raced_provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    raced_sessions = 0
+    raced_lists = 0
+
+    def raced_stale(request: httpx.Request) -> httpx.Response:
+        nonlocal raced_sessions, raced_lists
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            raced_sessions += 1
+            return _mcp_response(request, session=f"race-{raced_sessions}")
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        raced_lists += 1
+        if raced_lists == 1:
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}},
+            )
+        if raced_lists == 3:
+            raced_provider._sessions[("tenant", "project", "principal")] = "newer-session"
+        return httpx.Response(404)
+
+    raced_context = ctx(raced_stale)
+    raced_provider.discover(raced_context)
+    with pytest.raises(UpstreamError, match="after reinitialization"):
+        raced_provider._rpc("tools/list", {}, raced_context, idempotent=True, max_retries=1)
+    assert raced_provider._sessions[("tenant", "project", "principal")] == "newer-session"
+
+    exhausted_provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    exhausted_calls = 0
+
+    def exhausted_retry(request: httpx.Request) -> httpx.Response:
+        nonlocal exhausted_calls
+        body = json.loads(request.content)
+        if body["method"] in {"initialize", "notifications/initialized"}:
+            return _mcp_response(request, session="exhausted")
+        exhausted_calls += 1
+        if exhausted_calls == 1:
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}},
+            )
+        return httpx.Response(500) if exhausted_calls == 2 else httpx.Response(404)
+
+    exhausted_context = ctx(exhausted_retry)
+    exhausted_provider.discover(exhausted_context)
+    with pytest.raises(UpstreamError, match="retry budget was exhausted"):
+        exhausted_provider._rpc("tools/list", {}, exhausted_context, idempotent=True, max_retries=1)
+    assert exhausted_calls == 3
+
 
 def test_mcp_tools_shape_long_name_and_tool_error() -> None:
     mode = "shape"
@@ -457,9 +551,9 @@ def test_mcp_tools_shape_long_name_and_tool_error() -> None:
             tool_policies=(
                 MCPToolPolicy(
                     "tool",
-                    OperationClass.PRIVILEGED,
+                    OperationClass.WRITE_IRREVERSIBLE,
                     ApprovalPolicy.REQUIRED,
-                    Idempotency.NONE,
+                    Idempotency.PROVIDER_NATIVE,
                     Maturity.GA,
                 ),
             ),
@@ -471,6 +565,7 @@ def test_mcp_tools_shape_long_name_and_tool_error() -> None:
     mode = "tools"
     mcp_discovery = provider.discover(context)
     capability = mcp_discovery[0]
+    assert mcp_discovery.descriptor_for(capability).operations[0].max_retries == 0
     with pytest.raises(UpstreamError, match="execution error"):
         provider.invoke(
             InvocationRequest(capability, "mcp.tools.call", {}, "key"),

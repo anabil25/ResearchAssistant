@@ -2,7 +2,9 @@ from __future__ import annotations
 
 import base64
 import json
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
+from threading import Barrier, Lock
 from typing import Any
 
 import httpx
@@ -456,7 +458,7 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
             return httpx.Response(200, content=b"blob-data", headers={"etag": "etag"})
         return httpx.Response(201, headers={"etag": "new", "x-ms-version-id": "v1"})
 
-    provider = AzureBlobProvider(BlobConfig("https://account.blob.core.windows.net", "tenant"))
+    provider = AzureBlobProvider(BlobConfig("https://account.blob.core.windows.net", "tenant", max_upload_bytes=3))
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     capability = capabilities[0]
@@ -467,6 +469,9 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
     )
     assert put_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
     assert put_operation.approval_policy is ApprovalPolicy.REQUIRED
+    assert put_operation.version == "1.1.0"
+    assert put_operation.input_schema["properties"]["content_base64"]["maxLength"] == 4
+    assert capability.configuration["max_upload_bytes"] == 3
     assert put_operation.side_effect_destinations == ("https://account.blob.core.windows.net/research",)
     listed = provider.invoke(
         InvocationRequest(capability, "blob.blobs.list", {"prefix": "folder/"}),
@@ -544,7 +549,7 @@ def test_blob_validation_xml_path_and_content_failures() -> None:
             content=b"<EnumerationResults><Containers><Container><Name>c</Name></Container></Containers></EnumerationResults>",
         )
 
-    provider = AzureBlobProvider(BlobConfig("https://blob.test", "tenant"))
+    provider = AzureBlobProvider(BlobConfig("https://blob.test", "tenant", max_upload_bytes=1))
     valid_ctx = make_context(handler)
     valid_capabilities = provider.discover(valid_ctx)
     capability = valid_capabilities[0]
@@ -558,6 +563,23 @@ def test_blob_validation_xml_path_and_content_failures() -> None:
             ),
             approve(valid_ctx, valid_capabilities, capability, "blob.put", invalid_arguments),
         )
+    boundary_arguments = {"blob": "a", "content_base64": base64.b64encode(b"a").decode()}
+    assert (
+        provider.invoke(
+            InvocationRequest(capability, "blob.put", boundary_arguments),
+            approve(valid_ctx, valid_capabilities, capability, "blob.put", boundary_arguments),
+        ).status_code
+        == 200
+    )
+    for content in (b"ab", b"abcd"):
+        oversized = {"blob": "a", "content_base64": base64.b64encode(content).decode()}
+        with pytest.raises(ProviderValidationError, match="upload limit"):
+            provider.invoke(
+                InvocationRequest(capability, "blob.put", oversized),
+                approve(valid_ctx, valid_capabilities, capability, "blob.put", oversized),
+            )
+    with pytest.raises(ValueError, match="positive"):
+        BlobConfig("https://blob.test", "tenant", max_upload_bytes=0)
 
 
 def test_mcp_protocol_session_untrusted_annotations_and_tool_call() -> None:
@@ -642,6 +664,240 @@ def test_mcp_protocol_session_untrusted_annotations_and_tool_call() -> None:
     assert methods.count("initialize") == 2
     provider.discover(replace(ctx, project_id="other-project"))
     assert methods.count("initialize") == 3
+
+
+def test_mcp_concurrent_initialization_and_scope_isolation() -> None:
+    barrier = Barrier(6)
+    state_lock = Lock()
+    initialization_count = 0
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal initialization_count
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            with state_lock:
+                initialization_count += 1
+                session_id = f"session-{initialization_count}"
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-06-18"}},
+                headers={"Mcp-Session-Id": session_id},
+            )
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"tools": []}},
+        )
+
+    provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
+    context = make_context(handler)
+
+    def discover() -> None:
+        barrier.wait()
+        provider.discover(context)
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        tuple(executor.map(lambda _: discover(), range(6)))
+    assert initialization_count == 1
+    assert len(provider._initialized) == 1
+
+    other_principal = replace(context, principal_id="other-principal")
+    other_tenant = replace(context, tenant_id="other-tenant")
+    provider._initialize_with_session(other_principal)
+    provider._initialize_with_session(other_tenant)
+    assert initialization_count == 3
+    assert provider._sessions[("tenant", "project", "principal")] == "session-1"
+    assert provider._sessions[("tenant", "project", "other-principal")] == "session-2"
+    assert provider._sessions[("other-tenant", "project", "principal")] == "session-3"
+
+
+def test_mcp_stale_session_recovery_and_non_idempotent_no_replay() -> None:
+    initializations = 0
+    tool_calls = 0
+    initialize_headers: list[str | None] = []
+    stale_calls = Barrier(2)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal initializations, tool_calls
+        body = json.loads(request.content)
+        method = body["method"]
+        if method == "initialize":
+            initializations += 1
+            initialize_headers.append(request.headers.get("mcp-session-id"))
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-06-18"}},
+                headers={"Mcp-Session-Id": f"session-{initializations}"},
+            )
+        if method == "notifications/initialized":
+            return httpx.Response(202)
+        if method == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {"tools": [{"name": "read", "inputSchema": {"type": "object"}}]},
+                },
+            )
+        tool_calls += 1
+        if request.headers["mcp-session-id"] == "session-1":
+            stale_calls.wait()
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": []}},
+        )
+
+    provider = MCPStreamableHTTPProvider(
+        MCPConfig(
+            "https://mcp.test",
+            "tenant",
+            tool_policies=(
+                MCPToolPolicy(
+                    "read",
+                    OperationClass.READ,
+                    ApprovalPolicy.NEVER,
+                    Idempotency.PROVIDER_NATIVE,
+                    Maturity.GA,
+                ),
+            ),
+        )
+    )
+    context = make_context(handler)
+    capability = provider.discover(context)[0]
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        results = tuple(
+            executor.map(
+                lambda _: provider.invoke(InvocationRequest(capability, "mcp.tools.call", {}), context),
+                range(2),
+            )
+        )
+    assert all(result.status_code == 200 for result in results)
+    assert initializations == 2
+    assert tool_calls == 4
+    assert initialize_headers == [None, None]
+
+    unsafe_initializations = 0
+    unsafe_calls = 0
+
+    def unsafe_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal unsafe_initializations, unsafe_calls
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            unsafe_initializations += 1
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-06-18"}},
+                headers={"Mcp-Session-Id": "stale"},
+            )
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        if body["method"] == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {"tools": [{"name": "write", "inputSchema": {"type": "object"}}]},
+                },
+            )
+        unsafe_calls += 1
+        return httpx.Response(404)
+
+    unsafe = MCPStreamableHTTPProvider(
+        MCPConfig(
+            "https://mcp.test",
+            "tenant",
+            tool_policies=(
+                MCPToolPolicy(
+                    "write",
+                    OperationClass.PRIVILEGED,
+                    ApprovalPolicy.REQUIRED,
+                    Idempotency.NONE,
+                    Maturity.GA,
+                ),
+            ),
+        )
+    )
+    unsafe_context = make_context(unsafe_handler)
+    unsafe_discovery = unsafe.discover(unsafe_context)
+    unsafe_capability = unsafe_discovery[0]
+    approved = approve(unsafe_context, unsafe_discovery, unsafe_capability, "mcp.tools.call", {})
+    with pytest.raises(UpstreamError, match="not replayed"):
+        unsafe.invoke(InvocationRequest(unsafe_capability, "mcp.tools.call", {}), approved)
+    assert unsafe_initializations == 1
+    assert unsafe_calls == 1
+    assert ("tenant", "project", "principal") not in unsafe._sessions
+
+    keyed_sessions = 0
+    keyed_headers: list[str | None] = []
+
+    def keyed_handler(request: httpx.Request) -> httpx.Response:
+        nonlocal keyed_sessions
+        body = json.loads(request.content)
+        if body["method"] == "initialize":
+            keyed_sessions += 1
+            return httpx.Response(
+                200,
+                json={"jsonrpc": "2.0", "id": body["id"], "result": {"protocolVersion": "2025-06-18"}},
+                headers={"Mcp-Session-Id": f"keyed-{keyed_sessions}"},
+            )
+        if body["method"] == "notifications/initialized":
+            return httpx.Response(202)
+        if body["method"] == "tools/list":
+            return httpx.Response(
+                200,
+                json={
+                    "jsonrpc": "2.0",
+                    "id": body["id"],
+                    "result": {"tools": [{"name": "keyed-write", "inputSchema": {"type": "object"}}]},
+                },
+            )
+        keyed_headers.append(request.headers.get("idempotency-key"))
+        if request.headers["mcp-session-id"] == "keyed-1":
+            return httpx.Response(404)
+        return httpx.Response(
+            200,
+            json={"jsonrpc": "2.0", "id": body["id"], "result": {"content": []}},
+        )
+
+    keyed = MCPStreamableHTTPProvider(
+        MCPConfig(
+            "https://mcp.test",
+            "tenant",
+            tool_policies=(
+                MCPToolPolicy(
+                    "keyed-write",
+                    OperationClass.PRIVILEGED,
+                    ApprovalPolicy.REQUIRED,
+                    Idempotency.CALLER_KEY,
+                    Maturity.GA,
+                ),
+            ),
+        )
+    )
+    keyed_context = make_context(keyed_handler)
+    keyed_discovery = keyed.discover(keyed_context)
+    keyed_capability = keyed_discovery[0]
+    assert keyed_discovery.descriptor_for(keyed_capability).operations[0].max_retries == 1
+    keyed_arguments: dict[str, Any] = {}
+    keyed_approval = approve(
+        keyed_context,
+        keyed_discovery,
+        keyed_capability,
+        "mcp.tools.call",
+        keyed_arguments,
+    )
+    assert (
+        keyed.invoke(
+            InvocationRequest(keyed_capability, "mcp.tools.call", keyed_arguments, "dedupe-1"),
+            keyed_approval,
+        ).status_code
+        == 200
+    )
+    assert keyed_headers == ["dedupe-1", "dedupe-1"]
 
 
 def test_mcp_validation_sse_and_protocol_failures() -> None:
@@ -820,13 +1076,16 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
             "https://hooks.test/events",
             "tenant",
             "publish",
+            AuthConfig(AuthMode.SIGNATURE),
             signing_algorithm="hmac-sha256",
         )
     )
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     capability = capabilities[0]
+    assert capabilities.descriptor_for(capability).auth_modes == (AuthMode.SIGNATURE,)
     assert provider.health(capability, ctx).readiness is Readiness.READY
+    assert requests[-1].headers["x-signature"] == "hmac-sha256:0"
     arguments = {"event": "x"}
     approved = approve(ctx, capabilities, capability, "publish", arguments)
     with pytest.raises(PolicyError, match="idempotency"):
@@ -839,12 +1098,86 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
     assert requests[-1].headers["x-signature"].startswith("hmac-sha256:")
     assert requests[-1].url == httpx.URL("https://hooks.test/events")
 
+    oauth = WebhookProvider(
+        WebhookConfig(
+            "https://hooks.test/oauth",
+            "tenant",
+            "send",
+            AuthConfig(AuthMode.OAUTH, "webhook.scope"),
+            signing_algorithm="hmac-sha256",
+        )
+    )
+    oauth_capabilities = oauth.discover(ctx)
+    oauth_capability = oauth_capabilities[0]
+    assert oauth_capabilities.descriptor_for(oauth_capability).auth_modes == (AuthMode.OAUTH, AuthMode.SIGNATURE)
+    assert oauth.health(oauth_capability, ctx).readiness is Readiness.READY
+    assert requests[-1].headers["authorization"].startswith("Bearer ")
+    assert requests[-1].headers["x-signature"] == "hmac-sha256:0"
+    oauth_arguments = {"event": "oauth"}
+    oauth.invoke(
+        InvocationRequest(oauth_capability, "send", oauth_arguments, "oauth-1"),
+        approve(ctx, oauth_capabilities, oauth_capability, "send", oauth_arguments),
+    )
+    assert requests[-1].headers["authorization"].startswith("Bearer ")
+    assert requests[-1].headers["x-signature"].startswith("hmac-sha256:")
+
+    api_key = WebhookProvider(
+        WebhookConfig(
+            "https://hooks.test/key",
+            "tenant",
+            "send",
+            AuthConfig(AuthMode.API_KEY, secret_name="webhook-key", header_name="x-api-key"),
+            signing_algorithm="hmac-sha256",
+        )
+    )
+    api_key_capability = api_key.discover(ctx)[0]
+    assert api_key.health(api_key_capability, ctx).readiness is Readiness.READY
+    assert requests[-1].headers["x-api-key"] == "secret:webhook-key"
+    assert requests[-1].headers["x-signature"] == "hmac-sha256:0"
+
     no_health = WebhookProvider(WebhookConfig("https://hooks.test", "tenant", "send", health_method=None))
     no_health_target = no_health.discover(ctx)[0]
     assert no_health.health(no_health_target, ctx).readiness is Readiness.READY
     for config in (
         WebhookConfig(None, "tenant", "send"),
         WebhookConfig("https://hooks.test", "tenant", "send", method="GET"),
+        WebhookConfig("https://hooks.test", "tenant", "send", AuthConfig(AuthMode.SIGNATURE)),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            AuthConfig(AuthMode.SIGNATURE),
+            signing_algorithm="hmac-sha256",
+            signature_header="Content-Type",
+        ),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            AuthConfig(AuthMode.API_KEY, secret_name="key", header_name="X-Signature"),
+            signing_algorithm="hmac-sha256",
+        ),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            signing_algorithm="hmac-sha256",
+            signature_header="",
+        ),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            signing_algorithm="hmac-sha256",
+            signature_header="Bad Header",
+        ),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            signing_algorithm="hmac-sha256",
+            signature_header="Host",
+        ),
     ):
         invalid = WebhookProvider(config)
         assert invalid.validate(invalid.discover(ctx)[0], ctx).readiness is Readiness.MISCONFIGURED
@@ -959,7 +1292,7 @@ def test_graph_sites_drives_items_ga_operations_and_work_iq_preview() -> None:
             return httpx.Response(201, json={"id": "new-item"})
         return httpx.Response(200, json={"id": "resource"})
 
-    provider = MicrosoftGraphProvider(GraphConfig("https://graph.microsoft.test/v1.0", "tenant"))
+    provider = MicrosoftGraphProvider(GraphConfig("https://graph.microsoft.test/v1.0", "tenant", max_upload_bytes=5))
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     preview = capabilities[0]
@@ -1003,6 +1336,9 @@ def test_graph_sites_drives_items_ga_operations_and_work_iq_preview() -> None:
     )
     graph_write = capabilities.descriptor_for(write).operations[0]
     assert graph_write.operation_class is OperationClass.WRITE_IRREVERSIBLE
+    assert graph_write.version == "1.1.0"
+    assert graph_write.input_schema["properties"]["content_base64"]["maxLength"] == 8
+    assert write.configuration["max_upload_bytes"] == 5
     assert graph_write.side_effect_destinations == ("https://graph.microsoft.test/v1.0/drives/drive-1/root",)
     write_arguments = {
         "path": "folder/paper.txt",
@@ -1038,7 +1374,9 @@ def test_graph_validation_no_item_discovery_and_write_validation() -> None:
     wrong = MicrosoftGraphProvider(GraphConfig("https://graph.test/v1.0", "other"))
     wrong_target = wrong.discover(ctx)[1]
     assert wrong.validate(wrong_target, ctx).readiness is Readiness.UNAUTHORIZED
-    provider = MicrosoftGraphProvider(GraphConfig("https://graph.test/v1.0", "tenant", discover_items=False))
+    provider = MicrosoftGraphProvider(
+        GraphConfig("https://graph.test/v1.0", "tenant", discover_items=False, max_upload_bytes=1)
+    )
     capabilities = provider.discover(ctx)
     assert not any(capabilities.descriptor_for(item).resource_kind == "drive_item" for item in capabilities)
     write = next(
@@ -1049,9 +1387,23 @@ def test_graph_validation_no_item_discovery_and_write_validation() -> None:
     for arguments, message in (
         ({"path": "../bad", "content_base64": "YQ=="}, "safe relative"),
         ({"path": "good", "content_base64": "***"}, "invalid"),
+        ({"path": "good", "content_base64": base64.b64encode(b"ab").decode()}, "upload limit"),
+        ({"path": "good", "content_base64": base64.b64encode(b"abcd").decode()}, "upload limit"),
     ):
         with pytest.raises(ProviderValidationError, match=message):
             provider.invoke(
                 InvocationRequest(write, "graph.drive.content.put", arguments),
                 approve(ctx, capabilities, write, "graph.drive.content.put", arguments),
             )
+    boundary = {"path": "good", "content_base64": base64.b64encode(b"a").decode()}
+    assert (
+        provider.invoke(
+            InvocationRequest(write, "graph.drive.content.put", boundary),
+            approve(ctx, capabilities, write, "graph.drive.content.put", boundary),
+        ).status_code
+        == 200
+    )
+    with pytest.raises(ValueError, match="250 MB"):
+        GraphConfig("https://graph.test/v1.0", "tenant", max_upload_bytes=250_000_001)
+    with pytest.raises(ValueError, match="250 MB"):
+        GraphConfig("https://graph.test/v1.0", "tenant", max_upload_bytes=0)
