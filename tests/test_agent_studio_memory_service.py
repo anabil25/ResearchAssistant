@@ -208,6 +208,7 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
         id="audit-2",
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-memory-test",
         entry_id="entry-1",
         action=MemoryAuditAction.CORRECT,
         actor_id="writer-1",
@@ -217,6 +218,7 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
         id="audit-1",
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-memory-test",
         entry_id="entry-1",
         action=MemoryAuditAction.REMEMBER,
         actor_id="creator-1",
@@ -225,9 +227,22 @@ def test_in_memory_store_entry_and_audit_operations() -> None:
     store.record_audit(late)
     store.record_audit(early)
 
-    audit = store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
+    audit = store.list_audit(
+        tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-memory-test", entry_id="entry-1"
+    )
     assert [record.id for record in audit] == ["audit-1", "audit-2"]
-    assert store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-3") == ()
+    assert (
+        store.list_audit(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-memory-test", entry_id="entry-3"
+        )
+        == ()
+    )
+    assert (
+        store.list_audit(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="other-agent", entry_id="entry-1"
+        )
+        == ()
+    )
 
 
 def test_in_memory_store_project_isolation_for_entries_and_audit() -> None:
@@ -238,6 +253,7 @@ def test_in_memory_store_project_isolation_for_entries_and_audit() -> None:
             id="audit-project-1",
             tenant_id="demo",
             project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-memory-test",
             entry_id="entry-1",
             action=MemoryAuditAction.REMEMBER,
             actor_id="creator-1",
@@ -256,7 +272,12 @@ def test_in_memory_store_project_isolation_for_entries_and_audit() -> None:
         )
         == ()
     )
-    assert store.list_audit(tenant_id="demo", project_id="proj-2", entry_id="entry-1") == ()
+    assert (
+        store.list_audit(
+            tenant_id="demo", project_id="proj-2", logical_agent_id="agent-memory-test", entry_id="entry-1"
+        )
+        == ()
+    )
 
 
 class FakeMemoryContainer:
@@ -361,6 +382,7 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
         id="audit-1",
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-memory-test",
         entry_id="entry-1",
         action=MemoryAuditAction.REMEMBER,
         actor_id="creator-1",
@@ -370,6 +392,7 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
         id="audit-2",
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-memory-test",
         entry_id="entry-1",
         action=MemoryAuditAction.FORGET,
         actor_id="creator-1",
@@ -378,9 +401,22 @@ def test_cosmos_memory_store_entry_and_audit_operations(monkeypatch: pytest.Monk
     store.record_audit(forget)
     store.record_audit(remember)
 
-    audit = store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
+    audit = store.list_audit(
+        tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-memory-test", entry_id="entry-1"
+    )
     assert [record.id for record in audit] == ["audit-1", "audit-2"]
-    assert store.list_audit(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="missing") == ()
+    assert (
+        store.list_audit(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-memory-test", entry_id="missing"
+        )
+        == ()
+    )
+    assert (
+        store.list_audit(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="other-agent", entry_id="entry-1"
+        )
+        == ()
+    )
 
     container = cast(FakeMemoryContainer, store._container)
     entry_document = container.documents["entry-1"]
@@ -527,7 +563,9 @@ def test_memory_service_remember_computes_ttl_and_records_audit() -> None:
     stored = service.remember(manifest, entry)
 
     assert stored.expires_at == BASE_TIME + timedelta(days=7)
-    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
+    trail = service.audit_trail(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+    )
     assert len(trail) == 1
     assert trail[0].action is MemoryAuditAction.REMEMBER
     assert trail[0].actor_id == "creator-1"
@@ -594,9 +632,55 @@ def test_memory_service_recall_and_export_filter_inactive_and_acl_and_record_sco
     assert [entry.id for entry in recalled] == ["entry-acl"]
     assert [entry.id for entry in exported] == ["entry-acl"]
 
-    scope_trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id=_scope_sentinel())
+    # Scope-level aggregate audit records (recall/export activity) are
+    # written to the store under a ``scope:...`` pseudo-ID, but that pseudo-ID
+    # is intentionally not resolvable through the ACL-gated service facade
+    # (see the rejection test below) — only the underlying store exposes it,
+    # which is how the store's own governance tooling inspects scope activity.
+    scope_trail = store.list_audit(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id=manifest.logical_agent_id,
+        entry_id=_scope_sentinel(),
+    )
     assert [record.action for record in scope_trail] == [MemoryAuditAction.RECALL, MemoryAuditAction.EXPORT]
     assert [record.detail for record in scope_trail] == ["count=1", "count=1"]
+
+
+def test_memory_service_audit_trail_rejects_cross_tenant_entry() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    store.append(_entry(tenant_id="other-tenant"))
+
+    with pytest.raises(MemoryPolicyError, match="not found"):
+        service.audit_trail(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+        )
+
+
+def test_memory_service_audit_trail_rejects_scope_pseudo_id() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(manifest, _entry())
+    service.recall(
+        manifest,
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        scope_kind=MemoryScopeKind.CONVERSATION,
+        scope_id="conv-1",
+        actor_id="creator-1",
+    )
+
+    with pytest.raises(MemoryAccessError, match="concrete memory entry ID"):
+        service.audit_trail(
+            manifest,
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            entry_id=_scope_sentinel(),
+            actor_id="creator-1",
+        )
 
 
 def test_memory_service_recall_returns_empty_across_projects() -> None:
@@ -614,7 +698,9 @@ def test_memory_service_recall_returns_empty_across_projects() -> None:
         actor_id="creator-1",
     )
 
-    trail = service.audit_trail(tenant_id="demo", project_id="proj-2", entry_id=_scope_sentinel())
+    trail = store.list_audit(
+        tenant_id="demo", project_id="proj-2", logical_agent_id=manifest.logical_agent_id, entry_id=_scope_sentinel()
+    )
 
     assert recalled == ()
     assert len(trail) == 1
@@ -676,7 +762,9 @@ def test_memory_service_correct_updates_content_and_records_audit() -> None:
     assert corrected.content == "corrected value"
     assert corrected.provenance == "operator_correction"
     assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == corrected
-    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
+    trail = service.audit_trail(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+    )
     assert [record.action for record in trail] == [MemoryAuditAction.REMEMBER, MemoryAuditAction.CORRECT]
     assert trail[-1].detail == "content corrected"
 
@@ -737,7 +825,9 @@ def test_memory_service_forget_soft_deletes_and_records_audit(monkeypatch: pytes
 
     assert forgotten.deleted_at == forgotten_at
     assert store.get_entry(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1") == forgotten
-    trail = service.audit_trail(tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1")
+    trail = service.audit_trail(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+    )
     assert [record.action for record in trail] == [MemoryAuditAction.REMEMBER, MemoryAuditAction.FORGET]
     assert trail[-1].detail == "user requested deletion"
 
@@ -762,7 +852,7 @@ def test_memory_service_forget_rejects_unauthorized_actor_but_allows_already_del
     assert forgotten.deleted_at == second_deleted_at
 
 
-@pytest.mark.parametrize("method", ["inspect", "correct", "forget"])
+@pytest.mark.parametrize("method", ["inspect", "correct", "forget", "audit_trail"])
 def test_memory_service_cross_project_entries_are_treated_as_not_found(method: str) -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
@@ -787,8 +877,16 @@ def test_memory_service_cross_project_entries_are_treated_as_not_found(method: s
                 actor_id="creator-1",
                 content="fixed",
             )
-        else:
+        elif method == "forget":
             service.forget(
+                manifest,
+                tenant_id="demo",
+                project_id="proj-2",
+                entry_id="entry-1",
+                actor_id="creator-1",
+            )
+        else:
+            service.audit_trail(
                 manifest,
                 tenant_id="demo",
                 project_id="proj-2",
@@ -797,7 +895,7 @@ def test_memory_service_cross_project_entries_are_treated_as_not_found(method: s
             )
 
 
-@pytest.mark.parametrize("method", ["inspect", "correct", "forget"])
+@pytest.mark.parametrize("method", ["inspect", "correct", "forget", "audit_trail"])
 def test_memory_service_cross_agent_entries_are_treated_as_not_found(method: str) -> None:
     store = InMemoryMemoryStore()
     service = MemoryService(store)
@@ -818,10 +916,46 @@ def test_memory_service_cross_agent_entries_are_treated_as_not_found(method: str
                 actor_id="creator-1",
                 content="fixed",
             )
-        else:
+        elif method == "forget":
             service.forget(
                 manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
             )
+        else:
+            service.audit_trail(
+                manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+            )
+
+
+def test_memory_service_audit_trail_rejects_viewer_without_read_acl() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest()
+    service.remember(manifest, _entry(read_acl=("reader-1",)))
+
+    with pytest.raises(MemoryAccessError, match="read access"):
+        service.audit_trail(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="unrelated-viewer"
+        )
+
+    # A principal in the entry's read_acl is authorized, unlike an unrelated viewer.
+    trail = service.audit_trail(
+        manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="reader-1"
+    )
+    assert [record.action for record in trail] == [MemoryAuditAction.REMEMBER]
+
+
+def test_memory_service_audit_trail_rejects_when_scope_disallows_user_inspect() -> None:
+    store = InMemoryMemoryStore()
+    service = MemoryService(store)
+    manifest = _manifest(
+        (MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, allow_user_inspect=False),)
+    )
+    service.remember(manifest, _entry())
+
+    with pytest.raises(MemoryAccessError, match="does not allow user-initiated audit inspection"):
+        service.audit_trail(
+            manifest, tenant_id="demo", project_id=TEST_PROJECT_ID, entry_id="entry-1", actor_id="creator-1"
+        )
 
 
 def test_memory_service_inspect_rejects_when_scope_disallows_user_inspect() -> None:

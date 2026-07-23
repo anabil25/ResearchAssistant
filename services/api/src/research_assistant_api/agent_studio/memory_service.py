@@ -109,7 +109,9 @@ class MemoryStore(Protocol):
 
     def record_audit(self, record: MemoryAuditRecord) -> MemoryAuditRecord: ...
 
-    def list_audit(self, *, tenant_id: str, project_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]: ...
+    def list_audit(
+        self, *, tenant_id: str, project_id: str, logical_agent_id: str, entry_id: str
+    ) -> tuple[MemoryAuditRecord, ...]: ...
 
 
 class InMemoryMemoryStore:
@@ -161,11 +163,16 @@ class InMemoryMemoryStore:
         self._audit.append(record)
         return record
 
-    def list_audit(self, *, tenant_id: str, project_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
+    def list_audit(
+        self, *, tenant_id: str, project_id: str, logical_agent_id: str, entry_id: str
+    ) -> tuple[MemoryAuditRecord, ...]:
         matches = [
             record
             for record in self._audit
-            if record.tenant_id == tenant_id and record.project_id == project_id and record.entry_id == entry_id
+            if record.tenant_id == tenant_id
+            and record.project_id == project_id
+            and record.logical_agent_id == logical_agent_id
+            and record.entry_id == entry_id
         ]
         matches.sort(key=lambda record: record.created_at)
         return tuple(matches)
@@ -277,18 +284,25 @@ class CosmosMemoryStore:
                 "scope_key": compute_scope_key(record.tenant_id, record.project_id),
                 "tenantId": record.tenant_id,
                 "projectId": record.project_id,
+                "logicalAgentId": record.logical_agent_id,
                 "entryId": record.entry_id,
                 "payload": record.model_dump(mode="json"),
             }
         )
         return record
 
-    def list_audit(self, *, tenant_id: str, project_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
+    def list_audit(
+        self, *, tenant_id: str, project_id: str, logical_agent_id: str, entry_id: str
+    ) -> tuple[MemoryAuditRecord, ...]:
         documents = list(
             self._container.query_items(
-                query=("SELECT * FROM c WHERE c.documentType = @documentType AND c.entryId = @entryId"),
+                query=(
+                    "SELECT * FROM c WHERE c.documentType = @documentType "
+                    "AND c.logicalAgentId = @logicalAgentId AND c.entryId = @entryId"
+                ),
                 parameters=[
                     {"name": "@documentType", "value": "audit"},
+                    {"name": "@logicalAgentId", "value": logical_agent_id},
                     {"name": "@entryId", "value": entry_id},
                 ],
                 partition_key=compute_scope_key(tenant_id, project_id),
@@ -356,6 +370,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=entry.tenant_id,
                 project_id=entry.project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=entry.id,
                 action=MemoryAuditAction.REMEMBER,
                 actor_id=entry.created_by,
@@ -390,6 +405,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=tenant_id,
                 project_id=project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=f"scope:{scope_kind.value}:{scope_id}",
                 action=MemoryAuditAction.RECALL,
                 actor_id=actor_id,
@@ -420,6 +436,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=tenant_id,
                 project_id=project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=entry_id,
                 action=MemoryAuditAction.INSPECT,
                 actor_id=actor_id,
@@ -450,6 +467,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=tenant_id,
                 project_id=project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=entry_id,
                 action=MemoryAuditAction.CORRECT,
                 actor_id=actor_id,
@@ -483,6 +501,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=tenant_id,
                 project_id=project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=entry_id,
                 action=MemoryAuditAction.FORGET,
                 actor_id=actor_id,
@@ -519,6 +538,7 @@ class MemoryService:
                 id=str(uuid4()),
                 tenant_id=tenant_id,
                 project_id=project_id,
+                logical_agent_id=manifest.logical_agent_id,
                 entry_id=f"scope:{scope_kind.value}:{scope_id}",
                 action=MemoryAuditAction.EXPORT,
                 actor_id=actor_id,
@@ -527,9 +547,44 @@ class MemoryService:
         )
         return visible
 
-    def audit_trail(self, *, tenant_id: str, project_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
-        """Governance audit history for a single memory entry."""
-        return self._store.list_audit(tenant_id=tenant_id, project_id=project_id, entry_id=entry_id)
+    def audit_trail(
+        self, manifest: AgentManifest, *, tenant_id: str, project_id: str, entry_id: str, actor_id: str
+    ) -> tuple[MemoryAuditRecord, ...]:
+        """Governance audit history for a single memory entry.
+
+        Requires the enclosing ``manifest`` so the entry can be resolved
+        through its owning logical agent (never by ``entry_id`` alone): the
+        underlying store filters by ``(tenant_id, project_id,
+        logical_agent_id, entry_id)``, so no cross-agent audit history can be
+        surfaced even if the caller can guess another agent's entry ID.
+        Scope-level aggregate pseudo-IDs (``scope:{kind}:{scope_id}``, used
+        internally for ``recall``/``export`` audit records) are rejected here
+        rather than resolved, since there is no per-entry ACL to check for
+        them and allowing lookups by that pattern would let a caller
+        enumerate scope activity without an owned entry to authorize
+        against. The caller must also hold read access to the concrete entry
+        (creator or ``read_acl`` member) and the scope must permit
+        user-initiated inspection, matching ``inspect()``'s visibility rule.
+        """
+        if entry_id.startswith("scope:"):
+            raise MemoryAccessError(
+                "Audit trail lookups are only permitted for a concrete memory entry ID, "
+                "not an aggregate scope identifier."
+            )
+        entry = self._get_owned_entry(manifest, tenant_id=tenant_id, project_id=project_id, entry_id=entry_id)
+        binding = validate_memory_scopes(manifest, entry.scope_kind)
+        if not binding.allow_user_inspect:
+            raise MemoryAccessError(
+                f"Scope '{entry.scope_kind.value}' does not allow user-initiated audit inspection for this agent."
+            )
+        if not _can_read(entry, actor_id):
+            raise MemoryAccessError(f"Actor '{actor_id}' does not have read access to memory entry '{entry_id}'.")
+        return self._store.list_audit(
+            tenant_id=tenant_id,
+            project_id=project_id,
+            logical_agent_id=manifest.logical_agent_id,
+            entry_id=entry_id,
+        )
 
     def _get_owned_entry(
         self, manifest: AgentManifest, *, tenant_id: str, project_id: str, entry_id: str

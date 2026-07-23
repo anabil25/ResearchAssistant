@@ -17,6 +17,7 @@ from datetime import datetime
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentVisibility,
@@ -260,6 +261,32 @@ def _security_gate(
     return GateResult(name=GateName.SECURITY, status=GateStatus.PASSED, detail="No security findings.")
 
 
+def _binding_gate(
+    manifest: AgentManifest,
+    capability_registry: CapabilityRegistry,
+) -> GateResult:
+    """Hard-block release when any capability binding has gone stale.
+
+    Re-resolves every ``CapabilityBinding`` in the manifest against the
+    *live* registry state (not the value pinned at attach time) and
+    hard-fails if any descriptor/operation/instance digest, fingerprint,
+    version, destination, or bindability (maturity/lifecycle/readiness) has
+    drifted since the binding was attached. This closes the gap where a
+    client could otherwise PUT a fabricated or stale binding and have it
+    silently honored through cut/gates/deploy.
+    """
+    violations: list[str] = []
+    for binding in manifest.capabilities:
+        reason = capability_registry.check_binding_freshness(binding)
+        if reason is not None:
+            violations.append(reason)
+    if violations:
+        return GateResult(name=GateName.BINDING, status=GateStatus.FAILED, detail="; ".join(violations))
+    return GateResult(
+        name=GateName.BINDING, status=GateStatus.PASSED, detail="All capability bindings are fresh."
+    )
+
+
 def run_gates(
     *,
     version_id: str,
@@ -267,13 +294,14 @@ def run_gates(
     manifest: AgentManifest,
     manifest_hash: str,
     capability_catalog: Mapping[str, CapabilityDescriptor],
+    capability_registry: CapabilityRegistry,
     evidence: GateEvidence,
     runtime_target: RuntimeTarget | None = None,
     capability_approvals: tuple[StudioApprovalRecord, ...] = (),
     schema_resolver: SchemaRefResolver | None = None,
     now: datetime | None = None,
 ) -> ReleaseGateReport:
-    """Run all eight hard gates deterministically and assemble a report.
+    """Run all nine hard gates deterministically and assemble a report.
 
     ``runtime_target`` makes the BUILD gate runtime-aware: a Managed Foundry
     agent has no separate build step, so BUILD is deterministically
@@ -284,6 +312,9 @@ def run_gates(
     (missing/expired/mismatched capability-operation approvals hard-block);
     ``schema_resolver`` feeds the SCHEMA gate's independent digest
     verification of ``input_schema_ref``/``output_schema_ref``.
+    ``capability_registry`` (the *live* registry, independent of
+    ``capability_catalog``'s point-in-time mapping) feeds the BINDING gate's
+    stale-binding re-resolution.
     """
     resolver = schema_resolver if schema_resolver is not None else InlineSchemaRefResolver()
     effective_now = now if now is not None else utc_now()
@@ -296,5 +327,12 @@ def run_gates(
         _approval_gate(manifest, capability_catalog, manifest_hash, capability_approvals, effective_now),
         _security_gate(manifest, capability_catalog),
         _smoke_gate(evidence),
+        _binding_gate(manifest, capability_registry),
     )
-    return ReleaseGateReport(id=report_id, version_id=version_id, results=results)
+    return ReleaseGateReport(
+        id=report_id,
+        version_id=version_id,
+        tenant_id=manifest.tenant_id,
+        project_id=manifest.project_id,
+        results=results,
+    )

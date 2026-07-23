@@ -120,6 +120,23 @@ class DeploymentService:
             if approved.expires_at is not None and approved.expires_at <= utc_now():
                 raise DeploymentServiceError(f"Capability binding '{destination}' approval has expired.")
 
+    def _revalidate_capability_bindings(self, version: AgentVersion) -> None:
+        """Hard-fail deploy if any capability binding has gone stale.
+
+        Independent of ``_revalidate_capability_approvals``: this re-checks
+        descriptor/operation/instance digests, fingerprints, versions, and
+        destination constraints against the *live* registry, not just
+        approval state. A binding that was fresh at cut/gate time can still
+        drift before deploy (e.g. the provider descriptor changed, or the
+        discovered instance was reconfigured/removed).
+        """
+        if self._registry is None:
+            return
+        for binding in version.manifest.capabilities:
+            reason = self._registry.check_binding_freshness(binding)
+            if reason is not None:
+                raise DeploymentServiceError(f"Capability binding is stale and cannot be deployed: {reason}")
+
     def deploy(
         self,
         *,
@@ -157,6 +174,7 @@ class DeploymentService:
             )
         self._revalidate_model_deployment(version)
         self._revalidate_capability_approvals(scope, version)
+        self._revalidate_capability_bindings(version)
         runtime_target = version.runtime_target
         if runtime_target is None:
             raise DeploymentServiceError(f"Version '{version_id}' has no runtime_target resolved.")

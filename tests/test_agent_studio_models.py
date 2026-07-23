@@ -293,6 +293,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         id="audit-1",
         tenant_id="tenant-1",
         project_id="project-1",
+        logical_agent_id=manifest.logical_agent_id,
         entry_id=memory_entry.id,
         action=MemoryAuditAction.EXPORT,
         actor_id="user-1",
@@ -413,6 +414,8 @@ def test_release_gate_report_accepts_not_applicable_and_blocks_skipped_or_failed
     passing = ReleaseGateReport(
         id="report-pass",
         version_id="version-1",
+        tenant_id="tenant-1",
+        project_id="project-1",
         results=(
             GateResult(name=GateName.SCHEMA, status=GateStatus.PASSED),
             GateResult(name=GateName.BUILD, status=GateStatus.NOT_APPLICABLE),
@@ -421,6 +424,8 @@ def test_release_gate_report_accepts_not_applicable_and_blocks_skipped_or_failed
     blocking = ReleaseGateReport(
         id="report-block",
         version_id="version-1",
+        tenant_id="tenant-1",
+        project_id="project-1",
         results=(
             GateResult(name=GateName.TEST, status=GateStatus.SKIPPED, detail="No test evidence supplied."),
             GateResult(name=GateName.SECURITY, status=GateStatus.FAILED, detail="secret found"),

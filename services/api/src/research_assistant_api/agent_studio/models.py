@@ -695,7 +695,11 @@ class MemoryAuditRecord(BaseModel):
     writes from normal agent operation, which are already durable as the
     entry itself) is recorded here, independent of the entry's own lifecycle
     — a ``forget`` still leaves an audit record even though the entry content
-    itself is no longer recallable.
+    itself is no longer recallable. ``logical_agent_id`` is required so audit
+    lookups can be scoped/queried by the owning agent server-side, never by
+    ``entry_id`` alone — this is what prevents one agent's audit history
+    (or another actor's private scope) from being enumerated through another
+    agent's audit endpoint.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -703,6 +707,7 @@ class MemoryAuditRecord(BaseModel):
     id: str
     tenant_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
+    logical_agent_id: str = Field(min_length=1, max_length=200)
     entry_id: str
     action: MemoryAuditAction
     actor_id: str = Field(min_length=1, max_length=200)
@@ -1076,6 +1081,10 @@ class GateName(StrEnum):
     APPROVAL = "approval"
     SECURITY = "security"
     SMOKE = "smoke"
+    #: Re-resolves every capability binding against the *live* registry and
+    #: hard-fails on any stale descriptor/operation/instance/fingerprint —
+    #: see ``capability_registry.check_binding_freshness``.
+    BINDING = "binding"
 
 
 class GateStatus(StrEnum):
@@ -1099,10 +1108,23 @@ class GateResult(BaseModel):
 
 
 class ReleaseGateReport(BaseModel):
+    """The immutable, deterministic hard-gate result for one ``AgentVersion``.
+
+    ``tenant_id``/``project_id`` scope this report to the exact project that
+    owns the underlying version (mirroring every other Agent Studio record).
+    A gate report can contain sensitive detail (evidence summaries, security
+    findings) and previously had no owning scope at all -- it was persisted
+    under a single fixed, tenant/project-agnostic partition key, which made
+    it a cross-tenant point-lookup-by-id target. It is now partitioned and
+    queried exactly like every other project-scoped document.
+    """
+
     model_config = ConfigDict(frozen=True)
 
     id: str
     version_id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
     results: tuple[GateResult, ...]
     evaluations: tuple[EvaluationRecord, ...] = Field(default_factory=tuple)
     created_at: datetime = Field(default_factory=utc_now)

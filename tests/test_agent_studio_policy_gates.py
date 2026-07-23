@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, default_registry
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
@@ -31,6 +31,7 @@ from research_assistant_api.agent_studio.policy_gates import (
     GateEvidence,
     _approval_gate,
     _auth_gate,
+    _binding_gate,
     _build_gate,
     _contains_secret,
     _policy_gate,
@@ -97,12 +98,14 @@ def _gate(report: ReleaseGateReport, name: GateName) -> GateResult:
 
 
 def test_run_gates_all_pass_for_custom_hosted_with_evidence() -> None:
+    registry = default_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
         manifest=_manifest(),
         manifest_hash="sha256:" + "a" * 64,
-        capability_catalog=default_registry().as_mapping(),
+        capability_catalog=registry.as_mapping(),
+        capability_registry=registry,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
     )
@@ -113,12 +116,14 @@ def test_run_gates_all_pass_for_custom_hosted_with_evidence() -> None:
 
 
 def test_run_gates_marks_build_not_applicable_for_managed_foundry() -> None:
+    registry = default_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
         manifest=_manifest(),
         manifest_hash="sha256:" + "a" * 64,
-        capability_catalog=default_registry().as_mapping(),
+        capability_catalog=registry.as_mapping(),
+        capability_registry=registry,
         evidence=GateEvidence(tests_passed=True, smoke_passed=True),
         runtime_target=RuntimeTarget.MANAGED_FOUNDRY,
     )
@@ -257,12 +262,14 @@ def test_approval_gate_passes_with_matching_unexpired_approved_record() -> None:
 
 
 def test_run_gates_fails_report_when_required_capability_approval_is_missing() -> None:
+    registry = default_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
         manifest=_manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
         manifest_hash="sha256:manifest-a",
-        capability_catalog=default_registry().as_mapping(),
+        capability_catalog=registry.as_mapping(),
+        capability_registry=registry,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
         now=datetime(2030, 1, 1, tzinfo=UTC),
@@ -462,6 +469,88 @@ def test_security_gate_detects_embedded_secret_and_system_high_risk_public_capab
     assert "embedded secret" in embedded_secret.detail
     assert high_risk_system.status is GateStatus.FAILED
     assert "system-owned agent attaches high-risk" in high_risk_system.detail
+
+
+def test_binding_gate_passes_for_fresh_bindings() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+
+    result = _binding_gate(_manifest(capabilities=(binding,)), registry)
+
+    assert result.status is GateStatus.PASSED
+    assert "fresh" in result.detail
+
+
+def test_binding_gate_passes_when_manifest_has_no_capabilities() -> None:
+    registry = default_registry()
+
+    result = _binding_gate(_manifest(), registry)
+
+    assert result.status is GateStatus.PASSED
+
+
+def test_binding_gate_fails_for_tampered_descriptor_digest() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    tampered = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
+
+    result = _binding_gate(_manifest(capabilities=(tampered,)), registry)
+
+    assert result.status is GateStatus.FAILED
+    assert "descriptor_ref.digest mismatch" in result.detail
+
+
+def test_binding_gate_fails_for_descriptor_removed_from_live_registry() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    stale_registry = CapabilityRegistry(descriptors=())
+
+    result = _binding_gate(_manifest(capabilities=(binding,)), stale_registry)
+
+    assert result.status is GateStatus.FAILED
+    assert "no longer in the catalog" in result.detail
+
+
+def test_binding_gate_aggregates_multiple_stale_bindings() -> None:
+    registry = default_registry()
+    first = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    second = registry.attach(descriptor_id="foundry.file_search", operation="search", attached_by="user-1")
+    tampered_first = first.model_copy(
+        update={"descriptor_ref": first.descriptor_ref.model_copy(update={"digest": "sha256:tampered-1"})}
+    )
+    tampered_second = second.model_copy(
+        update={"descriptor_ref": second.descriptor_ref.model_copy(update={"digest": "sha256:tampered-2"})}
+    )
+
+    result = _binding_gate(_manifest(capabilities=(tampered_first, tampered_second)), registry)
+
+    assert result.status is GateStatus.FAILED
+    assert "foundry.web_search" in result.detail
+    assert "foundry.file_search" in result.detail
+
+
+def test_run_gates_hard_fails_when_a_capability_binding_is_stale() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    tampered = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
+    report = run_gates(
+        version_id="version-1",
+        report_id="report-1",
+        manifest=_manifest(capabilities=(tampered,)),
+        manifest_hash="sha256:" + "a" * 64,
+        capability_catalog=registry.as_mapping(),
+        capability_registry=registry,
+        evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        runtime_target=RuntimeTarget.CUSTOM_HOSTED,
+    )
+
+    assert not report.passed
+    assert _gate(report, GateName.BINDING).status is GateStatus.FAILED
+    assert "descriptor_ref.digest mismatch" in _gate(report, GateName.BINDING).detail
 
 
 def test_security_gate_passes_for_safe_config_and_missing_descriptor_without_findings() -> None:

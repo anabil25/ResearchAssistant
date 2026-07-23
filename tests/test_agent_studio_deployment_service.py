@@ -168,9 +168,11 @@ class ReleaseServiceHarness:
         tenant_id: str,
         project_id: str,
         version_id: str,
+        actor_id: str,
+        actor_role: AgentRole,
         evidence: GateEvidence,
     ) -> AgentRelease:
-        del evidence
+        del evidence, actor_role
         scope = _scope(project_id, tenant_id)
         version = self._store.get_version(scope, version_id)
         assert version is not None
@@ -184,7 +186,7 @@ class ReleaseServiceHarness:
             manifest_hash=version.manifest_hash,
             status=ReleaseStatus.GATED,
             previous_release_id=previous.id if previous is not None else None,
-            created_by=version.created_by,
+            created_by=actor_id,
             detail="Passed all applicable hard gates.",
         )
         return self._store.create_release(scope, release)
@@ -242,12 +244,19 @@ def _cut_version(
 
 
 def _pass_gates(
-    release_service: ReleaseServiceHarness, version: AgentVersion, *, project_id: str = TEST_PROJECT_ID
+    release_service: ReleaseServiceHarness,
+    version: AgentVersion,
+    *,
+    project_id: str = TEST_PROJECT_ID,
+    actor_id: str = "user-1",
+    actor_role: AgentRole = AgentRole.OWNER,
 ) -> None:
     release_service.run_release_gates(
         tenant_id=TENANT,
         project_id=project_id,
         version_id=version.id,
+        actor_id=actor_id,
+        actor_role=actor_role,
         evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
     )
 
@@ -1422,27 +1431,28 @@ def test_deploy_succeeds_when_capability_approval_is_valid(
     assert record.version_id == version.id
 
 
-def test_deploy_skips_capability_bindings_whose_descriptor_is_unknown_to_the_registry(
+def test_deploy_hard_fails_when_capability_binding_descriptor_is_unknown_to_the_registry(
     release_service: ReleaseServiceHarness,
     store: AgentStudioStore,
 ) -> None:
-    """The registry passed to ``DeploymentService`` may not (yet) know about
-    a descriptor referenced by an already-cut version's binding (e.g. a
-    descriptor retired from the catalog after the version was cut); this
-    must be skipped rather than treated as an approval failure."""
+    """Finding #4 regression: a descriptor retired from the live catalog
+    after a version was cut must hard-block deploy via the binding-
+    freshness revalidation, not silently succeed. Approval-enforcement
+    itself still tolerates an unknown descriptor (it cannot determine
+    whether approval applies), but the independent binding-freshness
+    gate must still reject deploy for the very same stale binding."""
     version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-unknown-descriptor")
     deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
 
-    record = deployment_service.deploy(
-        tenant_id="demo",
-        project_id=TEST_PROJECT_ID,
-        logical_agent_id="agent-deploy-unknown-descriptor",
-        version_id=version.id,
-        deployed_by="user-1",
-        actor_role=AgentRole.OWNER,
-    )
-
-    assert record.version_id == version.id
+    with pytest.raises(DeploymentServiceError, match="stale"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-deploy-unknown-descriptor",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
 
 
 def test_deploy_skips_capability_bindings_whose_operation_does_not_require_approval(
@@ -1487,7 +1497,58 @@ def test_deploy_skips_capability_bindings_whose_operation_does_not_require_appro
     assert record.version_id == version.id
 
 
-# -- Deploy-time revalidation: model deployment ------------------------------
+# -- Deploy-time revalidation: capability-binding freshness ------------------
+#
+# Finding #4 regression: independent of approval enforcement, ``deploy()``
+# must re-resolve every capability binding against the *live* registry and
+# hard-fail if it has gone stale (descriptor/operation/instance drift),
+# even for operations that never required approval in the first place.
+
+
+def test_deploy_hard_fails_when_a_non_approval_gated_binding_goes_stale_before_deploy(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    _create_agent(release_service, logical_agent_id="agent-deploy-stale-binding")
+    binding = release_service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+    )
+    draft = store.get_draft(_scope(), "agent-deploy-stale-binding")
+    assert draft is not None
+    release_service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-deploy-stale-binding",
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    version = release_service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-deploy-stale-binding",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    _append_release(store, version, ReleaseStatus.GATED, created_by="user-1")
+    # Simulate the descriptor's content changing (digest drift) between cut
+    # and deploy by pointing the deployment-time registry at an empty one.
+    deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
+
+    with pytest.raises(DeploymentServiceError, match="stale"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-deploy-stale-binding",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+
 #
 # Like the capability-approval recheck above, ``DeploymentService`` also
 # revalidates a declared ``model_deployment`` against *live* discovery again
