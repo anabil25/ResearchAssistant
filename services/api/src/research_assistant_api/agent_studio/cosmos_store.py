@@ -164,16 +164,118 @@ class CosmosAgentStudioStore(AgentStudioStore):
 
     # -- Versions -------------------------------------------------------
 
+    #: Bounded retry budget for the sequence-counter compare-and-swap loop.
+    #: A 412 (etag mismatch on ``replace_item``) or 409 (conflict on
+    #: ``create_item``) means another process/instance won the race for this
+    #: increment; we simply re-read the latest counter value and try again.
+    #: Sequence *gaps* (a reserved number whose version write never lands,
+    #: e.g. the process crashes) are acceptable; sequence *duplicates* are
+    #: not, and this loop never returns the same value twice.
+    _MAX_SEQUENCE_CAS_RETRIES = 10
+
     @staticmethod
     def _version_id(version_id: str) -> str:
         return f"version::{version_id}"
 
+    @staticmethod
+    def _sequence_counter_id(logical_agent_id: str) -> str:
+        return f"sequence-counter::{logical_agent_id}"
+
     def _sync_versions(self, scope: ScopeContext, logical_agent_id: str) -> None:
-        documents = self._query_partition(scope.scope_key, "version")
-        for document in documents:
+        for document in self._query_partition(scope.scope_key, "version"):
             version = AgentVersion.model_validate(document["payload"])
-            if version.logical_agent_id == logical_agent_id and version.id not in self._versions:
+            if version.logical_agent_id != logical_agent_id or version.id in self._versions:
+                continue
+            try:
                 AgentStudioStore.create_version(self, scope, version)
+            except AgentStudioStoreError:
+                # A concurrent caller on this same instance already synced
+                # this exact document into the local cache between our
+                # membership check and this call (e.g. two threads racing
+                # inside allocate_version) -- the cache ends up consistent
+                # either way, so this is a harmless benign race, not a real
+                # duplicate-version conflict.
+                continue
+
+    def _highest_persisted_sequence(self, scope: ScopeContext, logical_agent_id: str) -> int:
+        """Highest ``sequence`` among version documents already persisted for
+        this agent, read directly from Cosmos (not the local cache) so a
+        freshly-created counter seeds itself correctly even when versions
+        were written by ``create_version`` (tests, migration/backfill)
+        before the counter document ever existed."""
+        highest = 0
+        for document in self._query_partition(scope.scope_key, "version"):
+            version = AgentVersion.model_validate(document["payload"])
+            if version.logical_agent_id == logical_agent_id and version.sequence > highest:
+                highest = version.sequence
+        return highest
+
+    def _allocate_sequence_cas(self, scope: ScopeContext, logical_agent_id: str) -> int:
+        """Atomically reserve the next version sequence number for
+        ``(scope.scope_key, logical_agent_id)`` using a dedicated Cosmos
+        counter document and an ETag compare-and-swap increment.
+
+        This is the actual source of cross-process/cross-instance
+        atomicity: a single counter document per agent, incremented via
+        create-if-absent (first sequence) or a ``replace_item`` guarded by
+        ``MatchConditions.IfNotModified`` (subsequent sequences). Losing a
+        race surfaces as a 409 (someone else just created the counter) or a
+        412 (someone else just replaced it); both are retried with a
+        bounded budget instead of ever silently reusing a value. The
+        in-process ``AgentStudioStore._version_lock`` plays no role in this
+        guarantee — it only keeps this instance's local read-through cache
+        internally consistent.
+
+        On first creation the counter seeds itself from the highest
+        ``sequence`` already persisted for this agent (see
+        ``_highest_persisted_sequence``), so it produces a correct next
+        value even for an agent whose earlier versions were written via
+        ``create_version`` (e.g. migrated/backfilled data) before any
+        counter document existed for it.
+        """
+        counter_id = self._sequence_counter_id(logical_agent_id)
+        last_error: CosmosHttpResponseError | None = None
+        for _ in range(self._MAX_SEQUENCE_CAS_RETRIES):
+            try:
+                document = self._container.read_item(item=counter_id, partition_key=scope.scope_key)
+            except CosmosResourceNotFoundError:
+                seed = self._highest_persisted_sequence(scope, logical_agent_id) + 1
+                try:
+                    created = self._container.create_item(
+                        {
+                            "id": counter_id,
+                            "documentType": "sequence_counter",
+                            "scope_key": scope.scope_key,
+                            "logical_agent_id": logical_agent_id,
+                            "value": seed,
+                        }
+                    )
+                except CosmosHttpResponseError as exc:
+                    if exc.status_code != 409:
+                        raise
+                    last_error = exc
+                    continue
+                return int(created["value"])
+            else:
+                next_value = int(document["value"]) + 1
+                document["value"] = next_value
+                try:
+                    self._container.replace_item(
+                        item=counter_id,
+                        body=document,
+                        etag=document.get("_etag"),
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except CosmosHttpResponseError as exc:
+                    if exc.status_code != 412:
+                        raise
+                    last_error = exc
+                    continue
+                return next_value
+        raise AgentStudioStoreError(
+            f"Exceeded {self._MAX_SEQUENCE_CAS_RETRIES} retries allocating a version sequence "
+            f"for '{logical_agent_id}'."
+        ) from last_error
 
     def allocate_version(
         self,
@@ -181,17 +283,27 @@ class CosmosAgentStudioStore(AgentStudioStore):
         logical_agent_id: str,
         builder: Callable[[int], AgentVersion],
     ) -> AgentVersion:
-        """Sync any Cosmos-persisted versions into the in-memory cache first
-        so the atomic in-process sequence lock reserves a sequence number
-        that actually accounts for versions written by prior process
-        lifetimes, then delegate to the base class for the atomic
-        reserve-and-build step, then write through to Cosmos.
+        """Reserve the next sequence via the Cosmos-native CAS counter
+        (:meth:`_allocate_sequence_cas`, safe across processes/instances),
+        build the immutable version with that exact sequence, then persist
+        it locally and write it through to Cosmos.
 
-        Multi-process allocation races remain out of scope for this pass —
-        see the Phase 1 coordination note on atomic sequence allocation.
+        The Cosmos counter (not this process's local cache) is the sole
+        source of atomicity for the sequence number itself, so no lock is
+        held here. ``_sync_versions`` is still called first purely so this
+        instance's local cache -- and therefore ``list_versions`` ordering
+        -- reflects any versions another process/instance already wrote for
+        this agent before appending the newly allocated one.
         """
         self._sync_versions(scope, logical_agent_id)
-        version = super().allocate_version(scope, logical_agent_id, builder)
+        sequence = self._allocate_sequence_cas(scope, logical_agent_id)
+        version = builder(sequence)
+        self._require_scope_match(scope, version.tenant_id, version.project_id)
+        if version.sequence != sequence:
+            raise AgentStudioStoreError(
+                f"Builder returned sequence {version.sequence}, expected atomically-reserved {sequence}."
+            )
+        AgentStudioStore.create_version(self, scope, version)
         self._upsert(scope.scope_key, self._version_id(version.id), "version", version.model_dump(mode="json"))
         return version
 

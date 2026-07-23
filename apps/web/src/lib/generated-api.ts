@@ -4,6 +4,696 @@
  */
 
 export interface paths {
+    "/api/agent-studio/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Agent */
+        post: operations["create_agent_api_agent_studio_agents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/builder/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Builder Proposal
+         * @description Produce a stored manifest-change proposal from a natural-language message.
+         *
+         *     Never mutates the draft directly. The request body is a free-form
+         *     ``message`` and a ``base_etag`` acknowledgement only -- never a patch.
+         */
+        post: operations["create_builder_proposal_api_agent_studio_agents__logical_agent_id__builder_messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Deployments */
+        get: operations["list_deployments_api_agent_studio_agents__logical_agent_id__deployments_get"];
+        put?: never;
+        /** Deploy */
+        post: operations["deploy_api_agent_studio_agents__logical_agent_id__deployments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Draft */
+        get: operations["get_draft_api_agent_studio_agents__logical_agent_id__draft_get"];
+        /** Update Draft */
+        put: operations["update_draft_api_agent_studio_agents__logical_agent_id__draft_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/escalations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Escalation */
+        post: operations["request_escalation_api_agent_studio_agents__logical_agent_id__escalations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fork Agent */
+        post: operations["fork_agent_api_agent_studio_agents__logical_agent_id__fork_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lineage */
+        get: operations["list_lineage_api_agent_studio_agents__logical_agent_id__lineage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recall */
+        get: operations["recall_api_agent_studio_agents__logical_agent_id__memory_get"];
+        put?: never;
+        /**
+         * Remember
+         * @description Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).
+         *
+         *     Rejects non-GA memory mechanisms (e.g. the Foundry native "Memory"
+         *     preview feature) rather than silently accepting them. Memory is opt-in
+         *     per the agent's ``MemoryPolicy`` and persistent storage defaults off;
+         *     entries are governed by TTL, an explicit read/write ACL, and a
+         *     ``REMEMBER`` provenance audit record.
+         */
+        post: operations["remember_api_agent_studio_agents__logical_agent_id__memory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/memory-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Memory
+         * @description Export all readable memory entries for a scope (GA-mechanism memory governance: export).
+         */
+        get: operations["export_memory_api_agent_studio_agents__logical_agent_id__memory_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect Memory Entry
+         * @description Inspect a single memory entry (GA-mechanism memory governance: inspect).
+         */
+        get: operations["inspect_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__get"];
+        /**
+         * Correct Memory Entry
+         * @description Correct a memory entry's content (GA-mechanism memory governance: correct).
+         */
+        put: operations["correct_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__put"];
+        post?: never;
+        /**
+         * Forget Memory Entry
+         * @description Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance.
+         */
+        delete: operations["forget_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Memory Audit Trail
+         * @description Deletion/provenance audit trail for a single memory entry.
+         */
+        get: operations["memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Builder Proposals
+         * @description Proposal history for an agent (pending, applied, and rejected).
+         */
+        get: operations["list_builder_proposals_api_agent_studio_agents__logical_agent_id__proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Builder Proposal */
+        get: operations["get_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Builder Proposal
+         * @description Apply a stored proposal after researcher review.
+         *
+         *     Never accepts a patch body: only a ``base_etag`` acknowledgement. Fails
+         *     closed with a 409 if the draft changed since the proposal was generated,
+         *     or since the caller last read it.
+         */
+        post: operations["apply_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Builder Proposal */
+        post: operations["reject_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve Logical Agent
+         * @description Composition/resolution contract for the future typed workflow compiler.
+         *
+         *     Resolves a stable logical agent ID (within this tenant/workspace and the
+         *     requested ``environment``) to the exact pinned version/release, its
+         *     manifest hash, runtime endpoint, typed I/O schema refs, and capability
+         *     versions. A published workflow must pin this response's ``version_id``/
+         *     ``release_id``/``manifest_hash`` at compose time; execution must never
+         *     silently re-resolve to "whatever is latest" later.
+         */
+        get: operations["resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rollback */
+        post: operations["rollback_api_agent_studio_agents__logical_agent_id__rollback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/tool-registrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tool Registrations */
+        get: operations["list_tool_registrations_api_agent_studio_agents__logical_agent_id__tool_registrations_get"];
+        put?: never;
+        /**
+         * Register Tool
+         * @description Register the runtime handler for a GA capability operation.
+         *
+         *     Rejects operations that are not GA-attachable with the same honest
+         *     reason as ``/capabilities/attach`` (never silently registers a handler
+         *     for a preview/unavailable operation).
+         */
+        post: operations["register_tool_api_agent_studio_agents__logical_agent_id__tool_registrations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/agents/{logical_agent_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Versions */
+        get: operations["list_versions_api_agent_studio_agents__logical_agent_id__versions_get"];
+        put?: never;
+        /** Cut Version */
+        post: operations["cut_version_api_agent_studio_agents__logical_agent_id__versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/approvals/{approval_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Approval Route */
+        post: operations["decide_approval_route_api_agent_studio_approvals__approval_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/capabilities/attach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach Capability
+         * @description Attach a capability operation, enforcing GA-only maturity.
+         *
+         *     Rejects preview/unavailable operations with an honest reason rather than
+         *     silently succeeding; the resulting ``CapabilityBinding`` is returned for
+         *     the caller to merge into a draft manifest via ``PUT .../draft``. When
+         *     ``instance_id`` is supplied it must reference a registered, non-unavailable
+         *     ``CapabilityInstance`` for this descriptor.
+         */
+        post: operations["attach_capability_api_agent_studio_capabilities_attach_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/capabilities/descriptors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Capability Descriptors
+         * @description Honest capability catalog: GA operations are attachable; preview/unavailable
+         *     operations remain visible with their ``reason`` rather than being hidden.
+         *
+         *     Separate canonical resource from ``/capabilities/instances`` -- descriptors
+         *     are immutable provider-wide catalog/governance semantics, never tenant-
+         *     or project-scoped resource state.
+         */
+        get: operations["list_capability_descriptors_api_agent_studio_capabilities_descriptors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/capabilities/discovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Capability Discovery
+         * @description Combined descriptor/instance discovery snapshot for UI/compiler convenience.
+         *
+         *     Never a separate canonical resource -- just an aggregate read-time
+         *     projection over ``/capabilities/descriptors`` and ``/capabilities/
+         *     instances``, plus honest, non-fatal discovery ``warnings`` and the
+         *     ``refreshed_at`` timestamp of the underlying registry's last discovery
+         *     pass.
+         */
+        get: operations["get_capability_discovery_api_agent_studio_capabilities_discovery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/capabilities/instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Capability Instances
+         * @description Discovered, tenant/project-scoped capability resources.
+         *
+         *     Separate canonical resource from ``/capabilities/descriptors``: these are
+         *     the concrete, discovered things a ``CapabilityBinding`` points at via
+         *     ``instance_id``, always isolated to the caller's tenant (and, when
+         *     ``project_id`` is supplied, that project too).
+         */
+        get: operations["list_capability_instances_api_agent_studio_capabilities_instances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Released Agent Catalog
+         * @description Released-agent catalog for the future node palette/compiler.
+         *
+         *     Lists the exact, pinned contract currently bound to ``environment`` for
+         *     every logical agent this tenant owns a draft for. Agents with no
+         *     environment binding yet are omitted (there is nothing to pin).
+         */
+        get: operations["get_released_agent_catalog_api_agent_studio_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/deployments/{deployment_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Health */
+        post: operations["record_health_api_agent_studio_deployments__deployment_id__health_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Deployed Models */
+        get: operations["list_deployed_models_api_agent_studio_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/schemas/agent-manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Manifest Schema
+         * @description Canonical JSON Schema + content digest for the persisted ``AgentManifest``.
+         *
+         *     External consumers (e.g. the harness) resolve the manifest contract from
+         *     this endpoint's JSON Schema and digest rather than importing this
+         *     codebase's Python model class.
+         */
+        get: operations["get_agent_manifest_schema_api_agent_studio_schemas_agent_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/versions/{version_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate Release Route
+         * @description Explicit ACTIVE transition, gated on a healthy deploy+smoke record.
+         *
+         *     Never triggered implicitly by ``/promote``, ``/deployments`` (deploy),
+         *     or ``/deployments/{id}/health`` (record_health) — the caller must ask
+         *     for activation explicitly, and it is rejected unless the exact
+         *     version/environment already has a ``DeploymentRecord`` with a healthy
+         *     smoke result.
+         */
+        post: operations["activate_release_route_api_agent_studio_versions__version_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/versions/{version_id}/capability-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Capability Approval */
+        post: operations["request_capability_approval_api_agent_studio_versions__version_id__capability_approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/versions/{version_id}/contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Exact Version Contract
+         * @description Exact-version contract lookup for the future node palette/compiler.
+         *
+         *     Unlike ``/resolve`` (which follows the *current* environment binding for
+         *     a logical agent), this looks up one already-known ``version_id``
+         *     directly - for re-validating a previously composed/pinned workflow node
+         *     without depending on whatever is currently bound to an environment.
+         */
+        get: operations["get_exact_version_contract_api_agent_studio_versions__version_id__contract_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/versions/{version_id}/gates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Gates */
+        post: operations["run_gates_api_agent_studio_versions__version_id__gates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-studio/versions/{version_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Promotion */
+        post: operations["request_promotion_api_agent_studio_versions__version_id__promote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -134,40 +824,6 @@ export interface paths {
         put?: never;
         /** Test Connector */
         post: operations["test_connector_api_connectors__connector_id__test_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/datasets/execute": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Execute Dataset */
-        post: operations["execute_dataset_api_datasets_execute_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/datasets/plan": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Plan Dataset */
-        post: operations["plan_dataset_api_datasets_plan_post"];
         delete?: never;
         options?: never;
         head?: never;
@@ -400,6 +1056,50 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /**
+         * ActivationRequest
+         * @description Explicit request to activate an APPROVED release once deploy+smoke evidence exists.
+         *
+         *     ACTIVE is never an implicit side effect of promotion, ``deploy()``, or
+         *     ``record_health()`` — this is the one caller-visible action that flips a
+         *     version live for an environment, and it is rejected unless a healthy
+         *     ``DeploymentRecord`` for the exact version/environment already exists.
+         */
+        ActivationRequest: {
+            /** @default development */
+            environment: components["schemas"]["DeploymentEnvironment"];
+            /** Project Id */
+            project_id: string;
+        };
+        /**
+         * AgentDraft
+         * @description A mutable, in-progress edit of a manifest prior to cutting a version.
+         *
+         *     ``etag`` changes on every ``save_draft`` (see ``store.py``), giving
+         *     callers optimistic concurrency: a client that read an older ``etag`` and
+         *     submits an update built against stale state can be rejected rather than
+         *     silently clobbering a concurrent edit.
+         */
+        AgentDraft: {
+            /** Based On Version Id */
+            based_on_version_id?: string | null;
+            /** Etag */
+            etag?: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            manifest: components["schemas"]["AgentManifest"];
+            /** Project Id */
+            project_id: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at?: string;
+            /** Updated By */
+            updated_by: string;
+        };
         /** AgentInsight */
         AgentInsight: {
             /** Agent Name */
@@ -417,6 +1117,128 @@ export interface components {
             /** Unresolved Source Ids */
             unresolved_source_ids?: string[];
         };
+        /**
+         * AgentManifest
+         * @description The mutable, editable, runtime-neutral definition of an agent.
+         *
+         *     Runtime-neutral means this manifest never encodes a "deploy target"
+         *     choice directly — ``runtime_requirements`` states facts that
+         *     ``select_runtime`` uses to *derive* the target deterministically (see
+         *     ``runtime_selection.py``). Every other cross-cutting concern (I/O
+         *     contract, knowledge, delegation, policy/evaluation references, citation
+         *     policy, artifact contract, lineage/template provenance) is declared here
+         *     so an ``AgentVersion`` cut from this manifest is a complete, self-describing
+         *     release candidate.
+         */
+        AgentManifest: {
+            artifact_contract?: components["schemas"]["ArtifactContract"];
+            /** Capabilities */
+            capabilities?: components["schemas"]["CapabilityBinding"][];
+            citation_policy?: components["schemas"]["CitationPolicy"];
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Evaluation Suite Refs */
+            evaluation_suite_refs?: string[];
+            input_schema_ref?: components["schemas"]["SchemaRef"] | null;
+            /**
+             * Instructions
+             * @default
+             */
+            instructions: string;
+            /** Knowledge Bindings */
+            knowledge_bindings?: components["schemas"]["KnowledgeBinding"][];
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            memory_policy?: components["schemas"]["MemoryPolicy"];
+            model_deployment?: components["schemas"]["ModelDeploymentRef"] | null;
+            output_schema_ref?: components["schemas"]["SchemaRef"] | null;
+            /** Owner Id */
+            owner_id: string;
+            owner_kind: components["schemas"]["AgentOwnerKind"];
+            /** Policy Refs */
+            policy_refs?: string[];
+            /** Project Id */
+            project_id: string;
+            runtime_requirements?: components["schemas"]["RuntimeRequirements"];
+            /**
+             * Schema Version
+             * @default agent-studio.manifest.v1
+             */
+            schema_version: string;
+            specialist_policy?: components["schemas"]["SpecialistPolicy"];
+            /** Tags */
+            tags?: string[];
+            template_provenance?: components["schemas"]["TemplateProvenance"] | null;
+            /** Tenant Id */
+            tenant_id: string;
+            /** @default private */
+            visibility: components["schemas"]["AgentVisibility"];
+            /** Workspace Connections */
+            workspace_connections?: string[];
+        };
+        /**
+         * AgentOwnerKind
+         * @enum {string}
+         */
+        AgentOwnerKind: "system" | "user";
+        /**
+         * AgentRelease
+         * @description Append-only lifecycle/governance record for an immutable ``AgentVersion``.
+         *
+         *     Distinct from ``AgentVersion`` (pure content) and from ``DeploymentRecord``
+         *     (a concrete development deployment instance): ``AgentRelease`` tracks the
+         *     *governance* lifecycle — gated/approved/active/deprecated/rolled_back —
+         *     for a version within a given ``environment``. Each transition creates a
+         *     new record; ``previous_release_id`` forms a full audit chain so "how did
+         *     this version become active" is always reconstructable.
+         */
+        AgentRelease: {
+            /** Approval Id */
+            approval_id?: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Created By */
+            created_by: string;
+            /** Deployment Id */
+            deployment_id?: string | null;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** @default development */
+            environment: components["schemas"]["DeploymentEnvironment"];
+            /** Gate Report Id */
+            gate_report_id?: string | null;
+            /** Id */
+            id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Manifest Hash */
+            manifest_hash: string;
+            /** Previous Release Id */
+            previous_release_id?: string | null;
+            /** Project Id */
+            project_id: string;
+            status: components["schemas"]["ReleaseStatus"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Version Id */
+            version_id: string;
+        };
+        /**
+         * AgentRole
+         * @enum {string}
+         */
+        AgentRole: "owner" | "maintainer" | "contributor" | "viewer";
         /** AgentSetting */
         AgentSetting: {
             /** Deployment */
@@ -434,6 +1256,66 @@ export interface components {
             /** Workflow Steps */
             workflow_steps: string[];
         };
+        /**
+         * AgentVersion
+         * @description An immutable, content-addressed release candidate/record.
+         *
+         *     Pure content only — ``AgentVersion`` never carries a mutable draft/
+         *     released/rollback status or a gate-report linkage; that lifecycle state
+         *     lives entirely in append-only ``AgentRelease`` records (below), keyed by
+         *     ``version_id``. Once created, no field on this model is ever mutated;
+         *     ``manifest_hash``/``bundle_uri``/``bundle_checksum`` are frozen forever at
+         *     cut time.
+         */
+        AgentVersion: {
+            artifact_metadata?: components["schemas"]["ReleaseArtifactMetadata"];
+            /** Bundle Checksum */
+            bundle_checksum?: string | null;
+            /** Bundle Uri */
+            bundle_uri?: string | null;
+            /** Capability Versions */
+            capability_versions?: {
+                [key: string]: string;
+            };
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Created By */
+            created_by: string;
+            /** Fork Of Version Id */
+            fork_of_version_id?: string | null;
+            /** Id */
+            id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            manifest: components["schemas"]["AgentManifest"];
+            /** Manifest Hash */
+            manifest_hash: string;
+            model_deployment?: components["schemas"]["ModelDeploymentRef"] | null;
+            /** Parent Version Id */
+            parent_version_id?: string | null;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Protocol Version
+             * @default agent-studio.protocol.v1
+             */
+            protocol_version: string;
+            /** Runtime Selection Reasons */
+            runtime_selection_reasons?: string[];
+            runtime_target?: components["schemas"]["RuntimeTarget"] | null;
+            /** Sequence */
+            sequence: number;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
+         * AgentVisibility
+         * @enum {string}
+         */
+        AgentVisibility: "system" | "private" | "org" | "published";
         /** AnalysisStep */
         AnalysisStep: {
             /** Deterministic */
@@ -449,10 +1331,24 @@ export interface components {
         };
         /** ApprovalDecision */
         ApprovalDecision: {
-            decision: components["schemas"]["ApprovalState"];
+            decision: components["schemas"]["ApprovalState-Input"];
             /** Rationale */
             rationale: string;
         };
+        /** ApprovalDecisionRequest */
+        ApprovalDecisionRequest: {
+            /** Approve */
+            approve: boolean;
+            /** Project Id */
+            project_id: string;
+            /** Rationale */
+            rationale?: string | null;
+        };
+        /**
+         * ApprovalKind
+         * @enum {string}
+         */
+        ApprovalKind: "release_promotion" | "fork_promotion" | "admin_escalation" | "capability_operation";
         /** ApprovalRecord */
         ApprovalRecord: {
             /** Approver Id */
@@ -491,7 +1387,7 @@ export interface components {
             risk: string;
             /** Run Id */
             run_id: string;
-            state: components["schemas"]["ApprovalState"];
+            state: components["schemas"]["research_assistant_api__workspace__ApprovalState"];
             /** Title */
             title: string;
         };
@@ -499,7 +1395,28 @@ export interface components {
          * ApprovalState
          * @enum {string}
          */
-        ApprovalState: "pending" | "approved" | "rejected" | "cancelled";
+        "ApprovalState-Input": "pending" | "approved" | "rejected" | "cancelled";
+        /**
+         * ArtifactContract
+         * @description Declares the packaging contract for this agent's output artifacts,
+         *     independent of ``output_schema_ref`` (which describes the *structured
+         *     data shape*; this describes the *delivery kind* — e.g. plain text vs. a
+         *     file attachment — and any size ceiling).
+         */
+        ArtifactContract: {
+            /** Max Output Bytes */
+            max_output_bytes?: number | null;
+            /**
+             * Output Kind
+             * @default text
+             */
+            output_kind: string;
+            /**
+             * Requires Human Review
+             * @default false
+             */
+            requires_human_review: boolean;
+        };
         /** ArtifactSection */
         ArtifactSection: {
             /** Body */
@@ -530,6 +1447,23 @@ export interface components {
             mode: string;
             /** Response Id */
             response_id?: string | null;
+        };
+        /** AttachCapabilityRequest */
+        AttachCapabilityRequest: {
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** Connection Ref */
+            connection_ref?: string | null;
+            /** Descriptor Id */
+            descriptor_id: string;
+            /** Instance Id */
+            instance_id?: string | null;
+            /** Operation */
+            operation: string;
+            /** Policy Ref */
+            policy_ref?: string | null;
         };
         /** AutomationStep */
         AutomationStep: {
@@ -597,10 +1531,437 @@ export interface components {
             title: string;
         };
         /**
+         * BuilderApplyRequest
+         * @description Request body to apply a stored proposal. Never accepts a patch body:
+         *
+         *     the server applies the proposal's own already-validated, already-stored
+         *     ``after_manifest`` -- the second structural safeguard against arbitrary
+         *     client-authored patches.
+         */
+        BuilderApplyRequest: {
+            /** Base Etag */
+            base_etag: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /**
+         * BuilderMessageRequest
+         * @description Request body for the Builder Agent's ``/builder/messages`` endpoint.
+         *
+         *     Deliberately opaque: a free-form natural-language ``message`` string,
+         *     never a JSON patch. This is the first of two structural safeguards
+         *     against "arbitrary client-authored path patches" -- there is simply no
+         *     patch-shaped input surface here at all.
+         */
+        BuilderMessageRequest: {
+            /** Base Etag */
+            base_etag: string;
+            /** Message */
+            message: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /**
+         * BuilderProposal
+         * @description A stored, reviewable manifest-change proposal from the Builder Agent.
+         *
+         *     Immutable content (``before_manifest``/``after_manifest``/diff summaries/
+         *     hashes/provenance) plus a mutable decision envelope (``state``/``decided_*``)
+         *     -- the same request/decision split already used by ``StudioApprovalRecord``.
+         *     Never carries a client-authored patch: ``after_manifest`` is always the
+         *     generator's own typed, canonical ``AgentManifest`` output.
+         */
+        BuilderProposal: {
+            after_manifest: components["schemas"]["AgentManifest"];
+            /** After Manifest Hash */
+            after_manifest_hash: string;
+            /** Applied Draft Etag */
+            applied_draft_etag?: string | null;
+            before_manifest: components["schemas"]["AgentManifest"];
+            /** Before Manifest Hash */
+            before_manifest_hash: string;
+            /** Capability Changes */
+            capability_changes?: components["schemas"]["CapabilityChangeSummary"][];
+            /** Changes */
+            changes?: components["schemas"]["ManifestChangeSummary"][];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Decided By */
+            decided_by?: string | null;
+            /** Draft Base Etag */
+            draft_base_etag: string;
+            /** Id */
+            id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Project Id */
+            project_id: string;
+            provenance: components["schemas"]["BuilderProvenance"];
+            /** Rejection Reason */
+            rejection_reason?: string | null;
+            /** Source Bundle Ref */
+            source_bundle_ref?: string | null;
+            /** @default pending */
+            state: components["schemas"]["BuilderProposalState"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Validation Warnings */
+            validation_warnings?: string[];
+        };
+        /**
+         * BuilderProposalState
+         * @enum {string}
+         */
+        BuilderProposalState: "pending" | "applied" | "rejected";
+        /**
+         * BuilderProvenance
+         * @description Where a proposal's content came from: which generator, what request.
+         */
+        BuilderProvenance: {
+            /** Generator */
+            generator: string;
+            /** Generator Version */
+            generator_version?: string | null;
+            /** Message */
+            message: string;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at?: string;
+            /** Requested By */
+            requested_by: string;
+        };
+        /** BuilderRejectRequest */
+        BuilderRejectRequest: {
+            /** Project Id */
+            project_id: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
+        /**
          * Capability
          * @enum {string}
          */
         Capability: "literature" | "grant" | "matching" | "dataset" | "institutional_qa" | "orchestration";
+        /** CapabilityApprovalRequest */
+        CapabilityApprovalRequest: {
+            /** Descriptor Id */
+            descriptor_id: string;
+            /** Destination Policy Ref */
+            destination_policy_ref?: string | null;
+            /** Evidence Summary */
+            evidence_summary: string;
+            /** Operation */
+            operation: string;
+            /** Permissions Policy Ref */
+            permissions_policy_ref?: string | null;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Risk
+             * @default medium
+             */
+            risk: string;
+        };
+        /**
+         * CapabilityBinding
+         * @description An agent's *attachment* of a catalog operation: config + version pins.
+         *
+         *     Distinct from ``CapabilityDescriptor`` (the catalog/governance entry),
+         *     ``CapabilityInstance`` (the discovered tenant/project resource), and
+         *     ``ToolRegistrationSpec`` (the runtime handler wiring below): ``CapabilityBinding``
+         *     only records that this manifest has chosen to use ``descriptor_id.operation``
+         *     at ``descriptor_version``/``pinned_provider_version``, pointed at a specific
+         *     ``instance_id`` (when the operation requires a discovered resource) via
+         *     ``connection_ref``, with what config and policy.
+         *
+         *     ``descriptor_digest`` pins the *content* of the attached descriptor (not
+         *     just its declared ``descriptor_version`` string) so a catalog edit that
+         *     bumps content without bumping the version string cannot silently change
+         *     an already-attached binding's behavior. ``input_schema_digest``/
+         *     ``output_schema_digest`` are copied from the resolved
+         *     ``CapabilityOperation`` at attach time — independent digests because a
+         *     descriptor's operations can have distinct I/O shapes. ``instance_fingerprint``
+         *     is copied from the resolved ``CapabilityInstance`` at attach time (see
+         *     ``CapabilityInstance.instance_fingerprint``); release/invoke re-checks it
+         *     against the current instance and hard-fails on drift (stale binding).
+         *     ``config_hash`` is a canonical digest of ``config`` computed at attach
+         *     time so any later config drift is independently detectable.
+         *     ``destination_constraints`` pins the resolved operation's
+         *     ``side_effect_destinations`` at attach time, independent of
+         *     ``descriptor_digest`` — an operation whose declared destinations change
+         *     (e.g. a provider widening what a "write" operation can reach) is
+         *     detected explicitly by ``check_binding_freshness`` rather than only
+         *     incidentally via a whole-descriptor digest mismatch.
+         */
+        CapabilityBinding: {
+            /**
+             * Attached At
+             * Format: date-time
+             */
+            attached_at?: string;
+            /** Attached By */
+            attached_by: string;
+            /** Config */
+            config?: {
+                [key: string]: unknown;
+            };
+            /** Config Hash */
+            config_hash?: string | null;
+            /** Connection Ref */
+            connection_ref?: string | null;
+            /** Descriptor Digest */
+            descriptor_digest?: string | null;
+            /** Descriptor Id */
+            descriptor_id: string;
+            /**
+             * Descriptor Version
+             * @default 1
+             */
+            descriptor_version: string;
+            /** Destination Constraints */
+            destination_constraints?: string[];
+            /** Input Schema Digest */
+            input_schema_digest?: string | null;
+            /** Instance Fingerprint */
+            instance_fingerprint?: string | null;
+            /** Instance Id */
+            instance_id?: string | null;
+            /** Operation */
+            operation: string;
+            /** Output Schema Digest */
+            output_schema_digest?: string | null;
+            /** Pinned Provider Version */
+            pinned_provider_version?: string | null;
+            /** Policy Ref */
+            policy_ref?: string | null;
+        };
+        /**
+         * CapabilityChangeKind
+         * @enum {string}
+         */
+        CapabilityChangeKind: "attached" | "detached" | "reconfigured";
+        /**
+         * CapabilityChangeSummary
+         * @description One deterministic capability-binding change.
+         *
+         *     Keyed by ``(descriptor_id, operation)`` -- the natural identity of a
+         *     ``CapabilityBinding`` within a manifest's ``capabilities`` tuple -- so a
+         *     reconfiguration of an existing binding is reported distinctly from an
+         *     attach/detach.
+         */
+        CapabilityChangeSummary: {
+            after?: components["schemas"]["CapabilityBinding"] | null;
+            before?: components["schemas"]["CapabilityBinding"] | null;
+            /** Descriptor Id */
+            descriptor_id: string;
+            kind: components["schemas"]["CapabilityChangeKind"];
+            /** Operation */
+            operation: string;
+        };
+        /**
+         * CapabilityDescriptor
+         * @description Provider-declared capability *catalog/governance* entry.
+         *
+         *     ``operations`` is the honest, per-operation maturity surface: GA
+         *     operations are attachable, ``preview``/``retired``/``unavailable``/
+         *     ``unknown`` operations remain visible (with ``reason``) but are rejected
+         *     at attach time. ``version`` is the descriptor's own catalog version,
+         *     pinned by any ``CapabilityBinding`` that attaches it (see below) so a
+         *     later catalog update never silently changes an already-released agent's
+         *     behavior.
+         */
+        CapabilityDescriptor: {
+            /** Auth Requirements */
+            auth_requirements?: string[];
+            /** Config Schema */
+            config_schema?: {
+                [key: string]: unknown;
+            };
+            /**
+             * Data Boundary
+             * @default project
+             */
+            data_boundary: string;
+            /** Description */
+            description: string;
+            /** Id */
+            id: string;
+            /**
+             * Managed Foundry Native
+             * @default false
+             */
+            managed_foundry_native: boolean;
+            /** Operations */
+            operations: components["schemas"]["CapabilityOperation"][];
+            /** Provider */
+            provider: string;
+            /**
+             * Risk Tier
+             * @default low
+             */
+            risk_tier: string;
+            /** Title */
+            title: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: string;
+        };
+        /**
+         * CapabilityDiscoverySnapshot
+         * @description Combined descriptor/instance discovery read model.
+         *
+         *     Convenience aggregate of ``GET /capabilities/descriptors`` and
+         *     ``GET /capabilities/instances`` for callers (e.g. the future node
+         *     palette/compiler) that want both plus honest, non-fatal discovery
+         *     ``warnings`` and the ``refreshed_at`` timestamp in one call. Never
+         *     itself persisted -- it is a read-time projection over the current
+         *     ``CapabilityRegistry`` state.
+         */
+        CapabilityDiscoverySnapshot: {
+            /** Descriptors */
+            descriptors: components["schemas"]["CapabilityDescriptor"][];
+            /** Instances */
+            instances: components["schemas"]["CapabilityInstance"][];
+            /**
+             * Refreshed At
+             * Format: date-time
+             */
+            refreshed_at: string;
+            /** Warnings */
+            warnings: string[];
+        };
+        /**
+         * CapabilityInstance
+         * @description A tenant/project-discovered *resource* for a capability descriptor.
+         *
+         *     Distinct from ``CapabilityDescriptor`` (immutable provider-wide catalog
+         *     semantics/governance) and from ``CapabilityBinding`` (an agent's
+         *     attachment): this is the concrete, discovered thing a binding points at
+         *     via ``instance_id`` — e.g. a specific Azure AI Search index connection
+         *     that this tenant/project actually has, with its own readiness/health
+         *     independent of the descriptor's static catalog entry. Never persisted
+         *     inside ``AgentManifest``; resolved and validated at attach/gate time.
+         */
+        CapabilityInstance: {
+            /** Config Fingerprint */
+            config_fingerprint?: string | null;
+            /** Descriptor Id */
+            descriptor_id: string;
+            /**
+             * Descriptor Version
+             * @default 1
+             */
+            descriptor_version: string;
+            /**
+             * Discovered At
+             * Format: date-time
+             */
+            discovered_at?: string;
+            /** Discovered Provider Version */
+            discovered_provider_version?: string | null;
+            /** @default unknown */
+            health_status: components["schemas"]["HealthStatus"];
+            /** Id */
+            id: string;
+            /** Instance Fingerprint */
+            instance_fingerprint?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** @default unavailable */
+            readiness: components["schemas"]["InstanceReadiness"];
+            /** Registered By */
+            registered_by: string;
+            /** Tenant Id */
+            tenant_id: string;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
+        };
+        /**
+         * CapabilityOperation
+         * @description A single operation on a capability descriptor.
+         *
+         *     ``maturity``/``risk``/``operation_class``/``requires_approval`` are all
+         *     operation-level (not descriptor-level): two operations on the same
+         *     descriptor can have entirely different maturity and risk profiles.
+         *     ``source_url``/``source_version``/``last_verified_at`` are the honest
+         *     provenance trail for the maturity claim — where it was confirmed, against
+         *     which provider release, and when it was last checked; a maturity claim
+         *     with no provenance is a catalog-authoring smell, not a runtime error.
+         *
+         *     ``requires_approval`` is *not* purely informational: ``approval_policy_ref``
+         *     names the versioned approval policy that ``CapabilityRegistry.attach``
+         *     (attach-time satisfiability), the ``APPROVAL`` release gate (cut/release
+         *     hard-block on missing/expired/mismatched approval), and deploy-time
+         *     checks all resolve against. ``least_privilege_scopes``/``least_privilege_roles``
+         *     declare the minimum access an invocation needs; ``timeout_seconds``/
+         *     ``max_retries``/``idempotent`` are runtime dispatch contract facts (not
+         *     behavior this backend executes itself — the harness/runtime owns
+         *     invocation — but real, declared metadata a caller must honor).
+         *     ``input_schema_digest``/``output_schema_digest`` are operation-level
+         *     (independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),
+         *     since a single descriptor's operations can have distinct I/O shapes.
+         */
+        CapabilityOperation: {
+            /** Approval Policy Ref */
+            approval_policy_ref?: string | null;
+            /**
+             * Idempotent
+             * @default false
+             */
+            idempotent: boolean;
+            /** Input Schema Digest */
+            input_schema_digest?: string | null;
+            /** Last Verified At */
+            last_verified_at?: string | null;
+            /** Least Privilege Roles */
+            least_privilege_roles?: string[];
+            /** Least Privilege Scopes */
+            least_privilege_scopes?: string[];
+            maturity: components["schemas"]["OperationMaturity"];
+            /**
+             * Max Retries
+             * @default 0
+             */
+            max_retries: number;
+            /** Name */
+            name: string;
+            /** @default read */
+            operation_class: components["schemas"]["OperationClass"];
+            /** Output Schema Digest */
+            output_schema_digest?: string | null;
+            /** Reason */
+            reason?: string | null;
+            /**
+             * Requires Approval
+             * @default false
+             */
+            requires_approval: boolean;
+            /**
+             * Risk
+             * @default low
+             */
+            risk: string;
+            /** Side Effect Destinations */
+            side_effect_destinations?: string[];
+            /** Source Url */
+            source_url?: string | null;
+            /** Source Version */
+            source_version?: string | null;
+            /** Timeout Seconds */
+            timeout_seconds?: number | null;
+        };
         /** CapabilitySpec */
         CapabilitySpec: {
             /** Accent */
@@ -646,6 +2007,23 @@ export interface components {
             source_id: string;
             /** Title */
             title: string;
+        };
+        /**
+         * CitationPolicy
+         * @description Citation/evidence policy: whether responses must cite evidence and,
+         *     if so, from which declared sources. Advisory at the model-behavior level
+         *     (no gate can verify a model actually cited correctly) but is a
+         *     deterministic, auditable declaration of intent that evaluation/observability
+         *     tooling can check against.
+         */
+        CitationPolicy: {
+            /** Allowed Evidence Sources */
+            allowed_evidence_sources?: string[];
+            /**
+             * Require Citations
+             * @default false
+             */
+            require_citations: boolean;
         };
         /** ComputeProposal */
         ComputeProposal: {
@@ -701,53 +2079,32 @@ export interface components {
             /** Enabled */
             enabled: boolean;
         };
-        /** CopilotPlanRequest */
-        CopilotPlanRequest: {
-            /** Objective */
-            objective: string;
+        /** CorrectMemoryRequest */
+        CorrectMemoryRequest: {
+            /** Content */
+            content: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /** CreateAgentRequest */
+        CreateAgentRequest: {
             /**
-             * Schema Summary
+             * Description
              * @default
              */
-            schema_summary: string;
-        };
-        /** CopilotPlanResponse */
-        CopilotPlanResponse: {
-            /**
-             * Executed
-             * @default false
-             */
-            executed: boolean;
-            /** Plan */
-            plan: string;
-        };
-        /** DatasetExecutionRequest */
-        DatasetExecutionRequest: {
-            /**
-             * Analysis Code
-             * @default summary = df.describe(include='all').fillna('').to_dict()
-             *     print(summary)
-             */
-            analysis_code: string;
-            /** Approval Acknowledged */
-            approval_acknowledged: boolean;
-            /** Csv Text */
-            csv_text: string;
-            /** Filename */
-            filename: string;
-        };
-        /** DatasetExecutionResult */
-        DatasetExecutionResult: {
-            /** Result */
-            result: {
-                [key: string]: unknown;
-            };
-            /** Session Id */
-            session_id: string;
-            /** Status */
-            status: string;
-        } & {
-            [key: string]: unknown;
+            description: string;
+            /** Display Name */
+            display_name: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Owner Id */
+            owner_id?: string | null;
+            /** @default user */
+            owner_kind: components["schemas"]["AgentOwnerKind"];
+            /** Project Id */
+            project_id: string;
+            /** @default private */
+            visibility: components["schemas"]["AgentVisibility"];
         };
         /** DatasetFieldProfile */
         DatasetFieldProfile: {
@@ -788,6 +2145,68 @@ export interface components {
             row_count: number;
             run: components["schemas"]["StudioRun"];
         };
+        /**
+         * DelegationScope
+         * @enum {string}
+         */
+        DelegationScope: "none" | "specialist_pool" | "any_released_agent";
+        /** DeployRequest */
+        DeployRequest: {
+            /** Project Id */
+            project_id: string;
+            /** Trace Ref */
+            trace_ref?: string | null;
+            /** Version Id */
+            version_id: string;
+        };
+        /**
+         * DeploymentEnvironment
+         * @enum {string}
+         */
+        DeploymentEnvironment: "development";
+        /** DeploymentHealth */
+        DeploymentHealth: {
+            /**
+             * Checked At
+             * Format: date-time
+             */
+            checked_at?: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** @default unknown */
+            status: components["schemas"]["HealthStatus"];
+        };
+        /** DeploymentRecord */
+        DeploymentRecord: {
+            /**
+             * Deployed At
+             * Format: date-time
+             */
+            deployed_at?: string;
+            /** Deployed By */
+            deployed_by: string;
+            /** @default development */
+            environment: components["schemas"]["DeploymentEnvironment"];
+            health?: components["schemas"]["DeploymentHealth"];
+            /** Id */
+            id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Rollback Of Deployment Id */
+            rollback_of_deployment_id?: string | null;
+            runtime_target: components["schemas"]["RuntimeTarget"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Trace Ref */
+            trace_ref?: string | null;
+            /** Version Id */
+            version_id: string;
+        };
         /** DraftSection */
         DraftSection: {
             /** Body */
@@ -802,6 +2221,42 @@ export interface components {
             title: string;
             /** Word Count */
             word_count: number;
+        };
+        /** EscalationRequest */
+        EscalationRequest: {
+            /** Evidence Summary */
+            evidence_summary: string;
+            /** Project Id */
+            project_id: string;
+            requested_role: components["schemas"]["AgentRole"];
+            /**
+             * Risk
+             * @default high
+             */
+            risk: string;
+        };
+        /** EvaluationRecord */
+        EvaluationRecord: {
+            /**
+             * Advisory
+             * @default true
+             */
+            advisory: boolean;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Evaluator */
+            evaluator: string;
+            /** Id */
+            id: string;
+            /** Score */
+            score?: number | null;
+            /** Summary */
+            summary: string;
+            /** Version Id */
+            version_id: string;
         };
         /** EvidenceExtraction */
         EvidenceExtraction: {
@@ -823,6 +2278,75 @@ export interface components {
          * @enum {string}
          */
         EvidenceState: "verified" | "model_analysis" | "unsupported" | "blocked";
+        /** ForgetMemoryRequest */
+        ForgetMemoryRequest: {
+            /** Project Id */
+            project_id: string;
+            /**
+             * Reason
+             * @default
+             */
+            reason: string;
+        };
+        /** ForkRequest */
+        ForkRequest: {
+            /** New Logical Agent Id */
+            new_logical_agent_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Source Version Id */
+            source_version_id: string;
+        };
+        /**
+         * GateEvidence
+         * @description Facts supplied by the actual build/test/smoke systems.
+         *
+         *     ``None`` means "not yet run" and results in ``GateStatus.SKIPPED``
+         *     (non-passing), never in an assumed pass.
+         */
+        GateEvidence: {
+            /**
+             * Build Detail
+             * @default
+             */
+            build_detail: string;
+            /** Build Succeeded */
+            build_succeeded?: boolean | null;
+            /**
+             * Smoke Detail
+             * @default
+             */
+            smoke_detail: string;
+            /** Smoke Passed */
+            smoke_passed?: boolean | null;
+            /**
+             * Test Detail
+             * @default
+             */
+            test_detail: string;
+            /** Tests Passed */
+            tests_passed?: boolean | null;
+        };
+        /**
+         * GateName
+         * @enum {string}
+         */
+        GateName: "schema" | "build" | "test" | "auth" | "policy" | "approval" | "security" | "smoke";
+        /** GateResult */
+        GateResult: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            name: components["schemas"]["GateName"];
+            status: components["schemas"]["GateStatus"];
+        };
+        /**
+         * GateStatus
+         * @enum {string}
+         */
+        GateStatus: "passed" | "failed" | "skipped" | "not_applicable";
         /** GrantOpportunity */
         GrantOpportunity: {
             /** Canonical Url */
@@ -885,6 +2409,29 @@ export interface components {
             /** Status */
             status: string;
         };
+        /**
+         * HealthStatus
+         * @enum {string}
+         */
+        HealthStatus: "healthy" | "degraded" | "unhealthy" | "unknown";
+        /** HealthUpdateRequest */
+        HealthUpdateRequest: {
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Project Id */
+            project_id: string;
+            status: components["schemas"]["HealthStatus"];
+            /** Trace Ref */
+            trace_ref?: string | null;
+        };
+        /**
+         * InstanceReadiness
+         * @enum {string}
+         */
+        InstanceReadiness: "ready" | "degraded" | "unavailable";
         /** InstitutionalStudioResult */
         InstitutionalStudioResult: {
             /** Abstained */
@@ -904,6 +2451,34 @@ export interface components {
             /** Versions */
             versions: components["schemas"]["PolicyVersion"][];
         };
+        /**
+         * KnowledgeBinding
+         * @description A knowledge/grounding source attached to the manifest.
+         *
+         *     Distinct from ``CapabilityBinding``: a knowledge binding may be backed by
+         *     a capability operation (in which case ``capability_binding_index`` points
+         *     at the corresponding entry in ``AgentManifest.capabilities``), but the
+         *     manifest keeps knowledge sources separately enumerated so consumers don't
+         *     have to reverse-engineer "which capabilities are actually grounding
+         *     sources" from the general capability list.
+         */
+        KnowledgeBinding: {
+            /** Capability Binding Index */
+            capability_binding_index?: number | null;
+            /** Connection Ref */
+            connection_ref?: string | null;
+            /**
+             * Description
+             * @default
+             */
+            description: string;
+            kind: components["schemas"]["KnowledgeBindingKind"];
+        };
+        /**
+         * KnowledgeBindingKind
+         * @enum {string}
+         */
+        KnowledgeBindingKind: "file_search" | "azure_ai_search" | "sharepoint";
         /** LibraryIngestRequest */
         LibraryIngestRequest: {
             /**
@@ -996,6 +2571,30 @@ export interface components {
             /** Synthesis */
             synthesis: string[];
         };
+        /**
+         * ManifestChangeSummary
+         * @description One deterministic, top-level ``AgentManifest`` field-level change.
+         *
+         *     Computed server-side from the canonical before/after manifest dumps
+         *     (``model_dump(mode="json")``); capability-binding changes are reported
+         *     separately via ``CapabilityChangeSummary`` since they have their own
+         *     natural identity (``descriptor_id``/``operation``) rather than a single
+         *     scalar value.
+         */
+        ManifestChangeSummary: {
+            /** After */
+            after?: unknown | null;
+            /** Before */
+            before?: unknown | null;
+            /** Field */
+            field: string;
+            kind: components["schemas"]["ManifestFieldChangeKind"];
+        };
+        /**
+         * ManifestFieldChangeKind
+         * @enum {string}
+         */
+        ManifestFieldChangeKind: "added" | "removed" | "modified";
         /** MatchCriterion */
         MatchCriterion: {
             /** Id */
@@ -1057,6 +2656,197 @@ export interface components {
             /** Shortlist Ids */
             shortlist_ids: string[];
         };
+        /**
+         * MemoryAuditAction
+         * @enum {string}
+         */
+        MemoryAuditAction: "remember" | "recall" | "inspect" | "correct" | "forget" | "export";
+        /**
+         * MemoryAuditRecord
+         * @description Append-only audit trail for memory inspect/correct/forget/export.
+         *
+         *     Every governance action on a ``MemoryEntry`` (not ordinary ``remember``
+         *     writes from normal agent operation, which are already durable as the
+         *     entry itself) is recorded here, independent of the entry's own lifecycle
+         *     — a ``forget`` still leaves an audit record even though the entry content
+         *     itself is no longer recallable.
+         */
+        MemoryAuditRecord: {
+            action: components["schemas"]["MemoryAuditAction"];
+            /** Actor Id */
+            actor_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /**
+             * Detail
+             * @default
+             */
+            detail: string;
+            /** Entry Id */
+            entry_id: string;
+            /** Id */
+            id: string;
+            /** Project Id */
+            project_id: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /**
+         * MemoryEntry
+         * @description A single application-owned (GA) memory record.
+         *
+         *     Persisted and queried by ``(tenant_id, scope_kind, scope_id,
+         *     logical_agent_id)`` for strict tenant/scope isolation. Governance fields
+         *     (opt-in enforcement happens at ``MemoryPolicy``/``MemoryService`` level,
+         *     not here) required by the memory-governance correction:
+         *
+         *     * ``ttl_days``/``expires_at`` — retention; ``expires_at`` is computed at
+         *       write time from ``ttl_days`` when set, so expiry is deterministic and
+         *       queryable without re-deriving it from ``created_at`` each read.
+         *     * ``read_acl``/``write_acl`` — principal IDs allowed to read/correct this
+         *       entry beyond the creator; empty means "creator + agent context only".
+         *     * ``provenance`` — where this memory came from (e.g. a conversation turn
+         *       vs. an operator correction), for inspect/audit.
+         *     * ``deleted_at`` — soft-delete marker set by ``forget()``; forgotten
+         *       entries are excluded from ``recall``/``export`` but the audit trail
+         *       (``MemoryAuditRecord``) of the deletion itself is retained.
+         */
+        MemoryEntry: {
+            /** Content */
+            content: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Created By */
+            created_by: string;
+            /** Deleted At */
+            deleted_at?: string | null;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Id */
+            id: string;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Provenance
+             * @default user_conversation
+             */
+            provenance: string;
+            /** Read Acl */
+            read_acl?: string[];
+            /**
+             * Role
+             * @default note
+             */
+            role: string;
+            /** Scope Id */
+            scope_id: string;
+            scope_kind: components["schemas"]["MemoryScopeKind"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Ttl Days */
+            ttl_days?: number | null;
+            /** Write Acl */
+            write_acl?: string[];
+        };
+        /**
+         * MemoryMechanism
+         * @description GA-only memory mechanisms.
+         *
+         *     ``application_thread`` and ``application_memory_store`` are both
+         *     application-owned (our Cosmos persistence), which is GA today.
+         *     ``foundry_native_memory_store`` refers to the Microsoft Foundry Agent
+         *     Service "Memory" feature, which is documented as **preview** as of this
+         *     writing; it is intentionally excluded from the default/attachable set and
+         *     only ever surfaced through the capability catalog with
+         *     ``OperationMaturity.PREVIEW``.
+         * @enum {string}
+         */
+        MemoryMechanism: "application_thread" | "application_memory_store" | "foundry_native_memory_store";
+        /**
+         * MemoryPolicy
+         * @description Manifest-level memory policy: an independent per-scope declaration.
+         *
+         *     A manifest with no declared ``scopes`` (or a scope with ``enabled=False``,
+         *     the default) has no memory access at all for that scope. There is no
+         *     single global switch; access is evaluated per ``MemoryScopeKind`` via
+         *     ``scope()``/``is_enabled()``.
+         */
+        MemoryPolicy: {
+            /** Scopes */
+            scopes?: components["schemas"]["MemoryScopeBinding"][];
+        };
+        /**
+         * MemoryScopeBinding
+         * @description Per-scope memory configuration.
+         *
+         *     There is deliberately no manifest-wide "memory enabled" bit: each scope
+         *     independently declares ``enabled`` (may this scope be accessed at all)
+         *     and, separately, ``persistent`` (may entries in this scope outlive the
+         *     current conversation/session). Conversation memory may be ``enabled=True``
+         *     while user/project/private-agent scopes stay ``enabled=False``; a scope
+         *     can even be ``enabled=True`` but ``persistent=False`` (session-only
+         *     working memory). ``persistent`` defaults ``False`` even when the scope
+         *     itself is enabled. ``default_read_acl``/``default_write_acl`` declare the
+         *     scope's baseline ACL (applied to entries that don't override it);
+         *     ``allow_user_inspect``/``allow_user_forget``/``allow_user_export`` are the
+         *     end-user self-service controls this scope exposes; ``provenance``
+         *     records where/why this scope was configured (e.g. an admin policy vs. an
+         *     owner opt-in), for inspect/audit.
+         */
+        MemoryScopeBinding: {
+            /**
+             * Allow User Export
+             * @default true
+             */
+            allow_user_export: boolean;
+            /**
+             * Allow User Forget
+             * @default true
+             */
+            allow_user_forget: boolean;
+            /**
+             * Allow User Inspect
+             * @default true
+             */
+            allow_user_inspect: boolean;
+            /** Default Read Acl */
+            default_read_acl?: string[];
+            /** Default Write Acl */
+            default_write_acl?: string[];
+            /**
+             * Enabled
+             * @default false
+             */
+            enabled: boolean;
+            kind: components["schemas"]["MemoryScopeKind"];
+            /** @default application_memory_store */
+            mechanism: components["schemas"]["MemoryMechanism"];
+            /**
+             * Persistent
+             * @default false
+             */
+            persistent: boolean;
+            /**
+             * Provenance
+             * @default
+             */
+            provenance: string;
+            /** Retention Days */
+            retention_days?: number | null;
+        };
+        /**
+         * MemoryScopeKind
+         * @enum {string}
+         */
+        MemoryScopeKind: "conversation" | "user" | "project" | "private_agent";
         /** Metric */
         Metric: {
             /** Detail */
@@ -1066,6 +2856,43 @@ export interface components {
             /** Value */
             value: string;
         };
+        /** ModelDeploymentRef */
+        ModelDeploymentRef: {
+            /** Capacity */
+            capacity?: number | null;
+            /** Deployment Name */
+            deployment_name: string;
+            /** Model Format */
+            model_format: string;
+            /** Model Name */
+            model_name: string;
+        };
+        /**
+         * OperationClass
+         * @description Deterministic side-effect classification for a capability operation.
+         *
+         *     Independent of ``maturity`` (GA/preview/unavailable eligibility) and of
+         *     ``requires_approval``/``side_effect_destinations`` (declared alongside it
+         *     on ``CapabilityOperation``): an operation's class describes *what kind*
+         *     of effect invoking it can have, not whether it is safe to attach or
+         *     whether it needs human sign-off.
+         * @enum {string}
+         */
+        OperationClass: "pure" | "read" | "write_reversible" | "write_irreversible" | "privileged";
+        /**
+         * OperationMaturity
+         * @description Per-operation maturity. Only ``GA`` is ever attachable.
+         *
+         *     ``RETIRED`` marks an operation that was once available but has been
+         *     withdrawn (kept in the catalog for historical/audit visibility, never
+         *     attachable again). ``UNKNOWN`` is the fail-closed default for an
+         *     operation whose maturity could not be positively confirmed from
+         *     provenance (e.g. a discovery source that didn't report a maturity tier);
+         *     it is treated identically to ``UNAVAILABLE`` for attachment purposes —
+         *     "unknown" must never be silently treated as safe-to-attach.
+         * @enum {string}
+         */
+        OperationMaturity: "ga" | "preview" | "unavailable" | "retired" | "unknown";
         /** PolicyConflict */
         PolicyConflict: {
             /** Description */
@@ -1144,6 +2971,20 @@ export interface components {
             /** Source Count */
             source_count: number;
         };
+        /** PromotionRequest */
+        PromotionRequest: {
+            /** Destination */
+            destination: string;
+            /** Evidence Summary */
+            evidence_summary: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Risk
+             * @default medium
+             */
+            risk: string;
+        };
         /** ProvenanceManifest */
         ProvenanceManifest: {
             capability: components["schemas"]["Capability"];
@@ -1195,6 +3036,99 @@ export interface components {
             /** Strengths */
             strengths: string[];
         };
+        /** RegisterToolRequest */
+        RegisterToolRequest: {
+            /** Descriptor Id */
+            descriptor_id: string;
+            /** Handler Ref */
+            handler_ref: string;
+            kind: components["schemas"]["ToolRegistrationKind"];
+            /** Operation */
+            operation: string;
+            /** Project Id */
+            project_id: string;
+        };
+        /**
+         * ReleaseArtifactMetadata
+         * @description Real, non-fabricated build/package metadata recorded at cut time.
+         *
+         *     Distinct from ``AgentVersion.sequence`` (a display/ordering integer):
+         *     ``sequence`` is never used to derive a version string here.
+         *     ``package_versions`` is the actual locked dependency version map read
+         *     from the running distribution (see ``release_artifact_metadata.py``);
+         *     ``lock_digest`` is a content hash over that map; ``framework_version``/
+         *     ``hosting_package_version`` are the real installed framework/hosting
+         *     package versions; ``source_revision`` is the source control revision the
+         *     cut was built from (``None`` when genuinely unknown — never fabricated).
+         */
+        ReleaseArtifactMetadata: {
+            /**
+             * Framework Version
+             * @default unknown
+             */
+            framework_version: string;
+            /**
+             * Hosting Package Version
+             * @default unknown
+             */
+            hosting_package_version: string;
+            /** Lock Digest */
+            lock_digest?: string | null;
+            /** Package Versions */
+            package_versions?: {
+                [key: string]: string;
+            };
+            /** Source Revision */
+            source_revision?: string | null;
+        };
+        /** ReleaseGateReport */
+        ReleaseGateReport: {
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Evaluations */
+            evaluations?: components["schemas"]["EvaluationRecord"][];
+            /** Id */
+            id: string;
+            /** Results */
+            results: components["schemas"]["GateResult"][];
+            /** Version Id */
+            version_id: string;
+        };
+        /**
+         * ReleaseStatus
+         * @description Lifecycle status of an ``AgentRelease``.
+         *
+         *     There is deliberately no ``DRAFT`` state here: a version with no
+         *     ``AgentRelease`` record at all *is* the "not yet gated" state. Each
+         *     transition below is a new, append-only ``AgentRelease`` row chained via
+         *     ``previous_release_id``, never an in-place mutation of an existing one.
+         * @enum {string}
+         */
+        ReleaseStatus: "gated" | "approved" | "active" | "deprecated" | "rolled_back";
+        /** RememberRequest */
+        RememberRequest: {
+            /** Content */
+            content: string;
+            /** Project Id */
+            project_id: string;
+            /** Read Acl */
+            read_acl?: string[];
+            /**
+             * Role
+             * @default note
+             */
+            role: string;
+            /** Scope Id */
+            scope_id: string;
+            scope_kind: components["schemas"]["MemoryScopeKind"];
+            /** Ttl Days */
+            ttl_days?: number | null;
+            /** Write Acl */
+            write_acl?: string[];
+        };
         /** ResearchRequest */
         ResearchRequest: {
             /** Context */
@@ -1241,6 +3175,42 @@ export interface components {
             /** Warnings */
             warnings?: string[];
         };
+        /**
+         * ResolvedAgentContract
+         * @description The exact, pinned contract returned by ``/resolve`` (workflow composition).
+         *
+         *     A published workflow pins these fields at compose time; execution reads
+         *     them back verbatim and must never silently re-resolve to "whatever is
+         *     latest now" — that would defeat the entire purpose of an immutable,
+         *     exact-version resolution contract. This is also the shape the future
+         *     typed workflow compiler/node palette consumes for capability/IO typing.
+         */
+        ResolvedAgentContract: {
+            artifact_metadata: components["schemas"]["ReleaseArtifactMetadata"];
+            /** Capability Versions */
+            capability_versions?: {
+                [key: string]: string;
+            };
+            environment: components["schemas"]["DeploymentEnvironment"];
+            input_schema_ref?: components["schemas"]["SchemaRef"] | null;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Manifest Hash */
+            manifest_hash: string;
+            output_schema_ref?: components["schemas"]["SchemaRef"] | null;
+            /** Project Id */
+            project_id: string;
+            /** Protocol Version */
+            protocol_version: string;
+            /** Release Id */
+            release_id: string;
+            release_status: components["schemas"]["ReleaseStatus"];
+            runtime_target: components["schemas"]["RuntimeTarget"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Version Id */
+            version_id: string;
+        };
         /** ReviewProtocol */
         ReviewProtocol: {
             /** Date From */
@@ -1255,6 +3225,21 @@ export interface components {
             research_question: string;
             /** Sources */
             sources: string[];
+        };
+        /** RollbackRequest */
+        RollbackRequest: {
+            /** Deployment Id */
+            deployment_id: string;
+            /** Project Id */
+            project_id: string;
+            /** Target Version Id */
+            target_version_id: string;
+        };
+        /** RunGatesRequest */
+        RunGatesRequest: {
+            evidence?: components["schemas"]["GateEvidence"];
+            /** Project Id */
+            project_id: string;
         };
         /** RunRecord */
         RunRecord: {
@@ -1359,6 +3344,63 @@ export interface components {
             /** Title */
             title: string;
         };
+        /**
+         * RuntimeRequirements
+         * @description Application-declared facts used by deterministic runtime selection.
+         *
+         *     These are facts about the manifest, not a user's runtime preference: the
+         *     platform derives ``RuntimeTarget`` from these fields rather than trusting
+         *     an arbitrary "deploy target" choice.
+         */
+        RuntimeRequirements: {
+            /**
+             * Requires Custom Code
+             * @default false
+             */
+            requires_custom_code: boolean;
+            /**
+             * Requires Custom Orchestration Workflow
+             * @default false
+             */
+            requires_custom_orchestration_workflow: boolean;
+            /**
+             * Requires Non Ga Tool
+             * @default false
+             */
+            requires_non_ga_tool: boolean;
+            /**
+             * Uses Project Deployed Model Only
+             * @default true
+             */
+            uses_project_deployed_model_only: boolean;
+        };
+        /**
+         * RuntimeTarget
+         * @enum {string}
+         */
+        RuntimeTarget: "managed_foundry" | "custom_hosted";
+        /**
+         * SchemaRef
+         * @description A reference to a JSON Schema plus its content digest.
+         *
+         *     Mirrors the pattern used for the manifest's own schema
+         *     (``GET /schemas/agent-manifest``): consumers resolve the schema via
+         *     ``ref`` + verify ``digest``, never by importing a Python type. ``ref`` is
+         *     typically a stored schema id/URL; ``inline_schema`` is an optional
+         *     convenience copy for callers that don't want a second round-trip, but
+         *     ``digest`` (computed the same way as the manifest schema digest —
+         *     ``sha256:`` + canonical JSON) is always the source of truth.
+         */
+        SchemaRef: {
+            /** Digest */
+            digest: string;
+            /** Inline Schema */
+            inline_schema?: {
+                [key: string]: unknown;
+            } | null;
+            /** Ref */
+            ref: string;
+        };
         /** ScoreComponent */
         ScoreComponent: {
             /** Contribution */
@@ -1392,6 +3434,81 @@ export interface components {
          * @enum {string}
          */
         SourceKind: "paper" | "policy" | "grant" | "person" | "facility" | "equipment" | "method" | "template" | "dataset";
+        /**
+         * SpecialistPolicy
+         * @description Specialist/delegation policy: whether/how this agent may delegate to
+         *     other (specialist) agents. Delegation is off by default (``NONE``); an
+         *     explicit, bounded pool (``SPECIALIST_POOL`` + ``allowed_specialist_logical_agent_ids``)
+         *     is the expected shape for anything beyond a single agent.
+         */
+        SpecialistPolicy: {
+            /** Allowed Specialist Logical Agent Ids */
+            allowed_specialist_logical_agent_ids?: string[];
+            /** @default none */
+            delegation_scope: components["schemas"]["DelegationScope"];
+            /**
+             * Max Delegation Depth
+             * @default 0
+             */
+            max_delegation_depth: number;
+        };
+        /**
+         * StudioApprovalRecord
+         * @description A behavioral-approval or admin-escalation request/decision.
+         *
+         *     ``content_hash``/``environment``/``permissions_policy_ref``/
+         *     ``destination_policy_ref``/``expires_at`` bind the approval to an exact,
+         *     reproducible context: *what* is being approved (content hash), *where*
+         *     (environment), *under what permissions/destination policy*, and *until
+         *     when* it remains valid to act on — an approval is never a blanket,
+         *     open-ended grant.
+         */
+        StudioApprovalRecord: {
+            /** Approver Id */
+            approver_id?: string | null;
+            /** Content Hash */
+            content_hash?: string | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /** Destination */
+            destination: string;
+            /** Destination Policy Ref */
+            destination_policy_ref?: string | null;
+            environment?: components["schemas"]["DeploymentEnvironment"] | null;
+            /** Evidence Summary */
+            evidence_summary: string;
+            /** Expires At */
+            expires_at?: string | null;
+            /** Gated Action */
+            gated_action: string;
+            /** Id */
+            id: string;
+            /** Idempotency Key */
+            idempotency_key: string;
+            kind: components["schemas"]["ApprovalKind"];
+            /** Permissions Policy Ref */
+            permissions_policy_ref?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Rationale */
+            rationale?: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at?: string;
+            /** Requested By */
+            requested_by: string;
+            requested_role?: components["schemas"]["AgentRole"] | null;
+            /** Risk */
+            risk: string;
+            /** @default pending */
+            state: components["schemas"]["research_assistant_api__agent_studio__models__ApprovalState"];
+            /** Tenant Id */
+            tenant_id: string;
+            /** Version Id */
+            version_id: string;
+        };
         /** StudioRun */
         StudioRun: {
             capability: components["schemas"]["Capability"];
@@ -1428,6 +3545,72 @@ export interface components {
              */
             online_research: boolean;
         };
+        /**
+         * TemplateProvenance
+         * @description Lineage/template provenance: which template (if any) this manifest
+         *     was originally generated from, distinct from fork lineage (``LineageEdge``,
+         *     which tracks agent-to-agent forks). A manifest can both be forked from
+         *     another agent *and* have been originally created from a template.
+         */
+        TemplateProvenance: {
+            /** Source Url */
+            source_url?: string | null;
+            /** Template Id */
+            template_id?: string | null;
+            /** Template Version */
+            template_version?: string | null;
+        };
+        /**
+         * ToolRegistrationKind
+         * @description How a bound capability operation is actually invoked at runtime.
+         * @enum {string}
+         */
+        ToolRegistrationKind: "managed_foundry_native" | "custom_handler";
+        /**
+         * ToolRegistrationSpec
+         * @description Persisted *spec* declaring how a ``CapabilityBinding`` is dispatched.
+         *
+         *     Separate from ``CapabilityDescriptor`` (catalog/governance) and
+         *     ``CapabilityBinding`` (agent attachment/config/version pin): this record
+         *     declares *how* an attached operation is dispatched at runtime — resolved
+         *     natively by the Managed Foundry runtime, or routed to an
+         *     application-owned handler for the Custom Hosted runtime.
+         *
+         *     This is a *spec* (data), not a runtime handler: ``handler_ref`` is an
+         *     opaque reference the harness/provider compiler resolves into the actual
+         *     non-serializable, callable ``ToolRegistration`` object at dispatch time.
+         *     This backend never constructs or serializes a callable handler — only
+         *     this spec. Immutable once created; re-pointing a tool to a different
+         *     handler creates a new spec rather than mutating this one.
+         */
+        ToolRegistrationSpec: {
+            /** Descriptor Id */
+            descriptor_id: string;
+            /** Handler Ref */
+            handler_ref: string;
+            /** Id */
+            id: string;
+            kind: components["schemas"]["ToolRegistrationKind"];
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Operation */
+            operation: string;
+            /** Project Id */
+            project_id: string;
+            /**
+             * Registered At
+             * Format: date-time
+             */
+            registered_at?: string;
+            /** Registered By */
+            registered_by: string;
+            /** Tenant Id */
+            tenant_id: string;
+        };
+        /** UpdateDraftRequest */
+        UpdateDraftRequest: {
+            manifest: components["schemas"]["AgentManifest"];
+        };
         /** ValidationError */
         ValidationError: {
             /** Context */
@@ -1462,6 +3645,16 @@ export interface components {
             persistence: string;
             project: components["schemas"]["ProjectSettings"];
         };
+        /**
+         * ApprovalState
+         * @enum {string}
+         */
+        research_assistant_api__agent_studio__models__ApprovalState: "pending" | "approved" | "rejected";
+        /**
+         * ApprovalState
+         * @enum {string}
+         */
+        research_assistant_api__workspace__ApprovalState: "pending" | "approved" | "rejected" | "cancelled";
     };
     responses: never;
     parameters: never;
@@ -1471,6 +3664,1336 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    create_agent_api_agent_studio_agents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_builder_proposal_api_agent_studio_agents__logical_agent_id__builder_messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deployments_api_agent_studio_agents__logical_agent_id__deployments_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deploy_api_agent_studio_agents__logical_agent_id__deployments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_draft_api_agent_studio_agents__logical_agent_id__draft_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_draft_api_agent_studio_agents__logical_agent_id__draft_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_escalation_api_agent_studio_agents__logical_agent_id__escalations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EscalationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fork_agent_api_agent_studio_agents__logical_agent_id__fork_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_lineage_api_agent_studio_agents__logical_agent_id__lineage_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recall_api_agent_studio_agents__logical_agent_id__memory_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                scope_kind: components["schemas"]["MemoryScopeKind"];
+                scope_id: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remember_api_agent_studio_agents__logical_agent_id__memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RememberRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_memory_api_agent_studio_agents__logical_agent_id__memory_export_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                scope_kind: components["schemas"]["MemoryScopeKind"];
+                scope_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectMemoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    forget_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForgetMemoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryAuditRecord"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_builder_proposals_api_agent_studio_agents__logical_agent_id__proposals_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rollback_api_agent_studio_agents__logical_agent_id__rollback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tool_registrations_api_agent_studio_agents__logical_agent_id__tool_registrations_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolRegistrationSpec"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_tool_api_agent_studio_agents__logical_agent_id__tool_registrations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterToolRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolRegistrationSpec"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_versions_api_agent_studio_agents__logical_agent_id__versions_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentVersion"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cut_version_api_agent_studio_agents__logical_agent_id__versions_post: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentVersion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_approval_route_api_agent_studio_approvals__approval_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_capability_api_agent_studio_capabilities_attach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachCapabilityRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityBinding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_capability_descriptors_api_agent_studio_capabilities_descriptors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityDescriptor"][];
+                };
+            };
+        };
+    };
+    get_capability_discovery_api_agent_studio_capabilities_discovery_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityDiscoverySnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_capability_instances_api_agent_studio_capabilities_instances_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityInstance"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_released_agent_catalog_api_agent_studio_catalog_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_health_api_agent_studio_deployments__deployment_id__health_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HealthUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deployed_models_api_agent_studio_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelDeploymentRef"][];
+                };
+            };
+        };
+    };
+    get_agent_manifest_schema_api_agent_studio_schemas_agent_manifest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    activate_release_route_api_agent_studio_versions__version_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRelease"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_capability_approval_api_agent_studio_versions__version_id__capability_approvals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapabilityApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_exact_version_contract_api_agent_studio_versions__version_id__contract_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_gates_api_agent_studio_versions__version_id__gates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunGatesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseGateReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_promotion_api_agent_studio_versions__version_id__promote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromotionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"] | components["schemas"]["AgentVersion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     agents_api_agents_get: {
         parameters: {
             query?: never;
@@ -1672,72 +5195,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ConnectorSetting"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    execute_dataset_api_datasets_execute_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DatasetExecutionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DatasetExecutionResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    plan_dataset_api_datasets_plan_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CopilotPlanRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CopilotPlanResponse"];
                 };
             };
             /** @description Validation Error */

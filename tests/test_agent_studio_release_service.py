@@ -184,6 +184,7 @@ def _record_healthy_deployment(
     environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
 ) -> DeploymentRecord:
     scope = _scope(version.tenant_id, version.project_id)
+    assert version.runtime_target is not None
     record = DeploymentRecord(
         id=deployment_id,
         logical_agent_id=version.logical_agent_id,

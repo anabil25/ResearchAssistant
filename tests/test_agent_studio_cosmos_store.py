@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import importlib
+import threading
 from copy import deepcopy
 from typing import TYPE_CHECKING, Any, cast
 
@@ -40,7 +41,7 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStoreError
+from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
 from research_assistant_api.config import Settings
 
 if TYPE_CHECKING:
@@ -288,24 +289,47 @@ class FakeContainer:
         self.query_calls = 0
         self.query_log: list[dict[str, Any]] = []
         self.read_log: list[tuple[str, str]] = []
+        # Guards ``create_item``/``replace_item`` critical sections so
+        # concurrent threads racing against the same fake container observe
+        # genuine optimistic-concurrency semantics (one wins, the other gets
+        # a 409/412) instead of silently corrupting ``self.documents`` via
+        # unsynchronized dict mutation -- this is what makes the parallel
+        # sequence-allocation tests meaningful.
+        self._lock = threading.Lock()
 
     def upsert_item(self, item: dict[str, Any]) -> dict[str, Any]:
-        self.version += 1
-        stored = deepcopy(item)
-        stored["_etag"] = str(self.version)
-        key = (stored["scope_key"], stored["id"])
-        self.documents[key] = stored
-        return deepcopy(stored)
+        with self._lock:
+            self.version += 1
+            stored = deepcopy(item)
+            stored["_etag"] = str(self.version)
+            key = (stored["scope_key"], stored["id"])
+            self.documents[key] = stored
+            return deepcopy(stored)
+
+    def create_item(self, body: dict[str, Any]) -> dict[str, Any]:
+        with self._lock:
+            key = (body["scope_key"], body["id"])
+            if key in self.documents:
+                raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                    status_code=409,
+                    message="conflict: document already exists",
+                )
+            self.version += 1
+            stored = deepcopy(body)
+            stored["_etag"] = str(self.version)
+            self.documents[key] = stored
+            return deepcopy(stored)
 
     def read_item(self, *, item: str, partition_key: str) -> dict[str, Any]:
         self.read_log.append((partition_key, item))
         key = (partition_key, item)
-        if key not in self.documents:
-            raise CosmosResourceNotFoundError(  # type: ignore[no-untyped-call]
-                status_code=404,
-                message="missing",
-            )
-        return deepcopy(self.documents[key])
+        with self._lock:
+            if key not in self.documents:
+                raise CosmosResourceNotFoundError(  # type: ignore[no-untyped-call]
+                    status_code=404,
+                    message="missing",
+                )
+            return deepcopy(self.documents[key])
 
     def query_items(
         self,
@@ -324,11 +348,12 @@ class FakeContainer:
             }
         )
         document_type = values["@documentType"]
-        return [
-            deepcopy(document)
-            for (scope_key, _), document in self.documents.items()
-            if scope_key == partition_key and document["documentType"] == document_type
-        ]
+        with self._lock:
+            return [
+                deepcopy(document)
+                for (scope_key, _), document in self.documents.items()
+                if scope_key == partition_key and document["documentType"] == document_type
+            ]
 
     def replace_item(
         self,
@@ -345,8 +370,17 @@ class FakeContainer:
             )
         assert match_condition is MatchConditions.IfNotModified
         key = (body["scope_key"], item)
-        assert self.documents[key]["_etag"] == etag
-        return self.upsert_item(body)
+        with self._lock:
+            if self.documents[key]["_etag"] != etag:
+                raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                    status_code=412,
+                    message="etag mismatch: document was modified concurrently",
+                )
+            self.version += 1
+            stored = deepcopy(body)
+            stored["_etag"] = str(self.version)
+            self.documents[key] = stored
+            return deepcopy(stored)
 
     def get_document(self, scope_key: str, document_id: str) -> dict[str, Any]:
         return deepcopy(self.documents[(scope_key, document_id)])
@@ -557,6 +591,267 @@ def test_versions_create_allocate_get_list_and_scope_guards(
         payload=mismatched.model_dump(mode="json"),
     )
     assert _new_store(fake_client_factory).get_version(SCOPE, "version-mismatch") is None
+
+
+def test_allocate_sequence_cas_retries_after_create_conflict_then_succeeds(
+    fake_client_factory: FakeCosmosClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """First sequence allocation for an agent: the counter document does not
+    exist yet, so ``_allocate_sequence_cas`` takes the create-if-absent
+    branch. Simulate another process winning the create race once (a 409)
+    before this instance retries and succeeds."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+    calls = {"count": 0}
+
+    def flaky_create_item(body: dict[str, Any]) -> dict[str, Any]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409,
+                message="simulated concurrent counter creation",
+            )
+        return original_create_item(body)
+
+    monkeypatch.setattr(container, "create_item", flaky_create_item)
+
+    allocated = store.allocate_version(
+        SCOPE,
+        AGENT_ID,
+        lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+    )
+
+    assert allocated.sequence == 1
+    assert calls["count"] == 2
+
+
+def test_allocate_sequence_cas_retries_after_replace_conflict_then_succeeds(
+    fake_client_factory: FakeCosmosClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Second-and-later sequence allocations replace the existing counter
+    document via ETag compare-and-swap. Simulate another process winning
+    that replace race once (a 412) before this instance re-reads and
+    succeeds."""
+    store = _new_store(fake_client_factory)
+    store.allocate_version(
+        SCOPE,
+        AGENT_ID,
+        lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+    )
+
+    container = _metadata_container(fake_client_factory)
+    original_replace_item = container.replace_item
+    calls = {"count": 0}
+
+    def flaky_replace_item(
+        *, item: str, body: dict[str, Any], etag: str | None, match_condition: Any
+    ) -> dict[str, Any]:
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=412,
+                message="simulated concurrent counter replace",
+            )
+        return original_replace_item(item=item, body=body, etag=etag, match_condition=match_condition)
+
+    monkeypatch.setattr(container, "replace_item", flaky_replace_item)
+
+    allocated = store.allocate_version(
+        SCOPE,
+        AGENT_ID,
+        lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+    )
+
+    assert allocated.sequence == 2
+    assert calls["count"] == 2
+
+
+def test_allocate_sequence_cas_raises_after_exhausting_retry_budget(
+    fake_client_factory: FakeCosmosClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the counter replace keeps losing the CAS race beyond the bounded
+    retry budget, allocation must fail loudly (never silently reuse or
+    fabricate a sequence number)."""
+    store = _new_store(fake_client_factory)
+    store.allocate_version(
+        SCOPE,
+        AGENT_ID,
+        lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+    )
+
+    container = _metadata_container(fake_client_factory)
+
+    def always_conflicting_replace_item(
+        *, item: str, body: dict[str, Any], etag: str | None, match_condition: Any
+    ) -> dict[str, Any]:
+        raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+            status_code=412,
+            message="simulated permanent counter replace conflict",
+        )
+
+    monkeypatch.setattr(container, "replace_item", always_conflicting_replace_item)
+
+    with pytest.raises(AgentStudioStoreError, match="Exceeded"):
+        store.allocate_version(
+            SCOPE,
+            AGENT_ID,
+            lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+        )
+
+
+def test_allocate_version_rejects_builder_returning_wrong_sequence(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A builder that ignores the atomically-reserved sequence and stamps a
+    different one onto the version must be rejected rather than silently
+    persisted under a mismatched sequence."""
+    store = _new_store(fake_client_factory)
+
+    with pytest.raises(AgentStudioStoreError, match="expected atomically-reserved"):
+        store.allocate_version(
+            SCOPE,
+            AGENT_ID,
+            lambda sequence: _version(sequence=sequence + 41, version_id="version-wrong-sequence"),
+        )
+
+
+def test_allocate_sequence_cas_reraises_unexpected_create_and_replace_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Non-conflict Cosmos errors from the counter create/replace calls must
+    propagate immediately rather than being swallowed as a benign race."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+
+    def failing_create_item(body: dict[str, Any]) -> dict[str, Any]:
+        raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+            status_code=500,
+            message="simulated unexpected create failure",
+        )
+
+    monkeypatch.setattr(container, "create_item", failing_create_item)
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.allocate_version(
+            SCOPE,
+            AGENT_ID,
+            lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+        )
+
+    monkeypatch.undo()
+    container_after_undo = _metadata_container(fake_client_factory)
+
+    def failing_replace_item(
+        *, item: str, body: dict[str, Any], etag: str | None, match_condition: Any
+    ) -> dict[str, Any]:
+        raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+            status_code=500,
+            message="simulated unexpected replace failure",
+        )
+
+    with pytest.MonkeyPatch.context() as replace_patch:
+        replace_patch.setattr(container_after_undo, "replace_item", failing_replace_item)
+        store.allocate_version(
+            SCOPE,
+            AGENT_ID,
+            lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+        )
+        with pytest.raises(CosmosHttpResponseError):
+            store.allocate_version(
+                SCOPE,
+                AGENT_ID,
+                lambda sequence: _version(sequence=sequence, version_id=f"version-{sequence}"),
+            )
+
+
+def test_sync_versions_swallows_benign_local_cache_race(
+    fake_client_factory: FakeCosmosClientFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``_sync_versions`` reads a document not yet present in this
+    instance's local cache and tries to insert it. If a concurrent call on
+    the same instance already inserted the exact same document between the
+    membership check and the insert (the only way ``AgentStudioStore.
+    create_version`` can raise here), that must be swallowed as a harmless
+    race rather than propagated."""
+    store = _new_store(fake_client_factory)
+    version = _version(sequence=1, version_id="version-race")
+    container = _metadata_container(fake_client_factory)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id="version::version-race",
+        document_type="version",
+        payload=version.model_dump(mode="json"),
+    )
+
+    def _raise_already_exists(
+        self: cosmos_store.CosmosAgentStudioStore, scope: ScopeContext, version: AgentVersion
+    ) -> AgentVersion:
+        raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
+
+    monkeypatch.setattr(AgentStudioStore, "create_version", _raise_already_exists)
+
+    store._sync_versions(SCOPE, AGENT_ID)  # must not raise
+
+    assert version.id not in store._versions
+
+
+def test_allocate_version_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances/processes racing to cut versions.
+
+    Each thread uses its OWN ``CosmosAgentStudioStore`` instance (its own
+    in-memory cache), but all instances share the same underlying
+    ``FakeContainer`` documents -- mirroring multiple API replicas hitting
+    the same Cosmos container concurrently. The CAS-based sequence counter
+    must hand out a strictly-unique sequence to every successful caller with
+    no duplicates, even though gaps are acceptable.
+    """
+    thread_count = 12
+    allocated_sequences: list[int] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _allocate(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        barrier.wait()
+
+        def _builder(sequence: int, worker_index: int = worker_index) -> AgentVersion:
+            return _version(sequence=sequence, version_id=f"concurrent-version-{worker_index}")
+
+        try:
+            version = store.allocate_version(SCOPE, AGENT_ID, _builder)
+        except BaseException as exc:  # capture every failure mode for the assertion below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            allocated_sequences.append(version.sequence)
+
+    threads = [threading.Thread(target=_allocate, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(allocated_sequences) == thread_count
+    assert len(set(allocated_sequences)) == thread_count, (
+        f"expected {thread_count} unique sequence numbers, got duplicates: {allocated_sequences}"
+    )
+
+    final_store = _new_store(fake_client_factory)
+    persisted = final_store.list_versions(SCOPE, AGENT_ID)
+    assert len(persisted) == thread_count
+    assert sorted(v.sequence for v in persisted) == sorted(allocated_sequences)
+    assert len({v.id for v in persisted}) == thread_count
 
 
 def test_lineage_and_gate_reports_round_trip_and_sentinel_partition(
