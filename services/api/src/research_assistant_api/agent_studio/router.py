@@ -16,7 +16,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
-from research_assistant_api.agent_studio.approvals import ApprovalError
+from research_assistant_api.agent_studio.approvals import (
+    ApprovalError,
+    compute_approval_effective_state,
+    revoke_approval,
+)
 from research_assistant_api.agent_studio.builder_service import (
     BuilderConcurrencyError,
     BuilderNotFoundError,
@@ -41,14 +45,18 @@ from research_assistant_api.agent_studio.model_discovery import ModelDiscovery, 
 from research_assistant_api.agent_studio.models import (
     AGENT_MANIFEST_SCHEMA_VERSION,
     AgentDraft,
+    AgentDraftView,
     AgentManifest,
     AgentOwnerKind,
     AgentRelease,
     AgentRole,
     AgentVersion,
+    AgentWorkspaceView,
     ApprovalKind,
+    ApprovalRecordView,
     BuilderProposal,
     CapabilityBinding,
+    CapabilityBindingView,
     CapabilityDescriptor,
     CapabilityInstance,
     DeploymentEnvironment,
@@ -88,6 +96,7 @@ from research_assistant_api.agent_studio.schemas import (
     PromotionRequest,
     RegisterToolRequest,
     RememberRequest,
+    RevokeApprovalRequest,
     RollbackRequest,
     RunGatesRequest,
     UpdateDraftRequest,
@@ -103,7 +112,7 @@ from research_assistant_api.identity import (
 
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 
-router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
+router = APIRouter(prefix="/v1/agent-studio", tags=["agent-studio"])
 
 
 def _identity(request: Request) -> IdentityContext:
@@ -178,6 +187,32 @@ def _actor_role(request: Request, identity: IdentityContext, logical_agent_id: s
         logical_agent_id=logical_agent_id,
         principal_id=identity.user_id,
     )
+
+
+def _resolve_approval_logical_agent_id(
+    store: AgentStudioStore, scope: ScopeContext, record: StudioApprovalRecord
+) -> str:
+    """Resolve the logical agent an approval record is "about", for role checks.
+
+    Admin escalation records reuse ``version_id`` as the logical_agent_id
+    (there is no version yet to escalate against); promotion and
+    capability-operation records carry a real ``version_id`` that must be
+    dereferenced to find the agent.
+    """
+    if record.kind is ApprovalKind.ADMIN_ESCALATION:
+        return record.version_id
+    version = store.get_version(scope, record.version_id)
+    if version is None:
+        raise _not_found(f"Version '{record.version_id}' was not found.")
+    return version.logical_agent_id
+
+
+def _approval_record_view(
+    store: AgentStudioStore, scope: ScopeContext, record: StudioApprovalRecord
+) -> ApprovalRecordView:
+    revocations = store.list_revocations(scope, record.id)
+    effective_state = compute_approval_effective_state(record, revoked=bool(revocations))
+    return ApprovalRecordView(record=record, effective_state=effective_state, revocations=revocations)
 
 
 def _not_found(detail: str) -> HTTPException:
@@ -321,13 +356,21 @@ def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraft)
-def get_draft(request: Request, logical_agent_id: str, project_id: str) -> AgentDraft:
+@router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraftView)
+def get_draft(request: Request, logical_agent_id: str, project_id: str) -> AgentDraftView:
+    """Raw draft plus a derived, volatile ``capability_views`` sidecar.
+
+    ``draft`` is exactly the persisted ``AgentDraft`` (raw ``CapabilityBinding``
+    only, unchanged); ``capability_views`` is a read-time expansion the
+    editor uses to show current descriptor/instance resolution and staleness
+    without ever being written back into the draft/manifest.
+    """
     identity = _identity(request)
     draft = _store(request).get_draft(_scope(identity, project_id), logical_agent_id)
     if draft is None:
         raise _not_found(f"Agent '{logical_agent_id}' was not found.")
-    return draft
+    capability_views = _registry(request).resolve_binding_views(draft.manifest.capabilities)
+    return AgentDraftView(draft=draft, capability_views=capability_views)
 
 
 @router.put("/agents/{logical_agent_id}/draft", response_model=AgentDraft)
@@ -446,6 +489,59 @@ def cut_version(request: Request, logical_agent_id: str, project_id: str) -> Age
 def list_versions(request: Request, logical_agent_id: str, project_id: str) -> list[AgentVersion]:
     identity = _identity(request)
     return list(_store(request).list_versions(_scope(identity, project_id), logical_agent_id))
+
+
+@router.get("/versions/{version_id}/capability-views", response_model=list[CapabilityBindingView])
+def get_version_capability_views(
+    request: Request, version_id: str, project_id: str
+) -> list[CapabilityBindingView]:
+    """Current expanded ``{binding, resolved_descriptor, resolved_instance,
+    bindability, stale_reason}`` view for one immutable, already-cut version.
+
+    Distinct from ``/versions/{id}/contract`` (raw binding-only, the actual
+    execution contract): this is volatile, read-time presentation data for
+    UI/audit and can never be substituted for the raw contract by a
+    runtime/compiler.
+    """
+    identity = _identity(request)
+    scope = _scope(identity, project_id)
+    version = _store(request).get_version(scope, version_id)
+    if version is None:
+        raise _not_found(f"Version '{version_id}' was not found.")
+    return list(_registry(request).resolve_binding_views(version.manifest.capabilities))
+
+
+@router.get("/agents/{logical_agent_id}/workspace", response_model=AgentWorkspaceView)
+def get_agent_workspace(request: Request, logical_agent_id: str, project_id: str) -> AgentWorkspaceView:
+    """Aggregate, volatile view of an agent's current draft/release/deployment state.
+
+    Convenience read-time composition for the UI: current draft (with its
+    expanded ``capability_views``), the most recently cut version, that
+    version's latest release, and recent deployment history. Never usable as
+    an execution contract -- the runtime/compiler always resolves via
+    ``/resolve``/``/versions/{id}/contract`` instead.
+    """
+    identity = _identity(request)
+    scope = _scope(identity, project_id)
+    store = _store(request)
+    draft = store.get_draft(scope, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    versions = store.list_versions(scope, logical_agent_id)
+    latest_version = versions[-1] if versions else None
+    latest_release = (
+        store.latest_release_for_version(scope, latest_version.id) if latest_version is not None else None
+    )
+    deployments = store.list_deployments(scope, logical_agent_id)
+    capability_views = _registry(request).resolve_binding_views(draft.manifest.capabilities)
+    return AgentWorkspaceView(
+        logical_agent_id=logical_agent_id,
+        draft=draft,
+        latest_version=latest_version,
+        latest_release=latest_release,
+        deployments=deployments,
+        capability_views=capability_views,
+    )
 
 
 @router.get("/agents/{logical_agent_id}/lineage")
@@ -584,17 +680,12 @@ def decide_approval_route(
     record = store.get_approval(scope, approval_id)
     if record is None:
         raise _not_found(f"Approval '{approval_id}' was not found.")
-    # Admin escalation records reuse ``version_id`` as the logical_agent_id
-    # (there is no version yet to escalate against); promotion and
-    # capability-operation records carry a real ``version_id`` that must be
-    # dereferenced to find the agent.
-    if record.kind is ApprovalKind.ADMIN_ESCALATION:
-        logical_agent_id = record.version_id
-    else:
-        version = store.get_version(scope, record.version_id)
-        if version is None:
-            raise _not_found(f"Version '{record.version_id}' was not found.")
-        logical_agent_id = version.logical_agent_id
+    if store.list_revocations(scope, approval_id):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=f"Approval '{approval_id}' has been revoked and can no longer be decided.",
+        )
+    logical_agent_id = _resolve_approval_logical_agent_id(store, scope, record)
     approver_role = (
         AgentRole.OWNER
         if _is_platform_owner(identity)
@@ -632,6 +723,62 @@ def decide_approval_route(
         )
     except (ReleaseServiceError, ApprovalError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/approvals/{approval_id}", response_model=ApprovalRecordView)
+def get_approval_route(request: Request, approval_id: str, project_id: str) -> ApprovalRecordView:
+    """UI/audit read of one approval: record + recomputed ``effective_state`` + revocations."""
+    identity = _identity(request)
+    store = _store(request)
+    scope = _scope(identity, project_id)
+    record = store.get_approval(scope, approval_id)
+    if record is None:
+        raise _not_found(f"Approval '{approval_id}' was not found.")
+    # Resolving the logical agent enforces that the approval actually belongs
+    # to this scope's agent graph before any data is returned.
+    _resolve_approval_logical_agent_id(store, scope, record)
+    return _approval_record_view(store, scope, record)
+
+
+@router.post("/approvals/{approval_id}/revoke", response_model=ApprovalRecordView)
+def revoke_approval_route(
+    request: Request, approval_id: str, payload: RevokeApprovalRequest
+) -> ApprovalRecordView:
+    """Append an ``ApprovalRevocation``. Permanent, append-only; no un-revoke.
+
+    Self-revocation (the original requester revoking their own already-
+    decided request) is always allowed; any other actor must meet the same
+    minimum role required to have decided the approval in the first place,
+    or be a platform owner.
+    """
+    identity = _identity(request)
+    store = _store(request)
+    scope = _scope(identity, payload.project_id)
+    record = store.get_approval(scope, approval_id)
+    if record is None:
+        raise _not_found(f"Approval '{approval_id}' was not found.")
+    logical_agent_id = _resolve_approval_logical_agent_id(store, scope, record)
+    actor_role = (
+        AgentRole.OWNER
+        if _is_platform_owner(identity)
+        else _actor_role(request, identity, logical_agent_id, scope.project_id)
+    )
+    try:
+        revocation = revoke_approval(
+            record,
+            revocation_id=f"rev-{uuid4().hex}",
+            actor_id=identity.user_id,
+            actor_role=actor_role,
+            is_platform_owner=_is_platform_owner(identity),
+            reason=payload.reason,
+        )
+    except ApprovalError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    store.create_revocation(scope, revocation)
+    revocations = store.list_revocations(scope, approval_id)
+    effective_state = compute_approval_effective_state(record, revoked=bool(revocations))
+    return ApprovalRecordView(record=record, effective_state=effective_state, revocations=revocations)
+
 
 
 @router.post(

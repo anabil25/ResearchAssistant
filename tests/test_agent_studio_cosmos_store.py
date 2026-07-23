@@ -21,6 +21,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    ApprovalRevocation,
     ApprovalState,
     BuilderProposal,
     BuilderProposalState,
@@ -203,6 +204,27 @@ def _approval(
         requested_by=USER_ID,
         evidence_summary="Evidence.",
         risk="medium",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _revocation(
+    *,
+    revocation_id: str = "revocation-1",
+    approval_id: str = "approval-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    actor_id: str = USER_ID,
+    reason: str = "no longer needed",
+    idempotency_key: str = "rev-key-1",
+) -> ApprovalRevocation:
+    return ApprovalRevocation(
+        id=revocation_id,
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        actor_id=actor_id,
+        reason=reason,
         idempotency_key=idempotency_key,
     )
 
@@ -1247,6 +1269,135 @@ def test_create_approval_is_race_free_across_concurrent_store_instances(
     replacement = _approval(approval_id="approval-race-replacement", idempotency_key="race-key")
     reopened_store = _new_store(fake_client_factory)
     assert reopened_store.create_approval(SCOPE, replacement) == replacement
+
+
+def test_revocations_create_list_sync_and_scope_isolation(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Revocations round-trip via list_revocations, are visible to a fresh
+    store instance through ``_sync_revocations`` (mirroring how other
+    replicas pick up revocations they didn't create locally), are
+    idempotent by ``(scope, approval, idempotency_key)``, and never leak
+    across a sibling project or tenant."""
+    first = _new_store(fake_client_factory)
+    assert first.list_revocations(SCOPE, "approval-1") == ()
+
+    revocation = _revocation()
+    assert first.create_revocation(SCOPE, revocation) == revocation
+
+    duplicate = _revocation(revocation_id="revocation-duplicate")
+    assert first.create_revocation(SCOPE, duplicate) == revocation
+
+    # A brand new store instance (no local cache) must sync from Cosmos
+    # rather than seeing an empty history.
+    reloaded = _new_store(fake_client_factory)
+    assert reloaded.list_revocations(SCOPE, "approval-1") == (revocation,)
+    # A second sync on the same (already-populated) local cache must not
+    # attempt to re-add the already-known revocation.
+    assert reloaded.list_revocations(SCOPE, "approval-1") == (revocation,)
+    assert reloaded.list_revocations(SAME_TENANT_OTHER_PROJECT_SCOPE, "approval-1") == ()
+    assert reloaded.list_revocations(OTHER_TENANT_SAME_PROJECT_SCOPE, "approval-1") == ()
+
+    with pytest.raises(AgentStudioStoreError):
+        reloaded.create_revocation(SCOPE, _revocation(project_id=OTHER_PROJECT))
+
+    container = _metadata_container(fake_client_factory)
+    revocation_documents = [
+        document
+        for document in container.documents.values()
+        if document["scope_key"] == SCOPE.scope_key and document["documentType"] == "approval_revocation"
+    ]
+    assert len(revocation_documents) == 1
+
+
+def test_create_revocation_raises_when_dedup_conflict_document_vanishes(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Mirrors the identical defensive branch on ``create_approval``: a 409
+    on the revocation dedup guard whose winning document can no longer be
+    read back must fail loudly rather than fabricate a result."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_conflict(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_revocation_dedup":
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409, message="conflict: document already exists"
+            )
+        return original_create_item(body)
+
+    container.create_item = _always_conflict  # type: ignore[method-assign]
+
+    with pytest.raises(AgentStudioStoreError, match="could not be read back"):
+        store.create_revocation(SCOPE, _revocation())
+
+
+def test_create_revocation_propagates_non_conflict_dedup_guard_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A non-409 failure creating the revocation dedup guard must propagate
+    unchanged, exactly like the equivalent approval-dedup-guard branch."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_fail(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_revocation_dedup":
+            raise CosmosHttpResponseError(status_code=500, message="simulated service error")  # type: ignore[no-untyped-call]
+        return original_create_item(body)
+
+    container.create_item = _always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.create_revocation(SCOPE, _revocation())
+
+
+def test_create_revocation_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances racing to revoke the same approval
+    under the same idempotency key (same actor/reason). Exactly one
+    distinct revocation record must result, and -- unlike approvals -- the
+    dedup guard is never released, so a later retry under the same key
+    still resolves to the original, permanent revocation."""
+    thread_count = 12
+    results: list[ApprovalRevocation] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _request(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        candidate = _revocation(revocation_id=f"revocation-race-{worker_index}", idempotency_key="rev-race-key")
+        barrier.wait()
+        try:
+            record = store.create_revocation(SCOPE, candidate)
+        except BaseException as exc:  # capture every failure mode for the assertion below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(record)
+
+    threads = [threading.Thread(target=_request, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(results) == thread_count
+    assert len({revocation.id for revocation in results}) == 1, (
+        f"expected exactly one distinct revocation record, got: {sorted({r.id for r in results})}"
+    )
+
+    final_store = _new_store(fake_client_factory)
+    assert len(final_store.list_revocations(SCOPE, "approval-1")) == 1
+
+    retried = _revocation(revocation_id="revocation-race-retry", idempotency_key="rev-race-key")
+    reopened_store = _new_store(fake_client_factory)
+    assert reopened_store.create_revocation(SCOPE, retried) == results[0]
 
 
 def test_deployments_create_list_get_update_and_scope_guards(

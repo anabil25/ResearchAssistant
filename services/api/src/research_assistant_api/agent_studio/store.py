@@ -29,6 +29,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    ApprovalRevocation,
     ApprovalState,
     BuilderProposal,
     BuilderProposalState,
@@ -84,6 +85,10 @@ class AgentStudioStore:
         self._approvals: dict[str, StudioApprovalRecord] = {}
         self._approval_dedup: dict[str, StudioApprovalRecord] = {}
         self._approval_lock = threading.Lock()
+        self._revocations: dict[str, ApprovalRevocation] = {}
+        self._revocation_dedup: dict[str, ApprovalRevocation] = {}
+        self._revocations_by_approval: dict[tuple[str, str], list[str]] = {}
+        self._revocation_lock = threading.Lock()
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
@@ -371,6 +376,49 @@ class AgentStudioStore:
             and approval.project_id == scope.project_id
             and (version_id is None or approval.version_id == version_id)
         )
+
+    # -- Approval revocations ---------------------------------------------
+
+    @staticmethod
+    def _revocation_dedup_key(scope: ScopeContext, approval_id: str, idempotency_key: str) -> str:
+        """Deterministic dedup guard key for a would-be revocation.
+
+        Mirrors ``_approval_dedup_key``, but revocation dedup guards are
+        *never released* -- unlike an approval decision (which frees its
+        guard so a fresh request under the same idempotency key can be
+        created later), a revocation is a permanent append-only fact and a
+        retried revoke request for the same ``(approval, actor, reason)``
+        must always return the original revocation, never append a
+        duplicate.
+        """
+        payload = "|".join((scope.scope_key, approval_id, idempotency_key))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def create_revocation(self, scope: ScopeContext, revocation: ApprovalRevocation) -> ApprovalRevocation:
+        """Atomically append a revocation, deduplicating by idempotency key.
+
+        Two concurrent revoke requests for the same logical revocation
+        (same scope, approval, actor, and reason) are guaranteed to observe
+        the exact same resulting record -- the existence check and the
+        append happen atomically under a single lock, so this can never
+        persist two distinct revocation records for one logical request.
+        """
+        self._require_scope_match(scope, revocation.tenant_id, revocation.project_id)
+        dedup_key = self._revocation_dedup_key(scope, revocation.approval_id, revocation.idempotency_key)
+        with self._revocation_lock:
+            existing = self._revocation_dedup.get(dedup_key)
+            if existing is not None:
+                return existing
+            self._revocations[revocation.id] = revocation
+            self._revocation_dedup[dedup_key] = revocation
+            self._revocations_by_approval.setdefault(
+                (scope.scope_key, revocation.approval_id), []
+            ).append(revocation.id)
+            return revocation
+
+    def list_revocations(self, scope: ScopeContext, approval_id: str) -> tuple[ApprovalRevocation, ...]:
+        ids = self._revocations_by_approval.get((scope.scope_key, approval_id), [])
+        return tuple(self._revocations[revocation_id] for revocation_id in ids)
 
     # -- Deployments ------------------------------------------------------
 

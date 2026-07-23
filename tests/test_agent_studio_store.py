@@ -24,6 +24,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    ApprovalRevocation,
     ApprovalState,
     BuilderProposal,
     BuilderProposalState,
@@ -210,6 +211,27 @@ def _approval(
         requested_by=USER_ID,
         evidence_summary="Evidence.",
         risk="medium",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _revocation(
+    *,
+    revocation_id: str = "revocation-1",
+    approval_id: str = "approval-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    actor_id: str = USER_ID,
+    reason: str = "no longer needed",
+    idempotency_key: str = "rev-key-1",
+) -> ApprovalRevocation:
+    return ApprovalRevocation(
+        id=revocation_id,
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        actor_id=actor_id,
+        reason=reason,
         idempotency_key=idempotency_key,
     )
 
@@ -567,6 +589,60 @@ def test_create_approval_is_atomic_for_concurrent_calls() -> None:
     # being blocked forever.
     replacement = _approval(approval_id="approval-race-replacement", idempotency_key="race-key")
     assert store.create_approval(SCOPE, replacement) == replacement
+
+
+def test_revocations_are_permanent_idempotent_and_scope_isolated() -> None:
+    store = AgentStudioStore()
+    assert store.list_revocations(SCOPE, "approval-1") == ()
+
+    first = _revocation()
+    duplicate = _revocation(revocation_id="revocation-duplicate")
+
+    assert store.create_revocation(SCOPE, first) == first
+    # Same (approval, idempotency_key) is idempotent -- never a second record.
+    assert store.create_revocation(SCOPE, duplicate) == first
+    assert store.list_revocations(SCOPE, "approval-1") == (first,)
+
+    # A revocation for a different approval or idempotency key is distinct
+    # and does not affect the first approval's revocation history.
+    other_approval = _revocation(
+        revocation_id="revocation-2", approval_id="approval-2", idempotency_key="rev-key-2"
+    )
+    assert store.create_revocation(SCOPE, other_approval) == other_approval
+    assert store.list_revocations(SCOPE, "approval-1") == (first,)
+    assert store.list_revocations(SCOPE, "approval-2") == (other_approval,)
+
+    # Scope isolation: neither a sibling project nor a sibling tenant can
+    # observe this scope's revocations.
+    assert store.list_revocations(SAME_TENANT_OTHER_PROJECT_SCOPE, "approval-1") == ()
+    assert store.list_revocations(OTHER_TENANT_SAME_PROJECT_SCOPE, "approval-1") == ()
+
+    with pytest.raises(AgentStudioStoreError):
+        store.create_revocation(SCOPE, _revocation(project_id=OTHER_PROJECT))
+
+
+def test_create_revocation_is_atomic_for_concurrent_calls() -> None:
+    """Concurrent ``create_revocation`` calls sharing the same idempotency
+    key must all observe the exact same winning record. Unlike approvals,
+    the revocation dedup guard is never released -- a later call with the
+    same key always returns the original, permanent revocation."""
+    store = AgentStudioStore()
+
+    def request(index: int) -> ApprovalRevocation:
+        candidate = _revocation(revocation_id=f"revocation-race-{index}", idempotency_key="rev-race-key")
+        return store.create_revocation(SCOPE, candidate)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(request, range(8)))
+
+    assert len({revocation.id for revocation in results}) == 1
+    assert store.list_revocations(SCOPE, "approval-1") == (results[0],)
+
+    # Unlike approvals, retrying under the same idempotency key after the
+    # fact still resolves to the original revocation -- there is no
+    # "decided, guard released" transition for a permanent fact.
+    retried = _revocation(revocation_id="revocation-race-retry", idempotency_key="rev-race-key")
+    assert store.create_revocation(SCOPE, retried) == results[0]
 
 
 def test_deployments_round_trip_update_and_scope_guards() -> None:

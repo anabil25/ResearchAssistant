@@ -93,6 +93,20 @@ class ApprovalDecisionRequest(BaseModel):
     rationale: str | None = None
 
 
+class RevokeApprovalRequest(BaseModel):
+    """Request body to append an ``ApprovalRevocation`` for a request/decision.
+
+    Revocation is permanent and append-only -- there is no corresponding
+    "un-revoke" request; a fresh approval request is required afterward if
+    the underlying action is still needed.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=4000)
+
+
 class EscalationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

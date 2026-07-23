@@ -8,12 +8,17 @@ from research_assistant_api.agent_studio.approvals import (
     DEFAULT_APPROVAL_VALIDITY,
     ApprovalError,
     build_approval_request,
+    compute_approval_effective_state,
     decide_approval,
+    decider_minimum_role,
     idempotency_key,
     requires_approval,
+    revocation_idempotency_key,
+    revoke_approval,
 )
 from research_assistant_api.agent_studio.models import (
     AgentRole,
+    ApprovalEffectiveState,
     ApprovalKind,
     ApprovalState,
     DeploymentEnvironment,
@@ -254,3 +259,137 @@ def test_decide_approval_allows_owner_to_approve_admin_escalation() -> None:
 
     assert decided.state is ApprovalState.APPROVED
     assert decided.approver_id == "owner-1"
+
+
+def test_decider_minimum_role_matches_documented_minimums() -> None:
+    assert decider_minimum_role(ApprovalKind.ADMIN_ESCALATION) is AgentRole.OWNER
+    assert decider_minimum_role(ApprovalKind.RELEASE_PROMOTION) is AgentRole.MAINTAINER
+    assert decider_minimum_role(ApprovalKind.CAPABILITY_OPERATION) is AgentRole.MAINTAINER
+    assert decider_minimum_role(ApprovalKind.FORK_PROMOTION) is AgentRole.MAINTAINER
+
+
+def test_compute_approval_effective_state_revoked_always_wins(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals_module, "utc_now", lambda: FIXED_NOW)
+    pending = _pending_record()
+    approved = decide_approval(
+        pending, approver_id="approver-1", approver_role=AgentRole.OWNER, approve=True
+    )
+
+    # Revocation wins even over a still-pending record.
+    assert compute_approval_effective_state(pending, revoked=True) is ApprovalEffectiveState.REVOKED
+    # ...and over an approved-but-not-yet-expired record.
+    assert compute_approval_effective_state(approved, revoked=True) is ApprovalEffectiveState.REVOKED
+
+
+def test_compute_approval_effective_state_expired_approved_record(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals_module, "utc_now", lambda: FIXED_NOW)
+    approved_expired = decide_approval(
+        _pending_record(expires_at=FIXED_NOW + timedelta(hours=1)),
+        approver_id="approver-1",
+        approver_role=AgentRole.OWNER,
+        approve=True,
+    )
+    now_after_expiry = FIXED_NOW + timedelta(hours=2)
+
+    assert (
+        compute_approval_effective_state(approved_expired, now=now_after_expiry)
+        is ApprovalEffectiveState.EXPIRED
+    )
+    # Still within validity: effective state stays APPROVED.
+    assert (
+        compute_approval_effective_state(approved_expired, now=FIXED_NOW + timedelta(minutes=1))
+        is ApprovalEffectiveState.APPROVED
+    )
+
+
+@pytest.mark.parametrize(
+    ("approve", "expected"),
+    [
+        (True, ApprovalEffectiveState.APPROVED),
+        (False, ApprovalEffectiveState.REJECTED),
+    ],
+)
+def test_compute_approval_effective_state_falls_back_to_stored_decision(
+    approve: bool, expected: ApprovalEffectiveState
+) -> None:
+    decided = decide_approval(
+        _pending_record(), approver_id="approver-1", approver_role=AgentRole.OWNER, approve=approve
+    )
+    assert compute_approval_effective_state(decided) is expected
+
+
+def test_compute_approval_effective_state_pending_record_without_revocation() -> None:
+    assert compute_approval_effective_state(_pending_record()) is ApprovalEffectiveState.PENDING
+
+
+def test_revocation_idempotency_key_is_deterministic_and_distinguishes_inputs() -> None:
+    key_a = revocation_idempotency_key(approval_id="approval-1", actor_id="user-1", reason="mistake")
+    key_b = revocation_idempotency_key(approval_id="approval-1", actor_id="user-1", reason="mistake")
+    key_c = revocation_idempotency_key(approval_id="approval-1", actor_id="user-2", reason="mistake")
+
+    assert key_a == key_b
+    assert key_a != key_c
+
+
+def test_revoke_approval_allows_self_revocation_regardless_of_role() -> None:
+    record = _pending_record()
+
+    revocation = revoke_approval(
+        record,
+        revocation_id="rev-1",
+        actor_id=record.requested_by,
+        actor_role=AgentRole.VIEWER,
+        is_platform_owner=False,
+        reason="changed my mind",
+    )
+
+    assert revocation.approval_id == record.id
+    assert revocation.actor_id == record.requested_by
+    assert revocation.reason == "changed my mind"
+    assert revocation.idempotency_key == revocation_idempotency_key(
+        approval_id=record.id, actor_id=record.requested_by, reason="changed my mind"
+    )
+
+
+def test_revoke_approval_allows_platform_owner_regardless_of_role() -> None:
+    record = _pending_record(kind=ApprovalKind.ADMIN_ESCALATION)
+
+    revocation = revoke_approval(
+        record,
+        revocation_id="rev-2",
+        actor_id="platform-owner-1",
+        actor_role=AgentRole.VIEWER,
+        is_platform_owner=True,
+        reason="policy violation",
+    )
+
+    assert revocation.actor_id == "platform-owner-1"
+
+
+def test_revoke_approval_enforces_minimum_role_for_other_actors() -> None:
+    record = _pending_record(kind=ApprovalKind.RELEASE_PROMOTION)
+
+    with pytest.raises(ApprovalError, match="does not meet the minimum"):
+        revoke_approval(
+            record,
+            revocation_id="rev-3",
+            actor_id="someone-else",
+            actor_role=AgentRole.CONTRIBUTOR,
+            is_platform_owner=False,
+            reason="not authorized",
+        )
+
+
+def test_revoke_approval_allows_other_actor_with_sufficient_role() -> None:
+    record = _pending_record(kind=ApprovalKind.RELEASE_PROMOTION)
+
+    revocation = revoke_approval(
+        record,
+        revocation_id="rev-4",
+        actor_id="maintainer-1",
+        actor_role=AgentRole.MAINTAINER,
+        is_platform_owner=False,
+        reason="stale evidence",
+    )
+
+    assert revocation.actor_id == "maintainer-1"

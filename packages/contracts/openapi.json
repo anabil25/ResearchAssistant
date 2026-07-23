@@ -80,6 +80,27 @@
         "title": "AgentDraft",
         "type": "object"
       },
+      "AgentDraftView": {
+        "additionalProperties": false,
+        "description": "``GET /agents/{id}/draft`` response: the raw draft plus a derived sidecar.\n\n``draft`` (and its ``AgentManifest.capabilities``) remains exactly what\nis persisted -- raw ``CapabilityBinding`` only. ``capability_views`` is an\nadditional, volatile expansion computed at request time so the draft\neditor can show current resolution/staleness without that information\never being written back into the draft or manifest.",
+        "properties": {
+          "capability_views": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityBindingView"
+            },
+            "title": "Capability Views",
+            "type": "array"
+          },
+          "draft": {
+            "$ref": "#/components/schemas/AgentDraft"
+          }
+        },
+        "required": [
+          "draft"
+        ],
+        "title": "AgentDraftView",
+        "type": "object"
+      },
       "AgentInsight": {
         "properties": {
           "agent_name": {
@@ -617,6 +638,70 @@
         "title": "AgentVisibility",
         "type": "string"
       },
+      "AgentWorkspaceView": {
+        "additionalProperties": false,
+        "description": "Aggregate, volatile view of an agent's current draft/release/deployment state.\n\nComposes the current draft, the latest cut ``AgentVersion``, its most\nrecent ``AgentRelease`` (governance status for the given environment),\nrecent ``DeploymentRecord`` history, and the draft's expanded\n``capability_views`` -- purely for UI/audit consumption. Never usable as\nan execution contract: the runtime/compiler always consumes\n``/resolve``/``/versions/{id}/contract`` (raw binding-only, immutable)\ninstead. ``/catalog`` remains summary-only and does not return this\nshape.",
+        "properties": {
+          "capability_views": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityBindingView"
+            },
+            "title": "Capability Views",
+            "type": "array"
+          },
+          "deployments": {
+            "items": {
+              "$ref": "#/components/schemas/DeploymentRecord"
+            },
+            "title": "Deployments",
+            "type": "array"
+          },
+          "draft": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentDraft"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_release": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentRelease"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "latest_version": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentVersion"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "logical_agent_id": {
+            "title": "Logical Agent Id",
+            "type": "string"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_agent_id"
+        ],
+        "title": "AgentWorkspaceView",
+        "type": "object"
+      },
       "AnalysisStep": {
         "properties": {
           "deterministic": {
@@ -700,6 +785,18 @@
         ],
         "title": "ApprovalDecisionRequest",
         "type": "object"
+      },
+      "ApprovalEffectiveState": {
+        "description": "The *derived* state of a ``StudioApprovalRecord``, recomputed at every\n\nread and enforcement point -- never stored on the record itself.\n\n``StudioApprovalRecord.state`` (pending/approved/rejected) is set once at\ndecision time and is never mutated again (see its docstring). Expiry and\nrevocation are independent, time-varying facts layered on top of that\nimmutable decision, so a record whose stored ``state`` is ``APPROVED``\ncan still have an effective state of ``EXPIRED`` or ``REVOKED`` depending\non ``expires_at`` and whether an ``ApprovalRevocation`` exists for it.\nRuntime/enforcement code must always use the effective state, never the\nraw stored ``state``, to decide whether an approval currently authorizes\nanything.",
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "expired",
+          "revoked"
+        ],
+        "title": "ApprovalEffectiveState",
+        "type": "string"
       },
       "ApprovalKind": {
         "enum": [
@@ -833,6 +930,100 @@
           "idempotency_key"
         ],
         "title": "ApprovalRecord",
+        "type": "object"
+      },
+      "ApprovalRecordView": {
+        "additionalProperties": false,
+        "description": "UI/audit read view of a ``StudioApprovalRecord``: the immutable record\nplus its currently-recomputed ``effective_state`` and full revocation\nhistory.\n\nNever persisted -- ``effective_state`` is always derived at request time\nby ``approvals.compute_approval_effective_state`` from the record's own\nstored ``state``/``expires_at`` and the live revocation log, exactly as\nevery enforcement point (gate/deploy) independently recomputes it. A\nruntime/enforcement path must never substitute this view's\n``effective_state`` for its own recomputation -- this is presentation\ndata only.",
+        "properties": {
+          "effective_state": {
+            "$ref": "#/components/schemas/ApprovalEffectiveState"
+          },
+          "record": {
+            "$ref": "#/components/schemas/StudioApprovalRecord"
+          },
+          "revocations": {
+            "items": {
+              "$ref": "#/components/schemas/ApprovalRevocation"
+            },
+            "title": "Revocations",
+            "type": "array"
+          }
+        },
+        "required": [
+          "record",
+          "effective_state"
+        ],
+        "title": "ApprovalRecordView",
+        "type": "object"
+      },
+      "ApprovalRevocation": {
+        "additionalProperties": false,
+        "description": "An append-only revocation event for a ``StudioApprovalRecord``.\n\nRevocation never mutates the original request/decision record -- it is a\nseparate, independent, permanent signal (\"this approval must never be\nhonored again\") layered on top via ``ApprovalEffectiveState``. There is\nno corresponding \"un-revoke\": once persisted, an approval's effective\nstate is ``REVOKED`` forever. Idempotent creation is keyed by\n``idempotency_key`` (see ``approvals.revocation_idempotency_key``) so a\nretried request returns the original revocation rather than appending a\nduplicate event.",
+        "properties": {
+          "actor_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Actor Id",
+            "type": "string"
+          },
+          "approval_id": {
+            "title": "Approval Id",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "policy_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Policy Ref"
+          },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          },
+          "tenant_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "approval_id",
+          "tenant_id",
+          "project_id",
+          "actor_id",
+          "reason",
+          "idempotency_key"
+        ],
+        "title": "ApprovalRevocation",
         "type": "object"
       },
       "ApprovalState-Input": {
@@ -1674,6 +1865,61 @@
           "attached_by"
         ],
         "title": "CapabilityBinding",
+        "type": "object"
+      },
+      "CapabilityBindingView": {
+        "additionalProperties": false,
+        "description": "A volatile, current-state expansion of one ``CapabilityBinding``.\n\nNever persisted and never the execution contract: the canonical\n``AgentManifest``/``AgentVersion``/``/versions/{id}/contract``/\n``/resolve`` surfaces stay raw-binding-only and immutable/minimal. This\nview exists purely for UI/audit consumption (draft editor sidecar,\n``GET /versions/{id}/capability-views``, the aggregate workspace view) so\na caller can see *current* resolved descriptor/instance state and\nstaleness without that volatile information ever leaking into a pinned\nrelease contract. ``resolved_descriptor``/``resolved_instance`` are\n``None`` when the referenced descriptor/instance is no longer in the\nlive catalog (itself a stale condition, reflected in ``stale_reason``).",
+        "properties": {
+          "bindable": {
+            "title": "Bindable",
+            "type": "boolean"
+          },
+          "binding": {
+            "$ref": "#/components/schemas/CapabilityBinding"
+          },
+          "resolved_at": {
+            "format": "date-time",
+            "title": "Resolved At",
+            "type": "string"
+          },
+          "resolved_descriptor": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityDescriptor"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "resolved_instance": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityInstance"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "stale_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Stale Reason"
+          }
+        },
+        "required": [
+          "binding",
+          "bindable"
+        ],
+        "title": "CapabilityBindingView",
         "type": "object"
       },
       "CapabilityChangeKind": {
@@ -5653,6 +5899,30 @@
         "title": "ReviewProtocol",
         "type": "object"
       },
+      "RevokeApprovalRequest": {
+        "additionalProperties": false,
+        "description": "Request body to append an ``ApprovalRevocation`` for a request/decision.\n\nRevocation is permanent and append-only -- there is no corresponding\n\"un-revoke\" request; a fresh approval request is required afterward if\nthe underlying action is still needed.",
+        "properties": {
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "reason": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "reason"
+        ],
+        "title": "RevokeApprovalRequest",
+        "type": "object"
+      },
       "RollbackRequest": {
         "additionalProperties": false,
         "properties": {
@@ -6741,2150 +7011,6 @@
   },
   "openapi": "3.1.0",
   "paths": {
-    "/api/agent-studio/agents": {
-      "post": {
-        "operationId": "create_agent_api_agent_studio_agents_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateAgentRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Agent",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/builder/messages": {
-      "post": {
-        "description": "Produce a stored manifest-change proposal from a natural-language message.\n\nNever mutates the draft directly. The request body is a free-form\n``message`` and a ``base_etag`` acknowledgement only -- never a patch.",
-        "operationId": "create_builder_proposal_api_agent_studio_agents__logical_agent_id__builder_messages_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BuilderMessageRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BuilderProposal"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Builder Proposal",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/deployments": {
-      "get": {
-        "operationId": "list_deployments_api_agent_studio_agents__logical_agent_id__deployments_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/DeploymentRecord"
-                  },
-                  "title": "Response List Deployments Api Agent Studio Agents  Logical Agent Id  Deployments Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Deployments",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "post": {
-        "operationId": "deploy_api_agent_studio_agents__logical_agent_id__deployments_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/DeployRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeploymentRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Deploy",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/draft": {
-      "get": {
-        "operationId": "get_draft_api_agent_studio_agents__logical_agent_id__draft_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Draft",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "put": {
-        "operationId": "update_draft_api_agent_studio_agents__logical_agent_id__draft_put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "description": "Expected current draft etag (optimistic concurrency).",
-            "in": "header",
-            "name": "If-Match",
-            "required": true,
-            "schema": {
-              "description": "Expected current draft etag (optimistic concurrency).",
-              "title": "If-Match",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/UpdateDraftRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Update Draft",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/escalations": {
-      "post": {
-        "operationId": "request_escalation_api_agent_studio_agents__logical_agent_id__escalations_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/EscalationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StudioApprovalRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Request Escalation",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/fork": {
-      "post": {
-        "operationId": "fork_agent_api_agent_studio_agents__logical_agent_id__fork_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForkRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Fork Agent",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/lineage": {
-      "get": {
-        "operationId": "list_lineage_api_agent_studio_agents__logical_agent_id__lineage_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "additionalProperties": true,
-                    "type": "object"
-                  },
-                  "title": "Response List Lineage Api Agent Studio Agents  Logical Agent Id  Lineage Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Lineage",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/memory": {
-      "get": {
-        "operationId": "recall_api_agent_studio_agents__logical_agent_id__memory_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope_kind",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/MemoryScopeKind"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope_id",
-            "required": true,
-            "schema": {
-              "title": "Scope Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 100,
-              "title": "Limit",
-              "type": "integer"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MemoryEntry"
-                  },
-                  "title": "Response Recall Api Agent Studio Agents  Logical Agent Id  Memory Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Recall",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "post": {
-        "description": "Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).\n\nRejects non-GA memory mechanisms (e.g. the Foundry native \"Memory\"\npreview feature) rather than silently accepting them. Memory is opt-in\nper the agent's ``MemoryPolicy`` and persistent storage defaults off;\nentries are governed by TTL, an explicit read/write ACL, and a\n``REMEMBER`` provenance audit record.",
-        "operationId": "remember_api_agent_studio_agents__logical_agent_id__memory_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RememberRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemoryEntry"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Remember",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/memory-export": {
-      "get": {
-        "description": "Export all readable memory entries for a scope (GA-mechanism memory governance: export).",
-        "operationId": "export_memory_api_agent_studio_agents__logical_agent_id__memory_export_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope_kind",
-            "required": true,
-            "schema": {
-              "$ref": "#/components/schemas/MemoryScopeKind"
-            }
-          },
-          {
-            "in": "query",
-            "name": "scope_id",
-            "required": true,
-            "schema": {
-              "title": "Scope Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MemoryEntry"
-                  },
-                  "title": "Response Export Memory Api Agent Studio Agents  Logical Agent Id  Memory Export Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Export Memory",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}": {
-      "delete": {
-        "description": "Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance.",
-        "operationId": "forget_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__delete",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "entry_id",
-            "required": true,
-            "schema": {
-              "title": "Entry Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ForgetMemoryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemoryEntry"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Forget Memory Entry",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "get": {
-        "description": "Inspect a single memory entry (GA-mechanism memory governance: inspect).",
-        "operationId": "inspect_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "entry_id",
-            "required": true,
-            "schema": {
-              "title": "Entry Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemoryEntry"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Inspect Memory Entry",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "put": {
-        "description": "Correct a memory entry's content (GA-mechanism memory governance: correct).",
-        "operationId": "correct_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__put",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "entry_id",
-            "required": true,
-            "schema": {
-              "title": "Entry Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CorrectMemoryRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/MemoryEntry"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Correct Memory Entry",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
-      "get": {
-        "description": "Deletion/provenance audit trail for a single memory entry.\n\nRequires read/inspect ACL on the concrete entry (creator or ``read_acl``\nmember) and the enclosing scope's ``allow_user_inspect`` control; entries\nare resolved through the caller's own logical agent so no cross-agent or\ncross-scope audit history can be enumerated.",
-        "operationId": "memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "entry_id",
-            "required": true,
-            "schema": {
-              "title": "Entry Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/MemoryAuditRecord"
-                  },
-                  "title": "Response Memory Audit Trail Api Agent Studio Agents  Logical Agent Id  Memory  Entry Id  Audit Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Memory Audit Trail",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/proposals": {
-      "get": {
-        "description": "Proposal history for an agent (pending, applied, and rejected).",
-        "operationId": "list_builder_proposals_api_agent_studio_agents__logical_agent_id__proposals_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/BuilderProposal"
-                  },
-                  "title": "Response List Builder Proposals Api Agent Studio Agents  Logical Agent Id  Proposals Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Builder Proposals",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}": {
-      "get": {
-        "operationId": "get_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "proposal_id",
-            "required": true,
-            "schema": {
-              "title": "Proposal Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BuilderProposal"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Builder Proposal",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/apply": {
-      "post": {
-        "description": "Apply a stored proposal after researcher review.\n\nNever accepts a patch body: only a ``base_etag`` acknowledgement. Fails\nclosed with a 409 if the draft changed since the proposal was generated,\nor since the caller last read it.",
-        "operationId": "apply_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "proposal_id",
-            "required": true,
-            "schema": {
-              "title": "Proposal Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BuilderApplyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentDraft"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Apply Builder Proposal",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/reject": {
-      "post": {
-        "operationId": "reject_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "proposal_id",
-            "required": true,
-            "schema": {
-              "title": "Proposal Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/BuilderRejectRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/BuilderProposal"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Reject Builder Proposal",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/resolve": {
-      "get": {
-        "description": "Composition/resolution contract for the future typed workflow compiler.\n\nResolves a stable logical agent ID (within this tenant/workspace and the\nrequested ``environment``) to the exact pinned version/release, its\nmanifest hash, runtime endpoint, typed I/O schema refs, and capability\nversions. A published workflow must pin this response's ``version_id``/\n``release_id``/``manifest_hash`` at compose time; execution must never\nsilently re-resolve to \"whatever is latest\" later.\n\nFails closed: if the pinned release's capability bindings have gone\nstale since cut (descriptor/instance/schema/destination drift), this\nraises 409 rather than returning a contract that would no longer pass\ngate-time validation.",
-        "operationId": "resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "environment",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/DeploymentEnvironment",
-              "default": "development"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResolvedAgentContract"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Resolve Logical Agent",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/rollback": {
-      "post": {
-        "operationId": "rollback_api_agent_studio_agents__logical_agent_id__rollback_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RollbackRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeploymentRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Rollback",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/tool-registrations": {
-      "get": {
-        "operationId": "list_tool_registrations_api_agent_studio_agents__logical_agent_id__tool_registrations_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ToolRegistrationSpec"
-                  },
-                  "title": "Response List Tool Registrations Api Agent Studio Agents  Logical Agent Id  Tool Registrations Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Tool Registrations",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "post": {
-        "description": "Register the runtime handler for a GA capability operation.\n\nRejects operations that are not GA-attachable with the same honest\nreason as ``/capabilities/attach`` (never silently registers a handler\nfor a preview/unavailable operation).",
-        "operationId": "register_tool_api_agent_studio_agents__logical_agent_id__tool_registrations_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RegisterToolRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ToolRegistrationSpec"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Register Tool",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/versions": {
-      "get": {
-        "operationId": "list_versions_api_agent_studio_agents__logical_agent_id__versions_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/AgentVersion"
-                  },
-                  "title": "Response List Versions Api Agent Studio Agents  Logical Agent Id  Versions Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Versions",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "post": {
-        "operationId": "cut_version_api_agent_studio_agents__logical_agent_id__versions_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentVersion"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Cut Version",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/approvals/{approval_id}/decision": {
-      "post": {
-        "operationId": "decide_approval_route_api_agent_studio_approvals__approval_id__decision_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "approval_id",
-            "required": true,
-            "schema": {
-              "title": "Approval Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ApprovalDecisionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StudioApprovalRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Decide Approval Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/capabilities/attach": {
-      "post": {
-        "description": "Attach a capability operation, enforcing GA-only maturity.\n\nRejects preview/unavailable operations with an honest reason rather than\nsilently succeeding; the resulting ``CapabilityBinding`` is returned for\nthe caller to merge into a draft manifest via ``PUT .../draft``. When\n``instance_id`` is supplied it must reference a registered, non-unavailable\n``CapabilityInstance`` for this descriptor.",
-        "operationId": "attach_capability_api_agent_studio_capabilities_attach_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/AttachCapabilityRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CapabilityBinding"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Attach Capability",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/capabilities/descriptors": {
-      "get": {
-        "description": "Honest capability catalog: GA operations are attachable; preview/unavailable\noperations remain visible with their ``reason`` rather than being hidden.\n\nSeparate canonical resource from ``/capabilities/instances`` -- descriptors\nare immutable provider-wide catalog/governance semantics, never tenant-\nor project-scoped resource state.",
-        "operationId": "list_capability_descriptors_api_agent_studio_capabilities_descriptors_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CapabilityDescriptor"
-                  },
-                  "title": "Response List Capability Descriptors Api Agent Studio Capabilities Descriptors Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Capability Descriptors",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/capabilities/discovery": {
-      "get": {
-        "description": "Combined descriptor/instance discovery snapshot for UI/compiler convenience.\n\nNever a separate canonical resource -- just an aggregate read-time\nprojection over ``/capabilities/descriptors`` and ``/capabilities/\ninstances``, plus honest, non-fatal discovery ``warnings`` and the\n``refreshed_at`` timestamp of the underlying registry's last discovery\npass.",
-        "operationId": "get_capability_discovery_api_agent_studio_capabilities_discovery_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Project Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/CapabilityDiscoverySnapshot"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Capability Discovery",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/capabilities/instances": {
-      "get": {
-        "description": "Discovered, tenant/project-scoped capability resources.\n\nSeparate canonical resource from ``/capabilities/descriptors``: these are\nthe concrete, discovered things a ``CapabilityBinding`` points at via\n``instance_id``, always isolated to the caller's tenant (and, when\n``project_id`` is supplied, that project too).",
-        "operationId": "list_capability_instances_api_agent_studio_capabilities_instances_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Project Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/CapabilityInstance"
-                  },
-                  "title": "Response List Capability Instances Api Agent Studio Capabilities Instances Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Capability Instances",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/catalog": {
-      "get": {
-        "description": "Released-agent catalog for the future node palette/compiler.\n\nLists the exact, pinned contract currently bound to ``environment`` for\nevery logical agent this tenant owns a draft for. Agents with no\nenvironment binding yet are omitted (there is nothing to pin).",
-        "operationId": "get_released_agent_catalog_api_agent_studio_catalog_get",
-        "parameters": [
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "environment",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/DeploymentEnvironment",
-              "default": "development"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ResolvedAgentContract"
-                  },
-                  "title": "Response Get Released Agent Catalog Api Agent Studio Catalog Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Released Agent Catalog",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/deployments/{deployment_id}/health": {
-      "post": {
-        "operationId": "record_health_api_agent_studio_deployments__deployment_id__health_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "deployment_id",
-            "required": true,
-            "schema": {
-              "title": "Deployment Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/HealthUpdateRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/DeploymentRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Record Health",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/models": {
-      "get": {
-        "operationId": "list_deployed_models_api_agent_studio_models_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/ModelDeploymentRef"
-                  },
-                  "title": "Response List Deployed Models Api Agent Studio Models Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "List Deployed Models",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/schemas/agent-manifest": {
-      "get": {
-        "description": "Canonical JSON Schema + content digest for the persisted ``AgentManifest``.\n\nExternal consumers (e.g. the harness) resolve the manifest contract from\nthis endpoint's JSON Schema and digest rather than importing this\ncodebase's Python model class.",
-        "operationId": "get_agent_manifest_schema_api_agent_studio_schemas_agent_manifest_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Get Agent Manifest Schema Api Agent Studio Schemas Agent Manifest Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "Successful Response"
-          }
-        },
-        "summary": "Get Agent Manifest Schema",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/versions/{version_id}/activate": {
-      "post": {
-        "description": "Explicit ACTIVE transition, gated on a healthy deploy+smoke record.\n\nNever triggered implicitly by ``/promote``, ``/deployments`` (deploy),\nor ``/deployments/{id}/health`` (record_health) \u2014 the caller must ask\nfor activation explicitly, and it is rejected unless the exact\nversion/environment already has a ``DeploymentRecord`` with a healthy\nsmoke result.",
-        "operationId": "activate_release_route_api_agent_studio_versions__version_id__activate_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "version_id",
-            "required": true,
-            "schema": {
-              "title": "Version Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ActivationRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/AgentRelease"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Activate Release Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/versions/{version_id}/capability-approvals": {
-      "post": {
-        "operationId": "request_capability_approval_api_agent_studio_versions__version_id__capability_approvals_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "version_id",
-            "required": true,
-            "schema": {
-              "title": "Version Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CapabilityApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/StudioApprovalRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Request Capability Approval",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/versions/{version_id}/contract": {
-      "get": {
-        "description": "Exact-version contract lookup for the future node palette/compiler.\n\nUnlike ``/resolve`` (which follows the *current* environment binding for\na logical agent), this looks up one already-known ``version_id``\ndirectly - for re-validating a previously composed/pinned workflow node\nwithout depending on whatever is currently bound to an environment.\n\nFails closed on stale capability bindings, same as ``/resolve``.",
-        "operationId": "get_exact_version_contract_api_agent_studio_versions__version_id__contract_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "version_id",
-            "required": true,
-            "schema": {
-              "title": "Version Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "environment",
-            "required": false,
-            "schema": {
-              "$ref": "#/components/schemas/DeploymentEnvironment",
-              "default": "development"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ResolvedAgentContract"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Exact Version Contract",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/versions/{version_id}/gates": {
-      "post": {
-        "operationId": "run_gates_api_agent_studio_versions__version_id__gates_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "version_id",
-            "required": true,
-            "schema": {
-              "title": "Version Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/RunGatesRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ReleaseGateReport"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Run Gates",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/versions/{version_id}/promote": {
-      "post": {
-        "operationId": "request_promotion_api_agent_studio_versions__version_id__promote_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "version_id",
-            "required": true,
-            "schema": {
-              "title": "Version Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/PromotionRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/StudioApprovalRecord"
-                    },
-                    {
-                      "$ref": "#/components/schemas/AgentVersion"
-                    }
-                  ],
-                  "title": "Response Request Promotion Api Agent Studio Versions  Version Id  Promote Post"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Request Promotion",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
     "/api/agents": {
       "get": {
         "operationId": "agents_api_agents_get",
@@ -9639,6 +7765,2364 @@
         "summary": "Ready",
         "tags": [
           "operations"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents": {
+      "post": {
+        "operationId": "create_agent_v1_agent_studio_agents_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreateAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Agent",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/builder/messages": {
+      "post": {
+        "description": "Produce a stored manifest-change proposal from a natural-language message.\n\nNever mutates the draft directly. The request body is a free-form\n``message`` and a ``base_etag`` acknowledgement only -- never a patch.",
+        "operationId": "create_builder_proposal_v1_agent_studio_agents__logical_agent_id__builder_messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuilderMessageRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuilderProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Builder Proposal",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/deployments": {
+      "get": {
+        "operationId": "list_deployments_v1_agent_studio_agents__logical_agent_id__deployments_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DeploymentRecord"
+                  },
+                  "title": "Response List Deployments V1 Agent Studio Agents  Logical Agent Id  Deployments Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Deployments",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "post": {
+        "operationId": "deploy_v1_agent_studio_agents__logical_agent_id__deployments_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DeployRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Deploy",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/draft": {
+      "get": {
+        "description": "Raw draft plus a derived, volatile ``capability_views`` sidecar.\n\n``draft`` is exactly the persisted ``AgentDraft`` (raw ``CapabilityBinding``\nonly, unchanged); ``capability_views`` is a read-time expansion the\neditor uses to show current descriptor/instance resolution and staleness\nwithout ever being written back into the draft/manifest.",
+        "operationId": "get_draft_v1_agent_studio_agents__logical_agent_id__draft_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDraftView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Draft",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "put": {
+        "operationId": "update_draft_v1_agent_studio_agents__logical_agent_id__draft_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Expected current draft etag (optimistic concurrency).",
+            "in": "header",
+            "name": "If-Match",
+            "required": true,
+            "schema": {
+              "description": "Expected current draft etag (optimistic concurrency).",
+              "title": "If-Match",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/UpdateDraftRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Draft",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/escalations": {
+      "post": {
+        "operationId": "request_escalation_v1_agent_studio_agents__logical_agent_id__escalations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/EscalationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Escalation",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/fork": {
+      "post": {
+        "operationId": "fork_agent_v1_agent_studio_agents__logical_agent_id__fork_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForkRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Fork Agent",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/lineage": {
+      "get": {
+        "operationId": "list_lineage_v1_agent_studio_agents__logical_agent_id__lineage_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response List Lineage V1 Agent Studio Agents  Logical Agent Id  Lineage Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Lineage",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/memory": {
+      "get": {
+        "operationId": "recall_v1_agent_studio_agents__logical_agent_id__memory_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MemoryScopeKind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_id",
+            "required": true,
+            "schema": {
+              "title": "Scope Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryEntry"
+                  },
+                  "title": "Response Recall V1 Agent Studio Agents  Logical Agent Id  Memory Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Recall",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "post": {
+        "description": "Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).\n\nRejects non-GA memory mechanisms (e.g. the Foundry native \"Memory\"\npreview feature) rather than silently accepting them. Memory is opt-in\nper the agent's ``MemoryPolicy`` and persistent storage defaults off;\nentries are governed by TTL, an explicit read/write ACL, and a\n``REMEMBER`` provenance audit record.",
+        "operationId": "remember_v1_agent_studio_agents__logical_agent_id__memory_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RememberRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Remember",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/memory-export": {
+      "get": {
+        "description": "Export all readable memory entries for a scope (GA-mechanism memory governance: export).",
+        "operationId": "export_memory_v1_agent_studio_agents__logical_agent_id__memory_export_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_kind",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/MemoryScopeKind"
+            }
+          },
+          {
+            "in": "query",
+            "name": "scope_id",
+            "required": true,
+            "schema": {
+              "title": "Scope Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryEntry"
+                  },
+                  "title": "Response Export Memory V1 Agent Studio Agents  Logical Agent Id  Memory Export Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Export Memory",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/memory/{entry_id}": {
+      "delete": {
+        "description": "Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance.",
+        "operationId": "forget_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__delete",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ForgetMemoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Forget Memory Entry",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "get": {
+        "description": "Inspect a single memory entry (GA-mechanism memory governance: inspect).",
+        "operationId": "inspect_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Inspect Memory Entry",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "put": {
+        "description": "Correct a memory entry's content (GA-mechanism memory governance: correct).",
+        "operationId": "correct_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CorrectMemoryRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/MemoryEntry"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Correct Memory Entry",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
+      "get": {
+        "description": "Deletion/provenance audit trail for a single memory entry.\n\nRequires read/inspect ACL on the concrete entry (creator or ``read_acl``\nmember) and the enclosing scope's ``allow_user_inspect`` control; entries\nare resolved through the caller's own logical agent so no cross-agent or\ncross-scope audit history can be enumerated.",
+        "operationId": "memory_audit_trail_v1_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "entry_id",
+            "required": true,
+            "schema": {
+              "title": "Entry Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/MemoryAuditRecord"
+                  },
+                  "title": "Response Memory Audit Trail V1 Agent Studio Agents  Logical Agent Id  Memory  Entry Id  Audit Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Memory Audit Trail",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals": {
+      "get": {
+        "description": "Proposal history for an agent (pending, applied, and rejected).",
+        "operationId": "list_builder_proposals_v1_agent_studio_agents__logical_agent_id__proposals_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/BuilderProposal"
+                  },
+                  "title": "Response List Builder Proposals V1 Agent Studio Agents  Logical Agent Id  Proposals Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Builder Proposals",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}": {
+      "get": {
+        "operationId": "get_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuilderProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Builder Proposal",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/apply": {
+      "post": {
+        "description": "Apply a stored proposal after researcher review.\n\nNever accepts a patch body: only a ``base_etag`` acknowledgement. Fails\nclosed with a 409 if the draft changed since the proposal was generated,\nor since the caller last read it.",
+        "operationId": "apply_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuilderApplyRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentDraft"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Apply Builder Proposal",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/reject": {
+      "post": {
+        "operationId": "reject_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "proposal_id",
+            "required": true,
+            "schema": {
+              "title": "Proposal Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/BuilderRejectRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/BuilderProposal"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Reject Builder Proposal",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/resolve": {
+      "get": {
+        "description": "Composition/resolution contract for the future typed workflow compiler.\n\nResolves a stable logical agent ID (within this tenant/workspace and the\nrequested ``environment``) to the exact pinned version/release, its\nmanifest hash, runtime endpoint, typed I/O schema refs, and capability\nversions. A published workflow must pin this response's ``version_id``/\n``release_id``/``manifest_hash`` at compose time; execution must never\nsilently re-resolve to \"whatever is latest\" later.\n\nFails closed: if the pinned release's capability bindings have gone\nstale since cut (descriptor/instance/schema/destination drift), this\nraises 409 rather than returning a contract that would no longer pass\ngate-time validation.",
+        "operationId": "resolve_logical_agent_v1_agent_studio_agents__logical_agent_id__resolve_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DeploymentEnvironment",
+              "default": "development"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedAgentContract"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Resolve Logical Agent",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/rollback": {
+      "post": {
+        "operationId": "rollback_v1_agent_studio_agents__logical_agent_id__rollback_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RollbackRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Rollback",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/tool-registrations": {
+      "get": {
+        "operationId": "list_tool_registrations_v1_agent_studio_agents__logical_agent_id__tool_registrations_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ToolRegistrationSpec"
+                  },
+                  "title": "Response List Tool Registrations V1 Agent Studio Agents  Logical Agent Id  Tool Registrations Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Tool Registrations",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "post": {
+        "description": "Register the runtime handler for a GA capability operation.\n\nRejects operations that are not GA-attachable with the same honest\nreason as ``/capabilities/attach`` (never silently registers a handler\nfor a preview/unavailable operation).",
+        "operationId": "register_tool_v1_agent_studio_agents__logical_agent_id__tool_registrations_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RegisterToolRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ToolRegistrationSpec"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Register Tool",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/versions": {
+      "get": {
+        "operationId": "list_versions_v1_agent_studio_agents__logical_agent_id__versions_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentVersion"
+                  },
+                  "title": "Response List Versions V1 Agent Studio Agents  Logical Agent Id  Versions Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Versions",
+        "tags": [
+          "agent-studio"
+        ]
+      },
+      "post": {
+        "operationId": "cut_version_v1_agent_studio_agents__logical_agent_id__versions_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentVersion"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Cut Version",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/agents/{logical_agent_id}/workspace": {
+      "get": {
+        "description": "Aggregate, volatile view of an agent's current draft/release/deployment state.\n\nConvenience read-time composition for the UI: current draft (with its\nexpanded ``capability_views``), the most recently cut version, that\nversion's latest release, and recent deployment history. Never usable as\nan execution contract -- the runtime/compiler always resolves via\n``/resolve``/``/versions/{id}/contract`` instead.",
+        "operationId": "get_agent_workspace_v1_agent_studio_agents__logical_agent_id__workspace_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentWorkspaceView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Agent Workspace",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/approvals/{approval_id}": {
+      "get": {
+        "description": "UI/audit read of one approval: record + recomputed ``effective_state`` + revocations.",
+        "operationId": "get_approval_route_v1_agent_studio_approvals__approval_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecordView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Approval Route",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/approvals/{approval_id}/decision": {
+      "post": {
+        "operationId": "decide_approval_route_v1_agent_studio_approvals__approval_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Approval Route",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/approvals/{approval_id}/revoke": {
+      "post": {
+        "description": "Append an ``ApprovalRevocation``. Permanent, append-only; no un-revoke.\n\nSelf-revocation (the original requester revoking their own already-\ndecided request) is always allowed; any other actor must meet the same\nminimum role required to have decided the approval in the first place,\nor be a platform owner.",
+        "operationId": "revoke_approval_route_v1_agent_studio_approvals__approval_id__revoke_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RevokeApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecordView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Revoke Approval Route",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/capabilities/attach": {
+      "post": {
+        "description": "Attach a capability operation, enforcing GA-only maturity.\n\nRejects preview/unavailable operations with an honest reason rather than\nsilently succeeding; the resulting ``CapabilityBinding`` is returned for\nthe caller to merge into a draft manifest via ``PUT .../draft``. When\n``instance_id`` is supplied it must reference a registered, non-unavailable\n``CapabilityInstance`` for this descriptor.",
+        "operationId": "attach_capability_v1_agent_studio_capabilities_attach_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AttachCapabilityRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityBinding"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Attach Capability",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/capabilities/descriptors": {
+      "get": {
+        "description": "Honest capability catalog: GA operations are attachable; preview/unavailable\noperations remain visible with their ``reason`` rather than being hidden.\n\nSeparate canonical resource from ``/capabilities/instances`` -- descriptors\nare immutable provider-wide catalog/governance semantics, never tenant-\nor project-scoped resource state.",
+        "operationId": "list_capability_descriptors_v1_agent_studio_capabilities_descriptors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityDescriptor"
+                  },
+                  "title": "Response List Capability Descriptors V1 Agent Studio Capabilities Descriptors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Capability Descriptors",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/capabilities/discovery": {
+      "get": {
+        "description": "Combined descriptor/instance discovery snapshot for UI/compiler convenience.\n\nNever a separate canonical resource -- just an aggregate read-time\nprojection over ``/capabilities/descriptors`` and ``/capabilities/\ninstances``, plus honest, non-fatal discovery ``warnings`` and the\n``refreshed_at`` timestamp of the underlying registry's last discovery\npass.",
+        "operationId": "get_capability_discovery_v1_agent_studio_capabilities_discovery_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/CapabilityDiscoverySnapshot"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Capability Discovery",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/capabilities/instances": {
+      "get": {
+        "description": "Discovered, tenant/project-scoped capability resources.\n\nSeparate canonical resource from ``/capabilities/descriptors``: these are\nthe concrete, discovered things a ``CapabilityBinding`` points at via\n``instance_id``, always isolated to the caller's tenant (and, when\n``project_id`` is supplied, that project too).",
+        "operationId": "list_capability_instances_v1_agent_studio_capabilities_instances_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityInstance"
+                  },
+                  "title": "Response List Capability Instances V1 Agent Studio Capabilities Instances Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Capability Instances",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/catalog": {
+      "get": {
+        "description": "Released-agent catalog for the future node palette/compiler.\n\nLists the exact, pinned contract currently bound to ``environment`` for\nevery logical agent this tenant owns a draft for. Agents with no\nenvironment binding yet are omitted (there is nothing to pin).",
+        "operationId": "get_released_agent_catalog_v1_agent_studio_catalog_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DeploymentEnvironment",
+              "default": "development"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ResolvedAgentContract"
+                  },
+                  "title": "Response Get Released Agent Catalog V1 Agent Studio Catalog Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Released Agent Catalog",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/deployments/{deployment_id}/health": {
+      "post": {
+        "operationId": "record_health_v1_agent_studio_deployments__deployment_id__health_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/HealthUpdateRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Record Health",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/models": {
+      "get": {
+        "operationId": "list_deployed_models_v1_agent_studio_models_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ModelDeploymentRef"
+                  },
+                  "title": "Response List Deployed Models V1 Agent Studio Models Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "List Deployed Models",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/schemas/agent-manifest": {
+      "get": {
+        "description": "Canonical JSON Schema + content digest for the persisted ``AgentManifest``.\n\nExternal consumers (e.g. the harness) resolve the manifest contract from\nthis endpoint's JSON Schema and digest rather than importing this\ncodebase's Python model class.",
+        "operationId": "get_agent_manifest_schema_v1_agent_studio_schemas_agent_manifest_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Get Agent Manifest Schema V1 Agent Studio Schemas Agent Manifest Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Agent Manifest Schema",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/activate": {
+      "post": {
+        "description": "Explicit ACTIVE transition, gated on a healthy deploy+smoke record.\n\nNever triggered implicitly by ``/promote``, ``/deployments`` (deploy),\nor ``/deployments/{id}/health`` (record_health) \u2014 the caller must ask\nfor activation explicitly, and it is rejected unless the exact\nversion/environment already has a ``DeploymentRecord`` with a healthy\nsmoke result.",
+        "operationId": "activate_release_route_v1_agent_studio_versions__version_id__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ActivationRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AgentRelease"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Release Route",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/capability-approvals": {
+      "post": {
+        "operationId": "request_capability_approval_v1_agent_studio_versions__version_id__capability_approvals_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CapabilityApprovalRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/StudioApprovalRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Capability Approval",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/capability-views": {
+      "get": {
+        "description": "Current expanded ``{binding, resolved_descriptor, resolved_instance,\nbindability, stale_reason}`` view for one immutable, already-cut version.\n\nDistinct from ``/versions/{id}/contract`` (raw binding-only, the actual\nexecution contract): this is volatile, read-time presentation data for\nUI/audit and can never be substituted for the raw contract by a\nruntime/compiler.",
+        "operationId": "get_version_capability_views_v1_agent_studio_versions__version_id__capability_views_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilityBindingView"
+                  },
+                  "title": "Response Get Version Capability Views V1 Agent Studio Versions  Version Id  Capability Views Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Version Capability Views",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/contract": {
+      "get": {
+        "description": "Exact-version contract lookup for the future node palette/compiler.\n\nUnlike ``/resolve`` (which follows the *current* environment binding for\na logical agent), this looks up one already-known ``version_id``\ndirectly - for re-validating a previously composed/pinned workflow node\nwithout depending on whatever is currently bound to an environment.\n\nFails closed on stale capability bindings, same as ``/resolve``.",
+        "operationId": "get_exact_version_contract_v1_agent_studio_versions__version_id__contract_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "environment",
+            "required": false,
+            "schema": {
+              "$ref": "#/components/schemas/DeploymentEnvironment",
+              "default": "development"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResolvedAgentContract"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Exact Version Contract",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/gates": {
+      "post": {
+        "operationId": "run_gates_v1_agent_studio_versions__version_id__gates_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RunGatesRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ReleaseGateReport"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Gates",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/v1/agent-studio/versions/{version_id}/promote": {
+      "post": {
+        "operationId": "request_promotion_v1_agent_studio_versions__version_id__promote_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PromotionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/StudioApprovalRecord"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AgentVersion"
+                    }
+                  ],
+                  "title": "Response Request Promotion V1 Agent Studio Versions  Version Id  Promote Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Promotion",
+        "tags": [
+          "agent-studio"
         ]
       }
     }

@@ -450,6 +450,14 @@ class ReleaseService:
         version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
+        capability_approvals = self._store.list_approvals(scope, version_id)
+        # Revocation is a live, external fact independent of an approval
+        # record's own stored (immutable, never-mutated) ``state`` -- always
+        # recomputed from the append-only revocation log, never cached or
+        # trusted from the approval record itself.
+        revoked_approval_ids = frozenset(
+            record.id for record in capability_approvals if self._store.list_revocations(scope, record.id)
+        )
         report = run_gates(
             version_id=version_id,
             report_id=str(uuid4()),
@@ -459,7 +467,8 @@ class ReleaseService:
             capability_registry=self._registry,
             evidence=evidence,
             runtime_target=version.runtime_target,
-            capability_approvals=self._store.list_approvals(scope, version_id),
+            capability_approvals=capability_approvals,
+            revoked_approval_ids=revoked_approval_ids,
         )
         self._store.save_gate_report(scope, report)
         if report.passed:

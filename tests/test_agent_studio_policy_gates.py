@@ -261,6 +261,35 @@ def test_approval_gate_passes_with_matching_unexpired_approved_record() -> None:
     assert result.status is GateStatus.PASSED
 
 
+def test_approval_gate_fails_when_the_only_approval_is_revoked() -> None:
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        seeded_test_registry().as_mapping(),
+        "sha256:manifest-a",
+        (_approval_record(),),
+        datetime(2030, 1, 1, tzinfo=UTC),
+        frozenset({"approval-1"}),
+    )
+
+    assert result.status is GateStatus.FAILED
+    assert "has been revoked" in result.detail
+
+
+def test_approval_gate_passes_when_an_older_revoked_approval_is_followed_by_a_valid_one() -> None:
+    revoked = _approval_record()
+    valid = _approval_record().model_copy(update={"id": "approval-2"})
+    result = _approval_gate(
+        _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
+        seeded_test_registry().as_mapping(),
+        "sha256:manifest-a",
+        (revoked, valid),
+        datetime(2030, 1, 1, tzinfo=UTC),
+        frozenset({"approval-1"}),
+    )
+
+    assert result.status is GateStatus.PASSED
+
+
 def test_run_gates_fails_report_when_required_capability_approval_is_missing() -> None:
     registry = seeded_test_registry()
     report = run_gates(

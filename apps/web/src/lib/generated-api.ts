@@ -4,708 +4,6 @@
  */
 
 export interface paths {
-    "/api/agent-studio/agents": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Create Agent */
-        post: operations["create_agent_api_agent_studio_agents_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/builder/messages": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create Builder Proposal
-         * @description Produce a stored manifest-change proposal from a natural-language message.
-         *
-         *     Never mutates the draft directly. The request body is a free-form
-         *     ``message`` and a ``base_etag`` acknowledgement only -- never a patch.
-         */
-        post: operations["create_builder_proposal_api_agent_studio_agents__logical_agent_id__builder_messages_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/deployments": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Deployments */
-        get: operations["list_deployments_api_agent_studio_agents__logical_agent_id__deployments_get"];
-        put?: never;
-        /** Deploy */
-        post: operations["deploy_api_agent_studio_agents__logical_agent_id__deployments_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/draft": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Draft */
-        get: operations["get_draft_api_agent_studio_agents__logical_agent_id__draft_get"];
-        /** Update Draft */
-        put: operations["update_draft_api_agent_studio_agents__logical_agent_id__draft_put"];
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/escalations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Request Escalation */
-        post: operations["request_escalation_api_agent_studio_agents__logical_agent_id__escalations_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/fork": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Fork Agent */
-        post: operations["fork_agent_api_agent_studio_agents__logical_agent_id__fork_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/lineage": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Lineage */
-        get: operations["list_lineage_api_agent_studio_agents__logical_agent_id__lineage_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/memory": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Recall */
-        get: operations["recall_api_agent_studio_agents__logical_agent_id__memory_get"];
-        put?: never;
-        /**
-         * Remember
-         * @description Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).
-         *
-         *     Rejects non-GA memory mechanisms (e.g. the Foundry native "Memory"
-         *     preview feature) rather than silently accepting them. Memory is opt-in
-         *     per the agent's ``MemoryPolicy`` and persistent storage defaults off;
-         *     entries are governed by TTL, an explicit read/write ACL, and a
-         *     ``REMEMBER`` provenance audit record.
-         */
-        post: operations["remember_api_agent_studio_agents__logical_agent_id__memory_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/memory-export": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Export Memory
-         * @description Export all readable memory entries for a scope (GA-mechanism memory governance: export).
-         */
-        get: operations["export_memory_api_agent_studio_agents__logical_agent_id__memory_export_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Inspect Memory Entry
-         * @description Inspect a single memory entry (GA-mechanism memory governance: inspect).
-         */
-        get: operations["inspect_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__get"];
-        /**
-         * Correct Memory Entry
-         * @description Correct a memory entry's content (GA-mechanism memory governance: correct).
-         */
-        put: operations["correct_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__put"];
-        post?: never;
-        /**
-         * Forget Memory Entry
-         * @description Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance.
-         */
-        delete: operations["forget_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__delete"];
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Memory Audit Trail
-         * @description Deletion/provenance audit trail for a single memory entry.
-         *
-         *     Requires read/inspect ACL on the concrete entry (creator or ``read_acl``
-         *     member) and the enclosing scope's ``allow_user_inspect`` control; entries
-         *     are resolved through the caller's own logical agent so no cross-agent or
-         *     cross-scope audit history can be enumerated.
-         */
-        get: operations["memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/proposals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Builder Proposals
-         * @description Proposal history for an agent (pending, applied, and rejected).
-         */
-        get: operations["list_builder_proposals_api_agent_studio_agents__logical_agent_id__proposals_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Builder Proposal */
-        get: operations["get_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/apply": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Apply Builder Proposal
-         * @description Apply a stored proposal after researcher review.
-         *
-         *     Never accepts a patch body: only a ``base_etag`` acknowledgement. Fails
-         *     closed with a 409 if the draft changed since the proposal was generated,
-         *     or since the caller last read it.
-         */
-        post: operations["apply_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/reject": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Reject Builder Proposal */
-        post: operations["reject_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/resolve": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Resolve Logical Agent
-         * @description Composition/resolution contract for the future typed workflow compiler.
-         *
-         *     Resolves a stable logical agent ID (within this tenant/workspace and the
-         *     requested ``environment``) to the exact pinned version/release, its
-         *     manifest hash, runtime endpoint, typed I/O schema refs, and capability
-         *     versions. A published workflow must pin this response's ``version_id``/
-         *     ``release_id``/``manifest_hash`` at compose time; execution must never
-         *     silently re-resolve to "whatever is latest" later.
-         *
-         *     Fails closed: if the pinned release's capability bindings have gone
-         *     stale since cut (descriptor/instance/schema/destination drift), this
-         *     raises 409 rather than returning a contract that would no longer pass
-         *     gate-time validation.
-         */
-        get: operations["resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/rollback": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Rollback */
-        post: operations["rollback_api_agent_studio_agents__logical_agent_id__rollback_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/tool-registrations": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Tool Registrations */
-        get: operations["list_tool_registrations_api_agent_studio_agents__logical_agent_id__tool_registrations_get"];
-        put?: never;
-        /**
-         * Register Tool
-         * @description Register the runtime handler for a GA capability operation.
-         *
-         *     Rejects operations that are not GA-attachable with the same honest
-         *     reason as ``/capabilities/attach`` (never silently registers a handler
-         *     for a preview/unavailable operation).
-         */
-        post: operations["register_tool_api_agent_studio_agents__logical_agent_id__tool_registrations_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/versions": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Versions */
-        get: operations["list_versions_api_agent_studio_agents__logical_agent_id__versions_get"];
-        put?: never;
-        /** Cut Version */
-        post: operations["cut_version_api_agent_studio_agents__logical_agent_id__versions_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/approvals/{approval_id}/decision": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Decide Approval Route */
-        post: operations["decide_approval_route_api_agent_studio_approvals__approval_id__decision_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/capabilities/attach": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Attach Capability
-         * @description Attach a capability operation, enforcing GA-only maturity.
-         *
-         *     Rejects preview/unavailable operations with an honest reason rather than
-         *     silently succeeding; the resulting ``CapabilityBinding`` is returned for
-         *     the caller to merge into a draft manifest via ``PUT .../draft``. When
-         *     ``instance_id`` is supplied it must reference a registered, non-unavailable
-         *     ``CapabilityInstance`` for this descriptor.
-         */
-        post: operations["attach_capability_api_agent_studio_capabilities_attach_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/capabilities/descriptors": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Capability Descriptors
-         * @description Honest capability catalog: GA operations are attachable; preview/unavailable
-         *     operations remain visible with their ``reason`` rather than being hidden.
-         *
-         *     Separate canonical resource from ``/capabilities/instances`` -- descriptors
-         *     are immutable provider-wide catalog/governance semantics, never tenant-
-         *     or project-scoped resource state.
-         */
-        get: operations["list_capability_descriptors_api_agent_studio_capabilities_descriptors_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/capabilities/discovery": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Capability Discovery
-         * @description Combined descriptor/instance discovery snapshot for UI/compiler convenience.
-         *
-         *     Never a separate canonical resource -- just an aggregate read-time
-         *     projection over ``/capabilities/descriptors`` and ``/capabilities/
-         *     instances``, plus honest, non-fatal discovery ``warnings`` and the
-         *     ``refreshed_at`` timestamp of the underlying registry's last discovery
-         *     pass.
-         */
-        get: operations["get_capability_discovery_api_agent_studio_capabilities_discovery_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/capabilities/instances": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Capability Instances
-         * @description Discovered, tenant/project-scoped capability resources.
-         *
-         *     Separate canonical resource from ``/capabilities/descriptors``: these are
-         *     the concrete, discovered things a ``CapabilityBinding`` points at via
-         *     ``instance_id``, always isolated to the caller's tenant (and, when
-         *     ``project_id`` is supplied, that project too).
-         */
-        get: operations["list_capability_instances_api_agent_studio_capabilities_instances_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/catalog": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Released Agent Catalog
-         * @description Released-agent catalog for the future node palette/compiler.
-         *
-         *     Lists the exact, pinned contract currently bound to ``environment`` for
-         *     every logical agent this tenant owns a draft for. Agents with no
-         *     environment binding yet are omitted (there is nothing to pin).
-         */
-        get: operations["get_released_agent_catalog_api_agent_studio_catalog_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/deployments/{deployment_id}/health": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Record Health */
-        post: operations["record_health_api_agent_studio_deployments__deployment_id__health_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/models": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Deployed Models */
-        get: operations["list_deployed_models_api_agent_studio_models_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/schemas/agent-manifest": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Agent Manifest Schema
-         * @description Canonical JSON Schema + content digest for the persisted ``AgentManifest``.
-         *
-         *     External consumers (e.g. the harness) resolve the manifest contract from
-         *     this endpoint's JSON Schema and digest rather than importing this
-         *     codebase's Python model class.
-         */
-        get: operations["get_agent_manifest_schema_api_agent_studio_schemas_agent_manifest_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/versions/{version_id}/activate": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Activate Release Route
-         * @description Explicit ACTIVE transition, gated on a healthy deploy+smoke record.
-         *
-         *     Never triggered implicitly by ``/promote``, ``/deployments`` (deploy),
-         *     or ``/deployments/{id}/health`` (record_health) — the caller must ask
-         *     for activation explicitly, and it is rejected unless the exact
-         *     version/environment already has a ``DeploymentRecord`` with a healthy
-         *     smoke result.
-         */
-        post: operations["activate_release_route_api_agent_studio_versions__version_id__activate_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/versions/{version_id}/capability-approvals": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Request Capability Approval */
-        post: operations["request_capability_approval_api_agent_studio_versions__version_id__capability_approvals_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/versions/{version_id}/contract": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Get Exact Version Contract
-         * @description Exact-version contract lookup for the future node palette/compiler.
-         *
-         *     Unlike ``/resolve`` (which follows the *current* environment binding for
-         *     a logical agent), this looks up one already-known ``version_id``
-         *     directly - for re-validating a previously composed/pinned workflow node
-         *     without depending on whatever is currently bound to an environment.
-         *
-         *     Fails closed on stale capability bindings, same as ``/resolve``.
-         */
-        get: operations["get_exact_version_contract_api_agent_studio_versions__version_id__contract_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/versions/{version_id}/gates": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Run Gates */
-        post: operations["run_gates_api_agent_studio_versions__version_id__gates_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/versions/{version_id}/promote": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /** Request Promotion */
-        post: operations["request_promotion_api_agent_studio_versions__version_id__promote_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -1064,6 +362,813 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/agent-studio/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Create Agent */
+        post: operations["create_agent_v1_agent_studio_agents_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/builder/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Create Builder Proposal
+         * @description Produce a stored manifest-change proposal from a natural-language message.
+         *
+         *     Never mutates the draft directly. The request body is a free-form
+         *     ``message`` and a ``base_etag`` acknowledgement only -- never a patch.
+         */
+        post: operations["create_builder_proposal_v1_agent_studio_agents__logical_agent_id__builder_messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/deployments": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Deployments */
+        get: operations["list_deployments_v1_agent_studio_agents__logical_agent_id__deployments_get"];
+        put?: never;
+        /** Deploy */
+        post: operations["deploy_v1_agent_studio_agents__logical_agent_id__deployments_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/draft": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Draft
+         * @description Raw draft plus a derived, volatile ``capability_views`` sidecar.
+         *
+         *     ``draft`` is exactly the persisted ``AgentDraft`` (raw ``CapabilityBinding``
+         *     only, unchanged); ``capability_views`` is a read-time expansion the
+         *     editor uses to show current descriptor/instance resolution and staleness
+         *     without ever being written back into the draft/manifest.
+         */
+        get: operations["get_draft_v1_agent_studio_agents__logical_agent_id__draft_get"];
+        /** Update Draft */
+        put: operations["update_draft_v1_agent_studio_agents__logical_agent_id__draft_put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/escalations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Escalation */
+        post: operations["request_escalation_v1_agent_studio_agents__logical_agent_id__escalations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/fork": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Fork Agent */
+        post: operations["fork_agent_v1_agent_studio_agents__logical_agent_id__fork_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/lineage": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Lineage */
+        get: operations["list_lineage_v1_agent_studio_agents__logical_agent_id__lineage_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/memory": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Recall */
+        get: operations["recall_v1_agent_studio_agents__logical_agent_id__memory_get"];
+        put?: never;
+        /**
+         * Remember
+         * @description Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).
+         *
+         *     Rejects non-GA memory mechanisms (e.g. the Foundry native "Memory"
+         *     preview feature) rather than silently accepting them. Memory is opt-in
+         *     per the agent's ``MemoryPolicy`` and persistent storage defaults off;
+         *     entries are governed by TTL, an explicit read/write ACL, and a
+         *     ``REMEMBER`` provenance audit record.
+         */
+        post: operations["remember_v1_agent_studio_agents__logical_agent_id__memory_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/memory-export": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Export Memory
+         * @description Export all readable memory entries for a scope (GA-mechanism memory governance: export).
+         */
+        get: operations["export_memory_v1_agent_studio_agents__logical_agent_id__memory_export_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/memory/{entry_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Inspect Memory Entry
+         * @description Inspect a single memory entry (GA-mechanism memory governance: inspect).
+         */
+        get: operations["inspect_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__get"];
+        /**
+         * Correct Memory Entry
+         * @description Correct a memory entry's content (GA-mechanism memory governance: correct).
+         */
+        put: operations["correct_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__put"];
+        post?: never;
+        /**
+         * Forget Memory Entry
+         * @description Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance.
+         */
+        delete: operations["forget_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__delete"];
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/memory/{entry_id}/audit": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Memory Audit Trail
+         * @description Deletion/provenance audit trail for a single memory entry.
+         *
+         *     Requires read/inspect ACL on the concrete entry (creator or ``read_acl``
+         *     member) and the enclosing scope's ``allow_user_inspect`` control; entries
+         *     are resolved through the caller's own logical agent so no cross-agent or
+         *     cross-scope audit history can be enumerated.
+         */
+        get: operations["memory_audit_trail_v1_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Builder Proposals
+         * @description Proposal history for an agent (pending, applied, and rejected).
+         */
+        get: operations["list_builder_proposals_v1_agent_studio_agents__logical_agent_id__proposals_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Builder Proposal */
+        get: operations["get_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/apply": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply Builder Proposal
+         * @description Apply a stored proposal after researcher review.
+         *
+         *     Never accepts a patch body: only a ``base_etag`` acknowledgement. Fails
+         *     closed with a 409 if the draft changed since the proposal was generated,
+         *     or since the caller last read it.
+         */
+        post: operations["apply_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/proposals/{proposal_id}/reject": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Reject Builder Proposal */
+        post: operations["reject_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Resolve Logical Agent
+         * @description Composition/resolution contract for the future typed workflow compiler.
+         *
+         *     Resolves a stable logical agent ID (within this tenant/workspace and the
+         *     requested ``environment``) to the exact pinned version/release, its
+         *     manifest hash, runtime endpoint, typed I/O schema refs, and capability
+         *     versions. A published workflow must pin this response's ``version_id``/
+         *     ``release_id``/``manifest_hash`` at compose time; execution must never
+         *     silently re-resolve to "whatever is latest" later.
+         *
+         *     Fails closed: if the pinned release's capability bindings have gone
+         *     stale since cut (descriptor/instance/schema/destination drift), this
+         *     raises 409 rather than returning a contract that would no longer pass
+         *     gate-time validation.
+         */
+        get: operations["resolve_logical_agent_v1_agent_studio_agents__logical_agent_id__resolve_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/rollback": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Rollback */
+        post: operations["rollback_v1_agent_studio_agents__logical_agent_id__rollback_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/tool-registrations": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Tool Registrations */
+        get: operations["list_tool_registrations_v1_agent_studio_agents__logical_agent_id__tool_registrations_get"];
+        put?: never;
+        /**
+         * Register Tool
+         * @description Register the runtime handler for a GA capability operation.
+         *
+         *     Rejects operations that are not GA-attachable with the same honest
+         *     reason as ``/capabilities/attach`` (never silently registers a handler
+         *     for a preview/unavailable operation).
+         */
+        post: operations["register_tool_v1_agent_studio_agents__logical_agent_id__tool_registrations_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/versions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Versions */
+        get: operations["list_versions_v1_agent_studio_agents__logical_agent_id__versions_get"];
+        put?: never;
+        /** Cut Version */
+        post: operations["cut_version_v1_agent_studio_agents__logical_agent_id__versions_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/agents/{logical_agent_id}/workspace": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Workspace
+         * @description Aggregate, volatile view of an agent's current draft/release/deployment state.
+         *
+         *     Convenience read-time composition for the UI: current draft (with its
+         *     expanded ``capability_views``), the most recently cut version, that
+         *     version's latest release, and recent deployment history. Never usable as
+         *     an execution contract -- the runtime/compiler always resolves via
+         *     ``/resolve``/``/versions/{id}/contract`` instead.
+         */
+        get: operations["get_agent_workspace_v1_agent_studio_agents__logical_agent_id__workspace_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/approvals/{approval_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Approval Route
+         * @description UI/audit read of one approval: record + recomputed ``effective_state`` + revocations.
+         */
+        get: operations["get_approval_route_v1_agent_studio_approvals__approval_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/approvals/{approval_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Approval Route */
+        post: operations["decide_approval_route_v1_agent_studio_approvals__approval_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/approvals/{approval_id}/revoke": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Revoke Approval Route
+         * @description Append an ``ApprovalRevocation``. Permanent, append-only; no un-revoke.
+         *
+         *     Self-revocation (the original requester revoking their own already-
+         *     decided request) is always allowed; any other actor must meet the same
+         *     minimum role required to have decided the approval in the first place,
+         *     or be a platform owner.
+         */
+        post: operations["revoke_approval_route_v1_agent_studio_approvals__approval_id__revoke_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/capabilities/attach": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Attach Capability
+         * @description Attach a capability operation, enforcing GA-only maturity.
+         *
+         *     Rejects preview/unavailable operations with an honest reason rather than
+         *     silently succeeding; the resulting ``CapabilityBinding`` is returned for
+         *     the caller to merge into a draft manifest via ``PUT .../draft``. When
+         *     ``instance_id`` is supplied it must reference a registered, non-unavailable
+         *     ``CapabilityInstance`` for this descriptor.
+         */
+        post: operations["attach_capability_v1_agent_studio_capabilities_attach_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/capabilities/descriptors": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Capability Descriptors
+         * @description Honest capability catalog: GA operations are attachable; preview/unavailable
+         *     operations remain visible with their ``reason`` rather than being hidden.
+         *
+         *     Separate canonical resource from ``/capabilities/instances`` -- descriptors
+         *     are immutable provider-wide catalog/governance semantics, never tenant-
+         *     or project-scoped resource state.
+         */
+        get: operations["list_capability_descriptors_v1_agent_studio_capabilities_descriptors_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/capabilities/discovery": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Capability Discovery
+         * @description Combined descriptor/instance discovery snapshot for UI/compiler convenience.
+         *
+         *     Never a separate canonical resource -- just an aggregate read-time
+         *     projection over ``/capabilities/descriptors`` and ``/capabilities/
+         *     instances``, plus honest, non-fatal discovery ``warnings`` and the
+         *     ``refreshed_at`` timestamp of the underlying registry's last discovery
+         *     pass.
+         */
+        get: operations["get_capability_discovery_v1_agent_studio_capabilities_discovery_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/capabilities/instances": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Capability Instances
+         * @description Discovered, tenant/project-scoped capability resources.
+         *
+         *     Separate canonical resource from ``/capabilities/descriptors``: these are
+         *     the concrete, discovered things a ``CapabilityBinding`` points at via
+         *     ``instance_id``, always isolated to the caller's tenant (and, when
+         *     ``project_id`` is supplied, that project too).
+         */
+        get: operations["list_capability_instances_v1_agent_studio_capabilities_instances_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/catalog": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Released Agent Catalog
+         * @description Released-agent catalog for the future node palette/compiler.
+         *
+         *     Lists the exact, pinned contract currently bound to ``environment`` for
+         *     every logical agent this tenant owns a draft for. Agents with no
+         *     environment binding yet are omitted (there is nothing to pin).
+         */
+        get: operations["get_released_agent_catalog_v1_agent_studio_catalog_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/deployments/{deployment_id}/health": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Record Health */
+        post: operations["record_health_v1_agent_studio_deployments__deployment_id__health_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/models": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Deployed Models */
+        get: operations["list_deployed_models_v1_agent_studio_models_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/schemas/agent-manifest": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Agent Manifest Schema
+         * @description Canonical JSON Schema + content digest for the persisted ``AgentManifest``.
+         *
+         *     External consumers (e.g. the harness) resolve the manifest contract from
+         *     this endpoint's JSON Schema and digest rather than importing this
+         *     codebase's Python model class.
+         */
+        get: operations["get_agent_manifest_schema_v1_agent_studio_schemas_agent_manifest_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/activate": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Activate Release Route
+         * @description Explicit ACTIVE transition, gated on a healthy deploy+smoke record.
+         *
+         *     Never triggered implicitly by ``/promote``, ``/deployments`` (deploy),
+         *     or ``/deployments/{id}/health`` (record_health) — the caller must ask
+         *     for activation explicitly, and it is rejected unless the exact
+         *     version/environment already has a ``DeploymentRecord`` with a healthy
+         *     smoke result.
+         */
+        post: operations["activate_release_route_v1_agent_studio_versions__version_id__activate_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/capability-approvals": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Capability Approval */
+        post: operations["request_capability_approval_v1_agent_studio_versions__version_id__capability_approvals_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/capability-views": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Version Capability Views
+         * @description Current expanded ``{binding, resolved_descriptor, resolved_instance,
+         *     bindability, stale_reason}`` view for one immutable, already-cut version.
+         *
+         *     Distinct from ``/versions/{id}/contract`` (raw binding-only, the actual
+         *     execution contract): this is volatile, read-time presentation data for
+         *     UI/audit and can never be substituted for the raw contract by a
+         *     runtime/compiler.
+         */
+        get: operations["get_version_capability_views_v1_agent_studio_versions__version_id__capability_views_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/contract": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Exact Version Contract
+         * @description Exact-version contract lookup for the future node palette/compiler.
+         *
+         *     Unlike ``/resolve`` (which follows the *current* environment binding for
+         *     a logical agent), this looks up one already-known ``version_id``
+         *     directly - for re-validating a previously composed/pinned workflow node
+         *     without depending on whatever is currently bound to an environment.
+         *
+         *     Fails closed on stale capability bindings, same as ``/resolve``.
+         */
+        get: operations["get_exact_version_contract_v1_agent_studio_versions__version_id__contract_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/gates": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Run Gates */
+        post: operations["run_gates_v1_agent_studio_versions__version_id__gates_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/agent-studio/versions/{version_id}/promote": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Request Promotion */
+        post: operations["request_promotion_v1_agent_studio_versions__version_id__promote_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 }
 export type webhooks = Record<string, never>;
 export interface components {
@@ -1111,6 +1216,21 @@ export interface components {
             updated_at?: string;
             /** Updated By */
             updated_by: string;
+        };
+        /**
+         * AgentDraftView
+         * @description ``GET /agents/{id}/draft`` response: the raw draft plus a derived sidecar.
+         *
+         *     ``draft`` (and its ``AgentManifest.capabilities``) remains exactly what
+         *     is persisted -- raw ``CapabilityBinding`` only. ``capability_views`` is an
+         *     additional, volatile expansion computed at request time so the draft
+         *     editor can show current resolution/staleness without that information
+         *     ever being written back into the draft or manifest.
+         */
+        AgentDraftView: {
+            /** Capability Views */
+            capability_views?: components["schemas"]["CapabilityBindingView"][];
+            draft: components["schemas"]["AgentDraft"];
         };
         /** AgentInsight */
         AgentInsight: {
@@ -1326,6 +1446,35 @@ export interface components {
          * @enum {string}
          */
         AgentVisibility: "system" | "private" | "org" | "published";
+        /**
+         * AgentWorkspaceView
+         * @description Aggregate, volatile view of an agent's current draft/release/deployment state.
+         *
+         *     Composes the current draft, the latest cut ``AgentVersion``, its most
+         *     recent ``AgentRelease`` (governance status for the given environment),
+         *     recent ``DeploymentRecord`` history, and the draft's expanded
+         *     ``capability_views`` -- purely for UI/audit consumption. Never usable as
+         *     an execution contract: the runtime/compiler always consumes
+         *     ``/resolve``/``/versions/{id}/contract`` (raw binding-only, immutable)
+         *     instead. ``/catalog`` remains summary-only and does not return this
+         *     shape.
+         */
+        AgentWorkspaceView: {
+            /** Capability Views */
+            capability_views?: components["schemas"]["CapabilityBindingView"][];
+            /** Deployments */
+            deployments?: components["schemas"]["DeploymentRecord"][];
+            draft?: components["schemas"]["AgentDraft"] | null;
+            latest_release?: components["schemas"]["AgentRelease"] | null;
+            latest_version?: components["schemas"]["AgentVersion"] | null;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /**
+             * Resolved At
+             * Format: date-time
+             */
+            resolved_at?: string;
+        };
         /** AnalysisStep */
         AnalysisStep: {
             /** Deterministic */
@@ -1354,6 +1503,24 @@ export interface components {
             /** Rationale */
             rationale?: string | null;
         };
+        /**
+         * ApprovalEffectiveState
+         * @description The *derived* state of a ``StudioApprovalRecord``, recomputed at every
+         *
+         *     read and enforcement point -- never stored on the record itself.
+         *
+         *     ``StudioApprovalRecord.state`` (pending/approved/rejected) is set once at
+         *     decision time and is never mutated again (see its docstring). Expiry and
+         *     revocation are independent, time-varying facts layered on top of that
+         *     immutable decision, so a record whose stored ``state`` is ``APPROVED``
+         *     can still have an effective state of ``EXPIRED`` or ``REVOKED`` depending
+         *     on ``expires_at`` and whether an ``ApprovalRevocation`` exists for it.
+         *     Runtime/enforcement code must always use the effective state, never the
+         *     raw stored ``state``, to decide whether an approval currently authorizes
+         *     anything.
+         * @enum {string}
+         */
+        ApprovalEffectiveState: "pending" | "approved" | "rejected" | "expired" | "revoked";
         /**
          * ApprovalKind
          * @enum {string}
@@ -1400,6 +1567,62 @@ export interface components {
             state: components["schemas"]["research_assistant_api__workspace__ApprovalState"];
             /** Title */
             title: string;
+        };
+        /**
+         * ApprovalRecordView
+         * @description UI/audit read view of a ``StudioApprovalRecord``: the immutable record
+         *     plus its currently-recomputed ``effective_state`` and full revocation
+         *     history.
+         *
+         *     Never persisted -- ``effective_state`` is always derived at request time
+         *     by ``approvals.compute_approval_effective_state`` from the record's own
+         *     stored ``state``/``expires_at`` and the live revocation log, exactly as
+         *     every enforcement point (gate/deploy) independently recomputes it. A
+         *     runtime/enforcement path must never substitute this view's
+         *     ``effective_state`` for its own recomputation -- this is presentation
+         *     data only.
+         */
+        ApprovalRecordView: {
+            effective_state: components["schemas"]["ApprovalEffectiveState"];
+            record: components["schemas"]["StudioApprovalRecord"];
+            /** Revocations */
+            revocations?: components["schemas"]["ApprovalRevocation"][];
+        };
+        /**
+         * ApprovalRevocation
+         * @description An append-only revocation event for a ``StudioApprovalRecord``.
+         *
+         *     Revocation never mutates the original request/decision record -- it is a
+         *     separate, independent, permanent signal ("this approval must never be
+         *     honored again") layered on top via ``ApprovalEffectiveState``. There is
+         *     no corresponding "un-revoke": once persisted, an approval's effective
+         *     state is ``REVOKED`` forever. Idempotent creation is keyed by
+         *     ``idempotency_key`` (see ``approvals.revocation_idempotency_key``) so a
+         *     retried request returns the original revocation rather than appending a
+         *     duplicate event.
+         */
+        ApprovalRevocation: {
+            /** Actor Id */
+            actor_id: string;
+            /** Approval Id */
+            approval_id: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at?: string;
+            /** Id */
+            id: string;
+            /** Idempotency Key */
+            idempotency_key: string;
+            /** Policy Ref */
+            policy_ref?: string | null;
+            /** Project Id */
+            project_id: string;
+            /** Reason */
+            reason: string;
+            /** Tenant Id */
+            tenant_id: string;
         };
         /**
          * ApprovalState
@@ -1742,6 +1965,35 @@ export interface components {
             policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
             /** Provider Contract Version */
             provider_contract_version: string;
+        };
+        /**
+         * CapabilityBindingView
+         * @description A volatile, current-state expansion of one ``CapabilityBinding``.
+         *
+         *     Never persisted and never the execution contract: the canonical
+         *     ``AgentManifest``/``AgentVersion``/``/versions/{id}/contract``/
+         *     ``/resolve`` surfaces stay raw-binding-only and immutable/minimal. This
+         *     view exists purely for UI/audit consumption (draft editor sidecar,
+         *     ``GET /versions/{id}/capability-views``, the aggregate workspace view) so
+         *     a caller can see *current* resolved descriptor/instance state and
+         *     staleness without that volatile information ever leaking into a pinned
+         *     release contract. ``resolved_descriptor``/``resolved_instance`` are
+         *     ``None`` when the referenced descriptor/instance is no longer in the
+         *     live catalog (itself a stale condition, reflected in ``stale_reason``).
+         */
+        CapabilityBindingView: {
+            /** Bindable */
+            bindable: boolean;
+            binding: components["schemas"]["CapabilityBinding"];
+            /**
+             * Resolved At
+             * Format: date-time
+             */
+            resolved_at?: string;
+            resolved_descriptor?: components["schemas"]["CapabilityDescriptor"] | null;
+            resolved_instance?: components["schemas"]["CapabilityInstance"] | null;
+            /** Stale Reason */
+            stale_reason?: string | null;
         };
         /**
          * CapabilityChangeKind
@@ -3484,6 +3736,20 @@ export interface components {
             /** Sources */
             sources: string[];
         };
+        /**
+         * RevokeApprovalRequest
+         * @description Request body to append an ``ApprovalRevocation`` for a request/decision.
+         *
+         *     Revocation is permanent and append-only -- there is no corresponding
+         *     "un-revoke" request; a fresh approval request is required afterward if
+         *     the underlying action is still needed.
+         */
+        RevokeApprovalRequest: {
+            /** Project Id */
+            project_id: string;
+            /** Reason */
+            reason: string;
+        };
         /** RollbackRequest */
         RollbackRequest: {
             /** Deployment Id */
@@ -3961,1339 +4227,6 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
-    create_agent_api_agent_studio_agents_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateAgentRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDraft"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_builder_proposal_api_agent_studio_agents__logical_agent_id__builder_messages_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BuilderMessageRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BuilderProposal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_deployments_api_agent_studio_agents__logical_agent_id__deployments_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeploymentRecord"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    deploy_api_agent_studio_agents__logical_agent_id__deployments_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["DeployRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeploymentRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_draft_api_agent_studio_agents__logical_agent_id__draft_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDraft"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    update_draft_api_agent_studio_agents__logical_agent_id__draft_put: {
-        parameters: {
-            query?: never;
-            header: {
-                /** @description Expected current draft etag (optimistic concurrency). */
-                "If-Match": string;
-            };
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["UpdateDraftRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDraft"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    request_escalation_api_agent_studio_agents__logical_agent_id__escalations_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["EscalationRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StudioApprovalRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    fork_agent_api_agent_studio_agents__logical_agent_id__fork_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ForkRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDraft"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_lineage_api_agent_studio_agents__logical_agent_id__lineage_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    }[];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    recall_api_agent_studio_agents__logical_agent_id__memory_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                scope_kind: components["schemas"]["MemoryScopeKind"];
-                scope_id: string;
-                limit?: number;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    remember_api_agent_studio_agents__logical_agent_id__memory_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RememberRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    export_memory_api_agent_studio_agents__logical_agent_id__memory_export_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                scope_kind: components["schemas"]["MemoryScopeKind"];
-                scope_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    inspect_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                entry_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    correct_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__put: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                entry_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CorrectMemoryRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    forget_memory_entry_api_agent_studio_agents__logical_agent_id__memory__entry_id__delete: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                entry_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ForgetMemoryRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryEntry"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    memory_audit_trail_api_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                entry_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["MemoryAuditRecord"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_builder_proposals_api_agent_studio_agents__logical_agent_id__proposals_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BuilderProposal"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BuilderProposal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    apply_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BuilderApplyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentDraft"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    reject_builder_proposal_api_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                proposal_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["BuilderRejectRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["BuilderProposal"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                environment?: components["schemas"]["DeploymentEnvironment"];
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResolvedAgentContract"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    rollback_api_agent_studio_agents__logical_agent_id__rollback_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RollbackRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeploymentRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_tool_registrations_api_agent_studio_agents__logical_agent_id__tool_registrations_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ToolRegistrationSpec"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    register_tool_api_agent_studio_agents__logical_agent_id__tool_registrations_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RegisterToolRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ToolRegistrationSpec"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_versions_api_agent_studio_agents__logical_agent_id__versions_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentVersion"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    cut_version_api_agent_studio_agents__logical_agent_id__versions_post: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentVersion"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    decide_approval_route_api_agent_studio_approvals__approval_id__decision_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                approval_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ApprovalDecisionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StudioApprovalRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    attach_capability_api_agent_studio_capabilities_attach_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["AttachCapabilityRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CapabilityBinding"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_capability_descriptors_api_agent_studio_capabilities_descriptors_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CapabilityDescriptor"][];
-                };
-            };
-        };
-    };
-    get_capability_discovery_api_agent_studio_capabilities_discovery_get: {
-        parameters: {
-            query?: {
-                project_id?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CapabilityDiscoverySnapshot"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_capability_instances_api_agent_studio_capabilities_instances_get: {
-        parameters: {
-            query?: {
-                project_id?: string | null;
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["CapabilityInstance"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_released_agent_catalog_api_agent_studio_catalog_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                environment?: components["schemas"]["DeploymentEnvironment"];
-            };
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResolvedAgentContract"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    record_health_api_agent_studio_deployments__deployment_id__health_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                deployment_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["HealthUpdateRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["DeploymentRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_deployed_models_api_agent_studio_models_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ModelDeploymentRef"][];
-                };
-            };
-        };
-    };
-    get_agent_manifest_schema_api_agent_studio_schemas_agent_manifest_get: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    };
-                };
-            };
-        };
-    };
-    activate_release_route_api_agent_studio_versions__version_id__activate_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ActivationRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["AgentRelease"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    request_capability_approval_api_agent_studio_versions__version_id__capability_approvals_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CapabilityApprovalRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StudioApprovalRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_exact_version_contract_api_agent_studio_versions__version_id__contract_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                environment?: components["schemas"]["DeploymentEnvironment"];
-            };
-            header?: never;
-            path: {
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ResolvedAgentContract"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    run_gates_api_agent_studio_versions__version_id__gates_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["RunGatesRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ReleaseGateReport"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    request_promotion_api_agent_studio_versions__version_id__promote_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                version_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["PromotionRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["StudioApprovalRecord"] | components["schemas"]["AgentVersion"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     agents_api_agents_get: {
         parameters: {
             query?: never;
@@ -5866,6 +4799,1473 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HealthResponse"];
+                };
+            };
+        };
+    };
+    create_agent_v1_agent_studio_agents_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CreateAgentRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    create_builder_proposal_v1_agent_studio_agents__logical_agent_id__builder_messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderMessageRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deployments_v1_agent_studio_agents__logical_agent_id__deployments_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    deploy_v1_agent_studio_agents__logical_agent_id__deployments_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DeployRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_draft_v1_agent_studio_agents__logical_agent_id__draft_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraftView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_draft_v1_agent_studio_agents__logical_agent_id__draft_put: {
+        parameters: {
+            query?: never;
+            header: {
+                /** @description Expected current draft etag (optimistic concurrency). */
+                "If-Match": string;
+            };
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UpdateDraftRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_escalation_v1_agent_studio_agents__logical_agent_id__escalations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["EscalationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    fork_agent_v1_agent_studio_agents__logical_agent_id__fork_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForkRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_lineage_v1_agent_studio_agents__logical_agent_id__lineage_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    }[];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    recall_v1_agent_studio_agents__logical_agent_id__memory_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                scope_kind: components["schemas"]["MemoryScopeKind"];
+                scope_id: string;
+                limit?: number;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    remember_v1_agent_studio_agents__logical_agent_id__memory_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RememberRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    export_memory_v1_agent_studio_agents__logical_agent_id__memory_export_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                scope_kind: components["schemas"]["MemoryScopeKind"];
+                scope_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    inspect_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    correct_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CorrectMemoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    forget_memory_entry_v1_agent_studio_agents__logical_agent_id__memory__entry_id__delete: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ForgetMemoryRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryEntry"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    memory_audit_trail_v1_agent_studio_agents__logical_agent_id__memory__entry_id__audit_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                entry_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["MemoryAuditRecord"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_builder_proposals_v1_agent_studio_agents__logical_agent_id__proposals_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    apply_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__apply_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderApplyRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentDraft"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    reject_builder_proposal_v1_agent_studio_agents__logical_agent_id__proposals__proposal_id__reject_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                proposal_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BuilderRejectRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BuilderProposal"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    resolve_logical_agent_v1_agent_studio_agents__logical_agent_id__resolve_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    rollback_v1_agent_studio_agents__logical_agent_id__rollback_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RollbackRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_tool_registrations_v1_agent_studio_agents__logical_agent_id__tool_registrations_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolRegistrationSpec"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    register_tool_v1_agent_studio_agents__logical_agent_id__tool_registrations_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RegisterToolRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ToolRegistrationSpec"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_versions_v1_agent_studio_agents__logical_agent_id__versions_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentVersion"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    cut_version_v1_agent_studio_agents__logical_agent_id__versions_post: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentVersion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_agent_workspace_v1_agent_studio_agents__logical_agent_id__workspace_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentWorkspaceView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_approval_route_v1_agent_studio_approvals__approval_id__get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalRecordView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_approval_route_v1_agent_studio_approvals__approval_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    revoke_approval_route_v1_agent_studio_approvals__approval_id__revoke_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                approval_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RevokeApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ApprovalRecordView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    attach_capability_v1_agent_studio_capabilities_attach_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["AttachCapabilityRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityBinding"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_capability_descriptors_v1_agent_studio_capabilities_descriptors_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityDescriptor"][];
+                };
+            };
+        };
+    };
+    get_capability_discovery_v1_agent_studio_capabilities_discovery_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityDiscoverySnapshot"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_capability_instances_v1_agent_studio_capabilities_instances_get: {
+        parameters: {
+            query?: {
+                project_id?: string | null;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityInstance"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_released_agent_catalog_v1_agent_studio_catalog_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    record_health_v1_agent_studio_deployments__deployment_id__health_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["HealthUpdateRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_deployed_models_v1_agent_studio_models_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ModelDeploymentRef"][];
+                };
+            };
+        };
+    };
+    get_agent_manifest_schema_v1_agent_studio_schemas_agent_manifest_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": {
+                        [key: string]: unknown;
+                    };
+                };
+            };
+        };
+    };
+    activate_release_route_v1_agent_studio_versions__version_id__activate_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ActivationRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentRelease"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_capability_approval_v1_agent_studio_versions__version_id__capability_approvals_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["CapabilityApprovalRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_version_capability_views_v1_agent_studio_versions__version_id__capability_views_get: {
+        parameters: {
+            query: {
+                project_id: string;
+            };
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["CapabilityBindingView"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_exact_version_contract_v1_agent_studio_versions__version_id__contract_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                environment?: components["schemas"]["DeploymentEnvironment"];
+            };
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ResolvedAgentContract"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    run_gates_v1_agent_studio_versions__version_id__gates_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["RunGatesRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ReleaseGateReport"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    request_promotion_v1_agent_studio_versions__version_id__promote_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                version_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["PromotionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["StudioApprovalRecord"] | components["schemas"]["AgentVersion"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

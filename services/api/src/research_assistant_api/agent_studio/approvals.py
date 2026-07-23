@@ -22,7 +22,9 @@ from datetime import datetime, timedelta
 
 from research_assistant_api.agent_studio.models import (
     AgentRole,
+    ApprovalEffectiveState,
     ApprovalKind,
+    ApprovalRevocation,
     ApprovalState,
     DeploymentEnvironment,
     StudioApprovalRecord,
@@ -51,7 +53,9 @@ def requires_approval(*, actor_role: AgentRole, kind: ApprovalKind) -> bool:
     return not role_at_least(actor_role, AgentRole.MAINTAINER)
 
 
-def _decider_minimum_role(kind: ApprovalKind) -> AgentRole:
+def decider_minimum_role(kind: ApprovalKind) -> AgentRole:
+    """The minimum role required to decide -- or revoke on another
+    requester's behalf -- an approval of this ``kind``."""
     if kind is ApprovalKind.ADMIN_ESCALATION:
         return AgentRole.OWNER
     return AgentRole.MAINTAINER
@@ -142,7 +146,7 @@ def decide_approval(
         raise ApprovalError(
             f"Approver '{approver_id}' cannot decide an approval they requested themselves (self-approval)."
         )
-    minimum = _decider_minimum_role(record.kind)
+    minimum = decider_minimum_role(record.kind)
     if not role_at_least(approver_role, minimum):
         raise ApprovalError(
             f"Approver role '{approver_role.value}' does not meet the minimum '{minimum.value}' "
@@ -155,4 +159,84 @@ def decide_approval(
             "decided_at": utc_now(),
             "rationale": rationale,
         }
+    )
+
+
+def compute_approval_effective_state(
+    record: StudioApprovalRecord,
+    *,
+    revoked: bool = False,
+    now: datetime | None = None,
+) -> ApprovalEffectiveState:
+    """Derive the *current* effective state of ``record``.
+
+    Never trusts ``record.state`` alone: revocation always wins (even over
+    a still-``PENDING`` record -- withdrawing a pending request must block
+    it from later being decided), then expiry (an ``APPROVED`` record past
+    ``expires_at`` is no longer actionable even though it was never
+    "rejected"), and only then falls back to the record's own immutable
+    stored ``state``. Callers must recompute this at every read and
+    enforcement point rather than caching or persisting the result --
+    revocation/expiry are time-varying facts external to the record itself.
+    """
+    if revoked:
+        return ApprovalEffectiveState.REVOKED
+    effective_now = now if now is not None else utc_now()
+    if (
+        record.state == ApprovalState.APPROVED
+        and record.expires_at is not None
+        and record.expires_at <= effective_now
+    ):
+        return ApprovalEffectiveState.EXPIRED
+    return ApprovalEffectiveState(record.state.value)
+
+
+def revocation_idempotency_key(*, approval_id: str, actor_id: str, reason: str) -> str:
+    """Deterministic idempotency key for a would-be revocation.
+
+    Same (approval, actor, reason) always yields the same key, so a
+    persistence layer can detect and return an existing revocation instead
+    of appending a duplicate append-only event for a retried request.
+    """
+    payload = "|".join((approval_id, actor_id, reason))
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def revoke_approval(
+    record: StudioApprovalRecord,
+    *,
+    revocation_id: str,
+    actor_id: str,
+    actor_role: AgentRole,
+    is_platform_owner: bool,
+    reason: str,
+    policy_ref: str | None = None,
+) -> ApprovalRevocation:
+    """Construct an append-only ``ApprovalRevocation`` for ``record``.
+
+    Self-revocation (the original requester withdrawing their own request)
+    is always permitted, symmetric with self-approval always being denied
+    in :func:`decide_approval`. Any other actor must meet the same minimum
+    role required to *decide* this approval kind, or be a platform owner.
+    Revocation is independent of the record's current decided/expired
+    state -- an already-rejected, already-expired, or still-pending record
+    can all be revoked; this is a distinct, permanent "never honor this"
+    signal, not a state transition on the record itself.
+    """
+    if actor_id != record.requested_by and not is_platform_owner:
+        minimum = decider_minimum_role(record.kind)
+        if not role_at_least(actor_role, minimum):
+            raise ApprovalError(
+                f"Actor role '{actor_role.value}' does not meet the minimum '{minimum.value}' required to "
+                f"revoke a {record.kind.value} approval requested by another user."
+            )
+    return ApprovalRevocation(
+        id=revocation_id,
+        approval_id=record.id,
+        tenant_id=record.tenant_id,
+        project_id=record.project_id,
+        actor_id=actor_id,
+        reason=reason,
+        policy_ref=policy_ref,
+        idempotency_key=revocation_idempotency_key(approval_id=record.id, actor_id=actor_id, reason=reason),
     )

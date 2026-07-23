@@ -44,6 +44,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalRevocation,
     BuilderProposal,
     BuilderProposalState,
     DeploymentEnvironment,
@@ -570,6 +571,86 @@ class CosmosAgentStudioStore(AgentStudioStore):
             self._container.delete_item(item=self._approval_dedup_id(dedup_key), partition_key=scope.scope_key)
         self._approval_dedup.pop(dedup_key, None)
         return record
+
+    # -- Approval revocations ---------------------------------------------
+
+    @staticmethod
+    def _revocation_id(revocation_id: str) -> str:
+        return f"approval_revocation::{revocation_id}"
+
+    @staticmethod
+    def _revocation_dedup_id(dedup_key: str) -> str:
+        return f"approval_revocation_dedup::{dedup_key}"
+
+    def _query_revocations_for_approval(self, scope_key: str, approval_id: str) -> list[dict[str, Any]]:
+        """Server-side filtered single-partition query for one approval's
+        revocation history -- never a client-side scan across every
+        revocation ever appended in the scope (mirrors
+        ``_query_releases_for_version``)."""
+        return list(
+            self._container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.documentType = @documentType AND c.payload.approval_id = @approvalId"
+                ),
+                parameters=[
+                    {"name": "@documentType", "value": "approval_revocation"},
+                    {"name": "@approvalId", "value": approval_id},
+                ],
+                partition_key=scope_key,
+            )
+        )
+
+    def _sync_revocations(self, scope: ScopeContext, approval_id: str) -> None:
+        documents = self._query_revocations_for_approval(scope.scope_key, approval_id)
+        for document in documents:
+            revocation = ApprovalRevocation.model_validate(document["payload"])
+            if revocation.id not in self._revocations:
+                AgentStudioStore.create_revocation(self, scope, revocation)
+
+    def create_revocation(self, scope: ScopeContext, revocation: ApprovalRevocation) -> ApprovalRevocation:
+        """Append-only revocation write via a Cosmos-native create-if-absent
+        guard document -- identical shape to ``create_approval``'s guard,
+        except the guard is never deleted: a revocation is a permanent fact,
+        so a retried request for the same ``(approval, actor, reason)`` must
+        forever resolve to the original revocation rather than ever being
+        eligible to create a fresh one.
+        """
+        self._require_scope_match(scope, revocation.tenant_id, revocation.project_id)
+        dedup_key = self._revocation_dedup_key(scope, revocation.approval_id, revocation.idempotency_key)
+        dedup_id = self._revocation_dedup_id(dedup_key)
+        payload = revocation.model_dump(mode="json")
+        try:
+            self._container.create_item(
+                {
+                    "id": dedup_id,
+                    "documentType": "approval_revocation_dedup",
+                    "scope_key": scope.scope_key,
+                    "payload": payload,
+                }
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            document = self._read(scope.scope_key, dedup_id)
+            if document is None:
+                raise AgentStudioStoreError(
+                    f"Approval revocation dedup guard for idempotency key "
+                    f"'{revocation.idempotency_key}' conflicted but the winning record could not be "
+                    "read back."
+                ) from exc
+            winner = ApprovalRevocation.model_validate(document["payload"])
+            self._revocations[winner.id] = winner
+            self._revocations_by_approval.setdefault((scope.scope_key, winner.approval_id), [])
+            if winner.id not in self._revocations_by_approval[(scope.scope_key, winner.approval_id)]:
+                self._revocations_by_approval[(scope.scope_key, winner.approval_id)].append(winner.id)
+            return winner
+        AgentStudioStore.create_revocation(self, scope, revocation)
+        self._upsert(scope.scope_key, self._revocation_id(revocation.id), "approval_revocation", payload)
+        return revocation
+
+    def list_revocations(self, scope: ScopeContext, approval_id: str) -> tuple[ApprovalRevocation, ...]:
+        self._sync_revocations(scope, approval_id)
+        return super().list_revocations(scope, approval_id)
 
     # -- Deployments ------------------------------------------------------
 

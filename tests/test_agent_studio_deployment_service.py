@@ -24,6 +24,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
     ApprovalKind,
+    ApprovalRevocation,
     ApprovalState,
     CapabilityBinding,
     CapabilityDescriptorRef,
@@ -1551,6 +1552,120 @@ def test_deploy_succeeds_when_capability_approval_is_valid(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
         logical_agent_id="agent-deploy-approval-valid",
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    assert record.version_id == version.id
+
+
+def test_deploy_raises_when_the_only_approval_has_been_revoked(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-revoked")
+    revoked_approval = StudioApprovalRecord(
+        id="approval-revoked",
+        version_id=version.id,
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        kind=ApprovalKind.CAPABILITY_OPERATION,
+        state=ApprovalState.APPROVED,
+        gated_action="attach_capability_operation",
+        destination="foundry.azure_functions.invoke",
+        requested_by="user-2",
+        evidence_summary="Reviewed.",
+        risk="medium",
+        idempotency_key="idem-revoked",
+        content_hash=version.manifest_hash,
+    )
+    store.create_approval(_scope(), revoked_approval)
+    store.create_revocation(
+        _scope(),
+        ApprovalRevocation(
+            id="revocation-1",
+            approval_id="approval-revoked",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            actor_id="user-2",
+            reason="Mistaken approval.",
+            idempotency_key="idem-revocation-1",
+        ),
+    )
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
+
+    with pytest.raises(DeploymentServiceError, match="approval has been revoked"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-deploy-approval-revoked",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_deploy_succeeds_when_an_older_revoked_approval_is_followed_by_a_valid_one(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    """When more than one ``APPROVED`` record exists for the same
+    destination, a since-revoked record must not mask a currently-valid
+    one sitting later in the list."""
+    version = _capability_gated_version(
+        release_service, store, logical_agent_id="agent-deploy-approval-revoked-then-valid"
+    )
+    revoked_approval = StudioApprovalRecord(
+        id="approval-revoked-first",
+        version_id=version.id,
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        kind=ApprovalKind.CAPABILITY_OPERATION,
+        state=ApprovalState.APPROVED,
+        gated_action="attach_capability_operation",
+        destination="foundry.azure_functions.invoke",
+        requested_by="user-2",
+        evidence_summary="Reviewed.",
+        risk="medium",
+        idempotency_key="idem-revoked-first",
+        content_hash=version.manifest_hash,
+    )
+    store.create_approval(_scope(), revoked_approval)
+    store.create_revocation(
+        _scope(),
+        ApprovalRevocation(
+            id="revocation-2",
+            approval_id="approval-revoked-first",
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            actor_id="user-2",
+            reason="Superseded.",
+            idempotency_key="idem-revocation-2",
+        ),
+    )
+    valid_approval = StudioApprovalRecord(
+        id="approval-valid-second",
+        version_id=version.id,
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        kind=ApprovalKind.CAPABILITY_OPERATION,
+        state=ApprovalState.APPROVED,
+        gated_action="attach_capability_operation",
+        destination="foundry.azure_functions.invoke",
+        requested_by="user-3",
+        evidence_summary="Reviewed again.",
+        risk="medium",
+        idempotency_key="idem-valid-second",
+        content_hash=version.manifest_hash,
+    )
+    store.create_approval(_scope(), valid_approval)
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
+
+    record = deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-deploy-approval-revoked-then-valid",
         version_id=version.id,
         deployed_by="user-1",
         actor_role=AgentRole.OWNER,

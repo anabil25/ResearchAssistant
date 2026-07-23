@@ -948,6 +948,7 @@ def test_run_release_gates_threads_runtime_target_and_records_advisory_evaluatio
         evidence: GateEvidence,
         runtime_target: RuntimeTarget | None,
         capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+        revoked_approval_ids: frozenset[str] = frozenset(),
     ) -> ReleaseGateReport:
         calls.append(runtime_target)
         idx = len(calls)
@@ -1021,6 +1022,7 @@ def test_run_release_gates_failed_report_creates_no_release(
         evidence: GateEvidence,
         runtime_target: RuntimeTarget | None,
         capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+        revoked_approval_ids: frozenset[str] = frozenset(),
     ) -> ReleaseGateReport:
         return ReleaseGateReport(
             id="report-fail",

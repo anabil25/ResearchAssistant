@@ -183,17 +183,27 @@ def _approval_gate(
     manifest_hash: str,
     capability_approvals: tuple[StudioApprovalRecord, ...],
     now: datetime,
+    revoked_approval_ids: frozenset[str] = frozenset(),
 ) -> GateResult:
     """Hard-block cut/release when a capability operation that
-    ``requires_approval`` has no matching, approved, unexpired record.
+    ``requires_approval`` has no matching, approved, unexpired, unrevoked
+    record.
 
     ``requires_approval`` is not informational: this gate resolves each
     binding's operation and requires a ``StudioApprovalRecord`` of kind
     ``CAPABILITY_OPERATION`` targeting this exact binding (by
     ``descriptor_id.operation`` destination), in ``APPROVED`` state, bound to
-    this exact manifest content hash, and not expired. Missing, mismatched,
-    or expired approvals all fail this gate identically — none are silently
+    this exact manifest content hash, not expired, and not revoked (see
+    ``revoked_approval_ids`` -- ids present in ``ApprovalRevocation`` records
+    for this destination's approval). Missing, mismatched, expired, or
+    revoked approvals all fail this gate identically — none are silently
     treated as satisfied.
+
+    When more than one ``APPROVED`` record exists for the same destination
+    (e.g. an older revoked approval followed by a newer valid one), every
+    candidate is evaluated rather than only the first: the gate passes if
+    *any* candidate is simultaneously content-hash-matched, unexpired, and
+    unrevoked, and only reports a violation when none qualify.
     """
     violations: list[str] = []
     for binding in manifest.capabilities:
@@ -207,19 +217,30 @@ def _approval_gate(
         matching = [
             record
             for record in capability_approvals
-            if record.kind == ApprovalKind.CAPABILITY_OPERATION and record.destination == destination
+            if record.kind == ApprovalKind.CAPABILITY_OPERATION
+            and record.destination == destination
+            and record.state == ApprovalState.APPROVED
         ]
-        approved = next((record for record in matching if record.state == ApprovalState.APPROVED), None)
-        if approved is None:
+        if not matching:
             violations.append(
                 f"capability binding '{destination}' requires approval but no approved record was found"
             )
-        elif approved.content_hash != manifest_hash:
-            violations.append(
-                f"capability binding '{destination}' approval is bound to a different manifest content hash"
-            )
-        elif approved.expires_at is not None and approved.expires_at <= now:
-            violations.append(f"capability binding '{destination}' approval has expired")
+            continue
+        violation: str | None = None
+        for record in matching:
+            if record.id in revoked_approval_ids:
+                violation = f"capability binding '{destination}' approval has been revoked"
+                continue
+            if record.content_hash != manifest_hash:
+                violation = f"capability binding '{destination}' approval is bound to a different manifest content hash"
+                continue
+            if record.expires_at is not None and record.expires_at <= now:
+                violation = f"capability binding '{destination}' approval has expired"
+                continue
+            violation = None
+            break
+        if violation is not None:
+            violations.append(violation)
     if violations:
         return GateResult(name=GateName.APPROVAL, status=GateStatus.FAILED, detail="; ".join(violations))
     return GateResult(
@@ -298,6 +319,7 @@ def run_gates(
     evidence: GateEvidence,
     runtime_target: RuntimeTarget | None = None,
     capability_approvals: tuple[StudioApprovalRecord, ...] = (),
+    revoked_approval_ids: frozenset[str] = frozenset(),
     schema_resolver: SchemaRefResolver | None = None,
     now: datetime | None = None,
 ) -> ReleaseGateReport:
@@ -309,9 +331,12 @@ def run_gates(
     other gates (including SMOKE, which still hard-blocks activation on
     deployment smoke failure) apply uniformly regardless of runtime.
     ``manifest_hash`` and ``capability_approvals`` feed the APPROVAL gate
-    (missing/expired/mismatched capability-operation approvals hard-block);
-    ``schema_resolver`` feeds the SCHEMA gate's independent digest
-    verification of ``input_schema_ref``/``output_schema_ref``.
+    (missing/expired/mismatched/revoked capability-operation approvals
+    hard-block); ``revoked_approval_ids`` is the set of approval ids with at
+    least one ``ApprovalRevocation`` recorded against them (computed by the
+    caller from the store, never trusted from the approval record's own
+    stored ``state``); ``schema_resolver`` feeds the SCHEMA gate's
+    independent digest verification of ``input_schema_ref``/``output_schema_ref``.
     ``capability_registry`` (the *live* registry, independent of
     ``capability_catalog``'s point-in-time mapping) feeds the BINDING gate's
     stale-binding re-resolution.
@@ -324,7 +349,14 @@ def run_gates(
         _test_gate(evidence),
         _auth_gate(manifest, capability_catalog),
         _policy_gate(manifest, capability_catalog),
-        _approval_gate(manifest, capability_catalog, manifest_hash, capability_approvals, effective_now),
+        _approval_gate(
+            manifest,
+            capability_catalog,
+            manifest_hash,
+            capability_approvals,
+            effective_now,
+            revoked_approval_ids,
+        ),
         _security_gate(manifest, capability_catalog),
         _smoke_gate(evidence),
         _binding_gate(manifest, capability_registry),

@@ -942,3 +942,98 @@ def test_check_binding_freshness_detects_operation_version_drift() -> None:
     assert "operation_ref.version mismatch" in reason
     assert "pinned '1'" in reason
     assert "now '2'" in reason
+
+
+def test_resolve_binding_view_fresh_binding_is_bindable_with_resolved_descriptor_and_instance() -> None:
+    registry = seeded_test_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="view-fresh-1", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+
+    view = registry.resolve_binding_view(binding)
+
+    assert view.binding == binding
+    assert view.resolved_descriptor == registry.get("foundry.azure_ai_search")
+    assert view.resolved_instance == instance
+    assert view.bindable is True
+    assert view.stale_reason is None
+    assert view.resolved_at is not None
+
+
+def test_resolve_binding_view_stale_binding_is_not_bindable_and_carries_reason() -> None:
+    registry = seeded_test_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    drifted = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
+
+    view = registry.resolve_binding_view(drifted)
+
+    assert view.binding == drifted
+    assert view.bindable is False
+    assert view.stale_reason is not None
+    assert "descriptor_ref.digest mismatch" in view.stale_reason
+
+
+def test_resolve_binding_view_unknown_descriptor_resolves_to_none_and_stale() -> None:
+    registry = seeded_test_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    stale_registry = CapabilityRegistry(descriptors=())
+
+    view = stale_registry.resolve_binding_view(binding)
+
+    assert view.resolved_descriptor is None
+    assert view.resolved_instance is None
+    assert view.bindable is False
+    assert view.stale_reason is not None
+    assert "no longer in the catalog" in view.stale_reason
+
+
+def test_resolve_binding_view_missing_instance_resolves_to_none() -> None:
+    registry = seeded_test_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="view-missing-1", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+    fresh_registry = seeded_test_registry()
+
+    view = fresh_registry.resolve_binding_view(binding)
+
+    assert view.resolved_instance is None
+    assert view.bindable is False
+    assert view.stale_reason is not None
+    assert "no longer registered" in view.stale_reason
+
+
+def test_resolve_binding_views_preserves_order_for_batch_of_bindings() -> None:
+    registry = seeded_test_registry()
+    search_instance = registry.register_instance(
+        _instance(instance_id="view-batch-1", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+    search_binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=search_instance.id,
+    )
+    web_binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+
+    views = registry.resolve_binding_views((search_binding, web_binding))
+
+    assert len(views) == 2
+    assert views[0].binding == search_binding
+    assert views[1].binding == web_binding
+    assert all(view.bindable for view in views)
+
+    assert registry.resolve_binding_views(()) == ()

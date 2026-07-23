@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from collections.abc import Sequence
 from datetime import datetime
 from typing import Any
 
@@ -37,6 +38,7 @@ from research_assistant_api.agent_studio.capability_discovery import (
 )
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
+    CapabilityBindingView,
     CapabilityConfigurationRef,
     CapabilityConnectionRef,
     CapabilityDescriptor,
@@ -899,6 +901,40 @@ class CapabilityRegistry:
                         "(instance_ref.fingerprint mismatch) — rebind and re-review before release/invoke."
                     )
         return None
+
+    def resolve_binding_view(self, binding: CapabilityBinding) -> CapabilityBindingView:
+        """Compute a volatile, current-state expansion of ``binding``.
+
+        Re-resolves the pinned ``descriptor_ref``/``instance_ref`` against
+        the *current* registry state (never the stale attach-time snapshot)
+        and reuses :meth:`check_binding_freshness` for the single source of
+        staleness truth, so this view can never disagree with the hard gate.
+        The returned view is read-only presentation data: the underlying
+        ``binding`` is echoed unchanged, and callers must never write this
+        view's ``resolved_descriptor``/``resolved_instance``/``bindable``
+        back into persisted state.
+        """
+        descriptor = self._descriptors.get(binding.descriptor_ref.id)
+        instance = (
+            self._instances.get(binding.instance_ref.id)
+            if binding.instance_ref is not None and binding.instance_ref.id is not None
+            else None
+        )
+        stale_reason = self.check_binding_freshness(binding)
+        return CapabilityBindingView(
+            binding=binding,
+            resolved_descriptor=descriptor,
+            resolved_instance=instance,
+            bindable=stale_reason is None,
+            stale_reason=stale_reason,
+            resolved_at=utc_now(),
+        )
+
+    def resolve_binding_views(
+        self, bindings: Sequence[CapabilityBinding]
+    ) -> tuple[CapabilityBindingView, ...]:
+        """Batch form of :meth:`resolve_binding_view`, preserving order."""
+        return tuple(self.resolve_binding_view(binding) for binding in bindings)
 
 
 def seeded_test_registry(descriptors: tuple[CapabilityDescriptor, ...] | None = None) -> CapabilityRegistry:

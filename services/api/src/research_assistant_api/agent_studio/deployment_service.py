@@ -87,6 +87,17 @@ class DeploymentService:
             )
 
     def _revalidate_capability_approvals(self, scope: ScopeContext, version: AgentVersion) -> None:
+        """Hard-fail deploy if any approval-required capability binding lacks
+        a currently-valid approval.
+
+        "Currently-valid" is recomputed here at deploy time from the
+        *live* approval + revocation records — never trusted from a
+        previously-decided record's stored ``state`` alone. When more than
+        one ``APPROVED`` record exists for the same destination, every
+        candidate is checked (not just the first) so an older, since-revoked
+        approval sitting ahead of a newer valid one in the list cannot mask
+        that a currently-valid approval does exist.
+        """
         if self._registry is None:
             return
         catalog = self._registry.as_mapping()
@@ -99,26 +110,35 @@ class DeploymentService:
             if operation is None or not operation.requires_approval:
                 continue
             destination = f"{binding.descriptor_ref.id}.{binding.operation_ref.id}"
-            approved = next(
-                (
-                    record
-                    for record in approvals
-                    if record.kind == ApprovalKind.CAPABILITY_OPERATION
-                    and record.destination == destination
-                    and record.state == ApprovalState.APPROVED
-                ),
-                None,
-            )
-            if approved is None:
+            matching = [
+                record
+                for record in approvals
+                if record.kind == ApprovalKind.CAPABILITY_OPERATION
+                and record.destination == destination
+                and record.state == ApprovalState.APPROVED
+            ]
+            if not matching:
                 raise DeploymentServiceError(
                     f"Capability binding '{destination}' requires approval but no approved record was found."
                 )
-            if approved.content_hash != version.manifest_hash:
-                raise DeploymentServiceError(
-                    f"Capability binding '{destination}' approval is bound to a different manifest content hash."
-                )
-            if approved.expires_at is not None and approved.expires_at <= utc_now():
-                raise DeploymentServiceError(f"Capability binding '{destination}' approval has expired.")
+            error: str | None = None
+            for record in matching:
+                if self._store.list_revocations(scope, record.id):
+                    error = f"Capability binding '{destination}' approval has been revoked."
+                    continue
+                if record.content_hash != version.manifest_hash:
+                    error = (
+                        f"Capability binding '{destination}' approval is bound to a"
+                        " different manifest content hash."
+                    )
+                    continue
+                if record.expires_at is not None and record.expires_at <= utc_now():
+                    error = f"Capability binding '{destination}' approval has expired."
+                    continue
+                error = None
+                break
+            if error is not None:
+                raise DeploymentServiceError(error)
 
     def _revalidate_capability_bindings(self, version: AgentVersion) -> None:
         """Hard-fail deploy if any capability binding has gone stale.

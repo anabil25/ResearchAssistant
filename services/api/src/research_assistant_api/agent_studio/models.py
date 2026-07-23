@@ -26,7 +26,7 @@ def utc_now() -> datetime:
 
 #: Canonical JSON Schema version identifier for the persisted ``AgentManifest``
 #: shape. Consumers outside this codebase (e.g. the harness) resolve the
-#: manifest contract via ``GET /api/agent-studio/schemas/agent-manifest``
+#: manifest contract via ``GET /v1/agent-studio/schemas/agent-manifest``
 #: (JSON Schema + content digest), never by importing this Python class.
 AGENT_MANIFEST_SCHEMA_VERSION = "agent-studio.manifest.v1"
 
@@ -618,6 +618,31 @@ class CapabilityVersionPin(BaseModel):
     configuration_ref: CapabilityConfigurationRef = Field(default_factory=CapabilityConfigurationRef)
     connection_ref: CapabilityConnectionRef | None = None
     policy_ref: CapabilityPolicyRef | None = None
+
+
+class CapabilityBindingView(BaseModel):
+    """A volatile, current-state expansion of one ``CapabilityBinding``.
+
+    Never persisted and never the execution contract: the canonical
+    ``AgentManifest``/``AgentVersion``/``/versions/{id}/contract``/
+    ``/resolve`` surfaces stay raw-binding-only and immutable/minimal. This
+    view exists purely for UI/audit consumption (draft editor sidecar,
+    ``GET /versions/{id}/capability-views``, the aggregate workspace view) so
+    a caller can see *current* resolved descriptor/instance state and
+    staleness without that volatile information ever leaking into a pinned
+    release contract. ``resolved_descriptor``/``resolved_instance`` are
+    ``None`` when the referenced descriptor/instance is no longer in the
+    live catalog (itself a stale condition, reflected in ``stale_reason``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    binding: CapabilityBinding
+    resolved_descriptor: CapabilityDescriptor | None = None
+    resolved_instance: CapabilityInstance | None = None
+    bindable: bool
+    stale_reason: str | None = None
+    resolved_at: datetime = Field(default_factory=utc_now)
 
 
 class ToolRegistrationKind(StrEnum):
@@ -1340,6 +1365,76 @@ class StudioApprovalRecord(BaseModel):
     expires_at: datetime | None = None
 
 
+class ApprovalEffectiveState(StrEnum):
+    """The *derived* state of a ``StudioApprovalRecord``, recomputed at every
+
+    read and enforcement point -- never stored on the record itself.
+
+    ``StudioApprovalRecord.state`` (pending/approved/rejected) is set once at
+    decision time and is never mutated again (see its docstring). Expiry and
+    revocation are independent, time-varying facts layered on top of that
+    immutable decision, so a record whose stored ``state`` is ``APPROVED``
+    can still have an effective state of ``EXPIRED`` or ``REVOKED`` depending
+    on ``expires_at`` and whether an ``ApprovalRevocation`` exists for it.
+    Runtime/enforcement code must always use the effective state, never the
+    raw stored ``state``, to decide whether an approval currently authorizes
+    anything.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+
+
+class ApprovalRevocation(BaseModel):
+    """An append-only revocation event for a ``StudioApprovalRecord``.
+
+    Revocation never mutates the original request/decision record -- it is a
+    separate, independent, permanent signal ("this approval must never be
+    honored again") layered on top via ``ApprovalEffectiveState``. There is
+    no corresponding "un-revoke": once persisted, an approval's effective
+    state is ``REVOKED`` forever. Idempotent creation is keyed by
+    ``idempotency_key`` (see ``approvals.revocation_idempotency_key``) so a
+    retried request returns the original revocation rather than appending a
+    duplicate event.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    approval_id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    actor_id: str = Field(min_length=1, max_length=200)
+    reason: str = Field(min_length=1, max_length=4000)
+    created_at: datetime = Field(default_factory=utc_now)
+    policy_ref: str | None = None
+    idempotency_key: str
+
+
+class ApprovalRecordView(BaseModel):
+    """UI/audit read view of a ``StudioApprovalRecord``: the immutable record
+    plus its currently-recomputed ``effective_state`` and full revocation
+    history.
+
+    Never persisted -- ``effective_state`` is always derived at request time
+    by ``approvals.compute_approval_effective_state`` from the record's own
+    stored ``state``/``expires_at`` and the live revocation log, exactly as
+    every enforcement point (gate/deploy) independently recomputes it. A
+    runtime/enforcement path must never substitute this view's
+    ``effective_state`` for its own recomputation -- this is presentation
+    data only.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    record: StudioApprovalRecord
+    effective_state: ApprovalEffectiveState
+    revocations: tuple[ApprovalRevocation, ...] = Field(default_factory=tuple)
+
+
 # --------------------------------------------------------------------------
 # Development deployments, health, rollback, logical ID resolution
 # --------------------------------------------------------------------------
@@ -1614,3 +1709,49 @@ class AuditEvent(BaseModel):
     meaning is determined by ``kind``."""
     created_at: datetime = Field(default_factory=utc_now)
     detail: dict[str, str] = Field(default_factory=dict)
+
+
+# --------------------------------------------------------------------------
+# Volatile, current-state read views (never persisted, never the execution
+# contract -- see ``CapabilityBindingView`` docstring above)
+# --------------------------------------------------------------------------
+
+
+class AgentDraftView(BaseModel):
+    """``GET /agents/{id}/draft`` response: the raw draft plus a derived sidecar.
+
+    ``draft`` (and its ``AgentManifest.capabilities``) remains exactly what
+    is persisted -- raw ``CapabilityBinding`` only. ``capability_views`` is an
+    additional, volatile expansion computed at request time so the draft
+    editor can show current resolution/staleness without that information
+    ever being written back into the draft or manifest.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    draft: AgentDraft
+    capability_views: tuple[CapabilityBindingView, ...] = Field(default_factory=tuple)
+
+
+class AgentWorkspaceView(BaseModel):
+    """Aggregate, volatile view of an agent's current draft/release/deployment state.
+
+    Composes the current draft, the latest cut ``AgentVersion``, its most
+    recent ``AgentRelease`` (governance status for the given environment),
+    recent ``DeploymentRecord`` history, and the draft's expanded
+    ``capability_views`` -- purely for UI/audit consumption. Never usable as
+    an execution contract: the runtime/compiler always consumes
+    ``/resolve``/``/versions/{id}/contract`` (raw binding-only, immutable)
+    instead. ``/catalog`` remains summary-only and does not return this
+    shape.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    logical_agent_id: str
+    draft: AgentDraft | None = None
+    latest_version: AgentVersion | None = None
+    latest_release: AgentRelease | None = None
+    deployments: tuple[DeploymentRecord, ...] = Field(default_factory=tuple)
+    capability_views: tuple[CapabilityBindingView, ...] = Field(default_factory=tuple)
+    resolved_at: datetime = Field(default_factory=utc_now)
