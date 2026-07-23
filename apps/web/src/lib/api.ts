@@ -312,6 +312,36 @@ export async function uploadLibraryItem(
 //     matched (`not_required|pending|approved|rejected|expired|revoked`) —
 //     no change needed there.
 //
+//   Round 9 — a further cross-session correction round claimed capability
+//     bindings must drop `enabled`/approval, use richer nested pin objects
+//     (descriptor id/version/digest, versioned operation, rich instance
+//     ref, connection id/auth/authorization digest, destination
+//     constraints/digest), a 6-value instance readiness, and a maturity/
+//     lifecycle split. Rather than implementing that paraphrase, the real
+//     committed Pydantic models in `d6df0fe` (`agent_studio/models.py`)
+//     were read in full. Findings: `CapabilityBinding` genuinely has no
+//     `enabled`/approval (confirming that part) but is otherwise FLAT —
+//     `descriptor_id`/`descriptor_version` (strings, no digest),
+//     `operation` (a bare name, no version), `instance_id` (a bare nullable
+//     string), `pinned_provider_version`, a single `schema_digest`, inline
+//     `config`, flat `connection_ref`/`policy_ref`, and `attached_by`/
+//     `attached_at` audit fields — no destination_constraints/digest field
+//     exists at all. `CapabilityInstance.readiness` (`InstanceReadiness`) is
+//     three values (`ready|degraded|unavailable`), not six, and carries no
+//     maturity/lifecycle — maturity lives on `CapabilityOperation`
+//     (`OperationMaturity`: `ga|preview|unavailable|retired|unknown`, ONE
+//     enum, no separate lifecycle field at all — the earlier maturity/
+//     lifecycle split instruction does not match real backend source and
+//     has been reverted). Approval (`StudioApprovalRecord`/`ApprovalState:
+//     pending|approved|rejected`) is scoped to `version_id` for release/
+//     fork/admin-escalation promotion — never a per-capability-binding
+//     concept; a capability operation only declares `requires_approval`
+//     (boolean). `types.ts`/`legacy-capability-adapter.ts`/
+//     `agent-workspace.tsx` and their tests were corrected to this verified
+//     shape; `isCapabilityAttachable` now takes `(operation, instance)` and
+//     checks `maturity === "ga"` plus instance readiness only when an
+//     instance is actually pinned.
+//
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`
 // proxy used everywhere else (just a different sub-path than `apiFetch`).

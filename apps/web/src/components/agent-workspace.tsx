@@ -39,8 +39,6 @@ import {
   type WorkspaceData,
 } from "@/lib/api";
 import {
-  isCapabilityApprovalActive,
-  isCapabilityAttachable,
   defaultMemoryView,
   resolveCapabilityBindingView,
   type AgentBuilderProposal,
@@ -929,9 +927,12 @@ export function AgentWorkspaceView({
     return contract.capabilities.map((binding) =>
       resolveCapabilityBindingView(
         binding,
-        discovery.descriptors.find((d) => d.id === binding.descriptor.id) ??
+        discovery.descriptors.find((d) => d.id === binding.descriptor_id) ??
           null,
-        discovery.instances.find((i) => i.id === binding.instance.id) ?? null,
+        binding.instance_id
+          ? (discovery.instances.find((i) => i.id === binding.instance_id) ??
+              null)
+          : null,
       ),
     );
   }, [contract.capabilities, discovery]);
@@ -1122,65 +1123,54 @@ export function AgentWorkspaceView({
                   <ul className="agent-capabilities-list">
                     {capabilityViews.map((capability) => {
                       const descriptor = capability.resolved_descriptor;
+                      const operation = capability.resolved_operation;
                       const instance = capability.resolved_instance;
-                      const approval = capability.binding.approval;
-                      const lifecycle = instance?.lifecycle ?? null;
+                      const maturity = operation?.maturity ?? "unknown";
+                      const destinations = operation?.side_effect_destinations ?? [];
                       return (
                         <li
-                          key={`${capability.binding.descriptor.id}-${capability.binding.instance.id}`}
-                          data-attachable={isCapabilityAttachable(instance)}
+                          key={`${capability.binding.descriptor_id}-${capability.binding.operation}-${capability.binding.instance_id ?? "none"}`}
+                          data-attachable={capability.attachable}
                           data-stale={Boolean(capability.stale_reason)}
                         >
                           <strong>
-                            {descriptor?.family ?? capability.binding.descriptor.id}
+                            {descriptor?.title ?? capability.binding.descriptor_id}
                           </strong>{" "}
-                          · {descriptor?.operation ?? capability.binding.operation}
+                          · {operation?.name ?? capability.binding.operation}
                           <span
                             className="status-chip"
-                            data-tone={descriptor?.risk_class ?? "unknown"}
+                            data-tone={operation?.operation_class ?? "unknown"}
                           >
-                            {(descriptor?.risk_class ?? "unknown").replace(/_/g, " ")}
+                            {(operation?.operation_class ?? "unknown").replace(/_/g, " ")}
                           </span>
-                          <span
-                            className="status-chip"
-                            data-tone={instance?.maturity ?? "unknown"}
-                          >
-                            {instance ? instance.maturity : "unknown"}
-                          </span>
-                          <span
-                            className="status-chip"
-                            data-tone={lifecycle ?? "unknown"}
-                          >
-                            {lifecycle ?? "unknown"}
+                          <span className="status-chip" data-tone={maturity}>
+                            {maturity}
                           </span>
                           <small>
-                            {capability.binding.enabled ? "Enabled" : "Disabled"} ·{" "}
-                            {approval.status.replace(/_/g, " ")}
-                            {approval.status !== "not_required" &&
-                            !isCapabilityApprovalActive(approval)
-                              ? " (not currently active)"
+                            {operation?.requires_approval
+                              ? "Requires approval"
+                              : "No approval required"}
+                            {capability.binding.instance_id
+                              ? ` · instance ${capability.binding.instance_id}`
                               : ""}
-                            {capability.binding.instance.version
-                              ? ` · pinned to ${capability.binding.instance.version}`
-                              : ""}
-                            {capability.binding.provider_contract_version
-                              ? ` · provider contract v${capability.binding.provider_contract_version}`
+                            {instance ? ` (${instance.readiness})` : ""}
+                            {capability.binding.pinned_provider_version
+                              ? ` · provider contract v${capability.binding.pinned_provider_version}`
                               : ""}
                           </small>
-                          {capability.binding.destination_constraints &&
-                          capability.binding.destination_constraints.length > 0 ? (
+                          {destinations.length > 0 ? (
                             <small className="agent-capability-destinations">
-                              Destinations: {capability.binding.destination_constraints.join(", ")}
+                              Destinations: {destinations.join(", ")}
                             </small>
                           ) : null}
-                          {lifecycle && lifecycle !== "active" ? (
+                          {maturity === "retired" || maturity === "unavailable" ? (
                             <small
                               className="agent-capability-lifecycle-warning"
-                              data-tone={lifecycle}
+                              data-tone={maturity}
                             >
-                              {lifecycle === "retired" ? "Retired" : "Deprecated"}
-                              {instance?.lifecycle_reason
-                                ? `: ${instance.lifecycle_reason}`
+                              {maturity === "retired" ? "Retired" : "Unavailable"}
+                              {operation?.reason
+                                ? `: ${operation.reason}`
                                 : " — no reason provided."}
                             </small>
                           ) : null}

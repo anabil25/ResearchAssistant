@@ -122,30 +122,36 @@ export type AgentRegistryLifecycle =
   | "archived";
 
 /**
- * Capability maturity: exactly these three values, no `experimental` alias.
- * `unknown` is always non-attachable — see `isCapabilityAttachable`. Distinct
- * from `CapabilityLifecycle`: maturity describes how proven an operation is
- * (ga/preview), lifecycle describes whether it's still in active service
- * (active/deprecated/retired). A `ga` instance can still be `deprecated` or
- * `retired` — do not collapse the two into one enum.
+ * Capability *operation* maturity — verified field-for-field against the
+ * backend's real `OperationMaturity` enum (commit `d6df0fe`,
+ * `agent_studio/models.py`). This is a single five-value enum, not split
+ * into a separate "lifecycle": `retired` and `unavailable` ARE maturity
+ * states, not a distinct lifecycle dimension. Only `ga` is ever attachable —
+ * see `isCapabilityAttachable`. `unknown` is the fail-closed default when a
+ * discovery source didn't report a maturity tier and must never be treated
+ * as safe-to-attach, identically to `unavailable`.
+ *
+ * A prior round of this file split this into `maturity`/`CapabilityLifecycle`
+ * per an unverified cross-session correction; that split has been reverted
+ * after directly inspecting the committed Pydantic source, which has no
+ * `lifecycle` field on `CapabilityOperation` at all.
  */
-export type CapabilityMaturity = "ga" | "preview" | "unknown";
+export type CapabilityMaturity =
+  | "ga"
+  | "preview"
+  | "unavailable"
+  | "retired"
+  | "unknown";
 
 /**
- * Capability lifecycle state, independent of maturity. `deprecated` and
- * `retired` instances remain visible in the UI (with `lifecycle_reason`
- * surfaced as an explicit warning) rather than being hidden — researchers
- * need to see what an agent is still bound to even after it's sunset — but
- * neither is attachable for new bindings; only `active` is.
+ * Deterministic side-effect classification for a capability operation —
+ * verified against the backend's real `OperationClass` enum. Independent of
+ * `maturity` (availability/attachability) and of `requires_approval`
+ * (declared alongside it on `CapabilityOperation`): this describes *what
+ * kind* of effect invoking the operation can have, not whether it's safe to
+ * attach or needs sign-off. Backend field name is `operation_class`.
  */
-export type CapabilityLifecycle = "active" | "deprecated" | "retired";
-
-/**
- * Operation risk classification shared with the Workflow page redesign
- * contract. Distinct from capability maturity: risk class governs approval
- * requirements, maturity governs availability/attachability.
- */
-export type CapabilityRiskClass =
+export type CapabilityOperationClass =
   | "pure"
   | "read"
   | "write_reversible"
@@ -153,90 +159,141 @@ export type CapabilityRiskClass =
   | "privileged";
 
 /**
- * Approval is never a permanent grant. Every capability binding carries its
- * own time/record-bound approval state — `approved` still requires checking
- * `expires_at` (see `isCapabilityApprovalActive`) before treating a binding
- * as currently authorized.
+ * A single operation on a capability descriptor — verified against the
+ * backend's real `CapabilityOperation` model. `maturity`/`operation_class`/
+ * `requires_approval` are all operation-level, not descriptor-level: two
+ * operations on the same descriptor can have entirely different maturity
+ * and risk profiles. `source_url`/`source_version`/`last_verified_at` are
+ * the provenance trail for the maturity claim.
  */
-export type CapabilityApprovalStatus =
-  | "not_required"
-  | "pending"
-  | "approved"
-  | "rejected"
-  | "expired"
-  | "revoked";
-
-/** Time/record-bound approval summary for one capability binding — never a bare boolean or permanent flag. */
-export interface CapabilityApprovalSummary {
-  status: CapabilityApprovalStatus;
-  /** The backing approval record, if any — lets a researcher trace exactly which decision authorized this binding. */
-  record_id: string | null;
-  /** Content hash of the exact scope/behavior this approval covers — detects a binding drifting out from under a stale approval. */
-  scope_hash: string | null;
-  actor: string | null;
-  expires_at: string | null;
+export interface CapabilityOperation {
+  name: string;
+  maturity: CapabilityMaturity;
+  operation_class: CapabilityOperationClass;
+  side_effect_destinations: string[];
+  requires_approval: boolean;
+  /** Surfaced when maturity isn't `ga` (e.g. why an operation is `preview`/`retired`/`unavailable`). */
+  reason: string | null;
+  source_url: string | null;
+  source_version: string | null;
+  last_verified_at: string | null;
 }
 
 /**
- * True only while an approval is currently in force: `not_required` needs no
- * approval to be usable, `approved` must not have passed its `expires_at`,
- * and every other status (`pending`/`rejected`/`expired`/`revoked`) is never
- * active. Fail-closed: an approval with an unparsable `expires_at` is never
- * treated as active.
- */
-export function isCapabilityApprovalActive(
-  approval: CapabilityApprovalSummary,
-  now: Date = new Date(),
-): boolean {
-  if (approval.status === "not_required") return true;
-  if (approval.status !== "approved") return false;
-  if (!approval.expires_at) return true;
-  const expiry = new Date(approval.expires_at).getTime();
-  if (Number.isNaN(expiry)) return false;
-  return expiry > now.getTime();
-}
-
-/**
- * Provider-driven catalog entry for a capability family + operation.
- * Immutable operation semantics/governance — fetched from
- * `GET /agent-studio/capabilities/descriptors`. `digest` content-addresses
- * this descriptor's semantics/governance so a binding's pinned reference can
- * be checked for drift.
+ * Provider-declared capability *catalog/governance* entry — verified
+ * field-for-field against the backend's real `CapabilityDescriptor` model.
+ * Fetched from `GET /agent-studio/capabilities/descriptors`. `operations` is
+ * the honest, per-operation maturity surface: `preview`/`retired`/
+ * `unavailable`/`unknown` operations remain visible (with `reason`) but are
+ * rejected at attach time. `version` is the descriptor's own catalog
+ * version, pinned by any `CapabilityBinding` that attaches it, so a later
+ * catalog update never silently changes an already-released agent's
+ * behavior. There is deliberately no descriptor-level `digest` field in the
+ * real backend model — drift is detected via `version` comparison, not a
+ * content hash, at this level (schema-level drift is instead carried on the
+ * binding's own `schema_digest`).
  */
 export interface CapabilityDescriptor {
   id: string;
   version: string;
-  family: string;
-  operation: string;
-  risk_class: CapabilityRiskClass;
+  provider: string;
+  title: string;
   description: string;
-  digest: string;
+  operations: CapabilityOperation[];
+  auth_requirements: string[];
+  risk_tier: string;
+  data_boundary: string;
+  managed_foundry_native: boolean;
 }
 
+/** Discovered-resource readiness — verified against the backend's real `InstanceReadiness` enum (three values only). */
+export type CapabilityInstanceReadiness = "ready" | "degraded" | "unavailable";
+
+/** Verified against the backend's real `HealthStatus` enum. */
+export type CapabilityHealthStatus =
+  | "healthy"
+  | "degraded"
+  | "unhealthy"
+  | "unknown";
+
 /**
- * A concrete, tenant/workspace-scoped discovered deployment of a descriptor
- * — fetched from `GET /agent-studio/capabilities/instances`. Never
- * carries secrets/credentials. `fingerprint` is this instance's own live
- * configuration/version fingerprint, compared against a binding's pinned
- * `instance_fingerprint` to detect drift.
+ * A tenant/project-discovered *resource* for a capability descriptor —
+ * verified field-for-field against the backend's real `CapabilityInstance`
+ * model. Distinct from `CapabilityDescriptor` (immutable catalog semantics)
+ * and from `CapabilityBinding` (an agent's attachment): this is the
+ * concrete, discovered thing a binding points at via `instance_id`, with its
+ * own readiness/health independent of the descriptor's static catalog entry.
+ * Never persisted inside a manifest; resolved and validated at attach/gate
+ * time. Scope is `tenant_id` + `project_id` (never a bare "workspace" id —
+ * a workspace is a display alias over `project_id`, not a distinct scope
+ * dimension). Never carries secrets/credentials.
  */
 export interface CapabilityInstance {
   id: string;
+  tenant_id: string;
+  project_id: string;
   descriptor_id: string;
-  /** Digest of the descriptor this instance was discovered against. */
-  descriptor_digest: string;
-  version: string;
-  fingerprint: string;
-  tenant_id: string | null;
-  workspace_id: string | null;
-  maturity: CapabilityMaturity;
-  /** Independent of `maturity` — see `CapabilityLifecycle`. */
-  lifecycle: CapabilityLifecycle;
-  /** Human-readable reason surfaced when `lifecycle !== "active"` (e.g. sunset date, replacement pointer). `null` only when `lifecycle === "active"` or the provider gave no reason. */
-  lifecycle_reason: string | null;
-  provider: string;
-  destination: string | null;
-  readiness: "ready" | "degraded" | "unavailable" | "unknown";
+  discovered_provider_version: string | null;
+  readiness: CapabilityInstanceReadiness;
+  health_status: CapabilityHealthStatus;
+  config_fingerprint: string | null;
+  unavailable_reason: string | null;
+  discovered_at: string;
+  registered_by: string;
+}
+
+/**
+ * Version/release-scoped approval record — verified against the backend's
+ * real `StudioApprovalRecord` model. Approval is explicitly NOT a
+ * per-capability-binding concept in the real backend: it gates release
+ * promotion, fork promotion, or admin escalation for an entire agent
+ * version, keyed by `version_id`. A capability operation's declarative
+ * `requires_approval` (see `CapabilityOperation`) only states that approval
+ * is *needed*; whether one is currently in force is this record, never a
+ * field on `CapabilityBinding`.
+ */
+export type StudioApprovalKind =
+  | "release_promotion"
+  | "fork_promotion"
+  | "admin_escalation";
+
+/** Verified against the backend's real `ApprovalState` enum — three values only, no `not_required`/`expired`/`revoked` variants; expiry is tracked separately via `expires_at`. */
+export type StudioApprovalState = "pending" | "approved" | "rejected";
+
+export interface StudioApprovalRecord {
+  id: string;
+  version_id: string;
+  kind: StudioApprovalKind;
+  state: StudioApprovalState;
+  gated_action: string;
+  destination: string;
+  requested_by: string;
+  requested_at: string;
+  evidence_summary: string;
+  risk: string;
+  idempotency_key: string;
+  approver_id: string | null;
+  decided_at: string | null;
+  rationale: string | null;
+  /** The exact version/manifest content hash this approval is bound to — never a blanket, open-ended grant. */
+  content_hash: string | null;
+  expires_at: string | null;
+}
+
+/**
+ * True only while a version-scoped approval is currently in force:
+ * `approved` must not have passed its `expires_at`; `pending`/`rejected` are
+ * never active. Fail-closed: an unparsable `expires_at` is never active.
+ */
+export function isStudioApprovalActive(
+  record: StudioApprovalRecord,
+  now: Date = new Date(),
+): boolean {
+  if (record.state !== "approved") return false;
+  if (!record.expires_at) return true;
+  const expiry = new Date(record.expires_at).getTime();
+  if (Number.isNaN(expiry)) return false;
+  return expiry > now.getTime();
 }
 
 /**
@@ -254,144 +311,119 @@ export interface CapabilityDiscovery {
 }
 
 /**
- * Only GA, `active`-lifecycle, `ready` instances attach. `unknown` maturity,
- * a non-`active` lifecycle (`deprecated`/`retired`), or any readiness other
- * than `ready` is always non-attachable — fail-closed rather than assuming
- * availability. Non-attachable instances (deprecated/retired especially)
- * still surface via `CapabilityBindingView` for display — attachability
- * only gates *new* bindings, it doesn't hide existing ones.
+ * Only a `ga`-maturity operation is ever attachable — verified against the
+ * backend's explicit docstring ("Only GA is ever attachable") on
+ * `OperationMaturity`. `preview`/`unavailable`/`retired`/`unknown` are always
+ * non-attachable — fail-closed rather than assuming availability. When the
+ * operation requires a discovered instance (`binding.instance_id` is set),
+ * that instance must additionally be `ready`; operations that need no
+ * instance pass `instance = null` and are gated on maturity alone.
+ * Non-attachable operations/instances still surface via
+ * `CapabilityBindingView` for display — attachability only gates *new*
+ * bindings, it doesn't hide existing ones.
  */
 export function isCapabilityAttachable(
+  operation: CapabilityOperation | null | undefined,
   instance: CapabilityInstance | null | undefined,
 ): boolean {
-  if (!instance) return false;
-  if (instance.maturity === "unknown") return false;
-  if (instance.readiness !== "ready") return false;
-  if (instance.lifecycle !== "active") return false;
-  return instance.maturity === "ga";
+  if (!operation) return false;
+  if (operation.maturity !== "ga") return false;
+  if (!instance) return true;
+  return instance.readiness === "ready";
 }
 
 /**
- * Typed reference to the pinned capability descriptor + version this binding
- * was created against. Never a bare string id — always carries the version
- * that was pinned so drift can be detected against the live catalog.
- */
-export interface CapabilityDescriptorRef {
-  id: string;
-  version: string;
-}
-
-/**
- * Typed reference to the pinned discovered instance this binding was created
- * against. `version` is nullable — a binding may pin to "whatever version is
- * live" rather than a specific release — but `fingerprint` is always the
- * concrete configuration/version fingerprint pinned at bind time.
- */
-export interface CapabilityInstanceRef {
-  id: string;
-  version: string | null;
-  fingerprint: string;
-}
-
-/** Typed reference to a workspace configuration resource this binding depends on. */
-export interface CapabilityConfigurationRef {
-  ref: string;
-}
-
-/** Typed reference to a workspace connection resource this binding depends on. */
-export interface CapabilityConnectionRef {
-  ref: string;
-}
-
-/** Typed reference to a governing policy resource this binding depends on. */
-export interface CapabilityPolicyRef {
-  ref: string;
-}
-
-/**
- * Persisted, immutable-manifest-embedded binding of one capability to a
- * specific agent version. Embeds only pinned typed references, schema
- * digests, provider contract version, frozen destination constraints, and
- * the authorizing approval summary — never the full descriptor or any
- * volatile instance health/readiness (see `CapabilityBindingView` for the
- * derived, resolved-for-display expansion of this row, kept strictly
- * separate from this persisted shape).
+ * Persisted, immutable-manifest-embedded attachment of one capability
+ * operation to a specific agent version/draft — verified field-for-field
+ * against the backend's real `CapabilityBinding` Pydantic model (commit
+ * `d6df0fe`). This is a flat set of pinned identity refs plus an attach
+ * audit trail: `descriptor_id`/`descriptor_version` pin the catalog entry,
+ * `operation` names the specific operation, `instance_id` optionally pins a
+ * discovered resource, `pinned_provider_version`/`schema_digest` pin the
+ * upstream contract/schema, `connection_ref`/`policy_ref` are flat resource
+ * references, and `config` is this binding's own inline configuration data.
+ * There is deliberately no `enabled` toggle and no approval status on this
+ * row — approval is a declarative `requires_approval` flag on the resolved
+ * `CapabilityOperation`, and any actual authorization decision lives in a
+ * separate, version-scoped `StudioApprovalRecord` — never a field here.
+ * Never embeds the full descriptor or any volatile instance health/readiness
+ * (see `CapabilityBindingView` for the derived, resolved-for-display
+ * expansion of this row, kept strictly separate from this persisted shape).
  */
 export interface CapabilityBinding {
-  descriptor: CapabilityDescriptorRef;
+  descriptor_id: string;
+  descriptor_version: string;
   operation: string;
-  instance: CapabilityInstanceRef;
-  /** `null` when this binding needs no workspace configuration. */
-  configuration: CapabilityConfigurationRef | null;
-  /** `null` when this binding needs no workspace connection (e.g. a pure/local operation). */
-  connection: CapabilityConnectionRef | null;
-  /** `null` when no policy beyond the descriptor's own risk class governs this binding. */
-  policy: CapabilityPolicyRef | null;
-  /**
-   * The actual upstream provider's contract/API version this binding was
-   * authorized against — distinct from `descriptor.version`/`instance.version`
-   * (Agent Studio's own catalog versions). Never exposed as an ambiguous
-   * bare `provider_version` alias; `null` only when the provider doesn't
-   * version its contract.
-   */
-  provider_contract_version: string | null;
-  /**
-   * Frozen at bind time: the destinations this binding is constrained to
-   * send data to. Distinct from the live, volatile `CapabilityInstance.destination`
-   * — this is what was actually authorized, not what the instance currently reports.
-   */
-  destination_constraints: string[] | null;
-  input_schema_digest: string | null;
-  output_schema_digest: string | null;
-  enabled: boolean;
-  approval: CapabilityApprovalSummary;
+  instance_id: string | null;
+  pinned_provider_version: string | null;
+  schema_digest: string | null;
+  config: Record<string, unknown>;
+  connection_ref: string | null;
+  policy_ref: string | null;
+  attached_by: string;
+  attached_at: string;
 }
 
 /**
  * Derived, read-only expansion of a `CapabilityBinding` for rendering in the
- * Workspace/detail view. Never the persisted shape: `resolved_descriptor`
- * and `resolved_instance` are looked up live at read time and may be `null`
- * (unresolvable) or drifted from what the binding pinned — see
- * `resolveCapabilityBindingView` and `stale_reason`.
+ * Workspace/detail view. Never the persisted shape: `resolved_descriptor`,
+ * `resolved_operation`, and `resolved_instance` are looked up live at read
+ * time and may be `null` (unresolvable) or drifted from what the binding
+ * pinned — see `resolveCapabilityBindingView` and `stale_reason`.
+ * `attachable` is the derived attach decision for this exact resolved
+ * operation/instance pair — never inferred by callers from maturity alone.
  */
 export interface CapabilityBindingView {
   binding: CapabilityBinding;
   resolved_descriptor: CapabilityDescriptor | null;
+  resolved_operation: CapabilityOperation | null;
   resolved_instance: CapabilityInstance | null;
-  /** Non-null when the pinned descriptor/instance can't be resolved, or the resolved instance has drifted from what the binding pinned. */
+  /** Non-null when the pinned descriptor/operation/instance can't be resolved, or has drifted from what the binding pinned. */
   stale_reason: string | null;
+  attachable: boolean;
 }
 
 /**
  * Reconciles a persisted binding against live descriptor/instance reads,
  * producing the derived `CapabilityBindingView` shown in the Workspace. This
- * is the one place staleness is computed — never store `stale_reason` on
- * the persisted binding itself.
+ * is the one place staleness/attachability is computed — never store
+ * `stale_reason`/`attachable` on the persisted binding itself.
  */
 export function resolveCapabilityBindingView(
   binding: CapabilityBinding,
   descriptor: CapabilityDescriptor | null,
   instance: CapabilityInstance | null,
 ): CapabilityBindingView {
+  const operation =
+    descriptor?.operations.find((op) => op.name === binding.operation) ??
+    null;
   let staleReason: string | null = null;
   if (!descriptor) {
     staleReason =
       "This binding's capability descriptor is no longer resolvable from the provider catalog.";
-  } else if (!instance) {
+  } else if (descriptor.version !== binding.descriptor_version) {
+    staleReason =
+      "The descriptor's catalog version has changed since this binding pinned its version.";
+  } else if (!operation) {
+    staleReason =
+      "This binding's operation is no longer present on the resolved descriptor.";
+  } else if (binding.instance_id && !instance) {
     staleReason =
       "This binding's discovered instance is no longer resolvable — it may have been removed or is unavailable.";
-  } else if (instance.fingerprint !== binding.instance.fingerprint) {
-    staleReason =
-      "The discovered instance's live fingerprint no longer matches what this binding pinned at bind time.";
-  } else if (instance.descriptor_digest !== descriptor.digest) {
-    staleReason =
-      "The descriptor's governance/semantics digest has changed since this instance was discovered.";
   }
   return {
     binding,
     resolved_descriptor: descriptor,
+    resolved_operation: operation,
     resolved_instance: instance,
     stale_reason: staleReason,
+    // A pinned-but-unresolvable instance must gate attachment closed — it is
+    // NOT the same as "no instance required" (which is what a bare `null`
+    // means to `isCapabilityAttachable`). Only fold in `instance` when the
+    // binding actually pinned one; otherwise evaluate maturity alone.
+    attachable: binding.instance_id
+      ? isCapabilityAttachable(operation, instance) && instance !== null
+      : isCapabilityAttachable(operation, null),
   };
 }
 

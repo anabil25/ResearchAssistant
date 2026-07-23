@@ -1329,24 +1329,17 @@ describe("AgentWorkspaceView", () => {
         ],
         capabilities: [
           {
-            descriptor: { id: "web-search", version: "1.0.0" },
+            descriptor_id: "web-search",
+            descriptor_version: "1.0.0",
             operation: "search",
-            instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
-            configuration: null,
-            connection: { ref: "conn-bing" },
-            policy: null,
-            provider_contract_version: "2024-06-01",
-            destination_constraints: ["bing.com"],
-            input_schema_digest: "sha256:in1",
-            output_schema_digest: "sha256:out1",
-            enabled: true,
-            approval: {
-              status: "not_required",
-              record_id: null,
-              scope_hash: null,
-              actor: null,
-              expires_at: null,
-            },
+            instance_id: "web-search-instance-1",
+            pinned_provider_version: "2024-06-01",
+            schema_digest: "sha256:schema1",
+            config: {},
+            connection_ref: "conn-bing",
+            policy_ref: null,
+            attached_by: "researcher@example.com",
+            attached_at: "2026-01-01T00:00:00Z",
           },
         ],
         public_boundary: {
@@ -1363,28 +1356,41 @@ describe("AgentWorkspaceView", () => {
         {
           id: "web-search",
           version: "1.0.0",
-          family: "web",
-          operation: "search",
-          risk_class: "read",
+          provider: "bing",
+          title: "web",
           description: "Search the public web.",
-          digest: "sha256:desc1",
+          operations: [
+            {
+              name: "search",
+              maturity: "ga",
+              operation_class: "read",
+              side_effect_destinations: ["bing.com"],
+              requires_approval: false,
+              reason: null,
+              source_url: null,
+              source_version: null,
+              last_verified_at: null,
+            },
+          ],
+          auth_requirements: [],
+          risk_tier: "low",
+          data_boundary: "project",
+          managed_foundry_native: false,
         },
       ],
       instances: [
         {
           id: "web-search-instance-1",
-          descriptor_id: "web-search",
-          descriptor_digest: "sha256:desc1",
-          version: "3.2.0",
-          fingerprint: "fp-web-search-1",
           tenant_id: "tenant-demo",
-          workspace_id: "workspace-demo",
-          maturity: "ga",
-          lifecycle: "active",
-          lifecycle_reason: null,
-          provider: "bing",
-          destination: null,
+          project_id: "project-demo",
+          descriptor_id: "web-search",
+          discovered_provider_version: "3.2.0",
           readiness: "ready",
+          health_status: "healthy",
+          config_fingerprint: "fp-web-search-1",
+          unavailable_reason: null,
+          discovered_at: "2026-01-01T00:00:00Z",
+          registered_by: "platform",
         },
       ],
       warnings: [],
@@ -1425,8 +1431,10 @@ describe("AgentWorkspaceView", () => {
     ).toBeInTheDocument();
     expect(within(contract).getByText(/Approval required for writes/)).toBeInTheDocument();
     expect(within(contract).getByText("web") ).toBeInTheDocument();
-    expect(within(contract).getByText(/search/)).toBeInTheDocument();
-    expect(within(contract).getByText(/pinned to 3\.2\.0/)).toBeInTheDocument();
+    expect(within(contract).getAllByText(/search/).length).toBeGreaterThan(0);
+    expect(
+      within(contract).getByText(/instance web-search-instance-1 \(ready\)/),
+    ).toBeInTheDocument();
     expect(
       within(contract).getByText(/provider contract v2024-06-01/),
     ).toBeInTheDocument();
@@ -1688,84 +1696,69 @@ describe("AgentWorkspaceView", () => {
           ],
           capabilities: [
             {
-              descriptor: { id: "analysis-summarize", version: "1.0.0" },
+              descriptor_id: "analysis-summarize",
+              descriptor_version: "1.0.0",
               operation: "summarize",
-              instance: { id: "analysis-summarize-instance", version: null, fingerprint: "fp-analysis-1" },
-              configuration: null,
-              connection: null,
-              policy: null,
-              provider_contract_version: null,
-              destination_constraints: null,
-              input_schema_digest: null,
-              output_schema_digest: null,
-              enabled: false,
-              approval: {
-                status: "not_required",
-                record_id: null,
-                scope_hash: null,
-                actor: null,
-                expires_at: null,
-              },
+              instance_id: "analysis-summarize-instance",
+              pinned_provider_version: null,
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
             },
             {
-              descriptor: { id: "unresolved-descriptor-op", version: "1.0.0" },
+              descriptor_id: "unresolved-descriptor-op",
+              descriptor_version: "1.0.0",
               operation: "unresolved-operation",
-              instance: { id: "unresolved-instance", version: null, fingerprint: "fp-unresolved" },
-              configuration: null,
-              connection: null,
-              policy: null,
-              provider_contract_version: null,
-              destination_constraints: null,
-              input_schema_digest: null,
-              output_schema_digest: null,
-              enabled: true,
-              approval: {
-                status: "pending",
-                record_id: "approval-42",
-                scope_hash: "sha256:scope1",
-                actor: "reviewer@example.com",
-                expires_at: null,
-              },
+              instance_id: "unresolved-instance",
+              pinned_provider_version: null,
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
             },
             {
-              descriptor: { id: "analysis-classify", version: "1.0.0" },
+              descriptor_id: "analysis-classify",
+              descriptor_version: "1.0.0",
               operation: "classify",
-              instance: { id: "analysis-classify-instance", version: null, fingerprint: "fp-classify-1" },
-              configuration: null,
-              connection: null,
-              policy: null,
-              provider_contract_version: "2.1",
-              destination_constraints: null,
-              input_schema_digest: null,
-              output_schema_digest: null,
-              enabled: true,
-              approval: {
-                status: "not_required",
-                record_id: null,
-                scope_hash: null,
-                actor: null,
-                expires_at: null,
-              },
+              instance_id: "analysis-classify-instance",
+              pinned_provider_version: "2.1",
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
             },
             {
-              descriptor: { id: "analysis-legacy-extract", version: "1.0.0" },
+              descriptor_id: "analysis-legacy-extract",
+              descriptor_version: "1.0.0",
               operation: "extract",
-              instance: { id: "analysis-legacy-extract-instance", version: null, fingerprint: "fp-legacy-extract-1" },
-              configuration: null,
-              connection: null,
-              policy: null,
-              provider_contract_version: null,
-              destination_constraints: ["internal-store"],
-              input_schema_digest: null,
-              output_schema_digest: null,
-              enabled: false,
-              approval: {
-                status: "not_required",
-                record_id: null,
-                scope_hash: null,
-                actor: null,
-                expires_at: null,
-              },
+              instance_id: "analysis-legacy-extract-instance",
+              pinned_provider_version: null,
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
+            },
+            {
+              descriptor_id: "analysis-quick-scan",
+              descriptor_version: "1.0.0",
+              operation: "quick_scan",
+              instance_id: null,
+              pinned_provider_version: null,
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
             },
           ],
         },
@@ -1775,67 +1768,135 @@ describe("AgentWorkspaceView", () => {
     // (simulating a removed/unavailable discovered resource); the
     // `unresolved-descriptor-op` binding's descriptor never resolves at all
     // (neither its descriptor nor its instance appear below); the other two
-    // bindings resolve fully against a matching descriptor+instance pair.
+    // bindings resolve fully against a matching descriptor+operation+instance
+    // — one `retired` (with a reason) requiring approval, one `unavailable`
+    // (no reason) — demonstrating operation `maturity` is a single five-value
+    // enum, never split into a separate lifecycle field.
     jest.mocked(getCapabilityDiscovery).mockResolvedValue({
       descriptors: [
         {
           id: "analysis-summarize",
           version: "1.0.0",
-          family: "analysis",
-          operation: "summarize",
-          risk_class: "read",
+          provider: "internal",
+          title: "analysis",
           description: "Summarize retrieved evidence.",
-          digest: "sha256:desc2",
+          operations: [
+            {
+              name: "summarize",
+              maturity: "ga",
+              operation_class: "read",
+              side_effect_destinations: [],
+              requires_approval: false,
+              reason: null,
+              source_url: null,
+              source_version: null,
+              last_verified_at: null,
+            },
+          ],
+          auth_requirements: [],
+          risk_tier: "low",
+          data_boundary: "project",
+          managed_foundry_native: false,
         },
         {
           id: "analysis-classify",
           version: "1.0.0",
-          family: "analysis",
-          operation: "classify",
-          risk_class: "read",
+          provider: "internal",
+          title: "analysis",
           description: "Classify retrieved evidence.",
-          digest: "sha256:desc3",
+          operations: [
+            {
+              name: "classify",
+              maturity: "retired",
+              operation_class: "read",
+              side_effect_destinations: [],
+              requires_approval: true,
+              reason: "Superseded by analysis-summarize v2; sunset 2026-12-01.",
+              source_url: null,
+              source_version: null,
+              last_verified_at: null,
+            },
+          ],
+          auth_requirements: [],
+          risk_tier: "low",
+          data_boundary: "project",
+          managed_foundry_native: false,
         },
         {
           id: "analysis-legacy-extract",
           version: "1.0.0",
-          family: "analysis",
-          operation: "extract",
-          risk_class: "read",
+          provider: "internal",
+          title: "analysis",
           description: "Legacy structured extraction.",
-          digest: "sha256:desc4",
+          operations: [
+            {
+              name: "extract",
+              maturity: "unavailable",
+              operation_class: "read",
+              side_effect_destinations: ["internal-store"],
+              requires_approval: false,
+              reason: null,
+              source_url: null,
+              source_version: null,
+              last_verified_at: null,
+            },
+          ],
+          auth_requirements: [],
+          risk_tier: "low",
+          data_boundary: "project",
+          managed_foundry_native: false,
+        },
+        {
+          id: "analysis-quick-scan",
+          version: "1.0.0",
+          provider: "internal",
+          title: "Quick scan",
+          description: "Stateless scan needing no discovered instance.",
+          operations: [
+            {
+              name: "quick_scan",
+              maturity: "ga",
+              operation_class: "read",
+              side_effect_destinations: [],
+              requires_approval: false,
+              reason: null,
+              source_url: null,
+              source_version: null,
+              last_verified_at: null,
+            },
+          ],
+          auth_requirements: [],
+          risk_tier: "low",
+          data_boundary: "project",
+          managed_foundry_native: false,
         },
       ],
       instances: [
         {
           id: "analysis-classify-instance",
-          descriptor_id: "analysis-classify",
-          descriptor_digest: "sha256:desc3",
-          version: "2.1.0",
-          fingerprint: "fp-classify-1",
           tenant_id: "tenant-demo",
-          workspace_id: "workspace-demo",
-          maturity: "ga",
-          lifecycle: "deprecated",
-          lifecycle_reason: "Superseded by analysis-summarize v2; sunset 2026-12-01.",
-          provider: "internal",
-          destination: null,
+          project_id: "project-demo",
+          descriptor_id: "analysis-classify",
+          discovered_provider_version: "2.1.0",
           readiness: "ready",
+          health_status: "healthy",
+          config_fingerprint: "fp-classify-1",
+          unavailable_reason: null,
+          discovered_at: "2026-01-01T00:00:00Z",
+          registered_by: "platform",
         },
         {
           id: "analysis-legacy-extract-instance",
-          descriptor_id: "analysis-legacy-extract",
-          descriptor_digest: "sha256:desc4",
-          version: "1.0.0",
-          fingerprint: "fp-legacy-extract-1",
           tenant_id: "tenant-demo",
-          workspace_id: "workspace-demo",
-          maturity: "preview",
-          lifecycle: "retired",
-          lifecycle_reason: null,
-          provider: "internal",
-          destination: null,
+          project_id: "project-demo",
+          descriptor_id: "analysis-legacy-extract",
+          discovered_provider_version: "1.0.0",
           readiness: "unavailable",
+          health_status: "unhealthy",
+          config_fingerprint: "fp-legacy-extract-1",
+          unavailable_reason: "Provider quota exhausted.",
+          discovered_at: "2026-01-01T00:00:00Z",
+          registered_by: "platform",
         },
       ],
       warnings: [],
@@ -1875,42 +1936,54 @@ describe("AgentWorkspaceView", () => {
     ).toBeInTheDocument();
     expect(within(contract).getByText(/Stats reviewer \(researcher\)/)).toBeInTheDocument();
     expect(within(contract).getByText(/— attached/)).toBeInTheDocument();
-    expect(within(contract).getAllByText("unknown").length).toBe(5);
-    expect(within(contract).getAllByText(/Disabled/).length).toBeGreaterThan(0);
-    expect(within(contract).queryByText(/pinned to/)).not.toBeInTheDocument();
+    expect(within(contract).getAllByText("unknown").length).toBe(2);
+    expect(within(contract).getByText(/Requires approval/)).toBeInTheDocument();
+    expect(
+      within(contract).getAllByText(/No approval required/).length,
+    ).toBeGreaterThan(0);
     expect(
       within(contract).getByText(/provider contract v2\.1/),
     ).toBeInTheDocument();
     expect(
       within(contract).getByText(/Destinations: internal-store/),
     ).toBeInTheDocument();
-    // Descriptor unresolved: falls back to the pinned binding's raw descriptor.id/operation.
+    // Descriptor unresolved: falls back to the pinned binding's raw descriptor_id/operation.
     expect(within(contract).getByText("unresolved-descriptor-op")).toBeInTheDocument();
     expect(
       within(contract).getByText(/unresolved-operation/),
-    ).toBeInTheDocument();
-    // Pending approval that isn't currently active gets the explicit qualifier.
-    expect(
-      within(contract).getByText(/pending \(not currently active\)/),
     ).toBeInTheDocument();
     expect(
       within(contract).getByText(
         /Stale: This binding's capability descriptor is no longer resolvable/,
       ),
     ).toBeInTheDocument();
-    // Maturity and lifecycle are independent: a GA instance can still be
-    // deprecated (with a surfaced reason), and a non-GA instance can be
-    // retired (with no reason provided, falling back to explicit copy).
-    expect(within(contract).getByText("ga")).toBeInTheDocument();
-    expect(within(contract).getByText("deprecated")).toBeInTheDocument();
-    expect(within(contract).getByText("retired")).toBeInTheDocument();
     expect(
       within(contract).getByText(
-        /Deprecated: Superseded by analysis-summarize v2; sunset 2026-12-01\./,
+        /Stale: This binding's discovered instance is no longer resolvable/,
+      ),
+    ).toBeInTheDocument();
+    // GA operation with no pinned instance (`instance_id: null`): attachable
+    // on maturity alone, and renders with no "· instance …" fragment at all.
+    const quickScanItem = within(contract)
+      .getByText(/quick_scan/)
+      .closest("li");
+    expect(quickScanItem).toHaveAttribute("data-attachable", "true");
+    expect(quickScanItem).toHaveAttribute("data-stale", "false");
+    expect(quickScanItem?.textContent).not.toMatch(/· instance/);
+    expect(within(contract).getByText("Quick scan")).toBeInTheDocument();
+    // Maturity is a single five-value enum on the operation, never split into
+    // a separate lifecycle field: a `retired` operation carries a surfaced
+    // reason, an `unavailable` operation can have no reason provided at all.
+    expect(within(contract).getAllByText("ga").length).toBeGreaterThanOrEqual(2);
+    expect(within(contract).getByText("retired")).toBeInTheDocument();
+    expect(within(contract).getAllByText("unavailable").length).toBeGreaterThan(0);
+    expect(
+      within(contract).getByText(
+        /Retired: Superseded by analysis-summarize v2; sunset 2026-12-01\./,
       ),
     ).toBeInTheDocument();
     expect(
-      within(contract).getByText(/Retired — no reason provided\./),
+      within(contract).getByText(/Unavailable — no reason provided\./),
     ).toBeInTheDocument();
     expect(
       within(contract).getAllByText("Not available yet.").length,
@@ -1931,24 +2004,17 @@ describe("AgentWorkspaceView", () => {
           ...emptyContract(),
           capabilities: [
             {
-              descriptor: { id: "web-search", version: "1.0.0" },
+              descriptor_id: "web-search",
+              descriptor_version: "1.0.0",
               operation: "search",
-              instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
-              configuration: null,
-              connection: null,
-              policy: null,
-              provider_contract_version: null,
-              destination_constraints: null,
-              input_schema_digest: null,
-              output_schema_digest: null,
-              enabled: true,
-              approval: {
-                status: "not_required",
-                record_id: null,
-                scope_hash: null,
-                actor: null,
-                expires_at: null,
-              },
+              instance_id: "web-search-instance-1",
+              pinned_provider_version: null,
+              schema_digest: null,
+              config: {},
+              connection_ref: null,
+              policy_ref: null,
+              attached_by: "researcher@example.com",
+              attached_at: "2026-01-01T00:00:00Z",
             },
           ],
         },

@@ -20,26 +20,41 @@ describe("adaptLegacyCapabilityRef", () => {
     };
     const view = adaptLegacyCapabilityRef(ref);
 
-    expect(view.binding.descriptor.id).toBe("legacy-web-search");
+    expect(view.binding.descriptor_id).toBe("legacy-web-search");
     expect(view.binding.operation).toBe("search");
-    expect(view.binding.enabled).toBe(false);
-    expect(view.binding.approval.status).toBe("not_required");
-    expect(view.binding.configuration).toBeNull();
-    expect(view.binding.connection).toBeNull();
-    expect(view.binding.policy).toBeNull();
-    expect(view.binding.provider_contract_version).toBeNull();
-    expect(view.binding.destination_constraints).toBeNull();
+    expect(view.binding.instance_id).toBeNull();
+    expect(view.binding.pinned_provider_version).toBeNull();
+    expect(view.binding.schema_digest).toBeNull();
+    expect(view.binding.connection_ref).toBeNull();
+    expect(view.binding.policy_ref).toBeNull();
     expect(view.resolved_descriptor).toEqual({
       id: "legacy-web-search",
       version: "unknown",
-      family: "web",
-      operation: "search",
-      risk_class: "read",
+      provider: "unknown",
+      title: "web",
       description:
-        "Adapted from a legacy capability reference; risk class defaulted to read pending real descriptor data.",
-      digest: "unknown",
+        "Adapted from a legacy capability reference; governance metadata defaulted pending real descriptor data.",
+      operations: [
+        {
+          name: "search",
+          maturity: "ga",
+          operation_class: "read",
+          side_effect_destinations: [],
+          requires_approval: false,
+          reason: null,
+          source_url: null,
+          source_version: null,
+          last_verified_at: null,
+        },
+      ],
+      auth_requirements: [],
+      risk_tier: "unknown",
+      data_boundary: "unknown",
+      managed_foundry_native: false,
     });
+    expect(view.resolved_operation).toBeNull();
     expect(view.resolved_instance).toBeNull();
+    expect(view.attachable).toBe(false);
     expect(view.stale_reason).toMatch(/deprecated legacy AgentCapabilityRef shape/);
   });
 });
