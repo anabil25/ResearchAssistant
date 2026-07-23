@@ -1,7 +1,8 @@
-import { render, screen, within } from "@testing-library/react";
+import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import { RunsView, SettingsView } from "@/components/workspace-views";
+import { updateConnector } from "@/lib/api";
 import type { WorkspaceData } from "@/lib/api";
 
 jest.mock("@/lib/api", () => ({
@@ -132,6 +133,78 @@ describe("SettingsView connector versions", () => {
     expect(
       within(apimCard).getByRole("button", { name: "Promote to default" }),
     ).toBeDisabled();
+  });
+});
+
+describe("SettingsView connector manager", () => {
+  beforeEach(() => {
+    jest.clearAllMocks();
+  });
+
+  it("explains missing gateway setup without reporting a provider outage", async () => {
+    const user = userEvent.setup();
+    const data = baseWorkspaceData({
+      connectors: [
+        {
+          ...baseWorkspaceData().connectors[0],
+          test_status: "configuration_required",
+          last_tested_at: "2026-07-16T12:00:00Z",
+        },
+      ],
+    });
+    render(<SettingsView data={data} onRefresh={jest.fn()} />);
+
+    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+
+    expect(
+      screen.getByRole("heading", { name: "Connector manager" }),
+    ).toBeInTheDocument();
+    expect(screen.getAllByText("Setup required").length).toBeGreaterThan(0);
+    expect(
+      screen.getByText(/The provider is not down/i),
+    ).toBeInTheDocument();
+    expect(screen.queryByText("Connection failed")).not.toBeInTheDocument();
+  });
+
+  it("saves enablement and specialist assignments from the manager widget", async () => {
+    const user = userEvent.setup();
+    const connector = {
+      ...baseWorkspaceData().connectors[0],
+      id: "europe_pmc",
+      name: "Europe PMC",
+    };
+    const data = baseWorkspaceData({ connectors: [connector] });
+    const onRefresh = jest.fn().mockResolvedValue(undefined);
+    jest.mocked(updateConnector).mockResolvedValue({
+      ...connector,
+      enabled: false,
+      assigned_agents: ["literature", "matching"],
+    });
+    render(<SettingsView data={data} onRefresh={onRefresh} />);
+
+    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Enable Europe PMC" }),
+    );
+    await user.click(
+      screen.getByRole("checkbox", {
+        name: "Assign matching to Europe PMC",
+      }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+
+    await waitFor(() =>
+      expect(updateConnector).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: "europe_pmc",
+          enabled: false,
+          assigned_agents: ["literature", "matching"],
+        }),
+      ),
+    );
+    expect(onRefresh).toHaveBeenCalled();
   });
 });
 

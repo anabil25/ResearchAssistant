@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 from pydantic import HttpUrl
 from research_assistant_api.app import app
 from research_assistant_api.config import Settings
+from research_assistant_api.connector_gateway import DisabledConnectorGateway
 from research_assistant_api.studios import validate_agent_insight
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
@@ -102,6 +103,17 @@ def test_connector_test_uses_the_connector_implementation(client: TestClient) ->
     assert response.status_code == 200
     assert response.json()["test_status"] == "ready"
     assert calls == [("grants_gov", "research reproducibility", 1)]
+
+
+def test_connector_test_distinguishes_missing_gateway_configuration(
+    client: TestClient,
+) -> None:
+    app.state.connector_gateway = DisabledConnectorGateway()
+
+    response = client.post("/api/connectors/pubmed/test")
+
+    assert response.status_code == 200
+    assert response.json()["test_status"] == "configuration_required"
 
 
 def test_runtime_upload_records_blob_checksum_and_ingestion_run(

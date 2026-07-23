@@ -38,6 +38,7 @@ from research_assistant_api.config import Settings, get_settings
 from research_assistant_api.connector_gateway import (
     ConnectorGateway,
     ConnectorGatewayError,
+    ConnectorGatewayNotConfiguredError,
     build_connector_gateway,
 )
 from research_assistant_api.cosmos_workspace import build_workspace_store
@@ -593,6 +594,9 @@ async def _probe_connector(
             limit=1,
         )
         return "ready_with_key" if result.warnings else "ready"
+    except ConnectorGatewayNotConfiguredError as exc:
+        logger.info("Connector %s test requires gateway setup: %s", connector_id, exc)
+        return "configuration_required"
     except ConnectorGatewayError as exc:
         logger.warning("Connector %s test failed: %s", connector_id, exc)
         return "unavailable"

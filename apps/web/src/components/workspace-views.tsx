@@ -79,7 +79,69 @@ function formatTime(value: string | null | undefined): string {
 }
 
 function statusLabel(value: string): string {
+  if (value === "configuration_required") return "setup required";
+  if (value === "ready_with_key") return "ready, key recommended";
   return value.replaceAll("_", " ");
+}
+
+const CONNECTOR_SPECIALISTS = [
+  "literature",
+  "grant",
+  "matching",
+  "dataset",
+  "institution",
+] as const;
+
+function connectorStatusInfo(connector: ConnectorSetting): {
+  label: string;
+  detail: string;
+  tone: string;
+} {
+  if (!connector.enabled) {
+    return {
+      label: "Disabled",
+      detail:
+        "This connector is intentionally disabled and will not be used by research runs.",
+      tone: "disabled",
+    };
+  }
+  if (connector.test_status === "configuration_required") {
+    return {
+      label: "Setup required",
+      detail:
+        "The provider is not down. An administrator must configure the connector gateway URL and managed identity before tests can reach it.",
+      tone: "configuration-required",
+    };
+  }
+  if (connector.test_status === "unavailable") {
+    return {
+      label: "Connection failed",
+      detail:
+        "The gateway is configured, but the latest bounded provider probe failed. Retry the test or inspect gateway logs before using this source.",
+      tone: "unavailable",
+    };
+  }
+  if (connector.test_status === "ready_with_key") {
+    return {
+      label: "Ready, key recommended",
+      detail:
+        "The connector is reachable with limited anonymous quota. Add the optional deployment-managed key for more reliable capacity.",
+      tone: "warning",
+    };
+  }
+  if (connector.test_status === "ready") {
+    return {
+      label: "Ready",
+      detail:
+        "The latest bounded probe succeeded and this connector can serve its assigned specialists.",
+      tone: "ready",
+    };
+  }
+  return {
+    label: "Not tested",
+    detail: "Run a bounded connection test before relying on this source.",
+    tone: "untested",
+  };
 }
 
 export function Overview({
@@ -993,10 +1055,31 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
     data?.settings ?? null,
   );
   const [saving, setSaving] = useState(false);
-  const [status, setStatus] = useState<string | null>(null);
+  const [status, setStatus] = useState<{
+    message: string;
+    tone: "success" | "warning" | "error";
+  } | null>(null);
   const [connectorQuery, setConnectorQuery] = useState("");
   const [connectorCategory, setConnectorCategory] = useState("All");
   const [busyConnector, setBusyConnector] = useState<string | null>(null);
+  const [managedConnectorId, setManagedConnectorId] = useState(
+    data?.connectors[0]?.id ?? "",
+  );
+  const managedConnector =
+    (data?.connectors ?? []).find(
+      (connector) => connector.id === managedConnectorId,
+    ) ??
+    data?.connectors[0] ??
+    null;
+  const [connectorDrafts, setConnectorDrafts] = useState<
+    Record<string, { enabled: boolean; assigned_agents: string[] }>
+  >({});
+  const connectorDraft = managedConnector
+    ? (connectorDrafts[managedConnector.id] ?? {
+        enabled: managedConnector.enabled,
+        assigned_agents: managedConnector.assigned_agents,
+      })
+    : null;
 
   const connectorCategories = [
     "All",
@@ -1018,6 +1101,9 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
         target.pattern.test(connector.category),
     ),
   }));
+  const managedConnectorStatus = managedConnector
+    ? connectorStatusInfo(managedConnector)
+    : null;
 
   const mutateConnector = (
     connector: ConnectorSetting,
@@ -1028,12 +1114,51 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
     void updateConnector({ ...connector, ...update })
       .then(async () => {
         await onRefresh();
-        setStatus(`${connector.name} configuration saved.`);
+        setConnectorDrafts((current) => {
+          const next = { ...current };
+          delete next[connector.id];
+          return next;
+        });
+        setStatus({
+          message: `${connector.name} configuration saved.`,
+          tone: "success",
+        });
       })
       .catch((error: unknown) =>
-        setStatus(
-          error instanceof Error ? error.message : "Connector update failed.",
-        ),
+        setStatus({
+          message:
+            error instanceof Error ? error.message : "Connector update failed.",
+          tone: "error",
+        }),
+      )
+      .finally(() => setBusyConnector(null));
+  };
+
+  const runConnectorTest = (connector: ConnectorSetting) => {
+    setBusyConnector(connector.id);
+    setStatus(null);
+    void testConnector(connector.id)
+      .then(async (updated) => {
+        await onRefresh();
+        const updatedStatus = connectorStatusInfo(updated);
+        setStatus({
+          message: `${updated.name}: ${updatedStatus.label}. ${updatedStatus.detail}`,
+          tone:
+            updatedStatus.tone === "unavailable"
+              ? "error"
+              : ["configuration-required", "warning", "untested"].includes(
+                    updatedStatus.tone,
+                  )
+                ? "warning"
+                : "success",
+        });
+      })
+      .catch((error: unknown) =>
+        setStatus({
+          message:
+            error instanceof Error ? error.message : "Connector test failed.",
+          tone: "error",
+        }),
       )
       .finally(() => setBusyConnector(null));
   };
@@ -1088,9 +1213,15 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
 
         <main className="settings-content">
           {status ? (
-            <div className="save-status" role="status">
-              <CheckCircle2 size={16} />
-              {status}
+            <div className={`save-status ${status.tone}`} role="status">
+              {status.tone === "success" ? (
+                <CheckCircle2 size={16} />
+              ) : status.tone === "warning" ? (
+                <CircleDashed size={16} />
+              ) : (
+                <X size={16} />
+              )}
+              {status.message}
             </div>
           ) : null}
           {tab === "General" ? (
@@ -1115,14 +1246,19 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                       .then(async (saved) => {
                         setDraft(saved);
                         await onRefresh();
-                        setStatus("Project settings saved.");
+                        setStatus({
+                          message: "Project settings saved.",
+                          tone: "success",
+                        });
                       })
                       .catch((error: unknown) =>
-                        setStatus(
-                          error instanceof Error
-                            ? error.message
-                            : "Settings could not be saved.",
-                        ),
+                        setStatus({
+                          message:
+                            error instanceof Error
+                              ? error.message
+                              : "Settings could not be saved.",
+                          tone: "error",
+                        }),
                       )
                       .finally(() => setSaving(false));
                   }}
@@ -1289,119 +1425,247 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                   ))}
                 </div>
               </div>
-              <div className="connector-grid">
-                {visibleConnectors.map((connector) => (
-                  <article className="panel connector-card" key={connector.id}>
-                    <div className="connector-card-heading">
-                      <span className="connector-logo">
-                        {connector.category === "Funding" ? (
-                          <FileText size={18} />
-                        ) : connector.category === "Identity" ? (
-                          <Users size={18} />
-                        ) : connector.category === "Datasets" ? (
-                          <BarChart3 size={18} />
-                        ) : (
-                          <Globe2 size={18} />
-                        )}
-                      </span>
-                      <span>
-                        <strong>{connector.name}</strong>
-                        <small>{connector.category}</small>
-                      </span>
-                      <label className="switch-control">
-                        <span className="sr-only">
-                          Enable {connector.name}
-                        </span>
-                        <input
-                          type="checkbox"
-                          checked={connector.enabled}
-                          disabled={
-                            busyConnector === connector.id ||
-                            connector.id === "pubmed" ||
-                            connector.id === "grants_gov"
-                          }
+              <div
+                className="connector-management-widget panel"
+                aria-labelledby="connector-manager-title"
+              >
+                <aside className="connector-catalog">
+                  <div className="connector-catalog-heading">
+                    <div>
+                      <strong>Connector catalog</strong>
+                      <span>Select a source to inspect and manage.</span>
+                    </div>
+                    <span>{visibleConnectors.length}</span>
+                  </div>
+                  <div className="connector-grid">
+                    {visibleConnectors.map((connector) => {
+                      const connectorStatus = connectorStatusInfo(connector);
+                      return (
+                        <button
+                          type="button"
+                          className="connector-card"
+                          data-selected={managedConnector?.id === connector.id}
+                          key={connector.id}
+                          onClick={() => setManagedConnectorId(connector.id)}
+                        >
+                          <span className="connector-logo">
+                            {connector.category === "Funding" ? (
+                              <FileText size={18} />
+                            ) : connector.category === "Identity" ? (
+                              <Users size={18} />
+                            ) : connector.category === "Datasets" ? (
+                              <BarChart3 size={18} />
+                            ) : (
+                              <Globe2 size={18} />
+                            )}
+                          </span>
+                          <span>
+                            <strong>{connector.name}</strong>
+                            <small>{connector.category}</small>
+                          </span>
+                          <span
+                            className="connector-state"
+                            data-tone={connectorStatus.tone}
+                          >
+                            <span />
+                            {connectorStatus.label}
+                          </span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                  {visibleConnectors.length === 0 ? (
+                    <div className="empty-connector-search">
+                      No connectors match this filter.
+                    </div>
+                  ) : null}
+                </aside>
+
+                {managedConnector && connectorDraft && managedConnectorStatus ? (
+                  <form
+                    className="connector-manager"
+                    onSubmit={(event) => {
+                      event.preventDefault();
+                      mutateConnector(managedConnector, connectorDraft);
+                    }}
+                  >
+                    <div className="connector-manager-heading">
+                      <div>
+                        <span className="eyebrow">Configuration widget</span>
+                        <h3 id="connector-manager-title">Connector manager</h3>
+                      </div>
+                      <label className="field connector-selector">
+                        <span>Connector</span>
+                        <select
+                          aria-label="Connector to manage"
+                          value={managedConnector.id}
                           onChange={(event) =>
-                            mutateConnector(connector, {
-                              enabled: event.target.checked,
-                            })
+                            setManagedConnectorId(event.target.value)
                           }
-                        />
+                        >
+                          {(data?.connectors ?? []).map((connector) => (
+                            <option value={connector.id} key={connector.id}>
+                              {connector.name}
+                            </option>
+                          ))}
+                        </select>
                       </label>
                     </div>
-                    <p>{connector.description}</p>
-                    <div className="connector-state-row">
-                      <span className={`connector-state ${connector.test_status}`}>
-                        <span />
-                        {statusLabel(connector.test_status)}
+
+                    <div className="managed-connector-title">
+                      <span className="connector-logo">
+                        {managedConnector.category === "Funding" ? (
+                          <FileText size={20} />
+                        ) : managedConnector.category === "Identity" ? (
+                          <Users size={20} />
+                        ) : managedConnector.category === "Datasets" ? (
+                          <BarChart3 size={20} />
+                        ) : (
+                          <Globe2 size={20} />
+                        )}
                       </span>
-                      <span>{connector.secret_status}</span>
+                      <div>
+                        <strong>{managedConnector.name}</strong>
+                        <span>
+                          {managedConnector.category} · {managedConnector.auth_kind}
+                        </span>
+                      </div>
+                      <span
+                        className="connector-health-badge"
+                        data-tone={managedConnectorStatus.tone}
+                      >
+                        {managedConnectorStatus.label}
+                      </span>
                     </div>
-                    <div className="connector-boundary">
-                      <strong>Data boundary</strong>
-                      <p>{connector.data_boundary}</p>
+
+                    <div
+                      className="connector-diagnostic"
+                      data-tone={managedConnectorStatus.tone}
+                    >
+                      <div>
+                        <strong>{managedConnectorStatus.label}</strong>
+                        <p>{managedConnectorStatus.detail}</p>
+                      </div>
+                      <dl>
+                        <div>
+                          <dt>Credential</dt>
+                          <dd>{managedConnector.secret_status}</dd>
+                        </div>
+                        <div>
+                          <dt>Last tested</dt>
+                          <dd>{formatTime(managedConnector.last_tested_at)}</dd>
+                        </div>
+                      </dl>
                     </div>
-                    <fieldset className="agent-assignments">
+
+                    <label className="connector-enable-row">
+                      <span>
+                        <strong>Enable connector</strong>
+                        <small>
+                          {["pubmed", "grants_gov"].includes(managedConnector.id)
+                            ? "Required baseline connectors cannot be disabled."
+                            : "Disabled connectors are excluded from research runs."}
+                        </small>
+                      </span>
+                      <input
+                        type="checkbox"
+                        aria-label={`Enable ${managedConnector.name}`}
+                        checked={connectorDraft.enabled}
+                        disabled={
+                          busyConnector === managedConnector.id ||
+                          ["pubmed", "grants_gov"].includes(managedConnector.id)
+                        }
+                        onChange={(event) =>
+                          setConnectorDrafts((current) => ({
+                            ...current,
+                            [managedConnector.id]: {
+                              ...connectorDraft,
+                              enabled: event.target.checked,
+                            },
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <fieldset className="agent-assignments connector-manager-agents">
                       <legend>Assigned specialists</legend>
-                      {["literature", "grant", "matching", "dataset", "institution"].map(
-                        (agent) => (
+                      <p>
+                        Only selected specialists can use this connector during
+                        an opted-in public metadata run.
+                      </p>
+                      <div>
+                        {CONNECTOR_SPECIALISTS.map((agent) => (
                           <label key={agent}>
                             <input
                               type="checkbox"
-                              checked={connector.assigned_agents.includes(agent)}
-                              disabled={busyConnector === connector.id}
+                              aria-label={`Assign ${agent} to ${managedConnector.name}`}
+                              checked={connectorDraft.assigned_agents.includes(agent)}
+                              disabled={busyConnector === managedConnector.id}
                               onChange={(event) => {
                                 const assigned = event.target.checked
-                                  ? [...connector.assigned_agents, agent]
-                                  : connector.assigned_agents.filter(
+                                  ? [...connectorDraft.assigned_agents, agent]
+                                  : connectorDraft.assigned_agents.filter(
                                       (item) => item !== agent,
                                     );
-                                mutateConnector(connector, {
-                                  assigned_agents: assigned,
-                                });
+                                setConnectorDrafts((current) => ({
+                                  ...current,
+                                  [managedConnector.id]: {
+                                    ...connectorDraft,
+                                    assigned_agents: assigned,
+                                  },
+                                }));
                               }}
                             />
                             <span>{agent}</span>
                           </label>
-                        ),
-                      )}
+                        ))}
+                      </div>
                     </fieldset>
-                    <div className="connector-actions">
+
+                    <div className="connector-manager-details">
+                      <div>
+                        <strong>Capabilities</strong>
+                        <span>{managedConnector.capabilities.join(" · ")}</span>
+                      </div>
+                      <div>
+                        <strong>Data boundary</strong>
+                        <span>{managedConnector.data_boundary}</span>
+                      </div>
+                    </div>
+
+                    <div className="connector-manager-actions">
                       <a
-                        href={connector.terms_url}
+                        href={managedConnector.terms_url}
                         target="_blank"
                         rel="noreferrer"
                       >
-                        Terms <ArrowUpRight size={13} />
+                        Provider terms <ArrowUpRight size={13} />
                       </a>
-                      <button
-                        disabled={busyConnector === connector.id}
-                        onClick={() => {
-                          setBusyConnector(connector.id);
-                          setStatus(null);
-                          void testConnector(connector.id)
-                            .then(async (updated) => {
-                              await onRefresh();
-                              setStatus(
-                                `${updated.name} test: ${statusLabel(updated.test_status)}.`,
-                              );
-                            })
-                            .catch((error: unknown) =>
-                              setStatus(
-                                error instanceof Error
-                                  ? error.message
-                                  : "Connector test failed.",
-                              ),
-                            )
-                            .finally(() => setBusyConnector(null));
-                        }}
-                      >
-                        {busyConnector === connector.id
-                          ? "Testing…"
-                          : "Test connection"}
-                      </button>
+                      <div>
+                        <button
+                          type="button"
+                          disabled={busyConnector === managedConnector.id}
+                          onClick={() => runConnectorTest(managedConnector)}
+                        >
+                          {busyConnector === managedConnector.id
+                            ? "Testing…"
+                            : "Test connection"}
+                        </button>
+                        <button
+                          className="primary-button"
+                          type="submit"
+                          disabled={busyConnector === managedConnector.id}
+                        >
+                          Save configuration
+                        </button>
+                      </div>
                     </div>
-                  </article>
-                ))}
+                  </form>
+                ) : (
+                  <div className="empty-connector-manager">
+                    Select a connector to configure it.
+                  </div>
+                )}
               </div>
               <article className="web-search-policy panel">
                 <span className="connector-logo">

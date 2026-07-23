@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 from pydantic import HttpUrl
-from research_assistant_api.connector_gateway import ConnectorGatewayError
+from research_assistant_api.connector_gateway import (
+    ConnectorGatewayError,
+    DisabledConnectorGateway,
+)
 from research_assistant_api.public_research import retrieve_public_metadata
 from research_assistant_api.workspace import WorkspaceStore
 from research_assistant_core.connector_gateway import (
@@ -137,6 +140,29 @@ async def test_public_research_surfaces_connector_failure() -> None:
             "source": "grants_gov",
             "status": "unavailable",
             "error": "Provider response was invalid",
+            "records": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_public_research_distinguishes_gateway_setup_from_provider_outage() -> None:
+    connector = next(
+        item for item in WorkspaceStore().connectors() if item.id == "pubmed"
+    )
+
+    results = await retrieve_public_metadata(
+        Capability.LITERATURE,
+        "public reproducibility guidance",
+        [connector],
+        gateway=DisabledConnectorGateway(),
+    )
+
+    assert results == [
+        {
+            "source": "pubmed",
+            "status": "configuration_required",
+            "error": "The connector gateway is not configured.",
             "records": [],
         }
     ]

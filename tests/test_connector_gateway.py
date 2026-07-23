@@ -10,6 +10,7 @@ from azure.core.credentials import AccessToken
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import (
     ConnectorGatewayError,
+    ConnectorGatewayNotConfiguredError,
     DisabledConnectorGateway,
     HttpConnectorGateway,
     build_connector_gateway,
@@ -145,3 +146,14 @@ def test_gateway_configuration_requires_https_or_local_loopback() -> None:
     assert isinstance(local, HttpConnectorGateway)
     with pytest.raises(ValueError, match="must use HTTPS"):
         Settings(connector_gateway_url="http://gateway.example")
+
+
+@pytest.mark.asyncio
+async def test_disabled_gateway_reports_configuration_instead_of_provider_failure() -> None:
+    gateway = DisabledConnectorGateway()
+
+    with pytest.raises(
+        ConnectorGatewayNotConfiguredError,
+        match="gateway is not configured",
+    ):
+        await gateway.search(Capability.LITERATURE, "pubmed", "query", limit=1)

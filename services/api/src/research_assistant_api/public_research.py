@@ -5,7 +5,11 @@ from typing import Any
 
 from research_assistant_core.models import Capability
 
-from research_assistant_api.connector_gateway import ConnectorGateway, ConnectorGatewayError
+from research_assistant_api.connector_gateway import (
+    ConnectorGateway,
+    ConnectorGatewayError,
+    ConnectorGatewayNotConfiguredError,
+)
 from research_assistant_api.workspace import ConnectorSetting
 
 _DEFAULT_SOURCES: dict[Capability, tuple[str, ...]] = {
@@ -62,6 +66,13 @@ async def _retrieve_one(
 ) -> dict[str, Any]:
     try:
         result = await gateway.search(capability, source, query, limit=3)
+    except ConnectorGatewayNotConfiguredError as exc:
+        return {
+            "source": source,
+            "status": "configuration_required",
+            "error": str(exc),
+            "records": [],
+        }
     except ConnectorGatewayError as exc:
         return {
             "source": source,

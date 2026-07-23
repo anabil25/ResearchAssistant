@@ -25,6 +25,10 @@ class ConnectorGatewayError(RuntimeError):
     pass
 
 
+class ConnectorGatewayNotConfiguredError(ConnectorGatewayError):
+    pass
+
+
 class ConnectorGateway(Protocol):
     async def search(
         self,
@@ -109,7 +113,9 @@ class DisabledConnectorGateway:
         limit: int,
     ) -> ConnectorSearchResponse:
         del capability, source, query, limit
-        raise ConnectorGatewayError("The connector gateway is not configured.")
+        raise ConnectorGatewayNotConfiguredError(
+            "The connector gateway is not configured."
+        )
 
     async def close(self) -> None:
         return None
