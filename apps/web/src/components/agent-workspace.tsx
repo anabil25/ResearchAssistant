@@ -15,9 +15,6 @@ import {
 import { useEffect, useState } from "react";
 
 import { StudioForCapability } from "@/components/studio-components";
-import {
-  connectorStatusInfo,
-} from "@/components/connections-view";
 import { formatTime } from "@/components/workspace-views";
 import {
   AsyncStateBanner,
@@ -25,23 +22,57 @@ import {
   LoadingBlock,
   classifyAsyncError,
 } from "@/components/async-state";
-import { getAgentCatalogEntry } from "@/lib/agent-catalog";
+import { buildLegacyAgentSummaries } from "@/lib/agent-catalog";
 import {
+  applyBuilderProposal,
+  forgetAgentMemoryScope,
+  getAgentDeployment,
+  getAgentDraft,
   getAgentEvaluation,
   getAgentHealth,
-  getAgentVersions,
-  proposeManifestChange,
+  getAgentRelease,
+  getAgentReleases,
+  getAgentTraces,
+  postBuilderMessage,
   runStudio,
   type WorkspaceData,
 } from "@/lib/api";
-import type {
-  AgentEvaluationSummary,
-  AgentHealthSummary,
-  AgentVersionRecord,
-  CapabilityId,
-  ManifestChangeProposal,
-  StudioResult,
+import {
+  isCapabilityAttachable,
+  defaultMemoryView,
+  type AgentBuilderProposal,
+  type AgentContractView,
+  type AgentDraftView,
+  type AgentEvaluationSummary,
+  type AgentHealthSummary,
+  type AgentReleaseSummary,
+  type AgentTraceSummary,
+  type CapabilityId,
+  type MemoryScope,
+  type MemoryView,
+  type StudioResult,
 } from "@/lib/types";
+
+function defaultContractView(): AgentContractView {
+  return {
+    purpose: null,
+    boundary: null,
+    input_artifact: null,
+    instructions: null,
+    evidence_policy: null,
+    model: { deployment: null, discovered: false },
+    knowledge: null,
+    tools: null,
+    memory: defaultMemoryView(),
+    connections: null,
+    specialists: null,
+    capabilities: null,
+    safety: null,
+    tests: null,
+    deployment: null,
+    public_boundary: null,
+  };
+}
 
 type AgentWorkspaceTabId =
   | "build"
@@ -67,6 +98,69 @@ interface AgentWorkspaceProps {
   onBack: () => void;
 }
 
+/**
+ * Loads the behavioral contract for one agent: the latest immutable release
+ * if one exists, otherwise the current draft. Both calls hit
+ * `/v1/agent-studio/...` and will genuinely 404 until the backend ships
+ * them — callers see an explicit `AsyncStateBanner`, never a fabricated
+ * contract.
+ */
+function useAgentContract(agentId: string) {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [contract, setContract] = useState<AgentContractView>(
+    defaultContractView(),
+  );
+  const [releaseVersion, setReleaseVersion] = useState<string | null>(null);
+  const [error, setError] = useState<ReturnType<
+    typeof classifyAsyncError
+  > | null>(null);
+  // Reset to "loading" during render (React's blessed pattern for adjusting
+  // state when a prop changes) rather than synchronously inside the effect
+  // body below, which react-hooks/set-state-in-effect flags as a footgun.
+  const [trackedAgentId, setTrackedAgentId] = useState(agentId);
+  if (trackedAgentId !== agentId) {
+    setTrackedAgentId(agentId);
+    setStatus("loading");
+    setError(null);
+  }
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentReleases(agentId)
+      .then((releases) => {
+        const latest = releases[releases.length - 1];
+        if (!latest) throw new Error("no releases yet");
+        return getAgentRelease(agentId, latest.version).then((result) => {
+          if (cancelled) return;
+          setContract(result.contract);
+          setReleaseVersion(latest.version);
+          setStatus("ready");
+        });
+      })
+      .catch(() =>
+        getAgentDraft(agentId).then((draft) => {
+          if (cancelled) return;
+          setContract(draft.contract);
+          setReleaseVersion(null);
+          setStatus("ready");
+        }),
+      )
+      .catch((finalError: unknown) => {
+        if (cancelled) return;
+        setError(classifyAsyncError(finalError));
+        setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
+  return { status, contract, releaseVersion, error };
+}
+
+
 export function BuildTab({ agentId }: { agentId: string }) {
   const [messages, setMessages] = useState<
     { role: "user" | "system"; text: string; tone?: "success" | "unavailable" }[]
@@ -76,24 +170,45 @@ export function BuildTab({ agentId }: { agentId: string }) {
       text: "Describe the change you want in plain language. I'll propose a typed manifest diff for you to review — no code required.",
     },
   ]);
-  const [draft, setDraft] = useState("");
+  const [intentDraft, setIntentDraft] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  const [applying, setApplying] = useState(false);
+  const [agentDraft, setAgentDraft] = useState<AgentDraftView | null>(null);
+  const [draftError, setDraftError] = useState<ReturnType<
+    typeof classifyAsyncError
+  > | null>(null);
+  const [proposal, setProposal] = useState<AgentBuilderProposal | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentDraft(agentId)
+      .then((next) => {
+        if (!cancelled) setAgentDraft(next);
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setDraftError(classifyAsyncError(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   const submit = () => {
-    const intent = draft.trim();
+    const intent = intentDraft.trim();
     if (!intent) return;
     setMessages((current) => [...current, { role: "user", text: intent }]);
-    setDraft("");
+    setIntentDraft("");
     setSubmitting(true);
-    void proposeManifestChange(agentId, intent, [
-      { path: "builder_intent", before: null, after: intent },
-    ])
-      .then((proposal: ManifestChangeProposal) => {
+    const draftId = agentDraft?.draft_id ?? agentId;
+    const baseEtag = agentDraft?.etag ?? "";
+    void postBuilderMessage(draftId, intent, baseEtag)
+      .then((next: AgentBuilderProposal) => {
+        setProposal(next);
         setMessages((current) => [
           ...current,
           {
             role: "system",
-            text: `Proposed manifest change ${proposal.id}: ${proposal.summary}. Nothing is applied until you approve it.`,
+            text: `Proposed change ${next.proposal_id}: ${next.summary}. Review the before/after summary below, then Approve to apply — nothing changes until you do.`,
             tone: "success",
           },
         ]);
@@ -106,7 +221,7 @@ export function BuildTab({ agentId }: { agentId: string }) {
             role: "system",
             text:
               classified.kind === "unavailable"
-                ? "Manifest change proposals aren't available yet — the backend doesn't expose this endpoint. Your intent is preserved above so you can resubmit once it ships."
+                ? "Builder proposals aren't available yet — the backend doesn't expose this endpoint. Your intent is preserved above so you can resubmit once it ships."
                 : classified.message,
             tone: "unavailable",
           },
@@ -115,16 +230,56 @@ export function BuildTab({ agentId }: { agentId: string }) {
       .finally(() => setSubmitting(false));
   };
 
+  const approve = (activeProposal: AgentBuilderProposal) => {
+    setApplying(true);
+    void applyBuilderProposal(
+      activeProposal.draft_id,
+      activeProposal.proposal_id,
+      activeProposal.base_etag,
+    )
+      .then((nextDraft) => {
+        setAgentDraft(nextDraft);
+        setProposal(null);
+        setMessages((current) => [
+          ...current,
+          {
+            role: "system",
+            text: "Change applied to the draft.",
+            tone: "success",
+          },
+        ]);
+      })
+      .catch((error: unknown) => {
+        const classified = classifyAsyncError(error);
+        setMessages((current) => [
+          ...current,
+          {
+            role: "system",
+            text:
+              classified.kind === "unavailable"
+                ? "Applying this proposal isn't available yet — the backend doesn't expose this endpoint."
+                : classified.message,
+            tone: "unavailable",
+          },
+        ]);
+      })
+      .finally(() => setApplying(false));
+  };
+
   return (
     <section className="panel agent-build-tab" aria-label="Builder Agent chat">
       <div className="settings-section-heading">
         <div>
           <h2>Builder Agent</h2>
           <p>
-            Every change you make here is a typed, reviewable manifest
-            proposal — you never need to read or write code.
+            Every change you make here is a typed, reviewable proposal — you
+            never need to read or write code. Nothing is applied until you
+            approve it.
           </p>
         </div>
+        <span className="subtle-chip" data-tone={draftError ? "unavailable" : undefined}>
+          Draft status: {agentDraft?.status ?? "not loaded yet"}
+        </span>
       </div>
       <div className="agent-build-chat" role="log" aria-live="polite">
         {messages.map((message, index) => (
@@ -138,6 +293,52 @@ export function BuildTab({ agentId }: { agentId: string }) {
           </div>
         ))}
       </div>
+      {proposal ? (
+        <div className="agent-build-proposal" role="group" aria-label="Proposed change">
+          <dl className="agent-registry-facts">
+            <div>
+              <dt>Before</dt>
+              <dd>{proposal.before_summary}</dd>
+            </div>
+            <div>
+              <dt>After</dt>
+              <dd>{proposal.after_summary}</dd>
+            </div>
+            {proposal.capability_changes.length > 0 ? (
+              <div>
+                <dt>Capability changes</dt>
+                <dd>{proposal.capability_changes.join(", ")}</dd>
+              </div>
+            ) : null}
+            {proposal.permission_changes.length > 0 ? (
+              <div>
+                <dt>Permission changes</dt>
+                <dd>{proposal.permission_changes.join(", ")}</dd>
+              </div>
+            ) : null}
+            {proposal.data_boundary_changes.length > 0 ? (
+              <div>
+                <dt>Data-boundary changes</dt>
+                <dd>{proposal.data_boundary_changes.join(", ")}</dd>
+              </div>
+            ) : null}
+            {proposal.validation_warnings.length > 0 ? (
+              <div>
+                <dt>Validation warnings</dt>
+                <dd>{proposal.validation_warnings.join(", ")}</dd>
+              </div>
+            ) : null}
+          </dl>
+          <button
+            type="button"
+            className="primary-button"
+            disabled={applying}
+            onClick={() => approve(proposal)}
+          >
+            {applying ? "Applying…" : "Approve & apply"}
+          </button>
+        </div>
+      ) : null}
       <form
         className="agent-build-composer"
         onSubmit={(event) => {
@@ -151,14 +352,14 @@ export function BuildTab({ agentId }: { agentId: string }) {
         <textarea
           id="agent-build-input"
           rows={2}
-          value={draft}
-          onChange={(event) => setDraft(event.target.value)}
+          value={intentDraft}
+          onChange={(event) => setIntentDraft(event.target.value)}
           placeholder="e.g. Only cite passages published in the last 5 years."
         />
         <button
           type="submit"
           className="primary-button"
-          disabled={submitting || draft.trim().length === 0}
+          disabled={submitting || intentDraft.trim().length === 0}
         >
           <Send size={14} /> {submitting ? "Proposing…" : "Propose change"}
         </button>
@@ -307,43 +508,35 @@ export function EvaluateTab({ agentId }: { agentId: string }) {
 export function DeployTab({
   agentId,
   ownerKind,
-  status,
 }: {
   agentId: string;
   ownerKind: "platform" | "researcher";
-  status: string | undefined;
 }) {
-  const [submitting, setSubmitting] = useState(false);
-  const [result, setResult] = useState<
-    | { kind: "success"; message: string }
-    | { kind: "unavailable"; message: string }
-    | null
-  >(null);
+  const [loading, setLoading] = useState(true);
+  const [deployment, setDeployment] = useState<{
+    status: string;
+    version: string | null;
+  } | null>(null);
+  const [errorState, setErrorState] = useState<ReturnType<
+    typeof classifyAsyncError
+  > | null>(null);
 
-  const requestDeploy = () => {
-    setSubmitting(true);
-    setResult(null);
-    void proposeManifestChange(agentId, "Request deployment", [
-      { path: "lifecycle", before: status ?? null, after: "active" },
-    ])
-      .then((proposal) =>
-        setResult({
-          kind: "success",
-          message: `Deployment request recorded as proposal ${proposal.id}.`,
-        }),
-      )
-      .catch((error: unknown) => {
-        const classified = classifyAsyncError(error);
-        setResult({
-          kind: "unavailable",
-          message:
-            classified.kind === "unavailable"
-              ? "Direct deployment controls aren't available yet. This request routes through the same manifest proposal pipeline as Build."
-              : classified.message,
-        });
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentDeployment(agentId)
+      .then((next) => {
+        if (!cancelled) setDeployment(next);
       })
-      .finally(() => setSubmitting(false));
-  };
+      .catch((error: unknown) => {
+        if (!cancelled) setErrorState(classifyAsyncError(error));
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
 
   return (
     <section className="panel agent-deploy-tab" aria-label="Deployment">
@@ -353,33 +546,28 @@ export function DeployTab({
           <p>
             {ownerKind === "platform"
               ? "Only platform owners publish new versions of a system agent. Researchers can inspect, fork, and propose changes from Build."
-              : "Researcher-created agents deploy through the same reviewed manifest proposal pipeline as system agents."}
+              : "Researcher-created agents deploy through the same reviewed builder proposal pipeline as system agents."}{" "}
+            A release only ships once its draft passes the objective hard
+            gates in Evaluate — request changes from Build, not here.
           </p>
         </div>
       </div>
-      <dl className="agent-registry-facts">
-        <div>
-          <dt>Current status</dt>
-          <dd>{status ?? "Not discovered yet"}</dd>
-        </div>
-      </dl>
-      <button
-        type="button"
-        className="primary-button"
-        disabled={submitting}
-        onClick={requestDeploy}
-      >
-        {submitting ? "Requesting…" : "Request deployment"}
-      </button>
-      {result ? (
-        result.kind === "success" ? (
-          <div className="save-status success" role="status">
-            {result.message}
+      {loading ? (
+        <LoadingBlock label="Loading deployment status…" />
+      ) : errorState ? (
+        <AsyncStateBanner kind={errorState.kind} message={errorState.message} />
+      ) : (
+        <dl className="agent-registry-facts">
+          <div>
+            <dt>Current deployment status</dt>
+            <dd>{deployment!.status}</dd>
           </div>
-        ) : (
-          <AsyncStateBanner kind="unavailable" message={result.message} />
-        )
-      ) : null}
+          <div>
+            <dt>Deployed version</dt>
+            <dd>{deployment!.version ?? "Not deployed yet"}</dd>
+          </div>
+        </dl>
+      )}
     </section>
   );
 }
@@ -428,6 +616,21 @@ export function MonitorTab({
     .sort()
     .pop();
 
+  const [traces, setTraces] = useState<AgentTraceSummary[] | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentTraces(agentId)
+      .then((next) => {
+        if (!cancelled) setTraces(next);
+      })
+      .catch(() => {
+        if (!cancelled) setTraces(null);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [agentId]);
+
   return (
     <section className="panel agent-monitor-tab" aria-label="Health and usage">
       <div className="settings-section-heading">
@@ -474,6 +677,23 @@ export function MonitorTab({
           <dd>{formatTime(lastUsed ?? null)}</dd>
         </div>
       </dl>
+      <h3>Recent traces</h3>
+      {traces && traces.length > 0 ? (
+        <ul className="agent-trace-list">
+          {traces.map((trace) => (
+            <li key={trace.id} data-status={trace.status}>
+              <span>{formatTime(trace.started_at)}</span>
+              <span>{trace.status}</span>
+              <span>{trace.summary}</span>
+            </li>
+          ))}
+        </ul>
+      ) : (
+        <EmptyBlock
+          title="No traces available yet"
+          description="Execution traces will appear here once the Agent Studio traces endpoint ships."
+        />
+      )}
     </section>
   );
 }
@@ -486,22 +706,30 @@ export function VersionsTab({
   ownerKind: "platform" | "researcher";
 }) {
   const [loading, setLoading] = useState(true);
-  const [versions, setVersions] = useState<AgentVersionRecord[] | null>(null);
+  const [releases, setReleases] = useState<AgentReleaseSummary[] | null>(null);
   const [errorState, setErrorState] = useState<ReturnType<
     typeof classifyAsyncError
   > | null>(null);
+  const [draftStatus, setDraftStatus] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
-    void getAgentVersions(agentId)
+    void getAgentReleases(agentId)
       .then((next) => {
-        if (!cancelled) setVersions(next);
+        if (!cancelled) setReleases(next);
       })
       .catch((error: unknown) => {
         if (!cancelled) setErrorState(classifyAsyncError(error));
       })
       .finally(() => {
         if (!cancelled) setLoading(false);
+      });
+    void getAgentDraft(agentId)
+      .then((next) => {
+        if (!cancelled) setDraftStatus(next.status);
+      })
+      .catch(() => {
+        if (!cancelled) setDraftStatus(null);
       });
     return () => {
       cancelled = true;
@@ -515,30 +743,37 @@ export function VersionsTab({
           <h2>Versions</h2>
           <p>
             {ownerKind === "platform"
-              ? "This agent's baseline is immutable. Platform owners publish new versions; researchers inspect and fork."
-              : "Forked and researcher-built agents keep their own version history once deployment support ships."}
+              ? "Every release below is immutable. Platform owners publish new versions; researchers inspect and fork."
+              : "Forked and researcher-built agents keep their own immutable release history once deployment support ships."}
           </p>
         </div>
       </div>
+      <p className="agent-draft-status-note">
+        Current draft status (mutable, separate from the immutable releases
+        below): <strong>{draftStatus ?? "not available yet"}</strong>
+      </p>
       {loading ? (
         <LoadingBlock label="Loading version history…" />
       ) : errorState ? (
         <AsyncStateBanner kind={errorState.kind} message={errorState.message} />
-      ) : versions && versions.length > 0 ? (
+      ) : releases && releases.length > 0 ? (
         <ul className="agent-version-list">
-          {versions.map((version) => (
-            <li key={version.version}>
-              <strong>{version.version}</strong>
-              <span>{version.changelog}</span>
+          {releases.map((release) => (
+            <li key={release.version}>
+              <strong>{release.version}</strong>
+              <span className="status-chip" data-tone={release.deployment_status}>
+                {release.deployment_status.replace("_", " ")}
+              </span>
+              <span>{release.changelog}</span>
               <small>
-                {version.created_by} · {formatTime(version.created_at)}
+                {release.created_by} · {formatTime(release.created_at)}
               </small>
               <small className="agent-version-lineage">
-                {version.derived_from
-                  ? `Forked from ${version.derived_from}`
+                {release.derived_from
+                  ? `Forked from ${release.derived_from}`
                   : "Original release"}{" "}
-                · model {version.model_version} · hash{" "}
-                {version.content_hash.slice(0, 12)}
+                · model {release.model_version} · hash{" "}
+                {release.content_hash.slice(0, 12)}
               </small>
             </li>
           ))}
@@ -546,10 +781,71 @@ export function VersionsTab({
       ) : (
         <EmptyBlock
           title="Immutable baseline only"
-          description="No version history has been recorded for this agent yet."
+          description="No release history has been recorded for this agent yet."
         />
       )}
     </section>
+  );
+}
+
+function MemoryScopePanel({
+  agentId,
+  memory,
+}: {
+  agentId: string;
+  memory: MemoryView;
+}) {
+  const [forgetting, setForgetting] = useState<MemoryScope | null>(null);
+  const [forgetResult, setForgetResult] = useState<string | null>(null);
+
+  const forget = (scope: MemoryScope) => {
+    setForgetting(scope);
+    setForgetResult(null);
+    void forgetAgentMemoryScope(agentId, scope)
+      .then(() => setForgetResult(`Forget requested for ${scope} memory.`))
+      .catch((error: unknown) => {
+        setForgetResult(classifyAsyncError(error).message);
+      })
+      .finally(() => setForgetting(null));
+  };
+
+  return (
+    <div className="agent-memory-panel">
+      <ul className="agent-memory-scopes">
+        {memory.scopes.map((scope) => (
+          <li key={scope.scope} data-enabled={scope.enabled}>
+            <strong>{scope.scope}</strong>
+            <span className="status-chip" data-tone={scope.enabled ? "ready" : "disabled"}>
+              {scope.enabled ? "Enabled" : "Disabled (default off)"}
+            </span>
+            <small>
+              {scope.retention_days
+                ? `${scope.retention_days}-day retention`
+                : "No retention set"}{" "}
+              · {scope.provider ?? "no provider"} · {scope.access}
+            </small>
+            <button
+              type="button"
+              className="ghost-button"
+              disabled={forgetting === scope.scope}
+              onClick={() => forget(scope.scope)}
+            >
+              {forgetting === scope.scope ? "Forgetting…" : "Forget"}
+            </button>
+          </li>
+        ))}
+      </ul>
+      <p className="agent-memory-hint">
+        Persistent memory defaults to off in every scope. Inspect, correct,
+        and export controls will appear here once the memory endpoints ship;
+        Forget above already calls the real (pending) endpoint.
+      </p>
+      {forgetResult ? (
+        <div className="save-status" role="status">
+          {forgetResult}
+        </div>
+      ) : null}
+    </div>
   );
 }
 
@@ -559,11 +855,19 @@ export function AgentWorkspaceView({
   onRefresh,
   onBack,
 }: AgentWorkspaceProps) {
-  const entry = getAgentCatalogEntry(agentId);
+  const summary = data
+    ? (buildLegacyAgentSummaries(data.agents).find((item) => item.id === agentId) ?? null)
+    : null;
+  const {
+    status: contractStatus,
+    contract,
+    releaseVersion,
+    error: contractError,
+  } = useAgentContract(agentId);
   const [tab, setTab] = useState<AgentWorkspaceTabId>("build");
   const [advanced, setAdvanced] = useState(false);
 
-  if (!entry) {
+  if (data && !summary) {
     return (
       <div className="operational-page">
         <EmptyBlock
@@ -579,10 +883,16 @@ export function AgentWorkspaceView({
     );
   }
 
-  const live = data?.agents.find((agent) => agent.id === entry.id);
-  const connections = (data?.connectors ?? []).filter((connector) =>
-    connector.assigned_agents.includes(entry.id),
-  );
+  if (!summary) {
+    return (
+      <div className="operational-page">
+        <LoadingBlock label="Loading agent workspace…" />
+      </div>
+    );
+  }
+
+  const live = data!.agents.find((agent) => agent.id === summary.id)!;
+  const boundary = contract.public_boundary ?? summary.public_boundary;
 
   return (
     <div className="operational-page agent-workspace-page">
@@ -593,61 +903,91 @@ export function AgentWorkspaceView({
         <div>
           <span className="eyebrow">Agent Workspace</span>
           <h1>
-            <Bot size={20} /> {entry.name}
+            <Bot size={20} /> {summary.name}
           </h1>
-          <p>{entry.purpose}</p>
+          <p>{contract.purpose ?? summary.purpose ?? "Purpose not available yet."}</p>
         </div>
-        <span className="agent-registry-owner" data-owner={entry.ownerKind}>
-          {entry.ownerKind === "platform" ? "Platform-owned" : "Researcher-owned"}
+        <span className="agent-registry-owner" data-owner={summary.owner_kind}>
+          {summary.owner_kind === "platform" ? "Platform-owned" : "Researcher-owned"}
         </span>
       </header>
+
+      {releaseVersion ? (
+        <p className="agent-workspace-release-note">
+          Showing the immutable release <strong>{releaseVersion}</strong>. Draft
+          status lives on the Versions tab, separate from this release.
+        </p>
+      ) : contractStatus === "ready" ? (
+        <p className="agent-workspace-release-note">
+          No published release yet — showing the current mutable draft.
+        </p>
+      ) : null}
 
       <div className="agent-workspace-layout">
         <aside className="panel agent-workspace-contract" aria-label="Behavioral contract">
           <h2>Behavioral contract</h2>
+          {contractStatus === "loading" ? (
+            <LoadingBlock label="Loading behavioral contract…" />
+          ) : contractStatus === "error" && contractError ? (
+            <AsyncStateBanner kind={contractError.kind} message={contractError.message} />
+          ) : null}
           <dl>
             <div>
               <dt>Purpose</dt>
-              <dd>{entry.purpose}</dd>
+              <dd>{contract.purpose ?? summary.purpose ?? "Not available yet."}</dd>
             </div>
             <div>
               <dt>Input & artifact</dt>
-              <dd>{entry.outputContract}</dd>
+              <dd>{contract.input_artifact ?? "Not available yet."}</dd>
             </div>
             <div>
               <dt>Instructions</dt>
-              <dd>{entry.boundary}</dd>
+              <dd>
+                {contract.instructions ??
+                  contract.boundary ??
+                  summary.boundary ??
+                  "Not available yet."}
+              </dd>
             </div>
             <div>
               <dt>Evidence & citations</dt>
               <dd>
-                Every claim must resolve to an authorized source ID or be
-                marked unresolved — model text alone never counts as proof.
+                {contract.evidence_policy ??
+                  "Every claim must resolve to an authorized source ID or be marked unresolved — model text alone never counts as proof."}
               </dd>
             </div>
             <div>
               <dt>
                 <Cpu size={13} /> Model
               </dt>
-              <dd>{live?.deployment ?? entry.modelTier} (discovered from project deployments)</dd>
+              <dd>
+                {live.deployment ||
+                  contract.model.deployment ||
+                  summary.discovered_project_model ||
+                  "Not discovered yet"}{" "}
+                (discovered from project deployments)
+              </dd>
             </div>
             <div>
               <dt>Knowledge</dt>
               <dd>
-                {entry.knowledge.length > 0 ? entry.knowledge.join(", ") : "None"}
+                {contract.knowledge && contract.knowledge.length > 0
+                  ? contract.knowledge.join(", ")
+                  : "Not available yet."}
               </dd>
             </div>
             <div>
               <dt>Tools</dt>
-              <dd>{entry.tools.length > 0 ? entry.tools.join(", ") : "None"}</dd>
+              <dd>
+                {contract.tools && contract.tools.length > 0
+                  ? contract.tools.join(", ")
+                  : "Not available yet."}
+              </dd>
             </div>
             <div>
               <dt>Memory</dt>
               <dd>
-                Persistent memory is off by default. When enabled, its scope
-                is one of conversation, user, project, or private-agent, and
-                retention, inspect, correct, forget, and export controls are
-                available under Advanced.
+                <MemoryScopePanel agentId={summary.id} memory={contract.memory} />
               </dd>
             </div>
             <div>
@@ -655,22 +995,26 @@ export function AgentWorkspaceView({
                 <Link2 size={13} /> Connections
               </dt>
               <dd>
-                {connections.length > 0 ? (
+                {contract.connections && contract.connections.length > 0 ? (
                   <ul className="agent-connections-list">
-                    {connections.map((connector) => {
-                      const info = connectorStatusInfo(connector);
-                      return (
-                        <li key={connector.id}>
-                          {connector.name}
-                          <span className="status-chip" data-tone={info.tone}>
-                            {info.label}
-                          </span>
-                        </li>
-                      );
-                    })}
+                    {contract.connections.map((connection) => (
+                      <li key={connection.id}>
+                        {connection.name}
+                        <span className="status-chip" data-tone={connection.readiness}>
+                          {connection.readiness.replace(/_/g, " ")}
+                        </span>
+                        <small>
+                          {connection.permissions.length > 0
+                            ? connection.permissions.join("/")
+                            : "no permissions"}{" "}
+                          · {connection.scope}
+                          {connection.version ? ` · v${connection.version}` : ""}
+                        </small>
+                      </li>
+                    ))}
                   </ul>
                 ) : (
-                  "No workspace connections assigned yet."
+                  "Not available yet."
                 )}
               </dd>
             </div>
@@ -679,29 +1023,82 @@ export function AgentWorkspaceView({
                 <Users size={13} /> Specialists
               </dt>
               <dd>
-                {entry.specialists.length > 0
-                  ? entry.specialists
-                      .map((id) => getAgentCatalogEntry(id)?.name ?? id)
-                      .join(", ")
-                  : "None"}
+                {contract.specialists && contract.specialists.length > 0 ? (
+                  <ul className="agent-specialists-list">
+                    {contract.specialists.map((specialist) => (
+                      <li key={specialist.id} data-attached={specialist.attached}>
+                        {specialist.name ?? specialist.id}
+                        {specialist.owner_kind ? ` (${specialist.owner_kind})` : ""}
+                        {specialist.attached ? " — attached" : " — not attached"}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  "None attached yet."
+                )}
               </dd>
             </div>
             <div>
-              <dt>Safety</dt>
+              <dt>Capabilities</dt>
+              <dd>
+                {contract.capabilities && contract.capabilities.length > 0 ? (
+                  <ul className="agent-capabilities-list">
+                    {contract.capabilities.map((capability) => (
+                      <li
+                        key={capability.descriptor.id}
+                        data-attachable={isCapabilityAttachable(capability.instance)}
+                      >
+                        <strong>{capability.descriptor.family}</strong> ·{" "}
+                        {capability.descriptor.operation}
+                        <span
+                          className="status-chip"
+                          data-tone={capability.descriptor.risk_class}
+                        >
+                          {capability.descriptor.risk_class.replace(/_/g, " ")}
+                        </span>
+                        <span
+                          className="status-chip"
+                          data-tone={capability.instance?.maturity ?? "unknown"}
+                        >
+                          {capability.instance ? capability.instance.maturity : "unknown"}
+                        </span>
+                        {capability.binding ? (
+                          <small>
+                            {capability.binding.enabled ? "Enabled" : "Disabled"} ·{" "}
+                            {capability.binding.approval_state.replace(/_/g, " ")}
+                            {capability.binding.version_pin
+                              ? ` · pinned to ${capability.binding.version_pin}`
+                              : ""}
+                          </small>
+                        ) : (
+                          <small>Not bound to this agent.</small>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  "Not available yet."
+                )}
+              </dd>
+            </div>
+            <div>
+              <dt>Safety & public web boundary</dt>
               <dd>
                 <Globe2 size={13} />{" "}
-                {entry.publicWebBoundary === "read_only"
-                  ? "Public web access is read-only; every result is treated as untrusted data."
-                  : "No public web access."}
+                {boundary.outbound_data_boundary ?? "Not available yet."}
+                {boundary.mode === "public_online"
+                  ? " Every result is treated as untrusted data; writes require approval."
+                  : ""}
+                {boundary.approval_required ? " Approval required for writes." : ""}
               </dd>
             </div>
             <div>
               <dt>Tests</dt>
-              <dd>Run real studio requests from the Test tab.</dd>
+              <dd>{contract.tests ?? "Run real studio requests from the Test tab."}</dd>
             </div>
             <div>
               <dt>Deployment</dt>
-              <dd>{live?.status ?? "Not discovered yet"}</dd>
+              <dd>{contract.deployment || live.status || "Not discovered yet"}</dd>
             </div>
           </dl>
 
@@ -717,14 +1114,14 @@ export function AgentWorkspaceView({
             <dl className="agent-workspace-advanced">
               <div>
                 <dt>Output schema</dt>
-                <dd>{entry.outputContract}</dd>
+                <dd>{contract.input_artifact ?? "Not available yet."}</dd>
               </div>
               <div>
                 <dt>Runtime</dt>
                 <dd>
                   Runtime selection is automatic and hidden by default; this
                   deployment is currently pinned to the{" "}
-                  {live?.model_tier ?? entry.modelTier} tier discovered from
+                  {live.model_tier || "undiscovered"} tier discovered from
                   the project&apos;s model deployments.
                 </dd>
               </div>
@@ -733,13 +1130,18 @@ export function AgentWorkspaceView({
                   <Database size={13} /> Identity
                 </dt>
                 <dd>
-                  Agent ID <code>{entry.id}</code>
-                  {live ? (
-                    <>
-                      {" "}
-                      · Deployment <code>{live.deployment}</code>
-                    </>
-                  ) : null}
+                  Agent ID <code>{summary.id}</code> · Deployment{" "}
+                  <code>{live.deployment}</code>
+                </dd>
+              </div>
+              <div>
+                <dt>Attach a specialist</dt>
+                <dd>
+                  To attach a registry agent or private specialist, describe
+                  it in Build (e.g. &quot;Add the Grant agent as a
+                  specialist&quot;) — every attachment flows through the same
+                  reviewable builder proposal pipeline as any other manifest
+                  change.
                 </dd>
               </div>
             </dl>
@@ -763,34 +1165,30 @@ export function AgentWorkspaceView({
           </div>
 
           <div role="tabpanel">
-            {tab === "build" ? <BuildTab agentId={entry.id} /> : null}
+            {tab === "build" ? <BuildTab agentId={summary.id} /> : null}
             {tab === "test" ? (
-              <TestTab capability={entry.capability} data={data} onRefresh={onRefresh} />
+              <TestTab capability={summary.capability} data={data} onRefresh={onRefresh} />
             ) : null}
-            {tab === "evaluate" ? <EvaluateTab agentId={entry.id} /> : null}
+            {tab === "evaluate" ? <EvaluateTab agentId={summary.id} /> : null}
             {tab === "deploy" ? (
-              <DeployTab
-                agentId={entry.id}
-                ownerKind={entry.ownerKind}
-                status={live?.status}
-              />
+              <DeployTab agentId={summary.id} ownerKind={summary.owner_kind} />
             ) : null}
             {tab === "monitor" ? (
               <MonitorTab
-                agentId={entry.id}
+                agentId={summary.id}
                 data={data}
-                capability={entry.capability}
+                capability={summary.capability}
               />
             ) : null}
             {tab === "versions" ? (
-              <VersionsTab agentId={entry.id} ownerKind={entry.ownerKind} />
+              <VersionsTab agentId={summary.id} ownerKind={summary.owner_kind} />
             ) : null}
           </div>
         </div>
       </div>
       <p className="agent-workspace-empty-note">
         <Lightbulb size={13} /> Non-developers never need to review code here
-        — every change flows through the typed manifest proposal above.
+        — every change flows through the typed builder proposal above.
       </p>
     </div>
   );

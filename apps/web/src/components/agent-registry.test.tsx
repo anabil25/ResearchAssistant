@@ -6,18 +6,23 @@ import {
   AgentRegistryCard,
   AgentRegistryView,
   capabilityTitle,
-  lifecycleFromStatus,
 } from "@/components/agent-registry";
-import type { AgentCatalogEntry } from "@/lib/agent-catalog";
 import {
   createAgentDraft,
   forkAgent,
   getAgentEvaluation,
   getAgentHealth,
-  getAgentVersions,
+  getAgentReleases,
+  getAgentStudioCatalog,
   ApiError,
   type WorkspaceData,
 } from "@/lib/api";
+import type {
+  AgentContractView,
+  AgentDraftView,
+  AgentSetting,
+  AgentSummary,
+} from "@/lib/types";
 
 jest.mock("@/lib/api", () => {
   const actual = jest.requireActual("@/lib/api");
@@ -27,9 +32,32 @@ jest.mock("@/lib/api", () => {
     forkAgent: jest.fn(),
     getAgentEvaluation: jest.fn(),
     getAgentHealth: jest.fn(),
-    getAgentVersions: jest.fn(),
+    getAgentReleases: jest.fn(),
+    getAgentStudioCatalog: jest.fn(),
   };
 });
+
+const AGENT_IDS = [
+  "coordinator",
+  "literature",
+  "literature_online",
+  "grant",
+  "grant_online",
+  "matching",
+  "matching_online",
+  "dataset",
+  "institution",
+];
+
+const NINE_AGENTS: AgentSetting[] = AGENT_IDS.map((id) => ({
+  id,
+  name: `${id}-agent`,
+  deployment: "",
+  model_tier: "primary",
+  status: "Active",
+  web_access: "none",
+  workflow_steps: [],
+}));
 
 function workspaceData(overrides: Partial<WorkspaceData> = {}): WorkspaceData {
   return {
@@ -72,11 +100,76 @@ function workspaceData(overrides: Partial<WorkspaceData> = {}): WorkspaceData {
       model_profile: "Balanced quality",
       evaluation_policy: "Block unresolved citations",
     },
-    agents: [],
+    agents: NINE_AGENTS,
     workflows: [],
     ...overrides,
   };
 }
+
+function agentSummary(overrides: Partial<AgentSummary> = {}): AgentSummary {
+  return {
+    id: "literature",
+    name: "literature-agent",
+    owner_kind: "platform",
+    lifecycle: "released",
+    latest_release: "1.0.0",
+    purpose: "Produces skeptical, source-grounded literature comparisons.",
+    boundary: "Analyzes only server-authorized evidence.",
+    discovered_project_model: null,
+    public_boundary: {
+      mode: "none",
+      sources: null,
+      outbound_data_boundary: null,
+      write_destinations: null,
+      approval_required: null,
+    },
+    capability: "literature",
+    source: "agent_studio",
+    ...overrides,
+  };
+}
+
+function emptyContract(): AgentContractView {
+  return {
+    purpose: null,
+    boundary: null,
+    input_artifact: null,
+    instructions: null,
+    evidence_policy: null,
+    model: { deployment: null, discovered: false },
+    knowledge: null,
+    tools: null,
+    memory: { scopes: [] },
+    connections: null,
+    specialists: null,
+    capabilities: null,
+    safety: null,
+    tests: null,
+    deployment: null,
+    public_boundary: null,
+  };
+}
+
+function draftView(overrides: Partial<AgentDraftView> = {}): AgentDraftView {
+  return {
+    draft_id: "draft-7",
+    agent_id: null,
+    base_version: null,
+    status: "editing",
+    etag: "etag-1",
+    contract: emptyContract(),
+    created_by: "researcher",
+    created_at: "2026-07-16T12:00:00Z",
+    ...overrides,
+  };
+}
+
+beforeEach(() => {
+  jest.clearAllMocks();
+  jest
+    .mocked(getAgentStudioCatalog)
+    .mockRejectedValue(new ApiError("no catalog endpoint", 404));
+});
 
 describe("pure helpers", () => {
   it("capabilityTitle returns null for a null capability and a label otherwise", () => {
@@ -89,44 +182,27 @@ describe("pure helpers", () => {
       "unknown_capability",
     );
   });
-
-  it("lifecycleFromStatus normalizes status text", () => {
-    expect(lifecycleFromStatus(undefined)).toBe("draft");
-    expect(lifecycleFromStatus("Active")).toBe("active");
-    expect(lifecycleFromStatus("Deprecated")).toBe("deprecated");
-  });
 });
 
-const literatureEntry: AgentCatalogEntry = {
-  id: "literature",
-  name: "literature-agent",
-  ownerKind: "platform",
-  purpose: "Produces skeptical, source-grounded literature comparisons.",
-  boundary: "Analyzes only server-authorized evidence.",
-  knowledge: ["paper"],
-  tools: [],
-  modelTier: "primary",
-  outputContract: "LiteratureSynthesisV2",
-  workflowSteps: ["protocol", "search"],
-  publicWebBoundary: "none",
-  connectorSources: [],
-  capability: "literature",
-  specialists: [],
-};
-
 describe("AgentRegistryCard", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
+  it("has no detectable accessibility violations", async () => {
+    const { container } = render(
+      <AgentRegistryCard
+        entry={agentSummary()}
+        data={workspaceData()}
+        onOpenAgent={jest.fn()}
+      />,
+    );
+    expect(await axe(container)).toHaveNoViolations();
   });
 
   it("renders a researcher-owned agent without a fork button and with no capability chip", () => {
-    const researcherEntry: AgentCatalogEntry = {
-      ...literatureEntry,
+    const researcherEntry = agentSummary({
       id: "custom-agent",
       name: "custom-agent",
-      ownerKind: "researcher",
+      owner_kind: "researcher",
       capability: null,
-    };
+    });
     render(
       <AgentRegistryCard
         entry={researcherEntry}
@@ -178,7 +254,7 @@ describe("AgentRegistryCard", () => {
     });
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={data}
         onOpenAgent={jest.fn()}
       />,
@@ -186,13 +262,18 @@ describe("AgentRegistryCard", () => {
     expect(screen.getByText("gpt-5-primary")).toBeInTheDocument();
     expect(screen.getByText("1 run")).toBeInTheDocument();
     expect(screen.getByText("1 workflow")).toBeInTheDocument();
-    expect(screen.getByText("active")).toBeInTheDocument();
+    expect(screen.getByText("released")).toBeInTheDocument();
   });
 
-  it("shows 'Not discovered yet' facts and zero counts when there is no live agent data", () => {
+  it("shows 'Not discovered yet' facts, zero counts, and a 'Not available yet' purpose/boundary when the summary lacks them", () => {
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary({
+          purpose: null,
+          boundary: null,
+          discovered_project_model: null,
+          lifecycle: "draft_only",
+        })}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -200,7 +281,77 @@ describe("AgentRegistryCard", () => {
     expect(screen.getByText("Not discovered yet")).toBeInTheDocument();
     expect(screen.getByText("0 runs")).toBeInTheDocument();
     expect(screen.getByText("0 workflows")).toBeInTheDocument();
-    expect(screen.getByText("draft")).toBeInTheDocument();
+    expect(screen.getByText("draft only")).toBeInTheDocument();
+    expect(
+      screen.getByText("Purpose: not available yet from the current data source."),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Boundary: not available yet from the current data source."),
+    ).toBeInTheDocument();
+  });
+
+  it("shows a legacy-summary chip when the entry's source is the legacy agents endpoint", () => {
+    render(
+      <AgentRegistryCard
+        entry={agentSummary({ source: "legacy_agents_endpoint" })}
+        data={workspaceData()}
+        onOpenAgent={jest.fn()}
+      />,
+    );
+    expect(screen.getByText("Legacy summary (from /agents)")).toBeInTheDocument();
+  });
+
+  it("renders a public-online boundary chip and workflow-step chips from live data", () => {
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "gpt-5-primary",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "public",
+          workflow_steps: ["protocol", "search"],
+        },
+      ],
+    });
+    render(
+      <AgentRegistryCard
+        entry={agentSummary({
+          public_boundary: {
+            mode: "public_online",
+            sources: null,
+            outbound_data_boundary: null,
+            write_destinations: null,
+            approval_required: null,
+          },
+        })}
+        data={data}
+        onOpenAgent={jest.fn()}
+      />,
+    );
+    expect(screen.getByText("Public web: read-only")).toBeInTheDocument();
+    expect(screen.getByText("protocol")).toBeInTheDocument();
+    expect(screen.getByText("search")).toBeInTheDocument();
+  });
+
+  it("shows a 'not available yet' public boundary label when mode is null", () => {
+    render(
+      <AgentRegistryCard
+        entry={agentSummary({
+          public_boundary: {
+            mode: null,
+            sources: null,
+            outbound_data_boundary: null,
+            write_destinations: null,
+            approval_required: null,
+          },
+        })}
+        data={workspaceData()}
+        onOpenAgent={jest.fn()}
+      />,
+    );
+    expect(screen.getByText("Public web: not available yet")).toBeInTheDocument();
   });
 
   it("invokes onOpenAgent when the card body is clicked", async () => {
@@ -208,7 +359,7 @@ describe("AgentRegistryCard", () => {
     const onOpenAgent = jest.fn();
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={onOpenAgent}
       />,
@@ -220,7 +371,7 @@ describe("AgentRegistryCard", () => {
   it("falls back to zero usage counts and no live facts when workspace data is null", () => {
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={null}
         onOpenAgent={jest.fn()}
       />,
@@ -230,7 +381,7 @@ describe("AgentRegistryCard", () => {
     expect(screen.getByText("Not discovered yet")).toBeInTheDocument();
   });
 
-  it("loads live health, evaluation, and versions on disclosure and shows real recorded versions", async () => {
+  it("loads live health, evaluation, and releases on disclosure and shows real recorded releases", async () => {
     const user = userEvent.setup();
     jest.mocked(getAgentHealth).mockResolvedValue({
       state: "healthy",
@@ -245,22 +396,22 @@ describe("AgentRegistryCard", () => {
       last_run_at: "2026-07-16T12:00:00Z",
       hard_gates: [],
     });
-    jest.mocked(getAgentVersions).mockResolvedValue([
+    jest.mocked(getAgentReleases).mockResolvedValue([
       {
         version: "1.0.0",
         created_at: "2026-07-01T12:00:00Z",
         created_by: "platform",
-        status: "active",
         changelog: "Initial release.",
         derived_from: null,
         content_hash: "sha256:0000000000000000",
         model_version: "gpt-4o-2026-05-01",
         capability_versions: {},
+        deployment_status: "deployed",
       },
     ]);
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -282,7 +433,7 @@ describe("AgentRegistryCard", () => {
     expect(getAgentHealth).toHaveBeenCalledTimes(1);
   });
 
-  it("shows the immutable-baseline fallback when versions are empty and partial-success fallbacks for failed calls", async () => {
+  it("shows the immutable-baseline fallback when releases are empty and partial-success fallbacks for failed calls", async () => {
     const user = userEvent.setup();
     jest.mocked(getAgentHealth).mockResolvedValue({
       state: "unknown",
@@ -290,10 +441,10 @@ describe("AgentRegistryCard", () => {
       detail: "Not yet checked.",
     });
     jest.mocked(getAgentEvaluation).mockRejectedValue(new Error("no eval"));
-    jest.mocked(getAgentVersions).mockResolvedValue([]);
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -321,10 +472,10 @@ describe("AgentRegistryCard", () => {
       last_run_at: null,
       hard_gates: [],
     });
-    jest.mocked(getAgentVersions).mockResolvedValue([]);
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -333,11 +484,9 @@ describe("AgentRegistryCard", () => {
       screen.getByRole("button", { name: /Live evaluation, health & versions/ }),
     );
     await waitFor(() =>
-      expect(
-        screen.getByText("—% citation resolution"),
-      ).toBeInTheDocument(),
+      expect(screen.getByText("—% citation resolution")).toBeInTheDocument(),
     );
-    // Health specifically failed while evaluation/versions succeeded.
+    // Health specifically failed while evaluation/releases succeeded.
     expect(screen.getAllByText("Not available yet").length).toBeGreaterThan(0);
   });
 
@@ -350,11 +499,11 @@ describe("AgentRegistryCard", () => {
       .mocked(getAgentEvaluation)
       .mockRejectedValue(new ApiError("no eval endpoint", 404));
     jest
-      .mocked(getAgentVersions)
-      .mockRejectedValue(new ApiError("no versions endpoint", 404));
+      .mocked(getAgentReleases)
+      .mockRejectedValue(new ApiError("no releases endpoint", 404));
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -375,10 +524,10 @@ describe("AgentRegistryCard", () => {
 
   it("forks a platform agent successfully", async () => {
     const user = userEvent.setup();
-    jest.mocked(forkAgent).mockResolvedValue({ id: "draft-42" });
+    jest.mocked(forkAgent).mockResolvedValue(draftView({ draft_id: "draft-42" }));
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -400,7 +549,7 @@ describe("AgentRegistryCard", () => {
       .mockRejectedValue(new ApiError("no fork endpoint", 404));
     render(
       <AgentRegistryCard
-        entry={literatureEntry}
+        entry={agentSummary()}
         data={workspaceData()}
         onOpenAgent={jest.fn()}
       />,
@@ -417,10 +566,6 @@ describe("AgentRegistryCard", () => {
 });
 
 describe("AgentRegistryView", () => {
-  beforeEach(() => {
-    jest.clearAllMocks();
-  });
-
   it("shows a loading state while workspace data has not arrived", () => {
     render(<AgentRegistryView data={null} onOpenAgent={jest.fn()} />);
     expect(screen.getByText("Loading agent registry…")).toBeInTheDocument();
@@ -432,6 +577,31 @@ describe("AgentRegistryView", () => {
       screen.getByText(/9 platform-owned Hosted Agent deployments/),
     ).toBeInTheDocument();
     expect(screen.getByText("No custom agents yet")).toBeInTheDocument();
+  });
+
+  it("shows an unavailable banner and falls back to a legacy summary when the Agent Studio catalog fetch fails", async () => {
+    render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Agent Studio catalog .* isn't available yet/),
+      ).toBeInTheDocument(),
+    );
+    expect(screen.getByText("literature-agent")).toBeInTheDocument();
+  });
+
+  it("uses the Agent Studio catalog directly once it loads successfully", async () => {
+    jest
+      .mocked(getAgentStudioCatalog)
+      .mockResolvedValue([agentSummary({ name: "studio-literature" })]);
+    render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText("studio-literature")).toBeInTheDocument(),
+    );
+    expect(
+      screen.queryByText(/Agent Studio catalog .* isn't available yet/),
+    ).not.toBeInTheDocument();
+    // Catalog is authoritative: the 9-item legacy fallback list is not shown.
+    expect(screen.queryByText("literature-agent")).not.toBeInTheDocument();
   });
 
   it("filters agents by search text", async () => {
@@ -457,7 +627,7 @@ describe("AgentRegistryView", () => {
     ).toBeInTheDocument();
   });
 
-  it("filters agents to none when the researcher owner filter is applied (catalog is all platform-owned)", async () => {
+  it("filters agents to none when the researcher owner filter is applied (fallback catalog is all platform-owned)", async () => {
     const user = userEvent.setup();
     render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
     await user.click(screen.getByRole("button", { name: "Researcher" }));
@@ -472,7 +642,7 @@ describe("AgentRegistryView", () => {
 
   it("opens and closes the create-agent panel from both entry points and submits a template draft", async () => {
     const user = userEvent.setup();
-    jest.mocked(createAgentDraft).mockResolvedValue({ id: "draft-7" });
+    jest.mocked(createAgentDraft).mockResolvedValue(draftView({ draft_id: "draft-7" }));
     render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
 
     const headerNewAgentButton = screen.getAllByRole("button", {
@@ -537,7 +707,7 @@ describe("AgentRegistryView", () => {
 
   it("switches the template capability via the select and toggles Task template explicitly", async () => {
     const user = userEvent.setup();
-    jest.mocked(createAgentDraft).mockResolvedValue({ id: "draft-9" });
+    jest.mocked(createAgentDraft).mockResolvedValue(draftView({ draft_id: "draft-9" }));
     render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
     await user.click(screen.getAllByRole("button", { name: /New agent/ })[0]);
     await user.click(screen.getByRole("button", { name: "Task template" }));
@@ -587,13 +757,37 @@ describe("AgentRegistryView", () => {
         screen.getByText(/Agent creation isn't available yet/),
       ).toBeInTheDocument(),
     );
+    expect(screen.getByDisplayValue("Draft intent text.")).toBeInTheDocument();
   });
 
-  it("shows the classified message for a non-unavailable draft creation failure", async () => {
+  it("renders researcher-owned agents in 'Your agents' and applies filters to that list too", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentStudioCatalog).mockResolvedValue([
+      agentSummary(),
+      agentSummary({
+        id: "custom-agent",
+        name: "custom-agent",
+        owner_kind: "researcher",
+        capability: null,
+      }),
+    ]);
+    render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
+    await waitFor(() =>
+      expect(screen.getByText("custom-agent")).toBeInTheDocument(),
+    );
+    await user.type(
+      screen.getByPlaceholderText("Search agents by name or purpose"),
+      "custom",
+    );
+    expect(screen.getByText("custom-agent")).toBeInTheDocument();
+    expect(screen.queryByText("literature-agent")).not.toBeInTheDocument();
+  });
+
+  it("shows the raw classified error message when draft creation fails with a non-API error", async () => {
     const user = userEvent.setup();
     jest
       .mocked(createAgentDraft)
-      .mockRejectedValue(new ApiError("Server exploded", 500));
+      .mockRejectedValue(new Error("Network offline."));
     render(<AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />);
     await user.click(
       screen.getAllByRole("button", { name: /New agent/ })[0],
@@ -608,11 +802,45 @@ describe("AgentRegistryView", () => {
       screen.getByRole("button", { name: "Create draft agent" }),
     );
     await waitFor(() =>
-      expect(screen.getByText("Server exploded")).toBeInTheDocument(),
+      expect(screen.getByText("Network offline.")).toBeInTheDocument(),
     );
   });
 
-  it("is free of detectable accessibility violations", async () => {
+  it("does not update catalog state after the component unmounts before the fetch resolves", async () => {
+    let resolveCatalog: (value: AgentSummary[]) => void = () => {};
+    jest.mocked(getAgentStudioCatalog).mockReturnValue(
+      new Promise((resolve) => {
+        resolveCatalog = resolve;
+      }),
+    );
+    const { unmount } = render(
+      <AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />,
+    );
+    unmount();
+    resolveCatalog([agentSummary()]);
+    await Promise.resolve();
+    await Promise.resolve();
+    // No assertion beyond "did not throw" — this exercises the cancelled-guard branch.
+  });
+
+  it("does not update the catalog-error state after the component unmounts before the fetch rejects", async () => {
+    let rejectCatalog: (error: unknown) => void = () => {};
+    jest.mocked(getAgentStudioCatalog).mockReturnValue(
+      new Promise((_resolve, reject) => {
+        rejectCatalog = reject;
+      }),
+    );
+    const { unmount } = render(
+      <AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />,
+    );
+    unmount();
+    rejectCatalog(new ApiError("no catalog endpoint", 404));
+    await Promise.resolve();
+    await Promise.resolve();
+    // No assertion beyond "did not throw" — this exercises the cancelled-guard branch.
+  });
+
+  it("has no detectable accessibility violations", async () => {
     const { container } = render(
       <AgentRegistryView data={workspaceData()} onOpenAgent={jest.fn()} />,
     );

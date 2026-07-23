@@ -148,8 +148,14 @@ test.describe("Agent Registry", () => {
     await card
       .getByRole("button", { name: /Live evaluation, health & versions/ })
       .click();
-    await expect(card.getByText("Checking live evaluation")).toBeVisible();
-    await expect(card.getByText("Not available yet")).toBeVisible({
+    // The loading state is exercised deterministically in the RTL unit
+    // tests (agent-registry.test.tsx) via a controlled deferred promise —
+    // against the real, fast local dev backend the 404 can resolve before
+    // this transient state is observable, so only the honest final state is
+    // asserted here.
+    await expect(
+      card.getByText("Not available yet", { exact: true }),
+    ).toBeVisible({
       timeout: 10_000,
     });
   });
@@ -169,7 +175,7 @@ test.describe("Agent Registry", () => {
   test("clicking an agent card opens its workspace and Back returns to the registry", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await expect(page).toHaveURL(/view=agent&agentId=literature\b/);
     await page.getByRole("button", { name: "Registry", exact: true }).click();
     await expect(
@@ -182,7 +188,7 @@ test.describe("Agent Workspace", () => {
   test("renders the always-visible behavioral contract and progressively discloses Advanced", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     const contract = page.getByLabel("Behavioral contract");
     await expect(contract.getByText("Purpose", { exact: true })).toBeVisible();
     await expect(
@@ -201,7 +207,7 @@ test.describe("Agent Workspace", () => {
     await expect(
       contract.getByText("Specialists", { exact: true }),
     ).toBeVisible();
-    await expect(contract.getByText("Safety", { exact: true })).toBeVisible();
+    await expect(contract.getByText("Safety & public web boundary", { exact: true })).toBeVisible();
     await expect(contract.getByText("Tests", { exact: true })).toBeVisible();
     await expect(
       contract.getByText("Deployment", { exact: true }),
@@ -222,7 +228,7 @@ test.describe("Agent Workspace", () => {
   });
 
   test("switches across all six tabs", async ({ page }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     for (const label of [
       "Build",
       "Test",
@@ -242,7 +248,7 @@ test.describe("Agent Workspace", () => {
   test("Build tab proposes a typed manifest change and shows the honest pending-backend state", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Build" }).click();
     await page
       .getByLabel("Describe the change you want")
@@ -254,7 +260,7 @@ test.describe("Agent Workspace", () => {
   });
 
   test("Test tab runs a real studio request end to end", async ({ page }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Test" }).click();
     const responsePromise = page.waitForResponse(
       (response) =>
@@ -272,33 +278,35 @@ test.describe("Agent Workspace", () => {
   test("Evaluate tab honestly reports the advisory evaluation backend isn't available yet", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Evaluate" }).click();
-    await expect(page.getByText("Not available yet")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(
+      page
+        .getByLabel("Advisory evaluation")
+        .getByText("Not available yet", { exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
   });
 
-  test("Deploy tab requests deployment and honestly reports the pending-backend state", async ({
+  test("Deploy tab honestly reports the pending-backend deployment state", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Deploy" }).click();
-    await expect(page.getByText("Current status")).toBeVisible();
-    await page.getByRole("button", { name: /Request deployment/ }).click();
-    await expect(page.getByText("Not available yet")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(
+      page.getByLabel("Deployment").getByText("Not available yet", { exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
   });
 
   test("Monitor tab shows real usage counts alongside the honest health-check state", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Monitor" }).click();
-    await expect(page.getByText("Not available yet")).toBeVisible({
-      timeout: 10_000,
-    });
+    await expect(
+      page
+        .getByLabel("Health and usage")
+        .getByText("Not available yet", { exact: true }),
+    ).toBeVisible({ timeout: 10_000 });
     await expect(page.getByText("Studio usage", { exact: true })).toBeVisible();
     await expect(
       page.getByText("Workflow usage", { exact: true }),
@@ -309,12 +317,14 @@ test.describe("Agent Workspace", () => {
   test("Versions tab shows immutable-baseline copy for platform agents and the honest pending-backend state", async ({
     page,
   }) => {
-    await openAgentWorkspace(page, "literature-agent");
+    await openAgentWorkspace(page, "Literature synthesis");
     await page.getByRole("tab", { name: "Versions" }).click();
     await expect(
-      page.getByText(/This agent's baseline is immutable/),
+      page.getByText(/Every release below is immutable/),
     ).toBeVisible();
-    await expect(page.getByText("Not available yet")).toBeVisible({
+    await expect(
+      page.getByLabel("Versions").getByText("Not available yet", { exact: true }),
+    ).toBeVisible({
       timeout: 10_000,
     });
   });
@@ -328,14 +338,14 @@ test.describe("Agent Workspace", () => {
       "true",
     );
     await expect(page.locator(".agent-workspace-header h1")).toContainText(
-      "literature-agent",
+      "Literature synthesis",
     );
 
     await page.getByRole("button", { name: "Registry", exact: true }).click();
     await expect(page).toHaveURL(/view=registry/);
     await page.goBack();
     await expect(page.locator(".agent-workspace-header h1")).toContainText(
-      "literature-agent",
+      "Literature synthesis",
     );
   });
 });
@@ -479,7 +489,9 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
       await card
         .getByRole("button", { name: /Live evaluation, health & versions/ })
         .click();
-      await expect(card.getByText("Not available yet")).toBeVisible({
+      await expect(
+        card.getByText("Not available yet", { exact: true }),
+      ).toBeVisible({
         timeout: 10_000,
       });
       await capture(`agent-registry-live-error-${tag}.png`);
@@ -492,7 +504,11 @@ test.describe("Agent Studio accessibility and responsive layout", () => {
       await capture(`agent-workspace-build-${tag}.png`);
 
       await page.getByRole("tab", { name: "Evaluate" }).click();
-      await expect(page.getByText("Not available yet")).toBeVisible({
+      await expect(
+        page
+          .getByLabel("Advisory evaluation")
+          .getByText("Not available yet", { exact: true }),
+      ).toBeVisible({
         timeout: 10_000,
       });
       await capture(`agent-workspace-evaluate-error-${tag}.png`);

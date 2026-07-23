@@ -9,24 +9,26 @@ import {
   Plus,
   Sparkles,
 } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import {
   createAgentDraft,
   forkAgent,
   getAgentEvaluation,
   getAgentHealth,
-  getAgentVersions,
+  getAgentReleases,
+  getAgentStudioCatalog,
   type WorkspaceData,
 } from "@/lib/api";
 import type {
   AgentDraftIntent,
   AgentEvaluationSummary,
   AgentHealthSummary,
-  AgentVersionRecord,
+  AgentReleaseSummary,
+  AgentSummary,
   CapabilityId,
 } from "@/lib/types";
-import { AGENT_CATALOG, type AgentCatalogEntry } from "@/lib/agent-catalog";
+import { buildLegacyAgentSummaries } from "@/lib/agent-catalog";
 import { CAPABILITY_CARDS } from "@/components/workspace-views";
 import {
   AsyncStateBanner,
@@ -42,6 +44,21 @@ interface AgentRegistryProps {
 
 type OwnerFilter = "all" | "platform" | "researcher";
 
+function filterAgentSummaries(
+  list: AgentSummary[],
+  ownerFilter: OwnerFilter,
+  query: string,
+): AgentSummary[] {
+  return list.filter((entry) => {
+    const matchesOwner =
+      ownerFilter === "all" || entry.owner_kind === ownerFilter;
+    const matchesQuery = `${entry.name} ${entry.purpose ?? ""}`
+      .toLowerCase()
+      .includes(query.toLowerCase());
+    return matchesOwner && matchesQuery;
+  });
+}
+
 export function capabilityTitle(capability: CapabilityId | null): string | null {
   if (!capability) return null;
   return (
@@ -50,17 +67,12 @@ export function capabilityTitle(capability: CapabilityId | null): string | null 
   );
 }
 
-export function lifecycleFromStatus(status: string | undefined): string {
-  if (!status) return "draft";
-  return status.toLowerCase() === "active" ? "active" : status.toLowerCase();
-}
-
 export function AgentRegistryCard({
   entry,
   data,
   onOpenAgent,
 }: {
-  entry: AgentCatalogEntry;
+  entry: AgentSummary;
   data: WorkspaceData | null;
   onOpenAgent: (agentId: string) => void;
 }) {
@@ -71,7 +83,7 @@ export function AgentRegistryCard({
   const [evaluation, setEvaluation] = useState<AgentEvaluationSummary | null>(
     null,
   );
-  const [versions, setVersions] = useState<AgentVersionRecord[] | null>(null);
+  const [releases, setReleases] = useState<AgentReleaseSummary[] | null>(null);
   const [liveError, setLiveError] = useState<ReturnType<
     typeof classifyAsyncError
   > | null>(null);
@@ -91,25 +103,25 @@ export function AgentRegistryCard({
 
   const loadLiveStatus = () => {
     setExpanded((current) => !current);
-    if (expanded || health || evaluation || versions || loadingLive) return;
+    if (expanded || health || evaluation || releases || loadingLive) return;
     setLoadingLive(true);
     setLiveError(null);
     void Promise.allSettled([
       getAgentHealth(entry.id),
       getAgentEvaluation(entry.id),
-      getAgentVersions(entry.id),
+      getAgentReleases(entry.id),
     ])
-      .then(([healthResult, evalResult, versionsResult]) => {
+      .then(([healthResult, evalResult, releasesResult]) => {
         if (healthResult.status === "fulfilled") {
           setHealth(healthResult.value);
         }
         if (evalResult.status === "fulfilled") {
           setEvaluation(evalResult.value);
         }
-        if (versionsResult.status === "fulfilled") {
-          setVersions(versionsResult.value);
+        if (releasesResult.status === "fulfilled") {
+          setReleases(releasesResult.value);
         }
-        const firstFailure = [healthResult, evalResult, versionsResult].find(
+        const firstFailure = [healthResult, evalResult, releasesResult].find(
           (result): result is PromiseRejectedResult =>
             result.status === "rejected",
         );
@@ -117,7 +129,7 @@ export function AgentRegistryCard({
           firstFailure &&
           healthResult.status === "rejected" &&
           evalResult.status === "rejected" &&
-          versionsResult.status === "rejected"
+          releasesResult.status === "rejected"
         ) {
           setLiveError(classifyAsyncError(firstFailure.reason));
         }
@@ -129,13 +141,22 @@ export function AgentRegistryCard({
     setForking(true);
     setForkResult(null);
     void forkAgent(entry.id)
-      .then((result) => setForkResult(`Fork created as draft ${result.id}.`))
+      .then((result) =>
+        setForkResult(`Fork created as draft ${result.draft_id}.`),
+      )
       .catch((error: unknown) => {
         const classified = classifyAsyncError(error);
         setForkResult(classified.message);
       })
       .finally(() => setForking(false));
   };
+
+  const publicBoundaryLabel =
+    entry.public_boundary.mode === "public_online"
+      ? "Public web: read-only"
+      : entry.public_boundary.mode === "none"
+        ? "Public web: none"
+        : "Public web: not available yet";
 
   return (
     <article className="panel agent-registry-card">
@@ -150,42 +171,50 @@ export function AgentRegistryCard({
           </span>
           <div>
             <strong>{entry.name}</strong>
-            <span className="agent-registry-owner" data-owner={entry.ownerKind}>
-              {entry.ownerKind === "platform" ? "Platform-owned" : "Researcher-owned"}
+            <span className="agent-registry-owner" data-owner={entry.owner_kind}>
+              {entry.owner_kind === "platform" ? "Platform-owned" : "Researcher-owned"}
             </span>
           </div>
           <span
             className="agent-registry-lifecycle"
-            data-lifecycle={lifecycleFromStatus(live?.status)}
+            data-lifecycle={entry.lifecycle}
           >
-            {lifecycleFromStatus(live?.status)}
+            {entry.lifecycle.replace("_", " ")}
           </span>
         </div>
-        <p className="agent-registry-purpose">{entry.purpose}</p>
-        <p className="agent-registry-boundary">{entry.boundary}</p>
+        <p className="agent-registry-purpose">
+          {entry.purpose ?? "Purpose: not available yet from the current data source."}
+        </p>
+        <p className="agent-registry-boundary">
+          {entry.boundary ?? "Boundary: not available yet from the current data source."}
+        </p>
         <div className="agent-registry-chips">
+          {entry.source === "legacy_agents_endpoint" ? (
+            <span className="subtle-chip" data-tone="unavailable">
+              Legacy summary (from /agents)
+            </span>
+          ) : null}
           {capabilityId ? (
             <span className="subtle-chip">{capabilityTitle(capabilityId)}</span>
           ) : null}
           <span className="subtle-chip">
-            <Cpu size={12} /> {live?.model_tier ?? entry.modelTier}
+            <Cpu size={12} /> {live?.model_tier || "Model tier not discovered yet"}
           </span>
           <span className="subtle-chip">
-            <Globe2 size={12} />{" "}
-            {entry.publicWebBoundary === "read_only"
-              ? "Public web: read-only"
-              : "Public web: none"}
+            <Globe2 size={12} /> {publicBoundaryLabel}
           </span>
-          {entry.knowledge.map((kind) => (
-            <span className="subtle-chip" key={kind}>
-              {kind}
+          {(live?.workflow_steps ?? []).map((step) => (
+            <span className="subtle-chip" key={step}>
+              {step}
             </span>
           ))}
         </div>
         <dl className="agent-registry-facts">
           <div>
             <dt>Discovered project model</dt>
-            <dd>{live?.deployment ?? "Not discovered yet"}</dd>
+            <dd>
+              {live?.deployment || entry.discovered_project_model || "Not discovered yet"}
+            </dd>
           </div>
           <div>
             <dt>Studio usage</dt>
@@ -212,7 +241,7 @@ export function AgentRegistryCard({
           {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
           Live evaluation, health & versions
         </button>
-        {entry.ownerKind === "platform" ? (
+        {entry.owner_kind === "platform" ? (
           <button
             type="button"
             className="agent-registry-fork"
@@ -251,8 +280,8 @@ export function AgentRegistryCard({
               <div>
                 <strong>Versions</strong>
                 <span>
-                  {versions && versions.length > 0
-                    ? `${versions.length} recorded`
+                  {releases && releases.length > 0
+                    ? `${releases.length} recorded`
                     : "Immutable baseline only — no version history yet"}
                 </span>
               </div>
@@ -292,7 +321,7 @@ function CreateAgentPanel({ onClose }: { onClose: () => void }) {
       .then((response) =>
         setResult({
           kind: "success",
-          message: `Draft agent ${response.id} created.`,
+          message: `Draft agent ${response.draft_id} created.`,
         }),
       )
       .catch((error: unknown) => {
@@ -392,17 +421,50 @@ export function AgentRegistryView({ data, onOpenAgent }: AgentRegistryProps) {
   const [query, setQuery] = useState("");
   const [ownerFilter, setOwnerFilter] = useState<OwnerFilter>("all");
   const [creating, setCreating] = useState(false);
+  const [catalog, setCatalog] = useState<AgentSummary[] | null>(null);
+  const [catalogError, setCatalogError] = useState<ReturnType<
+    typeof classifyAsyncError
+  > | null>(null);
 
-  const filtered = useMemo(() => {
-    return AGENT_CATALOG.filter((entry) => {
-      const matchesOwner =
-        ownerFilter === "all" || entry.ownerKind === ownerFilter;
-      const matchesQuery = `${entry.name} ${entry.purpose}`
-        .toLowerCase()
-        .includes(query.toLowerCase());
-      return matchesOwner && matchesQuery;
-    });
-  }, [query, ownerFilter]);
+  useEffect(() => {
+    let cancelled = false;
+    void getAgentStudioCatalog()
+      .then((next) => {
+        if (!cancelled) {
+          setCatalog(next);
+          setCatalogError(null);
+        }
+      })
+      .catch((error: unknown) => {
+        if (!cancelled) setCatalogError(classifyAsyncError(error));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  const agents = useMemo<AgentSummary[]>(() => {
+    if (catalog) return catalog;
+    if (data) return buildLegacyAgentSummaries(data.agents);
+    return [];
+  }, [catalog, data]);
+
+  const systemAgents = useMemo(
+    () => agents.filter((entry) => entry.owner_kind === "platform"),
+    [agents],
+  );
+  const yourAgents = useMemo(
+    () => agents.filter((entry) => entry.owner_kind === "researcher"),
+    [agents],
+  );
+
+  const applyFilters = (list: AgentSummary[]) =>
+    filterAgentSummaries(list, ownerFilter, query);
+
+  const filteredSystemAgents = useMemo(
+    () => filterAgentSummaries(systemAgents, ownerFilter, query),
+    [systemAgents, ownerFilter, query],
+  );
 
   return (
     <div className="operational-page agent-registry-page">
@@ -426,6 +488,13 @@ export function AgentRegistryView({ data, onOpenAgent }: AgentRegistryProps) {
           <Plus size={16} /> New agent
         </button>
       </header>
+
+      {catalogError ? (
+        <AsyncStateBanner
+          kind="unavailable"
+          message="The Agent Studio catalog (/v1/agent-studio/agents) isn't available yet — showing a legacy summary built from /agents. Purpose and boundary text will populate once that endpoint ships."
+        />
+      ) : null}
 
       {creating ? (
         <CreateAgentPanel onClose={() => setCreating(false)} />
@@ -469,19 +538,19 @@ export function AgentRegistryView({ data, onOpenAgent }: AgentRegistryProps) {
               <div>
                 <h2>System agents</h2>
                 <p>
-                  {AGENT_CATALOG.length} platform-owned Hosted Agent
+                  {systemAgents.length} platform-owned Hosted Agent
                   deployments, shown equally regardless of capability.
                 </p>
               </div>
             </div>
-            {filtered.length === 0 ? (
+            {filteredSystemAgents.length === 0 ? (
               <EmptyBlock
                 title="No agents match this filter"
                 description="Clear the search or owner filter to see every agent."
               />
             ) : (
               <div className="agent-registry-grid">
-                {filtered.map((entry) => (
+                {filteredSystemAgents.map((entry) => (
                   <AgentRegistryCard
                     key={entry.id}
                     entry={entry}
@@ -500,19 +569,32 @@ export function AgentRegistryView({ data, onOpenAgent }: AgentRegistryProps) {
                 <p>Researcher-created agents forked or built from scratch.</p>
               </div>
             </div>
-            <EmptyBlock
-              title="No custom agents yet"
-              description="Start from a task template or a blank conversational intent above to create your first agent."
-              action={
-                <button
-                  type="button"
-                  className="primary-button"
-                  onClick={() => setCreating(true)}
-                >
-                  <Plus size={14} /> New agent
-                </button>
-              }
-            />
+            {yourAgents.length === 0 ? (
+              <EmptyBlock
+                title="No custom agents yet"
+                description="Start from a task template or a blank conversational intent above to create your first agent."
+                action={
+                  <button
+                    type="button"
+                    className="primary-button"
+                    onClick={() => setCreating(true)}
+                  >
+                    <Plus size={14} /> New agent
+                  </button>
+                }
+              />
+            ) : (
+              <div className="agent-registry-grid">
+                {applyFilters(yourAgents).map((entry) => (
+                  <AgentRegistryCard
+                    key={entry.id}
+                    entry={entry}
+                    data={data}
+                    onOpenAgent={onOpenAgent}
+                  />
+                ))}
+              </div>
+            )}
           </section>
         </>
       )}

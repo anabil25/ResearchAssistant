@@ -13,57 +13,42 @@ import {
 } from "@/components/agent-workspace";
 import {
   ApiError,
+  applyBuilderProposal,
+  forgetAgentMemoryScope,
+  getAgentDeployment,
+  getAgentDraft,
   getAgentEvaluation,
   getAgentHealth,
-  getAgentVersions,
-  proposeManifestChange,
+  getAgentRelease,
+  getAgentReleases,
+  getAgentTraces,
+  postBuilderMessage,
   runStudio,
   type WorkspaceData,
 } from "@/lib/api";
-import type { ConnectorSetting, RunSummary, WorkflowBlueprint } from "@/lib/types";
-
-// A researcher-owned fixture entry: every entry in the real, static
-// AGENT_CATALOG is platform-owned, so ownerKind === "researcher" and an
-// unresolved specialist id are otherwise unreachable through
-// AgentWorkspaceView's own `getAgentCatalogEntry` lookup. This mock adds one
-// fixture id alongside the real catalog so those branches can be exercised
-// directly without fabricating unrealistic app-wide data.
-jest.mock("@/lib/agent-catalog", () => {
-  const actual = jest.requireActual("@/lib/agent-catalog");
-  const researcherFixtureEntry = {
-    id: "researcher-fixture",
-    name: "researcher-fixture-agent",
-    ownerKind: "researcher",
-    purpose: "A researcher-built fixture agent for testing only.",
-    boundary: "Fixture boundary text for testing only.",
-    knowledge: ["custom-notes"],
-    tools: ["custom-tool"],
-    modelTier: "fast",
-    outputContract: "FixtureContractV1",
-    workflowSteps: [],
-    publicWebBoundary: "none",
-    connectorSources: [],
-    capability: "literature",
-    specialists: ["missing-specialist-id"],
-  };
-  return {
-    ...actual,
-    getAgentCatalogEntry: (id: string) =>
-      id === "researcher-fixture"
-        ? researcherFixtureEntry
-        : actual.getAgentCatalogEntry(id),
-  };
-});
-
+import type {
+  AgentBuilderProposal,
+  AgentContractView,
+  AgentDraftView,
+  AgentReleaseSummary,
+  RunSummary,
+  WorkflowBlueprint,
+} from "@/lib/types";
 
 jest.mock("@/lib/api", () => {
   const actual = jest.requireActual("@/lib/api");
   return {
     ApiError: actual.ApiError,
+    applyBuilderProposal: jest.fn(),
+    forgetAgentMemoryScope: jest.fn(),
+    getAgentDeployment: jest.fn(),
+    getAgentDraft: jest.fn(),
     getAgentEvaluation: jest.fn(),
     getAgentHealth: jest.fn(),
-    getAgentVersions: jest.fn(),
-    proposeManifestChange: jest.fn(),
+    getAgentRelease: jest.fn(),
+    getAgentReleases: jest.fn(),
+    getAgentTraces: jest.fn(),
+    postBuilderMessage: jest.fn(),
     runStudio: jest.fn(),
   };
 });
@@ -98,25 +83,6 @@ jest.mock("@/components/studio-components", () => ({
     </div>
   ),
 }));
-
-function connector(overrides: Partial<ConnectorSetting> = {}): ConnectorSetting {
-  return {
-    id: "pubmed",
-    name: "PubMed",
-    category: "Literature",
-    description: "Biomedical citations and abstracts.",
-    auth_kind: "None",
-    secret_status: "Not required",
-    enabled: true,
-    test_status: "ready",
-    last_tested_at: null,
-    assigned_agents: ["literature"],
-    terms_url: "https://www.ncbi.nlm.nih.gov/home/about/policies/",
-    data_boundary: "Public metadata only.",
-    capabilities: ["Search", "Metadata"],
-    ...overrides,
-  };
-}
 
 function runSummary(overrides: Partial<RunSummary> = {}): RunSummary {
   return {
@@ -200,6 +166,77 @@ function workspaceData(overrides: Partial<WorkspaceData> = {}): WorkspaceData {
   };
 }
 
+function emptyContract(): AgentContractView {
+  return {
+    purpose: null,
+    boundary: null,
+    input_artifact: null,
+    instructions: null,
+    evidence_policy: null,
+    model: { deployment: null, discovered: false },
+    knowledge: null,
+    tools: null,
+    memory: { scopes: [] },
+    connections: null,
+    specialists: null,
+    capabilities: null,
+    safety: null,
+    tests: null,
+    deployment: null,
+    public_boundary: null,
+  };
+}
+
+function draftView(overrides: Partial<AgentDraftView> = {}): AgentDraftView {
+  return {
+    draft_id: "draft-7",
+    agent_id: null,
+    base_version: null,
+    status: "editing",
+    etag: "etag-1",
+    contract: emptyContract(),
+    created_by: "researcher",
+    created_at: "2026-07-16T12:00:00Z",
+    ...overrides,
+  };
+}
+
+function builderProposal(
+  overrides: Partial<AgentBuilderProposal> = {},
+): AgentBuilderProposal {
+  return {
+    proposal_id: "proposal-1",
+    draft_id: "draft-7",
+    summary: "Only cite papers from the last 5 years.",
+    patch: [],
+    before_summary: "Cites papers of any age.",
+    after_summary: "Only cites papers from the last 5 years.",
+    capability_changes: [],
+    permission_changes: [],
+    data_boundary_changes: [],
+    validation_warnings: [],
+    base_etag: "etag-1",
+    ...overrides,
+  };
+}
+
+function releaseSummary(
+  overrides: Partial<AgentReleaseSummary> = {},
+): AgentReleaseSummary {
+  return {
+    version: "1.0.0",
+    created_at: "2026-01-01T00:00:00Z",
+    created_by: "platform",
+    changelog: "Initial release.",
+    derived_from: null,
+    content_hash: "sha256:0000000000000000",
+    model_version: "gpt-5-fast",
+    capability_versions: {},
+    deployment_status: "deployed",
+    ...overrides,
+  };
+}
+
 beforeEach(() => {
   jest.clearAllMocks();
 });
@@ -223,48 +260,124 @@ async function flush() {
 }
 
 describe("BuildTab", () => {
+  beforeEach(() => {
+    jest.mocked(getAgentDraft).mockResolvedValue(draftView());
+  });
+
   it("does not submit when the trimmed intent is empty, even if the form is force-submitted", () => {
     const { container } = render(<BuildTab agentId="literature" />);
     const form = container.querySelector("form") as HTMLFormElement;
     fireEvent.submit(form);
-    expect(proposeManifestChange).not.toHaveBeenCalled();
+    expect(postBuilderMessage).not.toHaveBeenCalled();
   });
 
-  it("submits an intent and renders the proposed manifest change on success", async () => {
-    const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockResolvedValue({
-      id: "proposal-1",
-      agent_id: "literature",
-      summary: "Only cite papers from the last 5 years.",
-      changes: [],
-      created_at: "2026-07-16T12:00:00Z",
-    });
+  it("shows the loaded draft status chip, falling back to 'not loaded yet' while pending", async () => {
+    jest.mocked(getAgentDraft).mockResolvedValue(draftView({ status: "validating" }));
     render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: validating")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows 'not loaded yet' when the draft fetch fails", async () => {
+    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("no draft endpoint", 404));
+    render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: not loaded yet")).toBeInTheDocument(),
+    );
+  });
+
+  it("submits an intent and renders the proposed change for review, then applies it", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({ draft_id: "draft-42", etag: "etag-42" }),
+    );
+    jest.mocked(postBuilderMessage).mockResolvedValue(
+      builderProposal({
+        draft_id: "draft-42",
+        base_etag: "etag-42",
+        capability_changes: ["Attach web-search v2"],
+        permission_changes: ["Grant write access to Workspace Library"],
+        data_boundary_changes: ["Outbound results now include full text"],
+        validation_warnings: ["Citation coverage threshold not yet re-evaluated"],
+      }),
+    );
+    jest.mocked(applyBuilderProposal).mockResolvedValue(
+      draftView({ draft_id: "draft-42", status: "ready_for_review" }),
+    );
+    render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: editing")).toBeInTheDocument(),
+    );
 
     const input = screen.getByLabelText("Describe the change you want");
     await user.type(input, "Only cite recent papers.");
     await user.click(screen.getByRole("button", { name: /Propose change/ }));
 
     await waitFor(() =>
-      expect(proposeManifestChange).toHaveBeenCalledWith(
-        "literature",
+      expect(postBuilderMessage).toHaveBeenCalledWith(
+        "draft-42",
         "Only cite recent papers.",
-        [{ path: "builder_intent", before: null, after: "Only cite recent papers." }],
+        "etag-42",
       ),
     );
     await waitFor(() =>
       expect(
-        screen.getByText(/Proposed manifest change proposal-1/),
+        screen.getByText(/Proposed change proposal-1: Only cite papers from the last 5 years\./),
       ).toBeInTheDocument(),
     );
     expect(input).toHaveValue("");
+    expect(screen.getByText("Cites papers of any age.")).toBeInTheDocument();
+    expect(screen.getByText("Attach web-search v2")).toBeInTheDocument();
+    expect(
+      screen.getByText("Grant write access to Workspace Library"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Outbound results now include full text"),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByText("Citation coverage threshold not yet re-evaluated"),
+    ).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "Approve & apply" }));
+    await waitFor(() =>
+      expect(applyBuilderProposal).toHaveBeenCalledWith(
+        "draft-42",
+        "proposal-1",
+        "etag-42",
+      ),
+    );
+    await waitFor(() =>
+      expect(screen.getByText("Change applied to the draft.")).toBeInTheDocument(),
+    );
+    expect(screen.getByText("Draft status: ready_for_review")).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "Approve & apply" }),
+    ).not.toBeInTheDocument();
   });
 
-  it("shows the unavailable-specific copy when the proposal endpoint is not implemented", async () => {
+  it("falls back to the raw agentId and an empty etag when no draft has loaded", async () => {
     const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockRejectedValue(
-      new ApiError("Not found", 404),
+    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("nope", 404));
+    jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
+    render(<BuildTab agentId="literature" />);
+    await waitFor(() =>
+      expect(screen.getByText("Draft status: not loaded yet")).toBeInTheDocument(),
     );
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+    await waitFor(() =>
+      expect(postBuilderMessage).toHaveBeenCalledWith("literature", "Add a new rule.", ""),
+    );
+  });
+
+  it("shows the unavailable-specific copy when the builder-message endpoint is not implemented", async () => {
+    const user = userEvent.setup();
+    jest.mocked(postBuilderMessage).mockRejectedValue(new ApiError("Not found", 404));
     render(<BuildTab agentId="literature" />);
 
     await user.type(
@@ -275,19 +388,16 @@ describe("BuildTab", () => {
 
     await waitFor(() =>
       expect(
-        screen.getByText(/Manifest change proposals aren't available yet/),
+        screen.getByText(/Builder proposals aren't available yet/),
       ).toBeInTheDocument(),
     );
-    expect(
-      screen.getByText("Add a new rule.", { selector: '[data-role="user"]' }),
-    ).toBeInTheDocument();
+    const userMessage = screen.getByText("Add a new rule.");
+    expect(userMessage).toHaveAttribute("data-role", "user");
   });
 
-  it("shows the classified message for a non-unavailable failure", async () => {
+  it("shows the classified message for a non-unavailable builder-message failure", async () => {
     const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockRejectedValue(
-      new ApiError("Server exploded", 500),
-    );
+    jest.mocked(postBuilderMessage).mockRejectedValue(new ApiError("Server exploded", 500));
     render(<BuildTab agentId="literature" />);
 
     await user.type(
@@ -301,6 +411,60 @@ describe("BuildTab", () => {
     );
   });
 
+  it("shows the unavailable-specific copy when applying a proposal is not implemented", async () => {
+    const user = userEvent.setup();
+    jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
+    jest.mocked(applyBuilderProposal).mockRejectedValue(new ApiError("nope", 404));
+    render(<BuildTab agentId="literature" />);
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve & apply" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Approve & apply" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/Applying this proposal isn't available yet/),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("shows the classified message for a non-unavailable apply failure", async () => {
+    const user = userEvent.setup();
+    jest.mocked(postBuilderMessage).mockResolvedValue(builderProposal());
+    jest.mocked(applyBuilderProposal).mockRejectedValue(
+      new ApiError("Draft was modified concurrently", 409),
+    );
+    render(<BuildTab agentId="literature" />);
+
+    await user.type(
+      screen.getByLabelText("Describe the change you want"),
+      "Add a new rule.",
+    );
+    await user.click(screen.getByRole("button", { name: /Propose change/ }));
+    await waitFor(() =>
+      expect(screen.getByRole("button", { name: "Approve & apply" })).toBeInTheDocument(),
+    );
+    await user.click(screen.getByRole("button", { name: "Approve & apply" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Draft was modified concurrently"),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("does nothing when Approve & apply is invoked with no active proposal", () => {
+    render(<BuildTab agentId="literature" />);
+    expect(
+      screen.queryByRole("button", { name: "Approve & apply" }),
+    ).not.toBeInTheDocument();
+    expect(applyBuilderProposal).not.toHaveBeenCalled();
+  });
+
   it("does not submit an empty or whitespace-only intent", async () => {
     const user = userEvent.setup();
     render(<BuildTab agentId="literature" />);
@@ -309,7 +473,7 @@ describe("BuildTab", () => {
 
     await user.type(screen.getByLabelText("Describe the change you want"), "   ");
     expect(submit).toBeDisabled();
-    expect(proposeManifestChange).not.toHaveBeenCalled();
+    expect(postBuilderMessage).not.toHaveBeenCalled();
   });
 });
 
@@ -498,76 +662,67 @@ describe("EvaluateTab", () => {
 });
 
 describe("DeployTab", () => {
-  it("shows platform copy and 'Not discovered yet' when there is no live status", () => {
-    render(<DeployTab agentId="literature" ownerKind="platform" status={undefined} />);
+  it("shows platform copy and a loading state, then 'Not deployed yet' when there is no version", async () => {
+    jest.mocked(getAgentDeployment).mockResolvedValue({ status: "not_deployed", version: null });
+    render(<DeployTab agentId="literature" ownerKind="platform" />);
     expect(
       screen.getByText(/Only platform owners publish new versions/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Not discovered yet")).toBeInTheDocument();
+    expect(screen.getByText("Loading deployment status…")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("not_deployed")).toBeInTheDocument());
+    expect(screen.getByText("Not deployed yet")).toBeInTheDocument();
   });
 
-  it("shows researcher copy and the live status when present", () => {
-    render(<DeployTab agentId="custom-agent" ownerKind="researcher" status="Active" />);
+  it("shows researcher copy and the deployed version when present", async () => {
+    jest
+      .mocked(getAgentDeployment)
+      .mockResolvedValue({ status: "deployed", version: "1.2.0" });
+    render(<DeployTab agentId="custom-agent" ownerKind="researcher" />);
     expect(
       screen.getByText(/Researcher-created agents deploy through/),
     ).toBeInTheDocument();
-    expect(screen.getByText("Active")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("1.2.0")).toBeInTheDocument());
+    expect(screen.getByText("deployed")).toBeInTheDocument();
   });
 
-  it("submits a deployment request and shows a success message", async () => {
-    const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockResolvedValue({
-      id: "deploy-proposal-1",
-      agent_id: "literature",
-      summary: "Request deployment",
-      changes: [],
-      created_at: "2026-07-16T12:00:00Z",
-    });
-    render(<DeployTab agentId="literature" ownerKind="platform" status="draft" />);
-
-    await user.click(screen.getByRole("button", { name: /Request deployment/ }));
+  it("renders a classified async-state banner when the deployment fetch fails", async () => {
+    jest.mocked(getAgentDeployment).mockRejectedValue(new ApiError("nope", 404));
+    render(<DeployTab agentId="literature" ownerKind="platform" />);
     await waitFor(() =>
-      expect(proposeManifestChange).toHaveBeenCalledWith(
-        "literature",
-        "Request deployment",
-        [{ path: "lifecycle", before: "draft", after: "active" }],
-      ),
-    );
-    await waitFor(() =>
-      expect(
-        screen.getByText(/Deployment request recorded as proposal deploy-proposal-1/),
-      ).toBeInTheDocument(),
+      expect(screen.getByRole("status")).toHaveAttribute("data-tone", "unavailable"),
     );
   });
 
-  it("shows the unavailable-specific copy when direct deployment isn't implemented", async () => {
-    const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockRejectedValue(new ApiError("nope", 404));
-    render(<DeployTab agentId="literature" ownerKind="platform" status={undefined} />);
-
-    await user.click(screen.getByRole("button", { name: /Request deployment/ }));
-    await waitFor(() =>
-      expect(
-        screen.getByText(/Direct deployment controls aren't available yet/),
-      ).toBeInTheDocument(),
-    );
+  it("does not update state after unmount when the deployment request resolves late", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { promise, resolve } = deferred<{ status: string; version: string | null }>();
+    jest.mocked(getAgentDeployment).mockReturnValue(promise);
+    const { unmount } = render(<DeployTab agentId="literature" ownerKind="platform" />);
+    unmount();
+    resolve({ status: "deployed", version: "1.0.0" });
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 
-  it("shows the classified message for a non-unavailable deployment failure", async () => {
-    const user = userEvent.setup();
-    jest.mocked(proposeManifestChange).mockRejectedValue(
-      new ApiError("Deployment gate failed", 409),
-    );
-    render(<DeployTab agentId="literature" ownerKind="platform" status={undefined} />);
-
-    await user.click(screen.getByRole("button", { name: /Request deployment/ }));
-    await waitFor(() =>
-      expect(screen.getByText("Deployment gate failed")).toBeInTheDocument(),
-    );
+  it("does not update state after unmount when the deployment request rejects late", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    const { promise, reject } = deferred<never>();
+    jest.mocked(getAgentDeployment).mockReturnValue(promise);
+    const { unmount } = render(<DeployTab agentId="literature" ownerKind="platform" />);
+    unmount();
+    reject(new Error("late failure"));
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
   });
 });
 
 describe("MonitorTab", () => {
+  beforeEach(() => {
+    jest.mocked(getAgentTraces).mockResolvedValue([]);
+  });
+
   it("shows zero counts and an em dash for last-used when there is no capability", () => {
     jest.mocked(getAgentHealth).mockReturnValue(new Promise(() => {}));
     render(
@@ -684,51 +839,142 @@ describe("MonitorTab", () => {
     expect(consoleError).not.toHaveBeenCalled();
     consoleError.mockRestore();
   });
+
+  it("renders recent traces on success", async () => {
+    jest.mocked(getAgentHealth).mockResolvedValue({
+      state: "healthy",
+      last_checked_at: null,
+      detail: "ok",
+    });
+    jest.mocked(getAgentTraces).mockResolvedValue([
+      { id: "trace-1", started_at: "2026-07-01T10:00:00Z", status: "success", summary: "Ran fine." },
+      { id: "trace-2", started_at: "2026-07-02T10:00:00Z", status: "error", summary: "Timed out." },
+    ]);
+    render(
+      <MonitorTab agentId="literature" data={workspaceData()} capability="literature" />,
+    );
+    await waitFor(() => expect(screen.getByText("Ran fine.")).toBeInTheDocument());
+    expect(screen.getByText("Timed out.")).toBeInTheDocument();
+  });
+
+  it("shows an empty state when there are no traces", async () => {
+    jest.mocked(getAgentHealth).mockResolvedValue({
+      state: "healthy",
+      last_checked_at: null,
+      detail: "ok",
+    });
+    jest.mocked(getAgentTraces).mockResolvedValue([]);
+    render(
+      <MonitorTab agentId="literature" data={workspaceData()} capability="literature" />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("No traces available yet")).toBeInTheDocument(),
+    );
+  });
+
+  it("shows an empty traces state when the traces fetch fails", async () => {
+    jest.mocked(getAgentHealth).mockResolvedValue({
+      state: "healthy",
+      last_checked_at: null,
+      detail: "ok",
+    });
+    jest.mocked(getAgentTraces).mockRejectedValue(new ApiError("nope", 404));
+    render(
+      <MonitorTab agentId="literature" data={workspaceData()} capability="literature" />,
+    );
+    await waitFor(() =>
+      expect(screen.getByText("No traces available yet")).toBeInTheDocument(),
+    );
+  });
+
+  it("does not update trace state after unmount", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.mocked(getAgentHealth).mockResolvedValue({
+      state: "healthy",
+      last_checked_at: null,
+      detail: "ok",
+    });
+    const { promise, resolve } = deferred<never[]>();
+    jest.mocked(getAgentTraces).mockReturnValue(promise);
+    const { unmount } = render(
+      <MonitorTab agentId="literature" data={workspaceData()} capability="literature" />,
+    );
+    unmount();
+    resolve([]);
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("does not update trace state after unmount when the traces request rejects late", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.mocked(getAgentHealth).mockResolvedValue({
+      state: "healthy",
+      last_checked_at: null,
+      detail: "ok",
+    });
+    const { promise, reject } = deferred<never[]>();
+    jest.mocked(getAgentTraces).mockReturnValue(promise);
+    const { unmount } = render(
+      <MonitorTab agentId="literature" data={workspaceData()} capability="literature" />,
+    );
+    unmount();
+    reject(new ApiError("nope", 404));
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
 });
 
 describe("VersionsTab", () => {
-  it("shows platform copy while loading", () => {
-    jest.mocked(getAgentVersions).mockReturnValue(new Promise(() => {}));
+  beforeEach(() => {
+    jest.mocked(getAgentDraft).mockReturnValue(new Promise(() => {}));
+  });
+
+  it("shows platform copy while loading, and 'not available yet' for the draft status", () => {
+    jest.mocked(getAgentReleases).mockReturnValue(new Promise(() => {}));
     render(<VersionsTab agentId="literature" ownerKind="platform" />);
     expect(
-      screen.getByText(/This agent's baseline is immutable/),
+      screen.getByText(/Every release below is immutable/),
     ).toBeInTheDocument();
     expect(screen.getByText("Loading version history…")).toBeInTheDocument();
+    expect(screen.getByText("not available yet")).toBeInTheDocument();
   });
 
   it("shows researcher copy", () => {
-    jest.mocked(getAgentVersions).mockReturnValue(new Promise(() => {}));
+    jest.mocked(getAgentReleases).mockReturnValue(new Promise(() => {}));
     render(<VersionsTab agentId="custom-agent" ownerKind="researcher" />);
     expect(
-      screen.getByText(/Forked and researcher-built agents keep their own version/),
+      screen.getByText(/Forked and researcher-built agents keep their own immutable/),
     ).toBeInTheDocument();
   });
 
-  it("renders the version list on success", async () => {
-    jest.mocked(getAgentVersions).mockResolvedValue([
+  it("renders the release list and separate draft status on success", async () => {
+    jest.mocked(getAgentReleases).mockResolvedValue([
       {
         version: "1.2.0",
         created_at: "2026-06-01T00:00:00Z",
         created_by: "platform-team",
-        status: "active",
         changelog: "Improved citation coverage.",
         derived_from: "1.1.0",
         content_hash: "sha256:abcdef1234567890",
         model_version: "gpt-4o-2026-05-01",
         capability_versions: { "web-search": "3.2.0" },
+        deployment_status: "deployed",
       },
       {
         version: "1.0.0",
         created_at: "2026-01-01T00:00:00Z",
         created_by: "platform-team",
-        status: "active",
         changelog: "Initial release.",
         derived_from: null,
         content_hash: "sha256:0011223344556677",
         model_version: "gpt-4o-2026-01-01",
         capability_versions: {},
+        deployment_status: "rolled_back",
       },
     ]);
+    jest.mocked(getAgentDraft).mockResolvedValue(draftView({ status: "evaluating" }));
     render(<VersionsTab agentId="literature" ownerKind="platform" />);
 
     await waitFor(() => expect(screen.getByText("1.2.0")).toBeInTheDocument());
@@ -736,28 +982,38 @@ describe("VersionsTab", () => {
     expect(screen.getAllByText(/platform-team/).length).toBe(2);
     expect(screen.getByText(/Forked from 1\.1\.0/)).toBeInTheDocument();
     expect(screen.getByText(/Original release/)).toBeInTheDocument();
+    expect(screen.getByText("deployed")).toBeInTheDocument();
+    expect(screen.getByText("rolled back")).toBeInTheDocument();
+    await waitFor(() => expect(screen.getByText("evaluating")).toBeInTheDocument());
   });
 
-  it("shows an empty state when there is no version history", async () => {
-    jest.mocked(getAgentVersions).mockResolvedValue([]);
+  it("shows an empty state when there is no release history", async () => {
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
     render(<VersionsTab agentId="literature" ownerKind="platform" />);
     await waitFor(() =>
       expect(screen.getByText("Immutable baseline only")).toBeInTheDocument(),
     );
   });
 
+  it("falls back to 'not available yet' draft status when the draft fetch fails", async () => {
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
+    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("nope", 404));
+    render(<VersionsTab agentId="literature" ownerKind="platform" />);
+    await waitFor(() => expect(screen.getByText("not available yet")).toBeInTheDocument());
+  });
+
   it("renders a classified async-state banner on failure", async () => {
-    jest.mocked(getAgentVersions).mockRejectedValue(new ApiError("nope", 401));
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("nope", 401));
     render(<VersionsTab agentId="literature" ownerKind="platform" />);
     await waitFor(() =>
       expect(screen.getByRole("status")).toHaveAttribute("data-tone", "unauthorized"),
     );
   });
 
-  it("does not update state after unmount when the versions request resolves late", async () => {
+  it("does not update state after unmount when the releases request resolves late", async () => {
     const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
     const { promise, resolve } = deferred<[]>();
-    jest.mocked(getAgentVersions).mockReturnValue(promise);
+    jest.mocked(getAgentReleases).mockReturnValue(promise);
     const { unmount } = render(<VersionsTab agentId="literature" ownerKind="platform" />);
     unmount();
     resolve([]);
@@ -766,10 +1022,36 @@ describe("VersionsTab", () => {
     consoleError.mockRestore();
   });
 
-  it("does not update state after unmount when the versions request rejects late", async () => {
+  it("does not update state after unmount when the releases request rejects late", async () => {
     const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
     const { promise, reject } = deferred<never>();
-    jest.mocked(getAgentVersions).mockReturnValue(promise);
+    jest.mocked(getAgentReleases).mockReturnValue(promise);
+    const { unmount } = render(<VersionsTab agentId="literature" ownerKind="platform" />);
+    unmount();
+    reject(new Error("late failure"));
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("does not update the draft-status state after unmount when the draft request resolves late", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
+    const { promise, resolve } = deferred<AgentDraftView>();
+    jest.mocked(getAgentDraft).mockReturnValue(promise);
+    const { unmount } = render(<VersionsTab agentId="literature" ownerKind="platform" />);
+    unmount();
+    resolve(draftView());
+    await flush();
+    expect(consoleError).not.toHaveBeenCalled();
+    consoleError.mockRestore();
+  });
+
+  it("does not update the draft-status state after unmount when the draft request rejects late", async () => {
+    const consoleError = jest.spyOn(console, "error").mockImplementation(() => {});
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
+    const { promise, reject } = deferred<never>();
+    jest.mocked(getAgentDraft).mockReturnValue(promise);
     const { unmount } = render(<VersionsTab agentId="literature" ownerKind="platform" />);
     unmount();
     reject(new Error("late failure"));
@@ -783,7 +1065,86 @@ describe("AgentWorkspaceView", () => {
   beforeEach(() => {
     jest.mocked(getAgentEvaluation).mockReturnValue(new Promise(() => {}));
     jest.mocked(getAgentHealth).mockReturnValue(new Promise(() => {}));
-    jest.mocked(getAgentVersions).mockReturnValue(new Promise(() => {}));
+    jest.mocked(getAgentTraces).mockReturnValue(new Promise(() => {}));
+    jest.mocked(getAgentDeployment).mockReturnValue(new Promise(() => {}));
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentRelease).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentDraft).mockResolvedValue(draftView());
+  });
+
+  it("shows a loading state while workspace data has not arrived", () => {
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={null}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    expect(screen.getByText("Loading agent workspace…")).toBeInTheDocument();
+  });
+
+  it("resets the contract to loading and refetches when the agentId prop changes without unmounting", async () => {
+    jest.mocked(getAgentReleases).mockImplementation((agentId: string) =>
+      agentId === "literature"
+        ? Promise.reject(new ApiError("no releases yet", 404))
+        : Promise.resolve([releaseSummary({ version: "2.0.0" })]),
+    );
+    jest.mocked(getAgentRelease).mockImplementation((agentId: string) =>
+      agentId === "coordinator"
+        ? Promise.resolve({
+            release: releaseSummary({ version: "2.0.0" }),
+            contract: { ...emptyContract(), purpose: "Coordinates specialist agents." },
+          })
+        : Promise.reject(new ApiError("no releases yet", 404)),
+    );
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+        {
+          id: "coordinator",
+          name: "coordinator-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    const { rerender } = render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getByLabelText("Behavioral contract")).toBeInTheDocument(),
+    );
+
+    rerender(
+      <AgentWorkspaceView
+        agentId="coordinator"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getAllByText("Coordinates specialist agents.").length,
+      ).toBeGreaterThan(0),
+    );
   });
 
   it("shows a not-found empty state and calls onBack for an unknown agent id", async () => {
@@ -792,7 +1153,7 @@ describe("AgentWorkspaceView", () => {
     render(
       <AgentWorkspaceView
         agentId="unknown-agent"
-        data={workspaceData()}
+        data={workspaceData({ agents: [] })}
         onRefresh={jest.fn()}
         onBack={onBack}
       />,
@@ -802,59 +1163,181 @@ describe("AgentWorkspaceView", () => {
     expect(onBack).toHaveBeenCalled();
   });
 
-  it("falls back to no connections when data is null", () => {
+  it("renders researcher-owned copy for an agent id outside the structural system index", async () => {
+    const data = workspaceData({
+      agents: [
+        {
+          id: "custom-agent",
+          name: "custom-agent",
+          deployment: "",
+          model_tier: "fast",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
     render(
       <AgentWorkspaceView
-        agentId="literature"
-        data={null}
-        onRefresh={jest.fn()}
-        onBack={jest.fn()}
-      />,
-    );
-    const contract = screen.getByLabelText("Behavioral contract");
-    expect(
-      within(contract).getByText("No workspace connections assigned yet."),
-    ).toBeInTheDocument();
-  });
-
-  it("renders researcher-owned copy and an unresolved specialist id as a literal fallback", () => {
-    render(
-      <AgentWorkspaceView
-        agentId="researcher-fixture"
-        data={workspaceData()}
+        agentId="custom-agent"
+        data={data}
         onRefresh={jest.fn()}
         onBack={jest.fn()}
       />,
     );
     expect(screen.getByText("Researcher-owned")).toBeInTheDocument();
-    const contract = screen.getByLabelText("Behavioral contract");
-    expect(within(contract).getByText("missing-specialist-id")).toBeInTheDocument();
   });
 
-  it("renders the behavioral contract with no-data branches for an agent with specialists and no connections", () => {
+  it("renders 'Not available yet' fallbacks throughout the contract when the draft has no data", async () => {
+    const data = workspaceData({
+      agents: [
+        {
+          id: "coordinator",
+          name: "coordinator-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
     render(
       <AgentWorkspaceView
         agentId="coordinator"
-        data={workspaceData()}
+        data={data}
         onRefresh={jest.fn()}
         onBack={jest.fn()}
       />,
     );
     const contract = screen.getByLabelText("Behavioral contract");
-    expect(within(contract).getAllByText("None")).toHaveLength(2); // knowledge, tools
-    expect(
-      within(contract).getByText("No workspace connections assigned yet."),
-    ).toBeInTheDocument();
-    expect(
-      within(contract).getByText(/literature-agent/),
-    ).toBeInTheDocument(); // specialist display name resolved from catalog
-    expect(within(contract).getByText("No public web access.")).toBeInTheDocument();
-    expect(within(contract).getByText("Not discovered yet")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(contract).getAllByText("Not available yet.").length).toBeGreaterThan(0),
+    );
+    expect(within(contract).getByText("None attached yet.")).toBeInTheDocument();
+    expect(within(contract).getByText(/Not discovered yet/)).toBeInTheDocument();
   });
 
-  it("renders connections, live model/status, and the read-only web boundary for a discovered agent", () => {
+  it("renders an unresolved specialist id as a literal fallback when the specialist has no display name", async () => {
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          specialists: [
+            {
+              id: "missing-specialist-id",
+              name: null,
+              owner_kind: null,
+              purpose: null,
+              attached: false,
+            },
+          ],
+        },
+      }),
+    );
     const data = workspaceData({
-      connectors: [connector({ assigned_agents: ["literature_online"] })],
+      agents: [
+        {
+          id: "custom-agent",
+          name: "custom-agent",
+          deployment: "",
+          model_tier: "fast",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="custom-agent"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    const contract = screen.getByLabelText("Behavioral contract");
+    await waitFor(() =>
+      expect(within(contract).getByText(/missing-specialist-id/)).toBeInTheDocument(),
+    );
+    expect(within(contract).getByText(/not attached/)).toBeInTheDocument();
+  });
+
+  it("renders connections, capabilities, live model/status, and the read-only public web boundary for a discovered release", async () => {
+    jest.mocked(getAgentReleases).mockResolvedValue([
+      {
+        version: "1.0.0",
+        created_at: "2026-01-01T00:00:00Z",
+        created_by: "platform",
+        changelog: "Initial release.",
+        derived_from: null,
+        content_hash: "sha256:0000000000000000",
+        model_version: "gpt-5-fast",
+        capability_versions: {},
+        deployment_status: "deployed",
+      },
+    ]);
+    jest.mocked(getAgentRelease).mockResolvedValue({
+      release: {
+        version: "1.0.0",
+        created_at: "2026-01-01T00:00:00Z",
+        created_by: "platform",
+        changelog: "Initial release.",
+        derived_from: null,
+        content_hash: "sha256:0000000000000000",
+        model_version: "gpt-5-fast",
+        capability_versions: {},
+        deployment_status: "deployed",
+      },
+      contract: {
+        ...emptyContract(),
+        deployment: null,
+        connections: [
+          {
+            id: "pubmed",
+            name: "PubMed",
+            readiness: "ready",
+            permissions: ["read"],
+            scope: "workspace",
+            policy: null,
+            version: "3.2.0",
+          },
+        ],
+        capabilities: [
+          {
+            descriptor: {
+              id: "web-search",
+              family: "web",
+              operation: "search",
+              risk_class: "read",
+              description: "Search the public web.",
+            },
+            instance: {
+              id: "web-search-instance-1",
+              descriptor_id: "web-search",
+              maturity: "ga",
+              provider: "bing",
+              destination: null,
+              available: true,
+            },
+            binding: {
+              instance_id: "web-search-instance-1",
+              enabled: true,
+              approval_state: "not_required",
+              version_pin: "3.2.0",
+            },
+          },
+        ],
+        public_boundary: {
+          mode: "public_online",
+          sources: null,
+          outbound_data_boundary: "Public metadata only, no raw data.",
+          write_destinations: null,
+          approval_required: true,
+        },
+      },
+    });
+    const data = workspaceData({
       agents: [
         {
           id: "literature_online",
@@ -862,7 +1345,7 @@ describe("AgentWorkspaceView", () => {
           deployment: "gpt-5-fast",
           model_tier: "fast",
           status: "Active",
-          web_access: "read_only",
+          web_access: "some public description",
           workflow_steps: [],
         },
       ],
@@ -876,15 +1359,315 @@ describe("AgentWorkspaceView", () => {
       />,
     );
     const contract = screen.getByLabelText("Behavioral contract");
-    expect(within(contract).getByText("PubMed")).toBeInTheDocument();
-    expect(within(contract).getByText("gpt-5-fast (discovered from project deployments)")).toBeInTheDocument();
+    await waitFor(() =>
+      expect(within(contract).getByText("PubMed")).toBeInTheDocument(),
+    );
     expect(
-      within(contract).getByText(/Public web access is read-only/),
+      within(contract).getByText(
+        "gpt-5-fast (discovered from project deployments)",
+      ),
     ).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/Every result is treated as untrusted data/),
+    ).toBeInTheDocument();
+    expect(within(contract).getByText(/Approval required for writes/)).toBeInTheDocument();
+    expect(within(contract).getByText("web") ).toBeInTheDocument();
+    expect(within(contract).getByText(/search/)).toBeInTheDocument();
+    expect(within(contract).getByText(/pinned to 3\.2\.0/)).toBeInTheDocument();
     expect(within(contract).getByText("Active")).toBeInTheDocument();
+    expect(
+      screen.getByText(/Showing the immutable release/),
+    ).toBeInTheDocument();
+    expect(screen.getByText("1.0.0", { exact: false })).toBeInTheDocument();
   });
 
-  it("expands Advanced to reveal schema, runtime, and identity details including the live deployment id", async () => {
+  it("shows a draft-based note and a genuine error banner when the contract fetch fails entirely", async () => {
+    jest.mocked(getAgentDraft).mockRejectedValue(new ApiError("no draft either", 404));
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    const contract = screen.getByLabelText("Behavioral contract");
+    await waitFor(() =>
+      expect(
+        within(contract).getByRole("status"),
+      ).toHaveAttribute("data-tone", "unavailable"),
+    );
+    expect(within(contract).getByText("Not available yet")).toBeInTheDocument();
+  });
+
+  it("shows the mutable-draft note when no release exists but the draft loads", async () => {
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No published release yet — showing the current mutable draft\./),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("falls back to the draft when the release list resolves empty rather than rejecting", async () => {
+    jest.mocked(getAgentReleases).mockResolvedValue([]);
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByText(/No published release yet — showing the current mutable draft\./),
+      ).toBeInTheDocument(),
+    );
+  });
+
+  it("ignores a release-contract resolution that arrives after the workspace view unmounts", async () => {
+    const releaseCall = deferred<{
+      release: AgentReleaseSummary;
+      contract: AgentContractView;
+    }>();
+    jest.mocked(getAgentReleases).mockResolvedValue([releaseSummary()]);
+    jest.mocked(getAgentRelease).mockReturnValue(releaseCall.promise);
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "gpt-5-fast",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    const { unmount } = render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    unmount();
+    releaseCall.resolve({ release: releaseSummary(), contract: emptyContract() });
+    await flush();
+    // No assertion beyond not throwing: the effect's cleanup must have set
+    // `cancelled = true` so the post-unmount `setContract`/`setStatus` calls
+    // are skipped rather than triggering a React state update on an
+    // unmounted component.
+  });
+
+  it("ignores a draft-fallback resolution that arrives after the workspace view unmounts", async () => {
+    const draftCall = deferred<AgentDraftView>();
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentDraft).mockReturnValue(draftCall.promise);
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    const { unmount } = render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    unmount();
+    draftCall.resolve(draftView());
+    await flush();
+  });
+
+  it("ignores a final release-and-draft failure that arrives after the workspace view unmounts", async () => {
+    const draftCall = deferred<AgentDraftView>();
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentDraft).mockReturnValue(draftCall.promise);
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    const { unmount } = render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    unmount();
+    draftCall.reject(new ApiError("no draft either", 404));
+    await flush();
+  });
+
+  it("renders populated knowledge/tools, alternate connection/specialist/capability shapes, and the deepest model/deployment/tier fallbacks", async () => {
+    const user = userEvent.setup();
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          knowledge: ["Indexed PubMed abstracts (2015–present)"],
+          tools: ["citation_lookup"],
+          connections: [
+            {
+              id: "workspace-drive",
+              name: "Workspace Drive",
+              readiness: "ready",
+              permissions: [],
+              scope: "workspace",
+              policy: null,
+              version: null,
+            },
+          ],
+          specialists: [
+            {
+              id: "stats-reviewer",
+              name: "Stats reviewer",
+              owner_kind: "researcher",
+              purpose: null,
+              attached: true,
+            },
+          ],
+          capabilities: [
+            {
+              descriptor: {
+                id: "analysis-summarize",
+                family: "analysis",
+                operation: "summarize",
+                risk_class: "read",
+                description: "Summarize retrieved evidence.",
+              },
+              instance: null,
+              binding: {
+                instance_id: "analysis-summarize-instance",
+                enabled: false,
+                approval_state: "not_required",
+                version_pin: null,
+              },
+            },
+          ],
+        },
+      }),
+    );
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "",
+          status: "",
+          web_access: "",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    const contract = screen.getByLabelText("Behavioral contract");
+    await waitFor(() =>
+      expect(
+        within(contract).getByText("Indexed PubMed abstracts (2015–present)"),
+      ).toBeInTheDocument(),
+    );
+    expect(within(contract).getByText("citation_lookup")).toBeInTheDocument();
+    expect(within(contract).getByText("Workspace Drive")).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/no permissions.*· workspace$/),
+    ).toBeInTheDocument();
+    expect(within(contract).getByText(/Stats reviewer \(researcher\)/)).toBeInTheDocument();
+    expect(within(contract).getByText(/— attached/)).toBeInTheDocument();
+    expect(within(contract).getByText("unknown")).toBeInTheDocument();
+    expect(within(contract).getByText(/Disabled/)).toBeInTheDocument();
+    expect(within(contract).queryByText(/pinned to/)).not.toBeInTheDocument();
+    expect(
+      within(contract).getAllByText("Not available yet.").length,
+    ).toBeGreaterThan(0);
+    expect(
+      within(contract).getAllByText(/Not discovered yet/).length,
+    ).toBeGreaterThanOrEqual(2);
+
+    await user.click(screen.getByRole("button", { name: /Advanced/ }));
+    expect(screen.getByText(/pinned to the undiscovered tier/)).toBeInTheDocument();
+  });
+
+  it("expands Advanced to reveal schema, runtime, identity, and the specialist hint including the live deployment id", async () => {
     const user = userEvent.setup();
     const data = workspaceData({
       agents: [
@@ -914,89 +1697,191 @@ describe("AgentWorkspaceView", () => {
     await user.click(toggle);
     expect(toggle).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByText("Runtime")).toBeInTheDocument();
-    const advanced = document.querySelector(".agent-workspace-advanced");
-    expect(advanced).not.toBeNull();
-    expect(within(advanced as HTMLElement).getByText(/Deployment/)).toBeInTheDocument();
-    expect(within(advanced as HTMLElement).getByText("gpt-5-primary")).toBeInTheDocument();
-
-    await user.click(toggle);
-    expect(screen.queryByText("Runtime")).not.toBeInTheDocument();
+    expect(screen.getByText(/pinned to the primary tier/)).toBeInTheDocument();
+    expect(screen.getByText("literature")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5-primary")).toBeInTheDocument();
+    expect(screen.getByText(/Attach a specialist/)).toBeInTheDocument();
+    expect(screen.getByText(/describe it in Build/)).toBeInTheDocument();
   });
 
-  it("does not show a live deployment id under Advanced when the agent has not been discovered", async () => {
+  it("switches tabs and renders the corresponding tab panel", async () => {
     const user = userEvent.setup();
+    jest.mocked(getAgentDeployment).mockResolvedValue({ status: "not_deployed", version: null });
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
     render(
       <AgentWorkspaceView
         agentId="literature"
-        data={workspaceData()}
+        data={data}
         onRefresh={jest.fn()}
         onBack={jest.fn()}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Advanced/ }));
-    const advanced = document.querySelector(".agent-workspace-advanced");
-    expect(advanced).not.toBeNull();
-    expect(within(advanced as HTMLElement).getByText("Agent ID")).toBeInTheDocument();
-    expect(within(advanced as HTMLElement).queryByText(/Deployment/)).not.toBeInTheDocument();
-  });
-
-  it("switches between all six tabs", async () => {
-    const user = userEvent.setup();
-    render(
-      <AgentWorkspaceView
-        agentId="literature"
-        data={workspaceData()}
-        onRefresh={jest.fn()}
-        onBack={jest.fn()}
-      />,
-    );
-    const tabpanel = screen.getByRole("tabpanel");
-    expect(within(tabpanel).getByText("Builder Agent")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Test" }));
-    expect(within(tabpanel).getByTestId("studio-stub")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Evaluate" }));
-    expect(within(tabpanel).getByText("Advisory evaluation")).toBeInTheDocument();
-
     await user.click(screen.getByRole("tab", { name: "Deploy" }));
-    expect(within(tabpanel).getByText("Deployment")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Monitor" }));
-    expect(within(tabpanel).getByText("Health & usage")).toBeInTheDocument();
-
+    await waitFor(() =>
+      expect(screen.getByText(/Only platform owners publish new versions/)).toBeInTheDocument(),
+    );
     await user.click(screen.getByRole("tab", { name: "Versions" }));
-    expect(within(tabpanel).getByText("Versions")).toBeInTheDocument();
-
-    await user.click(screen.getByRole("tab", { name: "Build" }));
-    expect(within(tabpanel).getByText("Builder Agent")).toBeInTheDocument();
+    expect(screen.getByText(/Every release below is immutable/)).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Test" }));
+    expect(screen.getByTestId("studio-stub")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Evaluate" }));
+    expect(screen.getByLabelText("Advisory evaluation")).toBeInTheDocument();
+    await user.click(screen.getByRole("tab", { name: "Monitor" }));
+    await waitFor(() =>
+      expect(screen.getByLabelText("Health and usage")).toBeInTheDocument(),
+    );
   });
 
-  it("calls onBack from the workspace header", async () => {
+  it("renders per-scope memory controls and forgets a scope successfully", async () => {
+    jest.mocked(forgetAgentMemoryScope).mockResolvedValue({
+      scope: "conversation",
+      enabled: false,
+      default_enabled: false,
+      retention_days: null,
+      provider: null,
+      access: "Not configured",
+    });
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          memory: {
+            scopes: [
+              {
+                scope: "conversation",
+                enabled: true,
+                default_enabled: false,
+                retention_days: 30,
+                provider: "workspace-store",
+                access: "Read/write by this agent only",
+              },
+            ],
+          },
+        },
+      }),
+    );
     const user = userEvent.setup();
-    const onBack = jest.fn();
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
     render(
       <AgentWorkspaceView
         agentId="literature"
-        data={workspaceData()}
+        data={data}
         onRefresh={jest.fn()}
-        onBack={onBack}
+        onBack={jest.fn()}
       />,
     );
-    await user.click(screen.getByRole("button", { name: /Registry/ }));
-    expect(onBack).toHaveBeenCalled();
+    await waitFor(() => expect(screen.getByText(/30-day retention/)).toBeInTheDocument());
+    expect(screen.getByText("conversation")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Forget" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText("Forget requested for conversation memory."),
+      ).toBeInTheDocument(),
+    );
+    expect(forgetAgentMemoryScope).toHaveBeenCalledWith("literature", "conversation");
+  });
+
+  it("shows a classified error message when forgetting a memory scope fails", async () => {
+    jest.mocked(forgetAgentMemoryScope).mockRejectedValue(new ApiError("nope", 404));
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          memory: {
+            scopes: [
+              {
+                scope: "user",
+                enabled: false,
+                default_enabled: false,
+                retention_days: null,
+                provider: null,
+                access: "Not configured",
+              },
+            ],
+          },
+        },
+      }),
+    );
+    const user = userEvent.setup();
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    await waitFor(() =>
+      expect(screen.getAllByRole("button", { name: "Forget" })).toHaveLength(1),
+    );
+    expect(screen.getByText("user")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Forget" }));
+    await waitFor(() =>
+      expect(
+        screen.getByText(/This feature's backend endpoint isn't implemented/),
+      ).toBeInTheDocument(),
+    );
   });
 
   it("has no detectable accessibility violations", async () => {
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
     const { container } = render(
       <AgentWorkspaceView
         agentId="literature"
-        data={workspaceData()}
+        data={data}
         onRefresh={jest.fn()}
         onBack={jest.fn()}
       />,
     );
-    const results = await axe(container);
-    expect(results).toHaveNoViolations();
+    expect(await axe(container)).toHaveNoViolations();
   });
 });
