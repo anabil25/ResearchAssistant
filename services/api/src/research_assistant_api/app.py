@@ -30,6 +30,7 @@ from research_assistant_core.studio_models import (
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
 from research_assistant_api.agent_studio.authz import ClaimsGroupMembershipResolver
 from research_assistant_api.agent_studio.builder_service import (
@@ -166,6 +167,7 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_release_service = None
         application.state.agent_studio_deployment_service = None
         application.state.agent_studio_builder_service = None
+        application.state.agent_studio_approval_consumption_port = None
     else:
         application.state.agent_studio_store = store
         release_service = ReleaseService(store, registry, model_discovery=model_discovery)
@@ -179,6 +181,12 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
             build_artifact_bundle_store(settings),
             release_service,
         )
+        # Default durable approval-consumption adapter, backed directly by
+        # this package's own store. A future runtime/provider adapter can
+        # wrap or replace this at composition root (e.g. to additionally
+        # confirm the actual tool execution succeeded before durably
+        # recording consumption) without any router/service change.
+        application.state.agent_studio_approval_consumption_port = StoreBackedApprovalConsumptionPort(store)
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:

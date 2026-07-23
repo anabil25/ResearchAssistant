@@ -16,6 +16,11 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Header, HTTPException, Request, status
 
+from research_assistant_api.agent_studio.approval_consumption import (
+    ApprovalConsumptionPort,
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+)
 from research_assistant_api.agent_studio.approvals import (
     ApprovalError,
     compute_approval_effective_state,
@@ -93,6 +98,7 @@ from research_assistant_api.agent_studio.schemas import (
     BuilderRejectRequest,
     CapabilityApprovalRequest,
     CapabilityDiscoverySnapshot,
+    ConsumeCapabilityApprovalRequest,
     CorrectMemoryRequest,
     CreateAgentRequest,
     DeployRequest,
@@ -174,6 +180,26 @@ def _builder_service(request: Request) -> BuilderService:
     if service is None:
         raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
     return cast(BuilderService, service)
+
+
+def _approval_consumption_port(request: Request) -> ApprovalConsumptionPort:
+    """Resolve the app-composed durable approval-consumption adapter.
+
+    Defaults to ``StoreBackedApprovalConsumptionPort`` (backed by this
+    package's own ``AgentStudioStore``) wired at composition root; a future
+    runtime/provider adapter may wrap this (e.g. to additionally confirm
+    the actual tool execution succeeded before durably recording
+    consumption) via ``app.state.agent_studio_approval_consumption_port``
+    without any router change. Unlike the membership resolver, there is no
+    in-process fallback here: consuming an approval durably requires the
+    same Cosmos-backed persistence as every other write in this package, so
+    a missing port means the same "metadata persistence unavailable" 503 as
+    ``_store``/``_release_service``.
+    """
+    port = getattr(request.app.state, "agent_studio_approval_consumption_port", None)
+    if port is None:
+        raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
+    return cast(ApprovalConsumptionPort, port)
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
@@ -822,6 +848,60 @@ def revoke_approval_route(
     effective_state = compute_approval_effective_state(record, revoked=bool(revocations))
     return ApprovalRecordView(record=record, effective_state=effective_state, revocations=revocations)
 
+
+@router.post("/approvals/{approval_id}/consume", response_model=ApprovalConsumptionResult)
+async def consume_approval_route(
+    request: Request,
+    approval_id: str,
+    payload: ConsumeCapabilityApprovalRequest,
+) -> ApprovalConsumptionResult:
+    """Durably, atomically spend a ``CAPABILITY_OPERATION`` approval at
+    actual runtime invocation.
+
+    This is the *only* backend path by which a runtime invocation can turn
+    a decided approval into a spent, one-time authorization: the hosted
+    caller supplies nothing but the decision reference (``approval_id``,
+    from the path) and the concrete facts of this specific invocation
+    (binding/operation/instance/args/destination/policy/release/
+    idempotency) -- never a boolean claim of "this is approved". The acting
+    ``principal_id`` is always the authenticated caller's own identity,
+    never client-supplied. Every identifying field is independently
+    revalidated against the approval's own pinned version/binding by
+    ``ApprovalConsumptionPort`` before anything is durably recorded, so a
+    request naming the right ``approval_id`` cannot be used to spend it
+    against a different binding/operation/instance than what was actually
+    approved. Fails closed (``DENIED``) rather than raising an error for
+    every "not currently authorized" case; only scope/existence failures
+    raise HTTP errors.
+    """
+    identity = _identity(request)
+    store = _store(request)
+    scope = _scope(request, identity, payload.project_id)
+    record = store.get_approval(scope, approval_id)
+    if record is None:
+        raise _not_found(f"Approval '{approval_id}' was not found.")
+    # Resolving the logical agent enforces that the approval actually
+    # belongs to this scope's agent graph before any consumption is
+    # attempted -- the same boundary ``get_approval_route`` enforces for
+    # reads.
+    _resolve_approval_logical_agent_id(store, scope, record)
+    port = _approval_consumption_port(request)
+    consumption_request = ApprovalConsumptionRequest(
+        scope=scope,
+        approval_id=approval_id,
+        principal_id=identity.user_id,
+        binding_id=payload.binding_id,
+        instance_fingerprint=payload.instance_fingerprint,
+        operation_id=payload.operation_id,
+        operation_version=payload.operation_version,
+        args_hash=payload.args_hash,
+        destination_hash=payload.destination_hash,
+        policy_ref=payload.policy_ref,
+        release_id=payload.release_id,
+        invocation_id=payload.invocation_id,
+        idempotency_key=payload.idempotency_key,
+    )
+    return await port.consume_approval(consumption_request)
 
 
 @router.post(

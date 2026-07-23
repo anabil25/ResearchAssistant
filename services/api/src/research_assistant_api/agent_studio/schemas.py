@@ -107,6 +107,41 @@ class RevokeApprovalRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class ConsumeCapabilityApprovalRequest(BaseModel):
+    """Request body to durably, atomically spend a ``CAPABILITY_OPERATION``
+    approval at actual runtime invocation.
+
+    This is the wire contract the callers referenced in
+    ``approval_consumption.ApprovalConsumptionRequest`` carry the client;
+    ``tenant_id``/``project_id`` (via the authenticated identity + this
+    request's ``project_id``) and ``principal_id`` (the caller's own
+    authenticated identity) are never accepted from the client -- a runtime
+    invocation cannot assert who it is or which tenant it belongs to, it can
+    only present the decision reference (``approval_id``, from the path)
+    plus the concrete facts of *this* invocation, all of which are
+    independently revalidated against the approval's own pinned
+    binding/operation/instance/policy/release server-side before anything
+    is durably consumed. There is deliberately no boolean "is this
+    approved" field anywhere on this request: authority comes entirely from
+    the referenced, previously-decided ``StudioApprovalRecord``, never from
+    anything the caller asserts inline.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    binding_id: str = Field(min_length=1, max_length=200)
+    instance_fingerprint: str | None = None
+    operation_id: str = Field(min_length=1, max_length=200)
+    operation_version: str | None = None
+    args_hash: str = Field(min_length=1)
+    destination_hash: str = Field(min_length=1)
+    policy_ref: str | None = None
+    release_id: str | None = None
+    invocation_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1)
+
+
 class EscalationRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

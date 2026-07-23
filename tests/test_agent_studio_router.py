@@ -11,6 +11,7 @@ from typing import Any, cast
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
 from research_assistant_api.agent_studio.authz import (
     MembershipCheckRequest,
@@ -186,6 +187,11 @@ def _build_app(
     app.state.agent_studio_deployment_service = deployment_service
     app.state.agent_studio_memory_service = memory_service
     app.state.agent_studio_builder_service = builder_service
+    # Mirrors app.py's composition root: the durable approval-consumption
+    # port is only available when backed by real persistence.
+    app.state.agent_studio_approval_consumption_port = (
+        StoreBackedApprovalConsumptionPort(store) if store is not None else None
+    )
     return app
 
 
@@ -320,6 +326,37 @@ def memory_unavailable_client(
         memory_service=None,
         builder_service=builder_service,
     )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def approval_consumption_unavailable_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> Iterator[TestClient]:
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    # Simulates a composition root where Cosmos-backed persistence exists
+    # but the approval-consumption adapter itself was not wired -- distinct
+    # from ``unavailable_client`` (no persistence at all), since ``_store``
+    # succeeds here and the 503 must come specifically from
+    # ``_approval_consumption_port``.
+    app.state.agent_studio_approval_consumption_port = None
     with TestClient(app) as test_client:
         yield test_client
 
@@ -1516,6 +1553,273 @@ def test_capability_approval_routes_gate_release_until_approved(
         headers=USER_HEADERS,
     )
     assert decided_again.status_code == 409
+
+
+def _setup_approved_capability_approval(
+    client: TestClient,
+    store: AgentStudioStore,
+    *,
+    logical_agent_id: str,
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """Create an agent with an attached capability, cut a version, request a
+    ``CAPABILITY_OPERATION`` approval for it, and approve it. Returns
+    ``(binding, approval)`` as decoded JSON bodies.
+    """
+    _create_agent(client, logical_agent_id=logical_agent_id, headers=USER_HEADERS)
+    _grant_role(
+        store,
+        logical_agent_id=logical_agent_id,
+        principal_id="consume-requester",
+        role=AgentRole.CONTRIBUTOR,
+    )
+    requester_headers = _project_headers(
+        tenant_id="demo",
+        user_id="consume-requester",
+        project_ids=(DEFAULT_PROJECT_ID,),
+    )
+    attach_response = client.post(
+        "/v1/agent-studio/capabilities/attach",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "connection_ref": "conn-azure-functions",
+            "policy_ref": "policy.capability-approval.write-irreversible.v1",
+        },
+        headers=USER_HEADERS,
+    )
+    assert attach_response.status_code == 200, attach_response.text
+    binding = attach_response.json()
+
+    draft = _get_draft(client, logical_agent_id, headers=USER_HEADERS)
+    draft["manifest"]["capabilities"] = [binding]
+    _update_manifest(client, logical_agent_id, draft["manifest"], headers=USER_HEADERS)
+
+    version = _cut_version(client, logical_agent_id, headers=USER_HEADERS)
+
+    request_response = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/capability-approvals",
+        json=_body(
+            descriptor_id="foundry.azure_functions",
+            operation="invoke",
+            evidence_summary="Reviewed the destination and scopes.",
+        ),
+        headers=requester_headers,
+    )
+    assert request_response.status_code == 200, request_response.text
+    approval = request_response.json()
+
+    decision = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json=_body(approve=True, rationale="approved for consumption"),
+        headers=USER_HEADERS,
+    )
+    assert decision.status_code == 200, decision.text
+
+    return binding, approval
+
+
+def _consume_body(
+    project_id: str = DEFAULT_PROJECT_ID,
+    /,
+    *,
+    binding_id: str,
+    operation_id: str = "invoke",
+    invocation_id: str = "invocation-1",
+    idempotency_key: str = "idem-1",
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return _body(
+        project_id,
+        binding_id=binding_id,
+        operation_id=operation_id,
+        args_hash="hash-args-1",
+        destination_hash="hash-dest-1",
+        invocation_id=invocation_id,
+        idempotency_key=idempotency_key,
+        **kwargs,
+    )
+
+
+def test_consume_approval_route_consumes_once_then_reconciles_then_exhausts(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-consume-approval"
+    )
+
+    first = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert first.status_code == 200, first.text
+    first_body = first.json()
+    assert first_body["outcome"] == "consumed"
+    assert first_body["record"] is not None
+    assert first_body["record"]["binding_id"] == binding["binding_id"]
+    assert first_body["record"]["invocation_id"] == "invocation-1"
+    assert first_body["record"]["principal_id"] == "user-1"
+
+    # Same invocation retrying (identical idempotency_key) reconciles to the
+    # original durable record rather than re-consuming or being denied.
+    retry = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert retry.status_code == 200, retry.text
+    retry_body = retry.json()
+    assert retry_body["outcome"] == "already_consumed"
+    assert retry_body["record"]["id"] == first_body["record"]["id"]
+
+    # A different invocation attempting to reuse the same single-use
+    # approval is denied even though the approval is still "approved".
+    reused = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(
+            binding_id=binding["binding_id"],
+            invocation_id="invocation-2",
+            idempotency_key="idem-2",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert reused.status_code == 200, reused.text
+    reused_body = reused.json()
+    assert reused_body["outcome"] == "exhausted"
+    assert reused_body["record"]["id"] == first_body["record"]["id"]
+    assert reused_body["reason"] is not None
+
+
+def test_consume_approval_route_denies_when_not_approved_or_binding_mismatch(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    _create_agent(client, logical_agent_id="agent-consume-pending", headers=USER_HEADERS)
+    _grant_role(
+        store,
+        logical_agent_id="agent-consume-pending",
+        principal_id="pending-requester",
+        role=AgentRole.CONTRIBUTOR,
+    )
+    requester_headers = _project_headers(
+        tenant_id="demo",
+        user_id="pending-requester",
+        project_ids=(DEFAULT_PROJECT_ID,),
+    )
+    attach_response = client.post(
+        "/v1/agent-studio/capabilities/attach",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "connection_ref": "conn-azure-functions",
+            "policy_ref": "policy.capability-approval.write-irreversible.v1",
+        },
+        headers=USER_HEADERS,
+    )
+    assert attach_response.status_code == 200, attach_response.text
+    binding = attach_response.json()
+
+    draft = _get_draft(client, "agent-consume-pending", headers=USER_HEADERS)
+    draft["manifest"]["capabilities"] = [binding]
+    _update_manifest(client, "agent-consume-pending", draft["manifest"], headers=USER_HEADERS)
+    version = _cut_version(client, "agent-consume-pending", headers=USER_HEADERS)
+
+    request_response = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/capability-approvals",
+        json=_body(
+            descriptor_id="foundry.azure_functions",
+            operation="invoke",
+            evidence_summary="still under review",
+        ),
+        headers=requester_headers,
+    )
+    assert request_response.status_code == 200, request_response.text
+    approval = request_response.json()
+
+    still_pending = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert still_pending.status_code == 200, still_pending.text
+    still_pending_body = still_pending.json()
+    assert still_pending_body["outcome"] == "denied"
+    assert still_pending_body["record"] is None
+
+    decision = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json=_body(approve=True, rationale="approved"),
+        headers=USER_HEADERS,
+    )
+    assert decision.status_code == 200, decision.text
+
+    wrong_binding = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id="not-a-real-binding-id"),
+        headers=USER_HEADERS,
+    )
+    assert wrong_binding.status_code == 200, wrong_binding.text
+    wrong_binding_body = wrong_binding.json()
+    assert wrong_binding_body["outcome"] == "denied"
+    assert wrong_binding_body["record"] is None
+
+
+def test_consume_approval_route_is_not_found_for_missing_or_cross_scope_approval(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    missing = client.post(
+        "/v1/agent-studio/approvals/missing-approval/consume",
+        json=_consume_body(binding_id="whatever"),
+        headers=USER_HEADERS,
+    )
+    assert missing.status_code == 404
+
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-consume-cross-scope"
+    )
+
+    cross_project = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(OTHER_PROJECT_ID, binding_id=binding["binding_id"]),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project.status_code == 404
+
+    cross_tenant = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert cross_tenant.status_code == 404
+
+
+def test_consume_approval_route_returns_503_when_persistence_unavailable(
+    unavailable_client: TestClient,
+) -> None:
+    response = unavailable_client.post(
+        "/v1/agent-studio/approvals/missing-approval/consume",
+        json=_consume_body(binding_id="whatever"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+def test_consume_approval_route_returns_503_when_consumption_port_unavailable(
+    client: TestClient,
+    approval_consumption_unavailable_client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-consume-port-unavailable"
+    )
+    response = approval_consumption_unavailable_client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
 
 
 def test_escalation_routes_cover_pending_approval_and_owner_only_decision(
