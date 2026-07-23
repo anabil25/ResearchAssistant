@@ -37,6 +37,7 @@ from research_assistant_api.agent_studio.models import (
     InstanceReadiness,
     OperationClass,
     OperationMaturity,
+    utc_now,
 )
 
 _LEARN_TOOL_CATALOG_URL = (
@@ -423,6 +424,8 @@ class CapabilityRegistry:
         seed = descriptors if descriptors is not None else _seed_descriptors()
         self._descriptors: dict[str, CapabilityDescriptor] = {descriptor.id: descriptor for descriptor in seed}
         self._instances: dict[str, CapabilityInstance] = {}
+        self._warnings: tuple[str, ...] = ()
+        self._refreshed_at: datetime = utc_now()
 
     @classmethod
     def from_source(cls, source: CapabilityDiscoverySource) -> CapabilityRegistry:
@@ -433,12 +436,27 @@ class CapabilityRegistry:
         one), never merged with or silently overridden by hard-coded data.
         Discovered instances are registered immediately so they resolve via
         ``get_instance``/``instances_for`` without a separate wiring step.
+        Discovery ``warnings`` are preserved (surfaced via ``/capabilities/
+        discovery`` for admins/operators) and ``refreshed_at`` records when
+        this discovery pass ran.
         """
         result = source.discover()
         registry = cls(descriptors=result.descriptors)
         for instance in result.instances:
             registry.register_instance(instance)
+        registry._warnings = result.warnings
+        registry._refreshed_at = utc_now()
         return registry
+
+    @property
+    def warnings(self) -> tuple[str, ...]:
+        """Honest, non-fatal discovery caveats from the last discovery pass."""
+        return self._warnings
+
+    @property
+    def refreshed_at(self) -> datetime:
+        """When this registry's catalog/instances were last (re)discovered."""
+        return self._refreshed_at
 
     def catalog(self) -> tuple[CapabilityDescriptor, ...]:
         return tuple(self._descriptors.values())

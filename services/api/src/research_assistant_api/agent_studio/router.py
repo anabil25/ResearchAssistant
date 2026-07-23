@@ -48,6 +48,7 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposal,
     CapabilityBinding,
     CapabilityDescriptor,
+    CapabilityInstance,
     DeploymentEnvironment,
     DeploymentRecord,
     MemoryAuditRecord,
@@ -71,6 +72,7 @@ from research_assistant_api.agent_studio.schemas import (
     BuilderApplyRequest,
     BuilderMessageRequest,
     BuilderRejectRequest,
+    CapabilityDiscoverySnapshot,
     CorrectMemoryRequest,
     CreateAgentRequest,
     DeployRequest,
@@ -91,7 +93,7 @@ from research_assistant_api.identity import IdentityContext, resolve_identity
 
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 
-router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
+router = APIRouter(prefix="/v1/agent-studio", tags=["agent-studio"])
 
 
 def _identity(request: Request) -> IdentityContext:
@@ -163,13 +165,50 @@ def _unavailable(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
 
 
-@router.get("/capabilities", response_model=list[CapabilityDescriptor])
-def list_capabilities(request: Request) -> list[CapabilityDescriptor]:
+@router.get("/capabilities/descriptors", response_model=list[CapabilityDescriptor])
+def list_capability_descriptors(request: Request) -> list[CapabilityDescriptor]:
     """Honest capability catalog: GA operations are attachable; preview/unavailable
     operations remain visible with their ``reason`` rather than being hidden.
+
+    Separate canonical resource from ``/capabilities/instances`` -- descriptors
+    are immutable provider-wide catalog/governance semantics, never tenant-
+    or project-scoped resource state.
     """
     _identity(request)
     return list(_registry(request).catalog())
+
+
+@router.get("/capabilities/instances", response_model=list[CapabilityInstance])
+def list_capability_instances(request: Request, project_id: str | None = None) -> list[CapabilityInstance]:
+    """Discovered, tenant/project-scoped capability resources.
+
+    Separate canonical resource from ``/capabilities/descriptors``: these are
+    the concrete, discovered things a ``CapabilityBinding`` points at via
+    ``instance_id``, always isolated to the caller's tenant (and, when
+    ``project_id`` is supplied, that project too).
+    """
+    identity = _identity(request)
+    return list(_registry(request).instances_for(tenant_id=identity.tenant_id, project_id=project_id))
+
+
+@router.get("/capabilities/discovery", response_model=CapabilityDiscoverySnapshot)
+def get_capability_discovery(request: Request, project_id: str | None = None) -> CapabilityDiscoverySnapshot:
+    """Combined descriptor/instance discovery snapshot for UI/compiler convenience.
+
+    Never a separate canonical resource -- just an aggregate read-time
+    projection over ``/capabilities/descriptors`` and ``/capabilities/
+    instances``, plus honest, non-fatal discovery ``warnings`` and the
+    ``refreshed_at`` timestamp of the underlying registry's last discovery
+    pass.
+    """
+    identity = _identity(request)
+    registry = _registry(request)
+    return CapabilityDiscoverySnapshot(
+        descriptors=registry.catalog(),
+        instances=registry.instances_for(tenant_id=identity.tenant_id, project_id=project_id),
+        warnings=registry.warnings,
+        refreshed_at=registry.refreshed_at,
+    )
 
 
 @router.get("/models", response_model=list[ModelDeploymentRef])

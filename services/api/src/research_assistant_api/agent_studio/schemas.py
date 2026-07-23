@@ -9,6 +9,8 @@ from the authenticated identity, never from client input).
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from pydantic import BaseModel, ConfigDict, Field
 
 from research_assistant_api.agent_studio.models import (
@@ -16,6 +18,8 @@ from research_assistant_api.agent_studio.models import (
     AgentOwnerKind,
     AgentRole,
     AgentVisibility,
+    CapabilityDescriptor,
+    CapabilityInstance,
     HealthStatus,
     MemoryScopeKind,
     ToolRegistrationKind,
@@ -174,3 +178,22 @@ class BuilderRejectRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     reason: str = Field(default="", max_length=2000)
+
+
+class CapabilityDiscoverySnapshot(BaseModel):
+    """Combined descriptor/instance discovery read model.
+
+    Convenience aggregate of ``GET /capabilities/descriptors`` and
+    ``GET /capabilities/instances`` for callers (e.g. the future node
+    palette/compiler) that want both plus honest, non-fatal discovery
+    ``warnings`` and the ``refreshed_at`` timestamp in one call. Never
+    itself persisted -- it is a read-time projection over the current
+    ``CapabilityRegistry`` state.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    descriptors: tuple[CapabilityDescriptor, ...]
+    instances: tuple[CapabilityInstance, ...]
+    warnings: tuple[str, ...]
+    refreshed_at: datetime
