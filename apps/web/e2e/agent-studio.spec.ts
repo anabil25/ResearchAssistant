@@ -18,7 +18,7 @@ import { expect, test, type Page } from "@playwright/test";
 // a builder proposal, fork, memory controls, deploy). That coverage is real
 // and valid today, but it cannot substantiate the real happy-path behavior
 // of those flows — it only proves the UI degrades honestly. Once the
-// `/api/agent-studio/...` endpoints land, this suite must be extended with
+// the `/v1/agent-studio/...` endpoints land, this suite must be extended with
 // real happy-path specs for create/propose/apply/fork/memory/deploy; treat
 // the current 404/unavailable-state specs as pre-integration coverage, not
 // as a substitute for post-integration acceptance tests.

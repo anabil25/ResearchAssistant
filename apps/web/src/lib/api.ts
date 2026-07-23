@@ -225,7 +225,11 @@ export async function uploadLibraryItem(
 }
 
 // ---------------------------------------------------------------------------
-// Agent Studio contract — PENDING BACKEND, target namespace `/agent-studio`.
+// Agent Studio contract — PENDING BACKEND, canonical namespace
+// `/v1/agent-studio` (see Round 4/8 history below for the flip-flop; the
+// backend's real committed router prefix, confirmed by direct source
+// inspection, is `/v1/agent-studio` mounted at the app root — not nested
+// under `/api`).
 //
 // See the "Agent Studio contract" section in lib/types.ts for the read-model
 // rationale. This section was reconciled 2026-07-23/24 across rounds with

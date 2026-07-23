@@ -76,11 +76,11 @@ export type ResearchResult = Omit<
 };
 
 // ---------------------------------------------------------------------------
-// Agent Studio contract — PENDING BACKEND, target namespace `/agent-studio`
-// (updated per the coordinating session's report that the backend's actual
-// routing convention is `/api/agent-studio/...`, not the earlier proposed
-// `/v1/agent-studio` version prefix; not yet final — see `lib/api.ts` for
-// the single choke-point helper this is centralized behind).
+// Agent Studio contract — PENDING BACKEND, canonical namespace
+// `/v1/agent-studio` (confirmed against the backend's actual committed
+// router prefix — see the Round 4/8 history below for the full flip-flop;
+// not yet final since generated OpenAPI hasn't shipped — see `lib/api.ts`
+// for the single choke-point helper this is centralized behind).
 //
 // `packages/contracts/openapi.json` only defines `AgentSetting` today (id,
 // name, deployment, model_tier, status, web_access, workflow_steps). The
@@ -695,7 +695,7 @@ export interface AgentSummary {
   discovered_project_model: string | null;
   public_boundary: PublicBoundaryView;
   capability: CapabilityId | null;
-  /** `"legacy_agents_endpoint"` until `/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
+  /** `"legacy_agents_endpoint"` until `/v1/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
   source: "agent_studio" | "legacy_agents_endpoint";
 }
 
