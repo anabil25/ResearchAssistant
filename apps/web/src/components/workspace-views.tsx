@@ -967,6 +967,7 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
                     <span>Reviewer rationale</span>
                     <textarea
                       value={rationale}
+                      disabled={deciding}
                       onChange={(event) =>
                         setRationales((current) => ({
                           ...current,

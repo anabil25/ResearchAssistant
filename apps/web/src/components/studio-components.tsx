@@ -1775,15 +1775,15 @@ export function MatchingStudio({
               {compareOpen ? (
                 <div className="shortlist-compare" role="table">
                   <div className="shortlist-compare-row shortlist-compare-head" role="row">
-                    <span>Name</span>
-                    <span>Score</span>
-                    <span>Top evidence factors</span>
+                    <span role="columnheader">Name</span>
+                    <span role="columnheader">Score</span>
+                    <span role="columnheader">Top evidence factors</span>
                   </div>
                   {shortlistedMatches.map((match) => (
                     <div className="shortlist-compare-row" role="row" key={match.id}>
-                      <strong>{match.name}</strong>
-                      <span>{match.score}</span>
-                      <span>
+                      <strong role="rowheader">{match.name}</strong>
+                      <span role="cell">{match.score}</span>
+                      <span role="cell">
                         {match.components
                           .slice(0, 2)
                           .map(

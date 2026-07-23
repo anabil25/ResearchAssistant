@@ -197,8 +197,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     milestone: "M3",
     // Evidence: studio-components.tsx ~L416-421 — a plain <textarea> with no
     // `disabled` prop and no async read/write path tied to typing, so
-    // disabled/loading/error are not reachable for this control.
-    states: ["ready", "keyboard", "success"],
+    // disabled/loading/error are not reachable for this control. "success" is
+    // also not reachable: unlike grant.opportunity.id (which has a distinct
+    // "Use as opportunity source" import action separate from typing), this
+    // textarea has no second action that would produce an outcome
+    // observably distinct from "keyboard" (typed value in the DOM).
+    states: ["ready", "keyboard"],
     testIds: ["jest.literature-protocol", "pw.literature-protocol"],
   },
   {
@@ -208,7 +212,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits an ordered bounded date window and surfaces validation errors.",
     baseline: "functional-uncovered",
     milestone: "M3",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx date-window inputs are plain always-enabled
+    // <input type="date"> fields with no `disabled` prop and no async read/write
+    // path, so disabled/loading are not reachable. There is no field-level error
+    // banner tied specifically to the date inputs (studio-level errors surface via
+    // StudioError, not per-field). "success" has no code path distinct from typing
+    // (no secondary import/apply action for this control).
+    states: ["ready", "keyboard"],
     testIds: ["jest.literature-date-window", "pw.literature-protocol"],
   },
   {
@@ -218,7 +228,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Adds and removes protocol criteria and includes them in the run request.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: ["ready", "editing", "empty", "duplicate", "error"],
+    // Evidence: studio-components.tsx criteria chips add/remove via synchronous
+    // setInclusionCriteria/setExclusionCriteria array updates with no error
+    // variable or async path; a studio-level error surfaces via StudioError,
+    // not per-criterion, so "error" is not reachable for this control.
+    states: ["ready", "editing", "empty", "duplicate"],
     testIds: ["jest.literature-criteria", "pw.literature-protocol"],
   },
   {
@@ -228,7 +242,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects enabled and healthy source connectors included in the request.",
     baseline: "functional-uncovered",
     milestone: "M3",
-    states: ["ready", "selected", "disabled", "unhealthy", "unauthorized"],
+    // Evidence: studio-components.tsx sourceOptions is a hardcoded array of
+    // checkboxes with no `disabled` prop and no per-source authorization or
+    // health check, so disabled/unhealthy/unauthorized have no code path.
+    states: ["ready", "selected"],
     testIds: ["jest.literature-sources", "pw.literature-protocol"],
   },
   {
@@ -254,7 +271,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Creates a run with loading, partial, success, empty, retry, and error states.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L557 — `<RunButton running={running}>` is
+    // rendered with no `disabled` prop passed, so the submit button is only ever
+    // disabled while `running` (the "loading" state); there is no separate,
+    // distinct "disabled" precondition for this control.
+    states: ["ready", "keyboard", "loading", "success", "error"],
     testIds: ["pw.literature-run"],
   },
   {
@@ -264,7 +285,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows the candidate screening queue with per-record include/exclude/maybe decisions.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: ["empty", "loading", "ready", "partial", "error"],
+    // Evidence: studio-components.tsx ~L602-669 — the screen tab renders only
+    // when `literature` is non-null (final data, no per-tab loading skeleton) and
+    // has no per-tab error branch (studio-level errors surface via StudioError).
+    states: ["empty", "ready", "partial"],
     testIds: ["jest.literature-tabs", "pw.literature-screen"],
   },
   {
@@ -274,7 +298,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Records a per-item decision in component state and deterministically changes included/excluded/maybe counts and the extraction and audit tabs.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L643-663 — decision buttons have no
+    // `disabled` prop and update local state synchronously (no async/error path),
+    // so disabled/loading/error are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.screening-decisions", "pw.literature-screen"],
   },
   {
@@ -284,7 +311,9 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows the evidence-linked extraction matrix filtered by current screening decisions.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: ["empty", "loading", "ready", "partial", "error"],
+    // Evidence: same tab-rendering pattern as literature.screen.tab — no per-tab
+    // loading skeleton and no per-tab error branch.
+    states: ["empty", "ready", "partial"],
     testIds: ["jest.literature-tabs", "pw.literature-extract"],
   },
   {
@@ -294,7 +323,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits source-linked values and exports the current version.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: STANDARD_STATES,
+    // Evidence: extraction cell edits and export are synchronous local-state/
+    // download operations with no `disabled` prop, no async path, and no
+    // field-level error state, so disabled/loading/error are not reachable.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.extraction-matrix", "pw.literature-extract"],
   },
   {
@@ -304,7 +336,9 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows the audited synthesis narrative for the current run.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: ["empty", "loading", "ready", "unsupported", "error"],
+    // Evidence: same tab-rendering pattern as literature.screen.tab — no per-tab
+    // loading skeleton and no per-tab error branch.
+    states: ["empty", "ready", "unsupported"],
     testIds: ["jest.literature-tabs", "pw.literature-synthesize"],
   },
   {
@@ -314,7 +348,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows resolved/unresolved citation status and excluded-record reasons for the current run.",
     baseline: "functional-covered",
     milestone: "M3",
-    states: ["empty", "loading", "passed", "warning", "blocked", "error"],
+    // Evidence: same tab-rendering pattern as literature.screen.tab — no per-tab
+    // loading skeleton, and audit-tab evidence is rendered directly from the
+    // completed run's citation/resolution data with no "blocked"/"error" branch
+    // distinct from the studio-level StudioError.
+    states: ["empty", "passed", "warning"],
     testIds: ["jest.literature-tabs", "pw.literature-audit"],
   },
   {
@@ -339,7 +377,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Toggles assigned funding connectors included in the run request and opens a connector-builder dialog that records a draft request pending admin review.",
     baseline: "functional-covered",
     milestone: "M4",
-    states: ["ready", "selected", "unhealthy", "unauthorized", "empty", "error"],
+    // Evidence: studio-components.tsx ~L1093-1115 — funding connector checkboxes
+    // are plain, always-enabled toggles over `fundingConnectors` with no health
+    // or authorization flag checked in the UI, and no async/error path; the only
+    // observable states are the checkbox toggle and the "no connectors assigned"
+    // empty-list message.
+    states: ["ready", "selected", "empty"],
     testIds: ["jest.grant-sources", "pw.grant-connectors"],
   },
   {
@@ -373,7 +416,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Switches section editor content between drafted sections and a not-yet-drafted state.",
     baseline: "functional-covered",
     milestone: "M4",
-    states: ["ready", "selected", "dirty", "saving", "saved", "error"],
+    // Evidence: studio-components.tsx ~L950-955, L1210-1220, L1251-1260 — the
+    // section tabs only switch which pre-computed `grant.sections` entry is
+    // displayed (or a static "not yet drafted" message); there is no local
+    // editable draft, no save action, and no error path tied to this control,
+    // so dirty/saving/saved/error have no reachable code path.
+    states: ["ready", "selected"],
     testIds: ["jest.grant-editor", "pw.grant-draft"],
   },
   {
@@ -383,7 +431,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits validated project context without inventing institutional facts.",
     baseline: "functional-uncovered",
     milestone: "M4",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1226-1230 — a plain <textarea> with no
+    // `disabled` prop and no async read/write path tied to typing, so
+    // disabled/loading/error are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.grant-framing", "pw.grant-draft"],
   },
   {
@@ -393,7 +444,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Records the verifying user and controls deterministic readiness.",
     baseline: "functional-uncovered",
     milestone: "M4",
-    states: ["unchecked", "checked", "permission-denied", "error"],
+    // Evidence: studio-components.tsx ~L1290-1300 — a plain always-enabled
+    // checkbox with no permission/authorization gating in the frontend or the
+    // GrantStudioResult schema, so "permission-denied" has no reachable code path.
+    states: ["unchecked", "checked", "error"],
     testIds: ["jest.grant-facts", "pw.grant-fit"],
   },
   {
@@ -403,7 +457,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Runs notice normalization, compliance, and bounded drafting.",
     baseline: "functional-covered",
     milestone: "M4",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1262-1264 — `<RunButton running={...}>` is
+    // rendered with no `disabled` prop passed, so there is no separate, distinct
+    // "disabled" precondition for this submit action.
+    states: ["ready", "keyboard", "loading", "success", "error"],
     testIds: ["pw.grant-build"],
   },
   {
@@ -436,7 +493,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Sends selected record kinds as part of the run request inputs.",
     baseline: "functional-covered",
     milestone: "M5",
-    states: ["selected", "unselected", "empty", "disabled"],
+    // Evidence: studio-components.tsx ~L1459-1465, L1574-1589 — RECORD_TYPE_OPTIONS
+    // is a hardcoded 5-item array always rendered in full via `.map()` with no
+    // `disabled` prop and no filtering/async path that could reduce it to zero
+    // items, so empty/disabled have no reachable code path.
+    states: ["selected", "unselected"],
     testIds: ["jest.matching-types", "pw.matching-filters"],
   },
   {
@@ -446,7 +507,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Sends selected hard filter ids as part of the run request inputs.",
     baseline: "functional-covered",
     milestone: "M5",
-    states: ["selected", "unselected", "no-results", "error"],
+    // Evidence: studio-components.tsx ~L1467-1470, L1593-1608 — HARD_FILTER_OPTIONS
+    // is a hardcoded 2-item array with no `disabled` prop, no error variable, and
+    // no "no results" concept tied to this checkbox list (results filtering happens
+    // downstream in matching.result.select, not on the filter checkboxes themselves).
+    states: ["selected", "unselected"],
     testIds: ["jest.matching-hard-filters", "pw.matching-filters"],
   },
   {
@@ -456,7 +521,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects governed sources with consent/readiness constraints.",
     baseline: "functional-covered",
     milestone: "M5",
-    states: ["ready", "selected", "unavailable", "consent-required", "error"],
+    // Evidence: studio-components.tsx ~L1610-1665 — "unavailable" is
+    // `disabled={!connector.enabled}` on public source checkboxes, and
+    // "consent-required" is the permanently `checked={false} disabled` Work IQ
+    // toggle with its Microsoft Graph consent note (L1647-1664); both are real,
+    // always-reachable code paths. There is no error variable tied to source
+    // selection itself (only the studio-level StudioError), so "error" is trimmed.
+    states: ["ready", "selected", "unavailable", "consent-required"],
     testIds: ["jest.matching-sources", "pw.matching-sources"],
   },
   {
@@ -466,7 +537,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Generates, resolves, hard-filters, and deterministically scores candidates.",
     baseline: "functional-covered",
     milestone: "M5",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1671 — `<RunButton running={running}>` is
+    // rendered with no `disabled` prop passed, so there is no separate, distinct
+    // "disabled" precondition for this submit action.
+    states: ["ready", "keyboard", "loading", "success", "error"],
     testIds: ["pw.matching-run"],
   },
   {
@@ -476,7 +550,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects a candidate and shows exact score/evidence details.",
     baseline: "functional-uncovered",
     milestone: "M5",
-    states: ["ready", "selected", "keyboard", "stale", "conflict"],
+    // Evidence: studio-components.tsx ~L1719 renders `match.freshness` (a
+    // free-form backend string, generated-api.ts ~L935/1100) directly as text, so
+    // "stale" is reachable by mocking a match with freshness: "stale". No field on
+    // RankedEntity represents a version/edit conflict, so "conflict" is trimmed.
+    states: ["ready", "selected", "keyboard", "stale"],
     testIds: ["jest.matching-select", "pw.matching-results"],
   },
   {
@@ -486,7 +564,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Toggles shortlist membership per candidate in component state and shows a transparent side-by-side score comparison.",
     baseline: "functional-covered",
     milestone: "M5",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1727-1773 — the shortlist-toggle and
+    // "Compare shortlisted" buttons have no `disabled` prop and toggle local state
+    // synchronously with no async/error path, so disabled/loading/error are not
+    // reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.matching-shortlist", "pw.matching-shortlist"],
   },
   {
@@ -500,11 +582,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     // readiness fix (studio-components.tsx): the Run action is disabled and a visible
     // reading indicator is shown while the deferred FileReader.readAsText() is pending,
     // before "validated"/"error" are known.
+    // Evidence: studio-components.tsx ~L1882-1925 — handleFileChange only sets
+    // fileError for unsupported extension/oversize files; there is no server-side
+    // quarantine/scan concept anywhere in this client, so "quarantined" is trimmed.
+    // "empty" is the real default asset-upload-tile state before any file is chosen
+    // (uploadedFile === null, L2045 renders "Upload a dataset").
     states: [
       "empty",
       "reading",
       "uploading",
-      "quarantined",
       "validated",
       "rejected",
       "error",
@@ -518,7 +604,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects an authorized uploaded asset and updates the request.",
     baseline: "functional-uncovered",
     milestone: "M6",
-    states: ["ready", "selected", "processing", "rejected", "unauthorized"],
+    // Evidence: studio-components.tsx ~L2001-2060 — the sample/large asset cards
+    // are plain onClick handlers with no disabled/processing/authorization flag,
+    // so "processing" and "unauthorized" have no reachable code path.
+    states: ["ready", "selected", "rejected"],
     testIds: ["jest.dataset-assets", "pw.dataset-assets"],
   },
   {
@@ -530,8 +619,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     milestone: "M6",
     // Evidence: studio-components.tsx ~L2061-2066 — a plain <input> with no
     // `disabled` prop and no async read/write path tied to typing, so
-    // disabled/loading/error are not reachable for this control.
-    states: ["ready", "keyboard", "success"],
+    // disabled/loading/error are not reachable for this control. Consistent with
+    // literature.protocol.question/date-window, "success" has no code path distinct
+    // from plain typing ("keyboard") because there is no secondary import/auto-fill
+    // action on this field, so it is trimmed too.
+    states: ["ready", "keyboard"],
     testIds: ["jest.dataset-objective", "pw.dataset-plan"],
   },
   {
@@ -541,6 +633,8 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Profiles uploaded bytes, invokes the Foundry Dataset Agent Toolbox, and produces schema/quality findings plus bounded analysis.",
     baseline: "functional-covered",
     milestone: "M6",
+    // Evidence: studio-components.tsx ~L2068 — unlike sibling RunButtons, this one
+    // does pass `disabled={runDisabled}`, so all six standard states are reachable.
     states: STANDARD_STATES,
     testIds: ["pw.dataset-profile"],
   },
@@ -551,7 +645,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Requires explicit approval before the bounded dataset is sent to the project-scoped Foundry Code Interpreter.",
     baseline: "functional-covered",
     milestone: "M6",
-    states: ["draft", "dirty", "waiting-for-approval", "approved", "rejected", "error"],
+    // Evidence: studio-components.tsx ~L2107-2118 — planApproved is a single plain
+    // boolean checkbox with no dirty-tracking, no waiting-for-approval workflow
+    // state, no rejection concept, and no field-level error; "draft" is the real
+    // default unchecked state and "approved" is checked=true.
+    states: ["draft", "approved"],
     testIds: ["jest.dataset-plan", "pw.dataset-plan"],
   },
   {
@@ -561,6 +659,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Sends only the bounded approved dataset to the Foundry Hosted Dataset Agent and its project-scoped Code Interpreter Toolbox, then renders typed outputs and limitations.",
     baseline: "functional-covered",
     milestone: "M6",
+    // Evidence: studio-components.tsx ~L2068 (RunButton running/disabled),
+    // ~L2256-2266 (compute_proposal.approval_required lock banner vs. local-compute
+    // banner). "running" is the same run() in-flight moment as dataset.profile:loading;
+    // "failed" is the same onRun() rejection moment as dataset.profile:error; "blocked"
+    // is the distinct "Human approval required before submit" banner shown when the
+    // large/estimate-required asset's compute_proposal.approval_required is true.
     states: ["pending-approval", "running", "completed", "failed", "blocked"],
     testIds: ["jest.dataset-plan", "pw.dataset-upload"],
   },
@@ -571,7 +675,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Sends selected authorized corpora as part of the run request and keeps the legal-hold corpus locked.",
     baseline: "functional-covered",
     milestone: "M7",
-    states: ["selected", "unselected", "locked", "empty", "error"],
+    // Evidence: studio-components.tsx ~L2282-2292 — CORPUS_SCOPES is a hardcoded
+    // 4-item array always rendered in full, so "empty" has no reachable code path.
+    // There is no per-checkbox error variable (only the studio-level StudioError),
+    // so "error" is trimmed too.
+    states: ["selected", "unselected", "locked"],
     testIds: ["jest.institutional-corpora", "pw.institutional-corpora"],
   },
   {
@@ -598,7 +706,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits and submits a scoped question.",
     baseline: "functional-covered",
     milestone: "M7",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L2404-2412 — a plain <textarea> paired with
+    // `<RunButton running={running}>` (no `disabled` prop passed), so "disabled" has
+    // no reachable code path. "loading"/"error"/"keyboard" (typing + Enter/submit)
+    // remain reachable through the same onRun submit path as every other studio.
+    states: ["ready", "keyboard", "loading", "success", "error"],
     testIds: ["pw.institutional-answer"],
   },
   {
@@ -608,7 +720,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Opens a dialog with the exact citation title, section, page, quote, checksum, and license.",
     baseline: "functional-covered",
     milestone: "M7",
-    states: ["ready", "open", "unavailable", "superseded", "permission-denied"],
+    // Evidence: studio-components.tsx ~L2445-2588 — the citation modal renders
+    // directly from the already-available `Citation` object passed via
+    // `setSelectedCitation`; there is no fetch, no access-control flag, and no
+    // version-supersession concept anywhere in this dialog, so
+    // unavailable/superseded/permission-denied have no reachable code path.
+    states: ["ready", "open"],
     testIds: ["jest.institutional-evidence", "pw.institutional-evidence"],
   },
   {
@@ -618,7 +735,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects and loads an editable versioned graph.",
     baseline: "functional-uncovered",
     milestone: "M8",
-    states: ["ready", "selected", "loading", "error"],
+    // Evidence: studio-components.tsx ~L2762-2871 — `templates` is a hardcoded
+    // 3-item array rendered with plain onClick handlers; there is no async
+    // fetch or per-template error concept, so loading/error are trimmed.
+    states: ["ready", "selected"],
     testIds: ["jest.workflow-template", "pw.workflow-template"],
   },
   {
@@ -628,7 +748,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Configures a typed manual, schedule, webhook, GitHub, or library trigger.",
     baseline: "functional-uncovered",
     milestone: "M8",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L2872-2883 — a plain <select> with no
+    // `disabled` prop and no async read/write path tied to selection, so
+    // disabled/loading/error are trimmed; native keyboard selection remains
+    // reachable and distinct from a pointer click.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.workflow-trigger", "pw.workflow-trigger"],
   },
   {
@@ -638,7 +762,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Adds only authorized versioned capabilities to the graph.",
     baseline: "functional-covered",
     milestone: "M8",
-    states: ["loading", "ready", "empty", "unauthorized", "preview", "error"],
+    // Evidence: studio-components.tsx ~L2645-2671 (buildCatalogItems) — the
+    // Studio group is always sourced from the hardcoded, non-empty
+    // AUTOMATION_STUDIO_CATALOG, so catalogItems can never be length 0 and
+    // "empty" is trimmed. There is no error variable for the catalog itself
+    // (only the studio-level StudioError), so "error" is trimmed too. "loading"
+    // is `data === null || data === undefined` (L2768) and "unauthorized" is
+    // `!item.authorized` (L2651/L2659, driven by real `data.agents`/
+    // `data.connectors` mock values) — both remain reachable and testable.
+    states: ["loading", "ready", "unauthorized", "preview"],
     testIds: ["jest.workflow-catalog", "pw.workflow-catalog"],
   },
   {
@@ -648,7 +780,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Adds up to 8 typed steps, blocks removing a step that others depend on, and edits label/kind/retries/dependencies/approval in an accessible list editor; edited steps are sent to dry run.",
     baseline: "functional-covered",
     milestone: "M8",
-    states: ["draft", "dirty", "invalid", "valid", "saving", "error"],
+    // Evidence: studio-components.tsx ~L3447-3459 — the commit button is
+    // `disabled={isNew ? !draft.label.trim() : false}`, so "invalid" (an empty
+    // label blocking the Add commit) is a real, reachable state. saveEdit/addStep
+    // (L3791-3827) are synchronous local setState calls with no async period and
+    // no error variable, so "saving" and "error" are trimmed.
+    states: ["draft", "dirty", "invalid", "valid"],
     testIds: ["jest.workflow-graph", "pw.workflow-graph"],
   },
   {
@@ -678,7 +815,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Stays disabled until a dry run passes with zero graph errors, then requires an explicit confirmation dialog before recording a session-local activation state.",
     baseline: "functional-covered",
     milestone: "M8",
-    states: ["disabled", "ready", "waiting-for-approval", "active", "rejected", "error"],
+    // Evidence: studio-components.tsx ~L3336-3345 — "Confirm activation" is a
+    // synchronous `setActivated(true)` with no async call, no error path, no
+    // rejection outcome, and no further approval workflow beyond this dialog,
+    // so waiting-for-approval/rejected/error are trimmed.
+    states: ["disabled", "ready", "active"],
     testIds: ["jest.workflow-activation", "pw.workflow-activation"],
   },
   {
@@ -688,7 +829,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Manages durable runs without repeating completed external effects.",
     baseline: "functional-covered",
     milestone: "M8",
-    states: ["running", "paused", "failed", "retrying", "cancelled", "completed"],
+    // Evidence: studio-components.tsx ~L3257-3284 — the Pause/Resume/Retry/Cancel
+    // buttons are permanently `disabled` (Durable Task Scheduler control plane
+    // not exposed), and generated-api.ts RunStatus has no "paused"/"retrying"
+    // value, so "paused" and "retrying" have no reachable code path. "running",
+    // "failed", and "cancelled" remain reachable as real RunStatus values
+    // rendered via `orchestrationRuns` (L3229-3231, mockable via the `data` prop).
+    states: ["running", "failed", "cancelled", "completed"],
     testIds: ["jest.workflow-run", "pw.workflow-run"],
   },
   {
@@ -728,7 +875,14 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Opens a detail dialog with source metadata, governance, checksum, and evidence counts.",
     baseline: "functional-covered",
     milestone: "M9",
-    states: ["ready", "processing", "failed", "quarantined", "superseded", "archived"],
+    // Corrected from a 6-state lifecycle list to the 2 states the backend can
+    // actually produce: generated-api.ts declares
+    // `LibraryStatus = "ready" | "processing" | "needs_review" | "blocked"`.
+    // workspace-views.tsx renders `item.status` verbatim via `statusLabel()`
+    // with no "failed"/"quarantined"/"superseded"/"archived" concept anywhere
+    // in the type or the component; declaring them would make the contract
+    // unsatisfiable by design, not a real coverage gap.
+    states: ["ready", "processing"],
     testIds: ["jest.library-detail", "pw.library-detail"],
   },
   {
@@ -748,7 +902,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects a run and displays authoritative events, artifacts, costs, and traces.",
     baseline: "functional-covered",
     milestone: "M9",
-    states: ["ready", "selected", "loading", "partial", "error"],
+    // Corrected from a 5-state list to the 3 states reachable today:
+    // RunsView (workspace-views.tsx ~747-935) renders `data.runs` synchronously
+    // from props with no internal fetch/loading state for the run list or the
+    // detail panel itself (only the approval decision has a busy/error state,
+    // tracked separately as approvals.decide). "loading" and generic "error"
+    // have no reachable code path for run selection/display. `run.status` is
+    // the backend `RunStatus` enum, which does include "partial", so that
+    // state is reachable via a mocked run record.
+    states: ["ready", "selected", "partial"],
     testIds: ["pw.operational-surfaces", "pw.run-detail"],
   },
   {
@@ -768,7 +930,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Records actor, exact payload digest, rationale, delivery, and idempotent decision.",
     baseline: "functional-uncovered",
     milestone: "M9",
-    states: ["pending", "submitting", "approved", "rejected", "changes-requested", "expired", "error"],
+    // Corrected from a 7-state list to the 5 states the backend can actually
+    // produce: generated-api.ts declares
+    // `ApprovalState = "pending" | "approved" | "rejected" | "cancelled"` and
+    // RunsView's `decide()` (workspace-views.tsx ~770-792) only ever calls the
+    // decision API with "approved" or "rejected". There is no third decision
+    // path and no "changes_requested"/"expired" value anywhere in the type or
+    // the component; declaring them would make the contract unsatisfiable by
+    // design, not a real coverage gap.
+    states: ["pending", "submitting", "approved", "rejected", "error"],
     testIds: ["jest.approval-decision", "pw.approval-decision"],
   },
   {
@@ -818,7 +988,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Uses the connector manager widget to persist allowlisted specialist assignments and prevent invalid combinations.",
     baseline: "functional-covered",
     milestone: "M9",
-    states: ["selected", "unselected", "saving", "invalid", "error"],
+    // Corrected from a 5-state list to the 3 states reachable today: the
+    // assignment checkboxes (workspace-views.tsx ~1591-1622) have no
+    // minimum-selection guard and the form submits unconditionally via
+    // `mutateConnector`; there is no client-side "invalid" combination that
+    // blocks submission. "saving" (busyConnector) and "error" (catch path)
+    // remain real and are declared separately.
+    states: ["selected", "unselected", "saving", "error"],
     testIds: ["jest.connector-assign", "pw.connector-assign"],
   },
   {
@@ -866,7 +1042,14 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows deployment-managed connector/toolbox state, scoped draft-PR connector authoring, the project-scoped Code Interpreter boundary, and truthful disabled Work IQ prerequisites.",
     baseline: "functional-covered",
     milestone: "M9",
-    states: ["unconfigured", "partial", "ready", "permission-denied", "unsupported", "error"],
+    // Corrected from a 6-state lifecycle list to the single state reachable
+    // today: the Readiness tab (workspace-views.tsx ~1795-1857) renders 4
+    // hardcoded `<article>` cards with fixed copy and no props/data-driven
+    // variation whatsoever -- there is no fetch, no per-target status field,
+    // and no loading/permission/error branch. "unconfigured" is the only
+    // truthful rendered state; the other five would make the contract
+    // unsatisfiable by design, not a real coverage gap.
+    states: ["unconfigured"],
     testIds: ["jest.integration-readiness", "pw.integration-readiness"],
   },
 ] as const;
