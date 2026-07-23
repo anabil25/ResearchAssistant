@@ -1,0 +1,400 @@
+# yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
+
+requiredVersions:
+    extensions:
+        azure.ai.agents: '>=1.0.0-beta.5'
+        azure.ai.projects: '>=1.0.0-beta.2'
+        microsoft.foundry: '>=1.0.0-beta.1'
+name: research-assistant
+services:
+    ai-project:
+        host: azure.ai.project
+        deployments:
+            - model:
+                format: OpenAI
+                name: gpt-5.6-sol
+                version: "2026-07-09"
+              name: gpt-5.6-sol
+              sku:
+                capacity: 30
+                name: DataZoneStandard
+            - model:
+                format: OpenAI
+                name: gpt-5.4-mini
+                version: "2026-03-17"
+              name: gpt-5.4-mini
+              sku:
+                capacity: 30
+                name: DataZoneStandard
+            - model:
+                format: OpenAI
+                name: text-embedding-3-large
+                version: "1"
+              name: text-embedding-3-large
+              sku:
+                capacity: 50
+                name: DataZoneStandard
+    api:
+        project: .
+        host: containerapp
+        language: python
+        image: research-assistant-api
+        docker:
+            path: ./services/api/Dockerfile
+            context: .
+            remoteBuild: true
+    connector-adapter:
+        project: .
+        host: containerapp
+        language: python
+        image: research-assistant-connector-adapter
+        docker:
+            path: ./services/connector_adapter/Dockerfile
+            context: .
+            remoteBuild: true
+    dataset-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: dataset/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Explains deterministic table, metric, and notebook-output profiles.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: TOOLBOX_ENDPOINT
+              value: ${TOOLBOX_DATASET_MCP_ENDPOINT}
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Dataset
+                - Responses Protocol
+        name: dataset-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    grant-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: grant/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Maps funding requirements and drafts evidence-bounded grant sections.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.6-sol
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Grants
+                - Responses Protocol
+        name: grant-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    grant-online-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: grant_online/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Verifies current public opportunity guidance through funding metadata and web search.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: TOOLBOX_ENDPOINT
+              value: ${TOOLBOX_GRANT_MCP_ENDPOINT}
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Public Online
+                - Grants
+                - Responses Protocol
+        name: grant-online-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    institution-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: institution/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Answers only from authorized, versioned institutional sources.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Institutional
+                - Responses Protocol
+        name: institution-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    literature-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: literature/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Produces skeptical, source-grounded literature comparisons and synthesis.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.6-sol
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Literature
+                - Responses Protocol
+        name: literature-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    literature-online-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: literature_online/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Researches current public literature through allowlisted metadata and web search.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: TOOLBOX_ENDPOINT
+              value: ${TOOLBOX_LITERATURE_MCP_ENDPOINT}
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Public Online
+                - Literature
+                - Responses Protocol
+        name: literature-online-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    matching-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: matching/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Matches verified experts, facilities, equipment, methods, and templates.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Matching
+                - Responses Protocol
+        name: matching-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    matching-online-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: matching_online/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "0.5"
+                memory: 1Gi
+        description: Finds public researcher and organization metadata leads without claiming availability.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: TOOLBOX_ENDPOINT
+              value: ${TOOLBOX_MATCHING_MCP_ENDPOINT}
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Public Online
+                - Matching
+                - Responses Protocol
+        name: matching-online-agent
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    research-coordinator:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        codeConfiguration:
+            dependencyResolution: remote_build
+            entryPoint: coordinator/main.py
+            runtime: python_3_13
+        container:
+            resources:
+                cpu: "1"
+                memory: 2Gi
+        description: Routes research work to bounded specialist agents and preserves their evidence.
+        environmentVariables:
+            - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+              value: gpt-5.4-mini
+            - name: RESEARCH_LITERATURE_AGENT_NAME
+              value: literature-agent
+            - name: RESEARCH_GRANT_AGENT_NAME
+              value: grant-agent
+            - name: RESEARCH_MATCHING_AGENT_NAME
+              value: matching-agent
+            - name: RESEARCH_DATASET_AGENT_NAME
+              value: dataset-agent
+            - name: RESEARCH_INSTITUTION_AGENT_NAME
+              value: institution-agent
+            - name: RESEARCH_LITERATURE_ONLINE_AGENT_NAME
+              value: literature-online-agent
+            - name: RESEARCH_GRANT_ONLINE_AGENT_NAME
+              value: grant-online-agent
+            - name: RESEARCH_MATCHING_ONLINE_AGENT_NAME
+              value: matching-online-agent
+            - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+              value: "false"
+        kind: hosted
+        metadata:
+            tags:
+                - Agent Framework
+                - Research
+                - Coordinator
+                - Responses Protocol
+        name: research-coordinator
+        protocols:
+            - protocol: responses
+              version: 2.0.0
+    web:
+        project: ./apps/web
+        host: containerapp
+        language: js
+        docker:
+            path: ./Dockerfile
+            remoteBuild: true
+    worker:
+        project: .
+        host: containerapp
+        language: python
+        image: research-assistant-worker
+        docker:
+            path: ./services/worker/Dockerfile
+            context: .
+            remoteBuild: true
+infra:
+    provider: microsoft.foundry
+hooks:
+    postdeploy:
+        windows:
+            shell: pwsh
+            run: ./scripts/postdeploy.ps1
+        posix:
+            shell: sh
+            run: ./scripts/postdeploy.sh
+    postprovision:
+        windows:
+            shell: pwsh
+            run: ./scripts/postprovision.ps1
+        posix:
+            shell: sh
+            run: ./scripts/postprovision.sh
+    preprovision:
+        windows:
+            shell: pwsh
+            run: ./scripts/preprovision.ps1
+        posix:
+            shell: sh
+            run: ./scripts/preprovision.sh

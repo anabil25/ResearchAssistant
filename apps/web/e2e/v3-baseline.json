@@ -1,0 +1,1099 @@
+{
+  "agents": {
+    "direct_code_hosted_agents": 9,
+    "responses_v2_protocols": 9
+  },
+  "api_routes": [
+    {
+      "method": "GET",
+      "path": "/api/agents"
+    },
+    {
+      "method": "GET",
+      "path": "/api/approvals"
+    },
+    {
+      "method": "POST",
+      "path": "/api/approvals/{approval_id}/decision"
+    },
+    {
+      "method": "POST",
+      "path": "/api/assistant"
+    },
+    {
+      "method": "GET",
+      "path": "/api/capabilities"
+    },
+    {
+      "method": "GET",
+      "path": "/api/connectors"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/connectors/{connector_id}"
+    },
+    {
+      "method": "POST",
+      "path": "/api/connectors/{connector_id}/test"
+    },
+    {
+      "method": "GET",
+      "path": "/api/library"
+    },
+    {
+      "method": "POST",
+      "path": "/api/library/ingest"
+    },
+    {
+      "method": "POST",
+      "path": "/api/library/upload"
+    },
+    {
+      "method": "GET",
+      "path": "/api/projects"
+    },
+    {
+      "method": "POST",
+      "path": "/api/research/{capability}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs"
+    },
+    {
+      "method": "GET",
+      "path": "/api/runs/{run_id}"
+    },
+    {
+      "method": "GET",
+      "path": "/api/settings"
+    },
+    {
+      "method": "PUT",
+      "path": "/api/settings"
+    },
+    {
+      "method": "POST",
+      "path": "/api/studios/{capability}/run"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workflows"
+    },
+    {
+      "method": "GET",
+      "path": "/api/workspace"
+    },
+    {
+      "method": "GET",
+      "path": "/health"
+    },
+    {
+      "method": "GET",
+      "path": "/ready"
+    }
+  ],
+  "interactions": {
+    "by_baseline": {
+      "functional-covered": 13,
+      "functional-uncovered": 33,
+      "missing": 16,
+      "unwired": 15
+    },
+    "gaps": [
+      {
+        "baseline": "unwired",
+        "id": "shell.navigation.project-switcher",
+        "milestone": "M1",
+        "surface": "Shell"
+      },
+      {
+        "baseline": "unwired",
+        "id": "literature.protocol.criteria",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "unwired",
+        "id": "literature.screen.tab",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "missing",
+        "id": "literature.screen.decision",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "unwired",
+        "id": "literature.extract.tab",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "missing",
+        "id": "literature.extract.edit-export",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "unwired",
+        "id": "literature.synthesize.tab",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "unwired",
+        "id": "literature.audit.tab",
+        "milestone": "M3",
+        "surface": "Literature"
+      },
+      {
+        "baseline": "missing",
+        "id": "grant.discovery.search",
+        "milestone": "M4",
+        "surface": "Grant"
+      },
+      {
+        "baseline": "missing",
+        "id": "grant.discovery.sources",
+        "milestone": "M4",
+        "surface": "Grant"
+      },
+      {
+        "baseline": "unwired",
+        "id": "grant.requirements.open",
+        "milestone": "M4",
+        "surface": "Grant"
+      },
+      {
+        "baseline": "unwired",
+        "id": "grant.editor.tabs",
+        "milestone": "M4",
+        "surface": "Grant"
+      },
+      {
+        "baseline": "unwired",
+        "id": "grant.review.red-team",
+        "milestone": "M4",
+        "surface": "Grant"
+      },
+      {
+        "baseline": "unwired",
+        "id": "matching.need.entity-types",
+        "milestone": "M5",
+        "surface": "Matching"
+      },
+      {
+        "baseline": "unwired",
+        "id": "matching.need.hard-filters",
+        "milestone": "M5",
+        "surface": "Matching"
+      },
+      {
+        "baseline": "missing",
+        "id": "matching.need.sources",
+        "milestone": "M5",
+        "surface": "Matching"
+      },
+      {
+        "baseline": "missing",
+        "id": "matching.compare-shortlist",
+        "milestone": "M5",
+        "surface": "Matching"
+      },
+      {
+        "baseline": "missing",
+        "id": "dataset.upload",
+        "milestone": "M6",
+        "surface": "Dataset"
+      },
+      {
+        "baseline": "missing",
+        "id": "dataset.plan.approve",
+        "milestone": "M6",
+        "surface": "Dataset"
+      },
+      {
+        "baseline": "missing",
+        "id": "dataset.execution",
+        "milestone": "M6",
+        "surface": "Dataset"
+      },
+      {
+        "baseline": "unwired",
+        "id": "institutional.corpora",
+        "milestone": "M7",
+        "surface": "Institutional"
+      },
+      {
+        "baseline": "missing",
+        "id": "institutional.work-iq",
+        "milestone": "M7",
+        "surface": "Institutional"
+      },
+      {
+        "baseline": "unwired",
+        "id": "institutional.evidence.open",
+        "milestone": "M7",
+        "surface": "Institutional"
+      },
+      {
+        "baseline": "missing",
+        "id": "workflow.catalog",
+        "milestone": "M8",
+        "surface": "Workflow"
+      },
+      {
+        "baseline": "missing",
+        "id": "workflow.graph.edit",
+        "milestone": "M8",
+        "surface": "Workflow"
+      },
+      {
+        "baseline": "unwired",
+        "id": "workflow.canvas.zoom",
+        "milestone": "M8",
+        "surface": "Workflow"
+      },
+      {
+        "baseline": "unwired",
+        "id": "workflow.activate",
+        "milestone": "M8",
+        "surface": "Workflow"
+      },
+      {
+        "baseline": "missing",
+        "id": "workflow.run.manage",
+        "milestone": "M8",
+        "surface": "Workflow"
+      },
+      {
+        "baseline": "missing",
+        "id": "library.item.open",
+        "milestone": "M9",
+        "surface": "Library"
+      },
+      {
+        "baseline": "missing",
+        "id": "settings.connectors.versions",
+        "milestone": "M9",
+        "surface": "Settings"
+      },
+      {
+        "baseline": "missing",
+        "id": "settings.integrations.readiness",
+        "milestone": "M9",
+        "surface": "Settings"
+      }
+    ],
+    "total": 77
+  },
+  "schema_version": "research-assistant.v3-baseline",
+  "screenshots": [
+    "01-overview-v2.png",
+    "02-literature-protocol-v2.png",
+    "03-literature-results-v2.png",
+    "04-grant-studio-v2.png",
+    "05-matching-explorer-v2.png",
+    "06-dataset-lab-v2.png",
+    "07-institutional-qa-v2.png",
+    "08-workflow-automation-v2.png",
+    "09-library-v2.png",
+    "10-runs-approvals-v2.png",
+    "11-connectors-settings-v2.png",
+    "12-mobile-navigation-v2.png"
+  ],
+  "source_sha256": "480837f55f09f231dfba823778710ed43ddb1740df3663e38d4d58cc1a6d90ce",
+  "tests": {
+    "jest_tests": 8,
+    "playwright_tests": 10
+  },
+  "typography": {
+    "count_below_12px": 195,
+    "declarations_below_12px": [
+      {
+        "line": 210,
+        "size_px": 9
+      },
+      {
+        "line": 259,
+        "size_px": 9
+      },
+      {
+        "line": 273,
+        "size_px": 9
+      },
+      {
+        "line": 321,
+        "size_px": 9
+      },
+      {
+        "line": 359,
+        "size_px": 10
+      },
+      {
+        "line": 376,
+        "size_px": 11
+      },
+      {
+        "line": 382,
+        "size_px": 9
+      },
+      {
+        "line": 423,
+        "size_px": 9
+      },
+      {
+        "line": 458,
+        "size_px": 11
+      },
+      {
+        "line": 466,
+        "size_px": 8
+      },
+      {
+        "line": 504,
+        "size_px": 8
+      },
+      {
+        "line": 523,
+        "size_px": 11
+      },
+      {
+        "line": 534,
+        "size_px": 9
+      },
+      {
+        "line": 570,
+        "size_px": 10
+      },
+      {
+        "line": 583,
+        "size_px": 11
+      },
+      {
+        "line": 640,
+        "size_px": 10
+      },
+      {
+        "line": 688,
+        "size_px": 10
+      },
+      {
+        "line": 708,
+        "size_px": 9
+      },
+      {
+        "line": 724,
+        "size_px": 10
+      },
+      {
+        "line": 730,
+        "size_px": 11
+      },
+      {
+        "line": 821,
+        "size_px": 10
+      },
+      {
+        "line": 835,
+        "size_px": 9
+      },
+      {
+        "line": 902,
+        "size_px": 8
+      },
+      {
+        "line": 933,
+        "size_px": 8
+      },
+      {
+        "line": 995,
+        "size_px": 9
+      },
+      {
+        "line": 1002,
+        "size_px": 8
+      },
+      {
+        "line": 1029,
+        "size_px": 10
+      },
+      {
+        "line": 1085,
+        "size_px": 9
+      },
+      {
+        "line": 1111,
+        "size_px": 8
+      },
+      {
+        "line": 1127,
+        "size_px": 9
+      },
+      {
+        "line": 1144,
+        "size_px": 7
+      },
+      {
+        "line": 1156,
+        "size_px": 9
+      },
+      {
+        "line": 1205,
+        "size_px": 9
+      },
+      {
+        "line": 1264,
+        "size_px": 10
+      },
+      {
+        "line": 1272,
+        "size_px": 8
+      },
+      {
+        "line": 1293,
+        "size_px": 9
+      },
+      {
+        "line": 1324,
+        "size_px": 11
+      },
+      {
+        "line": 1331,
+        "size_px": 7
+      },
+      {
+        "line": 1341,
+        "size_px": 9
+      },
+      {
+        "line": 1399,
+        "size_px": 10
+      },
+      {
+        "line": 1441,
+        "size_px": 7
+      },
+      {
+        "line": 1451,
+        "size_px": 8
+      },
+      {
+        "line": 1458,
+        "size_px": 6
+      },
+      {
+        "line": 1487,
+        "size_px": 9
+      },
+      {
+        "line": 1525,
+        "size_px": 9
+      },
+      {
+        "line": 1531,
+        "size_px": 7
+      },
+      {
+        "line": 1584,
+        "size_px": 9
+      },
+      {
+        "line": 1589,
+        "size_px": 7
+      },
+      {
+        "line": 1597,
+        "size_px": 9
+      },
+      {
+        "line": 1606,
+        "size_px": 7
+      },
+      {
+        "line": 1638,
+        "size_px": 8
+      },
+      {
+        "line": 1648,
+        "size_px": 9
+      },
+      {
+        "line": 1665,
+        "size_px": 7
+      },
+      {
+        "line": 1690,
+        "size_px": 9
+      },
+      {
+        "line": 1733,
+        "size_px": 8
+      },
+      {
+        "line": 1766,
+        "size_px": 8
+      },
+      {
+        "line": 1806,
+        "size_px": 9
+      },
+      {
+        "line": 1812,
+        "size_px": 7
+      },
+      {
+        "line": 1821,
+        "size_px": 7
+      },
+      {
+        "line": 1841,
+        "size_px": 9
+      },
+      {
+        "line": 1847,
+        "size_px": 7
+      },
+      {
+        "line": 1852,
+        "size_px": 8
+      },
+      {
+        "line": 1861,
+        "size_px": 7
+      },
+      {
+        "line": 1906,
+        "size_px": 8
+      },
+      {
+        "line": 1916,
+        "size_px": 8
+      },
+      {
+        "line": 1923,
+        "size_px": 10
+      },
+      {
+        "line": 1986,
+        "size_px": 8
+      },
+      {
+        "line": 1992,
+        "size_px": 7
+      },
+      {
+        "line": 2009,
+        "size_px": 8
+      },
+      {
+        "line": 2029,
+        "size_px": 8
+      },
+      {
+        "line": 2048,
+        "size_px": 9
+      },
+      {
+        "line": 2055,
+        "size_px": 11
+      },
+      {
+        "line": 2096,
+        "size_px": 7
+      },
+      {
+        "line": 2112,
+        "size_px": 8
+      },
+      {
+        "line": 2118,
+        "size_px": 7
+      },
+      {
+        "line": 2131,
+        "size_px": 6
+      },
+      {
+        "line": 2138,
+        "size_px": 8
+      },
+      {
+        "line": 2144,
+        "size_px": 7
+      },
+      {
+        "line": 2160,
+        "size_px": 8
+      },
+      {
+        "line": 2193,
+        "size_px": 9
+      },
+      {
+        "line": 2257,
+        "size_px": 11
+      },
+      {
+        "line": 2268,
+        "size_px": 10
+      },
+      {
+        "line": 2273,
+        "size_px": 7
+      },
+      {
+        "line": 2289,
+        "size_px": 6
+      },
+      {
+        "line": 2296,
+        "size_px": 7
+      },
+      {
+        "line": 2338,
+        "size_px": 10
+      },
+      {
+        "line": 2359,
+        "size_px": 8
+      },
+      {
+        "line": 2365,
+        "size_px": 6
+      },
+      {
+        "line": 2370,
+        "size_px": 9
+      },
+      {
+        "line": 2398,
+        "size_px": 9
+      },
+      {
+        "line": 2443,
+        "size_px": 8
+      },
+      {
+        "line": 2449,
+        "size_px": 7
+      },
+      {
+        "line": 2496,
+        "size_px": 8
+      },
+      {
+        "line": 2507,
+        "size_px": 7
+      },
+      {
+        "line": 2513,
+        "size_px": 7
+      },
+      {
+        "line": 2529,
+        "size_px": 7
+      },
+      {
+        "line": 2555,
+        "size_px": 7
+      },
+      {
+        "line": 2560,
+        "size_px": 9
+      },
+      {
+        "line": 2567,
+        "size_px": 7
+      },
+      {
+        "line": 2575,
+        "size_px": 6
+      },
+      {
+        "line": 2591,
+        "size_px": 8
+      },
+      {
+        "line": 2603,
+        "size_px": 9
+      },
+      {
+        "line": 2619,
+        "size_px": 8
+      },
+      {
+        "line": 2644,
+        "size_px": 8
+      },
+      {
+        "line": 2656,
+        "size_px": 6
+      },
+      {
+        "line": 2699,
+        "size_px": 8
+      },
+      {
+        "line": 2705,
+        "size_px": 7
+      },
+      {
+        "line": 2728,
+        "size_px": 8
+      },
+      {
+        "line": 2735,
+        "size_px": 6
+      },
+      {
+        "line": 2788,
+        "size_px": 9
+      },
+      {
+        "line": 2794,
+        "size_px": 7
+      },
+      {
+        "line": 2822,
+        "size_px": 7
+      },
+      {
+        "line": 2882,
+        "size_px": 8
+      },
+      {
+        "line": 2889,
+        "size_px": 6
+      },
+      {
+        "line": 2900,
+        "size_px": 6
+      },
+      {
+        "line": 2913,
+        "size_px": 8
+      },
+      {
+        "line": 2918,
+        "size_px": 7
+      },
+      {
+        "line": 2962,
+        "size_px": 8
+      },
+      {
+        "line": 2968,
+        "size_px": 6
+      },
+      {
+        "line": 3027,
+        "size_px": 7
+      },
+      {
+        "line": 3080,
+        "size_px": 8
+      },
+      {
+        "line": 3086,
+        "size_px": 6
+      },
+      {
+        "line": 3098,
+        "size_px": 5
+      },
+      {
+        "line": 3139,
+        "size_px": 8
+      },
+      {
+        "line": 3146,
+        "size_px": 6
+      },
+      {
+        "line": 3179,
+        "size_px": 8
+      },
+      {
+        "line": 3185,
+        "size_px": 7
+      },
+      {
+        "line": 3232,
+        "size_px": 9
+      },
+      {
+        "line": 3248,
+        "size_px": 8
+      },
+      {
+        "line": 3281,
+        "size_px": 7
+      },
+      {
+        "line": 3293,
+        "size_px": 8
+      },
+      {
+        "line": 3301,
+        "size_px": 6
+      },
+      {
+        "line": 3333,
+        "size_px": 6
+      },
+      {
+        "line": 3358,
+        "size_px": 9
+      },
+      {
+        "line": 3383,
+        "size_px": 7
+      },
+      {
+        "line": 3448,
+        "size_px": 7
+      },
+      {
+        "line": 3481,
+        "size_px": 6
+      },
+      {
+        "line": 3487,
+        "size_px": 8
+      },
+      {
+        "line": 3526,
+        "size_px": 8
+      },
+      {
+        "line": 3532,
+        "size_px": 6
+      },
+      {
+        "line": 3537,
+        "size_px": 6
+      },
+      {
+        "line": 3593,
+        "size_px": 6
+      },
+      {
+        "line": 3603,
+        "size_px": 8
+      },
+      {
+        "line": 3629,
+        "size_px": 9
+      },
+      {
+        "line": 3635,
+        "size_px": 8
+      },
+      {
+        "line": 3649,
+        "size_px": 8
+      },
+      {
+        "line": 3687,
+        "size_px": 9
+      },
+      {
+        "line": 3703,
+        "size_px": 6
+      },
+      {
+        "line": 3721,
+        "size_px": 8
+      },
+      {
+        "line": 3743,
+        "size_px": 9
+      },
+      {
+        "line": 3772,
+        "size_px": 8
+      },
+      {
+        "line": 3778,
+        "size_px": 7
+      },
+      {
+        "line": 3785,
+        "size_px": 7
+      },
+      {
+        "line": 3830,
+        "size_px": 9
+      },
+      {
+        "line": 3836,
+        "size_px": 6
+      },
+      {
+        "line": 3841,
+        "size_px": 6
+      },
+      {
+        "line": 3866,
+        "size_px": 6
+      },
+      {
+        "line": 3871,
+        "size_px": 7
+      },
+      {
+        "line": 3886,
+        "size_px": 6
+      },
+      {
+        "line": 3919,
+        "size_px": 9
+      },
+      {
+        "line": 3925,
+        "size_px": 6
+      },
+      {
+        "line": 3941,
+        "size_px": 8
+      },
+      {
+        "line": 3954,
+        "size_px": 6
+      },
+      {
+        "line": 3986,
+        "size_px": 7
+      },
+      {
+        "line": 3992,
+        "size_px": 6
+      },
+      {
+        "line": 4014,
+        "size_px": 6
+      },
+      {
+        "line": 4044,
+        "size_px": 7
+      },
+      {
+        "line": 4060,
+        "size_px": 9
+      },
+      {
+        "line": 4066,
+        "size_px": 7
+      },
+      {
+        "line": 4090,
+        "size_px": 8
+      },
+      {
+        "line": 4094,
+        "size_px": 8
+      },
+      {
+        "line": 4118,
+        "size_px": 8
+      },
+      {
+        "line": 4124,
+        "size_px": 6
+      },
+      {
+        "line": 4198,
+        "size_px": 7
+      },
+      {
+        "line": 4240,
+        "size_px": 8
+      },
+      {
+        "line": 4247,
+        "size_px": 6
+      },
+      {
+        "line": 4258,
+        "size_px": 6
+      },
+      {
+        "line": 4294,
+        "size_px": 8
+      },
+      {
+        "line": 4305,
+        "size_px": 6
+      },
+      {
+        "line": 4340,
+        "size_px": 7
+      },
+      {
+        "line": 4355,
+        "size_px": 7
+      },
+      {
+        "line": 4377,
+        "size_px": 7
+      },
+      {
+        "line": 4389,
+        "size_px": 7
+      },
+      {
+        "line": 4430,
+        "size_px": 6
+      },
+      {
+        "line": 4441,
+        "size_px": 7
+      },
+      {
+        "line": 4448,
+        "size_px": 6
+      },
+      {
+        "line": 4456,
+        "size_px": 6
+      },
+      {
+        "line": 4465,
+        "size_px": 5
+      },
+      {
+        "line": 4474,
+        "size_px": 7
+      },
+      {
+        "line": 4484,
+        "size_px": 7
+      },
+      {
+        "line": 4508,
+        "size_px": 5
+      },
+      {
+        "line": 4513,
+        "size_px": 8
+      },
+      {
+        "line": 4569,
+        "size_px": 9
+      },
+      {
+        "line": 4658,
+        "size_px": 9
+      },
+      {
+        "line": 4664,
+        "size_px": 7
+      }
+    ],
+    "minimum_px": 5
+  }
+}

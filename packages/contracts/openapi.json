@@ -1,0 +1,3648 @@
+{
+  "components": {
+    "schemas": {
+      "AgentInsight": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "evidence_state": {
+            "$ref": "#/components/schemas/EvidenceState"
+          },
+          "online_research_used": {
+            "default": false,
+            "title": "Online Research Used",
+            "type": "boolean"
+          },
+          "referenced_source_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Referenced Source Ids",
+            "type": "array"
+          },
+          "unresolved_source_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Unresolved Source Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "agent_name",
+          "content",
+          "evidence_state"
+        ],
+        "title": "AgentInsight",
+        "type": "object"
+      },
+      "AgentSetting": {
+        "properties": {
+          "deployment": {
+            "title": "Deployment",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "model_tier": {
+            "title": "Model Tier",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "web_access": {
+            "title": "Web Access",
+            "type": "string"
+          },
+          "workflow_steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Workflow Steps",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "model_tier",
+          "status",
+          "web_access",
+          "workflow_steps",
+          "deployment"
+        ],
+        "title": "AgentSetting",
+        "type": "object"
+      },
+      "AnalysisStep": {
+        "properties": {
+          "deterministic": {
+            "title": "Deterministic",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "question": {
+            "title": "Question",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "question",
+          "method",
+          "status",
+          "deterministic"
+        ],
+        "title": "AnalysisStep",
+        "type": "object"
+      },
+      "ApprovalDecision": {
+        "properties": {
+          "decision": {
+            "$ref": "#/components/schemas/ApprovalState"
+          },
+          "rationale": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Rationale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "rationale"
+        ],
+        "title": "ApprovalDecision",
+        "type": "object"
+      },
+      "ApprovalRecord": {
+        "properties": {
+          "approver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "decision_event_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decision Event Id"
+          },
+          "destination": {
+            "title": "Destination",
+            "type": "string"
+          },
+          "event_delivery": {
+            "default": "not_requested",
+            "title": "Event Delivery",
+            "type": "string"
+          },
+          "evidence_summary": {
+            "title": "Evidence Summary",
+            "type": "string"
+          },
+          "gated_action": {
+            "title": "Gated Action",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "idempotency_key": {
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "risk": {
+            "title": "Risk",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/ApprovalState"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "run_id",
+          "title",
+          "state",
+          "risk",
+          "gated_action",
+          "destination",
+          "requested_by",
+          "requested_at",
+          "evidence_summary",
+          "idempotency_key"
+        ],
+        "title": "ApprovalRecord",
+        "type": "object"
+      },
+      "ApprovalState": {
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "cancelled"
+        ],
+        "title": "ApprovalState",
+        "type": "string"
+      },
+      "ArtifactSection": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "citation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "heading": {
+            "title": "Heading",
+            "type": "string"
+          },
+          "tone": {
+            "default": "neutral",
+            "title": "Tone",
+            "type": "string"
+          }
+        },
+        "required": [
+          "heading",
+          "body"
+        ],
+        "title": "ArtifactSection",
+        "type": "object"
+      },
+      "AssistantRequest": {
+        "properties": {
+          "capability": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/Capability"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "message": {
+            "maxLength": 8000,
+            "minLength": 3,
+            "title": "Message",
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "AssistantRequest",
+        "type": "object"
+      },
+      "AssistantResponse": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "response_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Id"
+          }
+        },
+        "required": [
+          "mode",
+          "agent_name",
+          "content"
+        ],
+        "title": "AssistantResponse",
+        "type": "object"
+      },
+      "AutomationStep": {
+        "properties": {
+          "approval_required": {
+            "title": "Approval Required",
+            "type": "boolean"
+          },
+          "depends_on": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Depends On",
+            "type": "array"
+          },
+          "id": {
+            "pattern": "^[a-z][a-z0-9-]{1,63}$",
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "enum": [
+              "activity",
+              "fan_out",
+              "agent",
+              "approval",
+              "external_action"
+            ],
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "retry_limit": {
+            "maximum": 10.0,
+            "minimum": 0.0,
+            "title": "Retry Limit",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "kind",
+          "depends_on",
+          "retry_limit",
+          "approval_required"
+        ],
+        "title": "AutomationStep",
+        "type": "object"
+      },
+      "AutomationStudioResult": {
+        "properties": {
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "dry_run_status": {
+            "title": "Dry Run Status",
+            "type": "string"
+          },
+          "graph_hash": {
+            "title": "Graph Hash",
+            "type": "string"
+          },
+          "graph_version": {
+            "title": "Graph Version",
+            "type": "string"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          },
+          "steps": {
+            "items": {
+              "$ref": "#/components/schemas/AutomationStep"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "template_id": {
+            "title": "Template Id",
+            "type": "string"
+          },
+          "trigger": {
+            "title": "Trigger",
+            "type": "string"
+          },
+          "validation_errors": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Validation Errors",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "template_id",
+          "trigger",
+          "steps",
+          "validation_errors",
+          "dry_run_status",
+          "graph_version",
+          "graph_hash",
+          "citations"
+        ],
+        "title": "AutomationStudioResult",
+        "type": "object"
+      },
+      "Body_upload_library_item_api_library_upload_post": {
+        "properties": {
+          "access": {
+            "default": "internal",
+            "enum": [
+              "public",
+              "internal",
+              "restricted"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Description",
+            "type": "string"
+          },
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 80,
+            "minLength": 2,
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "maxLength": 120,
+            "minLength": 2,
+            "title": "License",
+            "type": "string"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "maximum": 2100.0,
+                "minimum": 1000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          },
+          "source": {
+            "default": "Workspace upload",
+            "maxLength": 120,
+            "minLength": 2,
+            "title": "Source",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 240,
+            "minLength": 3,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "license",
+          "description",
+          "file"
+        ],
+        "title": "Body_upload_library_item_api_library_upload_post",
+        "type": "object"
+      },
+      "Capability": {
+        "enum": [
+          "literature",
+          "grant",
+          "matching",
+          "dataset",
+          "institutional_qa",
+          "orchestration"
+        ],
+        "title": "Capability",
+        "type": "string"
+      },
+      "CapabilitySpec": {
+        "properties": {
+          "accent": {
+            "title": "Accent",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "example_prompt": {
+            "title": "Example Prompt",
+            "type": "string"
+          },
+          "id": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "short_title": {
+            "title": "Short Title",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "short_title",
+          "description",
+          "example_prompt",
+          "accent"
+        ],
+        "title": "CapabilitySpec",
+        "type": "object"
+      },
+      "Citation": {
+        "properties": {
+          "canonical_url": {
+            "anyOf": [
+              {
+                "format": "uri",
+                "maxLength": 2083,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Canonical Url"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "chunk_id": {
+            "title": "Chunk Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "identifier": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Identifier"
+          },
+          "license": {
+            "title": "License",
+            "type": "string"
+          },
+          "page_end": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page End"
+          },
+          "page_start": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Page Start"
+          },
+          "quote": {
+            "title": "Quote",
+            "type": "string"
+          },
+          "retrieved_at": {
+            "format": "date-time",
+            "title": "Retrieved At",
+            "type": "string"
+          },
+          "section": {
+            "title": "Section",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "source_id",
+          "chunk_id",
+          "title",
+          "section",
+          "quote",
+          "checksum",
+          "license"
+        ],
+        "title": "Citation",
+        "type": "object"
+      },
+      "ComputeProposal": {
+        "properties": {
+          "adapter": {
+            "title": "Adapter",
+            "type": "string"
+          },
+          "approval_required": {
+            "title": "Approval Required",
+            "type": "boolean"
+          },
+          "estimated_bytes": {
+            "title": "Estimated Bytes",
+            "type": "integer"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "estimated_minutes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Minutes"
+          },
+          "stages": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Stages",
+            "type": "array"
+          }
+        },
+        "required": [
+          "adapter",
+          "estimated_bytes",
+          "estimated_cost_usd",
+          "estimated_minutes",
+          "approval_required",
+          "stages"
+        ],
+        "title": "ComputeProposal",
+        "type": "object"
+      },
+      "ConnectorSetting": {
+        "properties": {
+          "assigned_agents": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assigned Agents",
+            "type": "array"
+          },
+          "auth_kind": {
+            "title": "Auth Kind",
+            "type": "string"
+          },
+          "capabilities": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Capabilities",
+            "type": "array"
+          },
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "data_boundary": {
+            "title": "Data Boundary",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "last_tested_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Last Tested At"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "secret_status": {
+            "title": "Secret Status",
+            "type": "string"
+          },
+          "terms_url": {
+            "format": "uri",
+            "maxLength": 2083,
+            "minLength": 1,
+            "title": "Terms Url",
+            "type": "string"
+          },
+          "test_status": {
+            "title": "Test Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "category",
+          "description",
+          "auth_kind",
+          "secret_status",
+          "enabled",
+          "test_status",
+          "assigned_agents",
+          "terms_url",
+          "data_boundary",
+          "capabilities"
+        ],
+        "title": "ConnectorSetting",
+        "type": "object"
+      },
+      "ConnectorUpdate": {
+        "properties": {
+          "assigned_agents": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Assigned Agents",
+            "type": "array"
+          },
+          "enabled": {
+            "title": "Enabled",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "enabled",
+          "assigned_agents"
+        ],
+        "title": "ConnectorUpdate",
+        "type": "object"
+      },
+      "DatasetFieldProfile": {
+        "properties": {
+          "data_type": {
+            "title": "Data Type",
+            "type": "string"
+          },
+          "missing": {
+            "title": "Missing",
+            "type": "integer"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "range_or_values": {
+            "title": "Range Or Values",
+            "type": "string"
+          },
+          "unique": {
+            "title": "Unique",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "name",
+          "data_type",
+          "missing",
+          "unique",
+          "range_or_values"
+        ],
+        "title": "DatasetFieldProfile",
+        "type": "object"
+      },
+      "DatasetStudioResult": {
+        "properties": {
+          "analysis_plan": {
+            "items": {
+              "$ref": "#/components/schemas/AnalysisStep"
+            },
+            "title": "Analysis Plan",
+            "type": "array"
+          },
+          "asset_name": {
+            "title": "Asset Name",
+            "type": "string"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "column_count": {
+            "title": "Column Count",
+            "type": "integer"
+          },
+          "compute_proposal": {
+            "$ref": "#/components/schemas/ComputeProposal"
+          },
+          "fields": {
+            "items": {
+              "$ref": "#/components/schemas/DatasetFieldProfile"
+            },
+            "title": "Fields",
+            "type": "array"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "interpretation": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Interpretation",
+            "type": "array"
+          },
+          "profile_note": {
+            "title": "Profile Note",
+            "type": "string"
+          },
+          "profile_status": {
+            "title": "Profile Status",
+            "type": "string"
+          },
+          "quality_findings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Quality Findings",
+            "type": "array"
+          },
+          "row_count": {
+            "title": "Row Count",
+            "type": "integer"
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          }
+        },
+        "required": [
+          "run",
+          "asset_name",
+          "profile_status",
+          "profile_note",
+          "row_count",
+          "column_count",
+          "fields",
+          "quality_findings",
+          "analysis_plan",
+          "compute_proposal",
+          "interpretation",
+          "citations"
+        ],
+        "title": "DatasetStudioResult",
+        "type": "object"
+      },
+      "DraftSection": {
+        "properties": {
+          "body": {
+            "title": "Body",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "word_count": {
+            "title": "Word Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "status",
+          "word_count",
+          "body",
+          "evidence_ids"
+        ],
+        "title": "DraftSection",
+        "type": "object"
+      },
+      "EvidenceExtraction": {
+        "properties": {
+          "citation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "limitation": {
+            "title": "Limitation",
+            "type": "string"
+          },
+          "method": {
+            "title": "Method",
+            "type": "string"
+          },
+          "outcome": {
+            "title": "Outcome",
+            "type": "string"
+          },
+          "population": {
+            "title": "Population",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "method",
+          "population",
+          "outcome",
+          "limitation",
+          "citation_ids"
+        ],
+        "title": "EvidenceExtraction",
+        "type": "object"
+      },
+      "EvidenceState": {
+        "enum": [
+          "verified",
+          "model_analysis",
+          "unsupported",
+          "blocked"
+        ],
+        "title": "EvidenceState",
+        "type": "string"
+      },
+      "GrantOpportunity": {
+        "properties": {
+          "canonical_url": {
+            "title": "Canonical Url",
+            "type": "string"
+          },
+          "deadline": {
+            "title": "Deadline",
+            "type": "string"
+          },
+          "identifier": {
+            "title": "Identifier",
+            "type": "string"
+          },
+          "sponsor": {
+            "title": "Sponsor",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "identifier",
+          "sponsor",
+          "title",
+          "deadline",
+          "status",
+          "canonical_url"
+        ],
+        "title": "GrantOpportunity",
+        "type": "object"
+      },
+      "GrantRequirement": {
+        "properties": {
+          "category": {
+            "title": "Category",
+            "type": "string"
+          },
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "text": {
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "text",
+          "category",
+          "status",
+          "evidence_ids"
+        ],
+        "title": "GrantRequirement",
+        "type": "object"
+      },
+      "GrantStudioResult": {
+        "properties": {
+          "blockers": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Blockers",
+            "type": "array"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "fact_gaps": {
+            "items": {
+              "$ref": "#/components/schemas/ProjectFactGap"
+            },
+            "title": "Fact Gaps",
+            "type": "array"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "opportunity": {
+            "$ref": "#/components/schemas/GrantOpportunity"
+          },
+          "readiness": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Readiness",
+            "type": "integer"
+          },
+          "requirements": {
+            "items": {
+              "$ref": "#/components/schemas/GrantRequirement"
+            },
+            "title": "Requirements",
+            "type": "array"
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/DraftSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "specific_aims": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Specific Aims",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "opportunity",
+          "requirements",
+          "fact_gaps",
+          "specific_aims",
+          "sections",
+          "readiness",
+          "blockers",
+          "citations"
+        ],
+        "title": "GrantStudioResult",
+        "type": "object"
+      },
+      "HTTPValidationError": {
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/ValidationError"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "title": "HTTPValidationError",
+        "type": "object"
+      },
+      "HealthResponse": {
+        "properties": {
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "service": {
+            "title": "Service",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "service",
+          "mode"
+        ],
+        "title": "HealthResponse",
+        "type": "object"
+      },
+      "InstitutionalStudioResult": {
+        "properties": {
+          "abstained": {
+            "title": "Abstained",
+            "type": "boolean"
+          },
+          "answer": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Answer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "conflicts": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyConflict"
+            },
+            "title": "Conflicts",
+            "type": "array"
+          },
+          "escalation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Escalation"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          },
+          "scope": {
+            "title": "Scope",
+            "type": "string"
+          },
+          "versions": {
+            "items": {
+              "$ref": "#/components/schemas/PolicyVersion"
+            },
+            "title": "Versions",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "scope",
+          "answer",
+          "abstained",
+          "versions",
+          "conflicts",
+          "citations"
+        ],
+        "title": "InstitutionalStudioResult",
+        "type": "object"
+      },
+      "LibraryIngestRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "access": {
+            "default": "internal",
+            "enum": [
+              "public",
+              "internal",
+              "restricted"
+            ],
+            "title": "Access",
+            "type": "string"
+          },
+          "description": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Description",
+            "type": "string"
+          },
+          "kind": {
+            "maxLength": 80,
+            "minLength": 2,
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "maxLength": 120,
+            "minLength": 2,
+            "title": "License",
+            "type": "string"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "maximum": 2100.0,
+                "minimum": 1000.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          },
+          "source": {
+            "maxLength": 120,
+            "minLength": 2,
+            "title": "Source",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 240,
+            "minLength": 3,
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "title",
+          "kind",
+          "source",
+          "license",
+          "description"
+        ],
+        "title": "LibraryIngestRequest",
+        "type": "object"
+      },
+      "LibraryIngestResponse": {
+        "properties": {
+          "item": {
+            "$ref": "#/components/schemas/LibraryItem"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunSummary"
+          }
+        },
+        "required": [
+          "item",
+          "run"
+        ],
+        "title": "LibraryIngestResponse",
+        "type": "object"
+      },
+      "LibraryItem": {
+        "properties": {
+          "access": {
+            "title": "Access",
+            "type": "string"
+          },
+          "added_at": {
+            "format": "date-time",
+            "title": "Added At",
+            "type": "string"
+          },
+          "blob_uri": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Blob Uri"
+          },
+          "checksum": {
+            "title": "Checksum",
+            "type": "string"
+          },
+          "connector": {
+            "title": "Connector",
+            "type": "string"
+          },
+          "content_type": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Content Type"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence_count": {
+            "title": "Evidence Count",
+            "type": "integer"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "license": {
+            "title": "License",
+            "type": "string"
+          },
+          "provider": {
+            "title": "Provider",
+            "type": "string"
+          },
+          "publication_year": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Publication Year"
+          },
+          "size_bytes": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Size Bytes"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/LibraryStatus"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "title",
+          "kind",
+          "source",
+          "status",
+          "access",
+          "version",
+          "checksum",
+          "license",
+          "added_at",
+          "evidence_count",
+          "connector",
+          "provider",
+          "description"
+        ],
+        "title": "LibraryItem",
+        "type": "object"
+      },
+      "LibraryStatus": {
+        "enum": [
+          "ready",
+          "processing",
+          "needs_review",
+          "blocked"
+        ],
+        "title": "LibraryStatus",
+        "type": "string"
+      },
+      "LiteratureStudioResult": {
+        "properties": {
+          "candidate_count": {
+            "title": "Candidate Count",
+            "type": "integer"
+          },
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "extraction_matrix": {
+            "items": {
+              "$ref": "#/components/schemas/EvidenceExtraction"
+            },
+            "title": "Extraction Matrix",
+            "type": "array"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "protocol": {
+            "$ref": "#/components/schemas/ReviewProtocol"
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          },
+          "screening": {
+            "items": {
+              "$ref": "#/components/schemas/ScreeningDecision"
+            },
+            "title": "Screening",
+            "type": "array"
+          },
+          "search_queries": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Search Queries",
+            "type": "array"
+          },
+          "synthesis": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Synthesis",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "protocol",
+          "search_queries",
+          "candidate_count",
+          "screening",
+          "extraction_matrix",
+          "synthesis",
+          "citations"
+        ],
+        "title": "LiteratureStudioResult",
+        "type": "object"
+      },
+      "MatchCriterion": {
+        "properties": {
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          },
+          "weight": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "value",
+          "kind",
+          "weight"
+        ],
+        "title": "MatchCriterion",
+        "type": "object"
+      },
+      "MatchItem": {
+        "properties": {
+          "citation_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Citation Ids",
+            "type": "array"
+          },
+          "freshness": {
+            "title": "Freshness",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "$ref": "#/components/schemas/SourceKind"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "rationale": {
+            "title": "Rationale",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "score_factors": {
+            "items": {
+              "$ref": "#/components/schemas/MatchScoreFactor"
+            },
+            "title": "Score Factors",
+            "type": "array"
+          },
+          "tags": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tags",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "score",
+          "rationale",
+          "citation_ids",
+          "freshness"
+        ],
+        "title": "MatchItem",
+        "type": "object"
+      },
+      "MatchScoreFactor": {
+        "properties": {
+          "contribution": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Contribution",
+            "type": "number"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "match": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Match",
+            "type": "number"
+          },
+          "weight": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "weight",
+          "match",
+          "contribution",
+          "evidence_id"
+        ],
+        "title": "MatchScoreFactor",
+        "type": "object"
+      },
+      "MatchingStudioResult": {
+        "properties": {
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "criteria": {
+            "items": {
+              "$ref": "#/components/schemas/MatchCriterion"
+            },
+            "title": "Criteria",
+            "type": "array"
+          },
+          "insight": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/AgentInsight"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/RankedEntity"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
+          "run": {
+            "$ref": "#/components/schemas/StudioRun"
+          },
+          "shortlist_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Shortlist Ids",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "criteria",
+          "matches",
+          "shortlist_ids",
+          "citations"
+        ],
+        "title": "MatchingStudioResult",
+        "type": "object"
+      },
+      "Metric": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "value": {
+            "title": "Value",
+            "type": "string"
+          }
+        },
+        "required": [
+          "label",
+          "value"
+        ],
+        "title": "Metric",
+        "type": "object"
+      },
+      "PolicyConflict": {
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "severity": {
+            "title": "Severity",
+            "type": "string"
+          },
+          "source_a": {
+            "title": "Source A",
+            "type": "string"
+          },
+          "source_b": {
+            "title": "Source B",
+            "type": "string"
+          },
+          "topic": {
+            "title": "Topic",
+            "type": "string"
+          }
+        },
+        "required": [
+          "topic",
+          "source_a",
+          "source_b",
+          "description",
+          "severity"
+        ],
+        "title": "PolicyConflict",
+        "type": "object"
+      },
+      "PolicyVersion": {
+        "properties": {
+          "effective_date": {
+            "title": "Effective Date",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "version": {
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "title",
+          "version",
+          "effective_date",
+          "status"
+        ],
+        "title": "PolicyVersion",
+        "type": "object"
+      },
+      "ProjectFactGap": {
+        "properties": {
+          "guidance": {
+            "title": "Guidance",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "status",
+          "guidance"
+        ],
+        "title": "ProjectFactGap",
+        "type": "object"
+      },
+      "ProjectSettings": {
+        "properties": {
+          "allowed_export_destinations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Export Destinations",
+            "type": "array"
+          },
+          "citation_coverage_threshold": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Citation Coverage Threshold",
+            "type": "number"
+          },
+          "default_classification": {
+            "title": "Default Classification",
+            "type": "string"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evaluation_policy": {
+            "title": "Evaluation Policy",
+            "type": "string"
+          },
+          "model_profile": {
+            "title": "Model Profile",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "online_research_default": {
+            "default": false,
+            "title": "Online Research Default",
+            "type": "boolean"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "require_human_approval": {
+            "title": "Require Human Approval",
+            "type": "boolean"
+          },
+          "retention_days": {
+            "maximum": 3650.0,
+            "minimum": 30.0,
+            "title": "Retention Days",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "project_id",
+          "name",
+          "description",
+          "default_classification",
+          "retention_days",
+          "citation_coverage_threshold",
+          "require_human_approval",
+          "allowed_export_destinations",
+          "model_profile",
+          "evaluation_policy"
+        ],
+        "title": "ProjectSettings",
+        "type": "object"
+      },
+      "ProjectSummary": {
+        "properties": {
+          "active_runs": {
+            "title": "Active Runs",
+            "type": "integer"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "source_count": {
+            "title": "Source Count",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "description",
+          "active_runs",
+          "source_count"
+        ],
+        "title": "ProjectSummary",
+        "type": "object"
+      },
+      "ProvenanceManifest": {
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "caveats": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Caveats",
+            "type": "array"
+          },
+          "generated_at": {
+            "format": "date-time",
+            "title": "Generated At",
+            "type": "string"
+          },
+          "mode": {
+            "title": "Mode",
+            "type": "string"
+          },
+          "model_deployment": {
+            "title": "Model Deployment",
+            "type": "string"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "schema_version": {
+            "default": "research-assistant.provenance.v1",
+            "title": "Schema Version",
+            "type": "string"
+          },
+          "source_checksums": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "title": "Source Checksums",
+            "type": "object"
+          },
+          "source_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Source Ids",
+            "type": "array"
+          },
+          "verification": {
+            "title": "Verification",
+            "type": "string"
+          }
+        },
+        "required": [
+          "run_id",
+          "capability",
+          "mode",
+          "source_ids",
+          "source_checksums",
+          "model_deployment",
+          "verification"
+        ],
+        "title": "ProvenanceManifest",
+        "type": "object"
+      },
+      "RankedEntity": {
+        "properties": {
+          "components": {
+            "items": {
+              "$ref": "#/components/schemas/ScoreComponent"
+            },
+            "title": "Components",
+            "type": "array"
+          },
+          "freshness": {
+            "title": "Freshness",
+            "type": "string"
+          },
+          "gaps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Gaps",
+            "type": "array"
+          },
+          "hard_filters_passed": {
+            "title": "Hard Filters Passed",
+            "type": "boolean"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "score": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Score",
+            "type": "number"
+          },
+          "strengths": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Strengths",
+            "type": "array"
+          }
+        },
+        "required": [
+          "id",
+          "name",
+          "kind",
+          "hard_filters_passed",
+          "score",
+          "components",
+          "strengths",
+          "gaps",
+          "freshness"
+        ],
+        "title": "RankedEntity",
+        "type": "object"
+      },
+      "ResearchRequest": {
+        "properties": {
+          "context": {
+            "additionalProperties": true,
+            "title": "Context",
+            "type": "object"
+          },
+          "group_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Group Ids",
+            "type": "array"
+          },
+          "project_id": {
+            "default": "demo-project",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "query": {
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Query",
+            "type": "string"
+          },
+          "tenant_id": {
+            "default": "demo",
+            "maxLength": 100,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "query"
+        ],
+        "title": "ResearchRequest",
+        "type": "object"
+      },
+      "ResearchResult": {
+        "properties": {
+          "citations": {
+            "items": {
+              "$ref": "#/components/schemas/Citation"
+            },
+            "title": "Citations",
+            "type": "array"
+          },
+          "eyebrow": {
+            "title": "Eyebrow",
+            "type": "string"
+          },
+          "matches": {
+            "items": {
+              "$ref": "#/components/schemas/MatchItem"
+            },
+            "title": "Matches",
+            "type": "array"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "metrics": {
+            "items": {
+              "$ref": "#/components/schemas/Metric"
+            },
+            "title": "Metrics",
+            "type": "array"
+          },
+          "provenance": {
+            "$ref": "#/components/schemas/ProvenanceManifest"
+          },
+          "run": {
+            "$ref": "#/components/schemas/RunRecord"
+          },
+          "sections": {
+            "items": {
+              "$ref": "#/components/schemas/ArtifactSection"
+            },
+            "title": "Sections",
+            "type": "array"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "run",
+          "eyebrow",
+          "title",
+          "summary",
+          "sections",
+          "citations",
+          "provenance"
+        ],
+        "title": "ResearchResult",
+        "type": "object"
+      },
+      "ReviewProtocol": {
+        "properties": {
+          "date_from": {
+            "title": "Date From",
+            "type": "integer"
+          },
+          "date_to": {
+            "title": "Date To",
+            "type": "integer"
+          },
+          "exclusion_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Exclusion Criteria",
+            "type": "array"
+          },
+          "inclusion_criteria": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Inclusion Criteria",
+            "type": "array"
+          },
+          "research_question": {
+            "title": "Research Question",
+            "type": "string"
+          },
+          "sources": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Sources",
+            "type": "array"
+          }
+        },
+        "required": [
+          "research_question",
+          "date_from",
+          "date_to",
+          "sources",
+          "inclusion_criteria",
+          "exclusion_criteria"
+        ],
+        "title": "ReviewProtocol",
+        "type": "object"
+      },
+      "RunRecord": {
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "current_step": {
+            "title": "Current Step",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "progress": {
+            "default": 0,
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "steps": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Steps",
+            "type": "array"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "tenant_id",
+          "capability",
+          "title",
+          "status",
+          "current_step"
+        ],
+        "title": "RunRecord",
+        "type": "object"
+      },
+      "RunStage": {
+        "properties": {
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "started_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Started At"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "label",
+          "status",
+          "owner"
+        ],
+        "title": "RunStage",
+        "type": "object"
+      },
+      "RunStatus": {
+        "enum": [
+          "planned",
+          "running",
+          "waiting_for_approval",
+          "partial",
+          "blocked",
+          "completed",
+          "cancelled",
+          "failed"
+        ],
+        "title": "RunStatus",
+        "type": "string"
+      },
+      "RunSummary": {
+        "properties": {
+          "approval_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Id"
+          },
+          "artifact_count": {
+            "default": 0,
+            "title": "Artifact Count",
+            "type": "integer"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "completed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Completed At"
+          },
+          "current_stage": {
+            "title": "Current Stage",
+            "type": "string"
+          },
+          "durable_instance_id": {
+            "title": "Durable Instance Id",
+            "type": "string"
+          },
+          "estimated_cost_usd": {
+            "default": 0,
+            "title": "Estimated Cost Usd",
+            "type": "number"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "orchestration_input": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Orchestration Input"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "progress": {
+            "title": "Progress",
+            "type": "integer"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "scheduler_managed": {
+            "default": false,
+            "title": "Scheduler Managed",
+            "type": "boolean"
+          },
+          "scheduling_state": {
+            "default": "not_managed",
+            "title": "Scheduling State",
+            "type": "string"
+          },
+          "stages": {
+            "items": {
+              "$ref": "#/components/schemas/RunStage"
+            },
+            "title": "Stages",
+            "type": "array"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "durable_instance_id",
+          "project_id",
+          "capability",
+          "title",
+          "status",
+          "progress",
+          "current_stage",
+          "owner",
+          "started_at"
+        ],
+        "title": "RunSummary",
+        "type": "object"
+      },
+      "ScoreComponent": {
+        "properties": {
+          "contribution": {
+            "minimum": 0.0,
+            "title": "Contribution",
+            "type": "number"
+          },
+          "criterion_id": {
+            "title": "Criterion Id",
+            "type": "string"
+          },
+          "evidence_id": {
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "match": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Match",
+            "type": "number"
+          },
+          "weight": {
+            "title": "Weight",
+            "type": "number"
+          }
+        },
+        "required": [
+          "criterion_id",
+          "label",
+          "weight",
+          "match",
+          "contribution",
+          "evidence_id"
+        ],
+        "title": "ScoreComponent",
+        "type": "object"
+      },
+      "ScreeningDecision": {
+        "properties": {
+          "decision": {
+            "title": "Decision",
+            "type": "string"
+          },
+          "duplicate_group": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duplicate Group"
+          },
+          "reason": {
+            "title": "Reason",
+            "type": "string"
+          },
+          "source_id": {
+            "title": "Source Id",
+            "type": "string"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "source_id",
+          "title",
+          "decision",
+          "reason"
+        ],
+        "title": "ScreeningDecision",
+        "type": "object"
+      },
+      "SourceKind": {
+        "enum": [
+          "paper",
+          "policy",
+          "grant",
+          "person",
+          "facility",
+          "equipment",
+          "method",
+          "template",
+          "dataset"
+        ],
+        "title": "SourceKind",
+        "type": "string"
+      },
+      "StudioRun": {
+        "properties": {
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "current_stage": {
+            "title": "Current Stage",
+            "type": "string"
+          },
+          "durable_instance_id": {
+            "title": "Durable Instance Id",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "owner": {
+            "title": "Owner",
+            "type": "string"
+          },
+          "progress": {
+            "maximum": 100.0,
+            "minimum": 0.0,
+            "title": "Progress",
+            "type": "integer"
+          },
+          "started_at": {
+            "format": "date-time",
+            "title": "Started At",
+            "type": "string"
+          },
+          "status": {
+            "$ref": "#/components/schemas/RunStatus"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "durable_instance_id",
+          "capability",
+          "title",
+          "status",
+          "current_stage",
+          "progress",
+          "owner"
+        ],
+        "title": "StudioRun",
+        "type": "object"
+      },
+      "StudioRunRequest": {
+        "additionalProperties": false,
+        "properties": {
+          "inputs": {
+            "additionalProperties": true,
+            "title": "Inputs",
+            "type": "object"
+          },
+          "objective": {
+            "maxLength": 4000,
+            "minLength": 3,
+            "title": "Objective",
+            "type": "string"
+          },
+          "online_research": {
+            "default": false,
+            "title": "Online Research",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "objective"
+        ],
+        "title": "StudioRunRequest",
+        "type": "object"
+      },
+      "ValidationError": {
+        "properties": {
+          "ctx": {
+            "title": "Context",
+            "type": "object"
+          },
+          "input": {
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Location",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Message",
+            "type": "string"
+          },
+          "type": {
+            "title": "Error Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "loc",
+          "msg",
+          "type"
+        ],
+        "title": "ValidationError",
+        "type": "object"
+      },
+      "WorkspaceSummary": {
+        "properties": {
+          "active_runs": {
+            "title": "Active Runs",
+            "type": "integer"
+          },
+          "connector_ready": {
+            "title": "Connector Ready",
+            "type": "integer"
+          },
+          "connector_total": {
+            "title": "Connector Total",
+            "type": "integer"
+          },
+          "last_activity_at": {
+            "format": "date-time",
+            "title": "Last Activity At",
+            "type": "string"
+          },
+          "library_items": {
+            "title": "Library Items",
+            "type": "integer"
+          },
+          "pending_approvals": {
+            "title": "Pending Approvals",
+            "type": "integer"
+          },
+          "persistence": {
+            "title": "Persistence",
+            "type": "string"
+          },
+          "project": {
+            "$ref": "#/components/schemas/ProjectSettings"
+          }
+        },
+        "required": [
+          "project",
+          "library_items",
+          "active_runs",
+          "pending_approvals",
+          "connector_ready",
+          "connector_total",
+          "last_activity_at",
+          "persistence"
+        ],
+        "title": "WorkspaceSummary",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "title": "Research Assistant API",
+    "version": "0.1.0"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/api/agents": {
+      "get": {
+        "operationId": "agents_api_agents_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentSetting"
+                  },
+                  "title": "Response Agents Api Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agents",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/approvals": {
+      "get": {
+        "operationId": "approvals_api_approvals_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ApprovalRecord"
+                  },
+                  "title": "Response Approvals Api Approvals Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Approvals",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/approvals/{approval_id}/decision": {
+      "post": {
+        "operationId": "decide_approval_api_approvals__approval_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "approval_id",
+            "required": true,
+            "schema": {
+              "title": "Approval Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ApprovalDecision"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ApprovalRecord"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Approval",
+        "tags": [
+          "approvals"
+        ]
+      }
+    },
+    "/api/assistant": {
+      "post": {
+        "operationId": "invoke_assistant_api_assistant_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/AssistantRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/AssistantResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Invoke Assistant",
+        "tags": [
+          "agents"
+        ]
+      }
+    },
+    "/api/capabilities": {
+      "get": {
+        "operationId": "capabilities_api_capabilities_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/CapabilitySpec"
+                  },
+                  "title": "Response Capabilities Api Capabilities Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Capabilities",
+        "tags": [
+          "research"
+        ]
+      }
+    },
+    "/api/connectors": {
+      "get": {
+        "operationId": "connectors_api_connectors_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ConnectorSetting"
+                  },
+                  "title": "Response Connectors Api Connectors Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Connectors",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/connectors/{connector_id}": {
+      "put": {
+        "operationId": "update_connector_api_connectors__connector_id__put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorSetting"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Connector",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/connectors/{connector_id}/test": {
+      "post": {
+        "operationId": "test_connector_api_connectors__connector_id__test_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorSetting"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Test Connector",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/library": {
+      "get": {
+        "operationId": "library_api_library_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/LibraryItem"
+                  },
+                  "title": "Response Library Api Library Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Library",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/ingest": {
+      "post": {
+        "operationId": "ingest_library_item_api_library_ingest_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/LibraryIngestRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryIngestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Ingest Library Item",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/library/upload": {
+      "post": {
+        "operationId": "upload_library_item_api_library_upload_post",
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_library_item_api_library_upload_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/LibraryIngestResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Library Item",
+        "tags": [
+          "library"
+        ]
+      }
+    },
+    "/api/projects": {
+      "get": {
+        "operationId": "projects_api_projects_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/ProjectSummary"
+                  },
+                  "title": "Response Projects Api Projects Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Projects",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/research/{capability}": {
+      "post": {
+        "operationId": "run_capability_api_research__capability__post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Capability"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ResearchRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ResearchResult"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Capability",
+        "tags": [
+          "research"
+        ]
+      }
+    },
+    "/api/runs": {
+      "get": {
+        "operationId": "runs_api_runs_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/RunSummary"
+                  },
+                  "title": "Response Runs Api Runs Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Runs",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/runs/{run_id}": {
+      "get": {
+        "operationId": "run_detail_api_runs__run_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "run_id",
+            "required": true,
+            "schema": {
+              "title": "Run Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/RunSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Detail",
+        "tags": [
+          "runs"
+        ]
+      }
+    },
+    "/api/settings": {
+      "get": {
+        "operationId": "project_settings_api_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Project Settings",
+        "tags": [
+          "settings"
+        ]
+      },
+      "put": {
+        "operationId": "update_project_settings_api_settings_put",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProjectSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSettings"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project Settings",
+        "tags": [
+          "settings"
+        ]
+      }
+    },
+    "/api/studios/{capability}/run": {
+      "post": {
+        "operationId": "run_studio_api_studios__capability__run_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Capability"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/StudioRunRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/LiteratureStudioResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/GrantStudioResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/MatchingStudioResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/DatasetStudioResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/InstitutionalStudioResult"
+                    },
+                    {
+                      "$ref": "#/components/schemas/AutomationStudioResult"
+                    }
+                  ],
+                  "title": "Response Run Studio Api Studios  Capability  Run Post"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Run Studio",
+        "tags": [
+          "studios"
+        ]
+      }
+    },
+    "/api/workflows": {
+      "get": {
+        "operationId": "workflows_api_workflows_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "additionalProperties": true,
+                    "type": "object"
+                  },
+                  "title": "Response Workflows Api Workflows Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Workflows",
+        "tags": [
+          "research"
+        ]
+      }
+    },
+    "/api/workspace": {
+      "get": {
+        "operationId": "workspace_api_workspace_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WorkspaceSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Workspace",
+        "tags": [
+          "workspace"
+        ]
+      }
+    },
+    "/health": {
+      "get": {
+        "operationId": "health_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Health",
+        "tags": [
+          "operations"
+        ]
+      }
+    },
+    "/ready": {
+      "get": {
+        "operationId": "ready_ready_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Ready",
+        "tags": [
+          "operations"
+        ]
+      }
+    }
+  }
+}

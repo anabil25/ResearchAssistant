@@ -1,0 +1,5 @@
+description: Sandboxed Foundry data analysis tools
+tools:
+  - type: code_interpreter
+    name: code_interpreter
+    require_approval: "never"

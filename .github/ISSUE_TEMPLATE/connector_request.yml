@@ -1,0 +1,73 @@
+name: Research connector request
+description: Request a reviewed public research API or site adapter.
+title: "[Connector]: "
+labels:
+  - connector-request
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Connector requests create reviewed code and OpenAPI artifacts. They do
+        not directly modify production APIM or Foundry Toolbox policy.
+  - type: input
+    id: provider
+    attributes:
+      label: Provider
+      description: Organization and API/site name.
+    validations:
+      required: true
+  - type: textarea
+    id: purpose
+    attributes:
+      label: Research purpose
+      description: Studio capability and user outcome this connector supports.
+    validations:
+      required: true
+  - type: input
+    id: documentation
+    attributes:
+      label: API documentation or authoritative site
+      placeholder: https://
+    validations:
+      required: true
+  - type: input
+    id: terms
+    attributes:
+      label: Terms, license, and robots policy
+      placeholder: https://
+    validations:
+      required: true
+  - type: textarea
+    id: allowlist
+    attributes:
+      label: Allowed hosts and path prefixes
+      description: One host/path prefix per line. Wildcards and arbitrary URLs are not accepted.
+    validations:
+      required: true
+  - type: dropdown
+    id: authentication
+    attributes:
+      label: Authentication
+      options:
+        - None
+        - API key stored through an approved secret connection
+        - OAuth user delegation
+        - Managed identity
+    validations:
+      required: true
+  - type: textarea
+    id: sample
+    attributes:
+      label: Sample query and expected normalized fields
+      description: Do not include credentials, personal data, or confidential records.
+    validations:
+      required: true
+  - type: checkboxes
+    id: confirmations
+    attributes:
+      label: Confirmations
+      options:
+        - label: I confirmed this use is permitted by the provider terms and license.
+          required: true
+        - label: I understand generated code requires tests, review, staging evaluation, and separate promotion approval.
+          required: true

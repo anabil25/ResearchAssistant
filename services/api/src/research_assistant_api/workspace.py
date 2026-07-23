@@ -1,0 +1,1105 @@
+from __future__ import annotations
+
+from copy import deepcopy
+from datetime import UTC, datetime
+from enum import StrEnum
+from threading import RLock
+from typing import Any, Literal
+from uuid import uuid4
+
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from research_assistant_core.models import Capability, RunStatus
+
+from research_assistant_api.identity import IdentityContext
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
+
+
+def _complete_stages(run: RunSummary) -> None:
+    completed_at = utc_now()
+    for stage in run.stages:
+        stage.status = "completed"
+        stage.started_at = stage.started_at or run.started_at
+        stage.completed_at = stage.completed_at or completed_at
+
+
+def _fail_active_stage(run: RunSummary) -> None:
+    active = next(
+        (
+            stage
+            for stage in run.stages
+            if stage.status in {"running", "waiting_for_approval", "planned"}
+        ),
+        None,
+    )
+    if active is not None:
+        active.status = "failed"
+        active.started_at = active.started_at or run.started_at
+        active.completed_at = utc_now()
+
+
+class LibraryStatus(StrEnum):
+    READY = "ready"
+    PROCESSING = "processing"
+    NEEDS_REVIEW = "needs_review"
+    BLOCKED = "blocked"
+
+
+class LibraryItem(BaseModel):
+    id: str
+    title: str
+    kind: str
+    source: str
+    status: LibraryStatus
+    access: str
+    version: str
+    checksum: str
+    license: str
+    added_at: datetime
+    evidence_count: int
+    connector: str
+    provider: str
+    publication_year: int | None = None
+    description: str
+    tags: list[str] = Field(default_factory=list)
+    blob_uri: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = None
+
+
+class LibraryIngestRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    title: str = Field(min_length=3, max_length=240)
+    kind: str = Field(min_length=2, max_length=80)
+    source: str = Field(min_length=2, max_length=120)
+    publication_year: int | None = Field(default=None, ge=1000, le=2100)
+    access: Literal["public", "internal", "restricted"] = "internal"
+    license: str = Field(min_length=2, max_length=120)
+    description: str = Field(min_length=3, max_length=1000)
+
+
+class LibraryIngestRecord(LibraryIngestRequest):
+    source_id: str = Field(pattern=r"^source-[a-f0-9]{12}$")
+    blob_uri: str | None = None
+    content_type: str | None = None
+    size_bytes: int | None = Field(default=None, ge=1, le=20_000_000)
+    checksum: str | None = None
+
+
+class RunStage(BaseModel):
+    id: str
+    label: str
+    status: str
+    owner: str
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class RunSummary(BaseModel):
+    id: str
+    durable_instance_id: str
+    project_id: str
+    capability: Capability
+    title: str
+    status: RunStatus
+    progress: int
+    current_stage: str
+    owner: str
+    started_at: datetime
+    completed_at: datetime | None = None
+    artifact_count: int = 0
+    approval_id: str | None = None
+    estimated_cost_usd: float = 0
+    scheduler_managed: bool = False
+    scheduling_state: str = "not_managed"
+    orchestration_input: dict[str, Any] | None = None
+    stages: list[RunStage] = Field(default_factory=list)
+
+
+class LibraryIngestResponse(BaseModel):
+    item: LibraryItem
+    run: RunSummary
+
+
+class ApprovalState(StrEnum):
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CANCELLED = "cancelled"
+
+
+class ApprovalRecord(BaseModel):
+    id: str
+    run_id: str
+    title: str
+    state: ApprovalState
+    risk: str
+    gated_action: str
+    destination: str
+    requested_by: str
+    requested_at: datetime
+    evidence_summary: str
+    idempotency_key: str
+    approver_id: str | None = None
+    approver_name: str | None = None
+    decided_at: datetime | None = None
+    rationale: str | None = None
+    event_delivery: str = "not_requested"
+    decision_event_id: str | None = None
+
+
+class ApprovalDecision(BaseModel):
+    decision: ApprovalState
+    rationale: str = Field(min_length=3, max_length=1000)
+
+    @field_validator("decision")
+    @classmethod
+    def validate_decision(cls, value: ApprovalState) -> ApprovalState:
+        if value not in {ApprovalState.APPROVED, ApprovalState.REJECTED}:
+            raise ValueError("Decision must be approved or rejected.")
+        return value
+
+
+class ConnectorSetting(BaseModel):
+    id: str
+    name: str
+    category: str
+    description: str
+    auth_kind: str
+    secret_status: str
+    enabled: bool
+    test_status: str
+    last_tested_at: datetime | None = None
+    assigned_agents: list[str]
+    terms_url: HttpUrl
+    data_boundary: str
+    capabilities: list[str]
+
+
+class ConnectorUpdate(BaseModel):
+    enabled: bool
+    assigned_agents: list[str]
+
+
+class AgentSetting(BaseModel):
+    id: str
+    name: str
+    model_tier: str
+    status: str
+    web_access: str
+    workflow_steps: list[str]
+    deployment: str
+
+
+class ProjectSettings(BaseModel):
+    project_id: str
+    name: str
+    description: str
+    default_classification: str
+    online_research_default: bool = False
+    retention_days: int = Field(ge=30, le=3650)
+    citation_coverage_threshold: float = Field(ge=0, le=1)
+    require_human_approval: bool
+    allowed_export_destinations: list[str]
+    model_profile: str
+    evaluation_policy: str
+
+
+class WorkspaceSummary(BaseModel):
+    project: ProjectSettings
+    library_items: int
+    active_runs: int
+    pending_approvals: int
+    connector_ready: int
+    connector_total: int
+    last_activity_at: datetime
+    persistence: str
+
+
+class WorkspaceStore:
+    persistence = "in-memory demo"
+
+    def __init__(
+        self,
+        tenant_id: str = "demo",
+        project_id: str = "demo-project",
+    ) -> None:
+        self.tenant_id = tenant_id
+        self.project_id = project_id
+        self._lock = RLock()
+        self._library = _seed_library()
+        self._runs = _seed_runs(project_id)
+        self._approvals = _seed_approvals()
+        self._connectors = _seed_connectors()
+        self._settings = ProjectSettings(
+            project_id=project_id,
+            name="AI for equitable clinical research",
+            description=(
+                "A governed workspace for evidence review, grant development, "
+                "collaborator discovery, dataset analysis, and institutional guidance."
+            ),
+            default_classification="internal",
+            online_research_default=False,
+            retention_days=2555,
+            citation_coverage_threshold=1.0,
+            require_human_approval=True,
+            allowed_export_destinations=["Workspace Library", "SharePoint research site"],
+            model_profile="Balanced quality",
+            evaluation_policy="Block release on unresolved citations or critical policy findings",
+        )
+        self._agents = _seed_agents()
+
+    def summary(self) -> WorkspaceSummary:
+        with self._lock:
+            return WorkspaceSummary(
+                project=deepcopy(self._settings),
+                library_items=len(self._library),
+                active_runs=sum(
+                    item.status in {RunStatus.RUNNING, RunStatus.WAITING_FOR_APPROVAL} for item in self._runs
+                ),
+                pending_approvals=sum(item.state == ApprovalState.PENDING for item in self._approvals),
+                connector_ready=sum(
+                    item.enabled and item.test_status in {"ready", "ready_with_key"} for item in self._connectors
+                ),
+                connector_total=len(self._connectors),
+                last_activity_at=max(item.started_at for item in self._runs),
+                persistence=self.persistence,
+            )
+
+    def library(self) -> list[LibraryItem]:
+        with self._lock:
+            return deepcopy(self._library)
+
+    def ingest(
+        self,
+        payload: LibraryIngestRecord,
+        identity: IdentityContext,
+        *,
+        scheduler_managed: bool = False,
+    ) -> LibraryIngestResponse:
+        item_id = payload.source_id
+        item = LibraryItem(
+            id=item_id,
+            title=payload.title,
+            kind=payload.kind,
+            source=payload.source,
+            status=LibraryStatus.PROCESSING,
+            access=payload.access,
+            version="1.0" if payload.checksum else "pending",
+            checksum=payload.checksum or "pending",
+            license=payload.license,
+            added_at=utc_now(),
+            evidence_count=0,
+            connector=payload.source,
+            provider=payload.source,
+            publication_year=payload.publication_year,
+            description=payload.description,
+            tags=["new-ingestion"],
+            blob_uri=payload.blob_uri,
+            content_type=payload.content_type,
+            size_bytes=payload.size_bytes,
+        )
+        run_id = f"run-ingest-{uuid4().hex[:10]}"
+        run = self.add_run(
+            run_id=run_id,
+            capability=Capability.ORCHESTRATION,
+            title=f"Ingest {payload.title}",
+            owner=identity.display_name,
+            status=RunStatus.RUNNING,
+            progress=10,
+            current_stage="Extract structure",
+            artifact_count=0,
+            scheduler_managed=scheduler_managed,
+            stages=[
+                RunStage(
+                    id="receive",
+                    label="Receive source",
+                    status="completed",
+                    owner="ingestion-service",
+                ),
+                RunStage(
+                    id="extract",
+                    label="Extract structure",
+                    status="running",
+                    owner="document-intelligence",
+                ),
+                RunStage(
+                    id="govern",
+                    label="Checksum, license, version & ACL",
+                    status="planned",
+                    owner="ingestion-service",
+                ),
+                RunStage(
+                    id="index",
+                    label="Chunk, embed & index",
+                    status="planned",
+                    owner="search-indexer",
+                ),
+            ],
+        )
+        with self._lock:
+            self._library.insert(0, item)
+        return LibraryIngestResponse(item=deepcopy(item), run=run)
+
+    def fail_ingestion(
+        self,
+        item_id: str,
+        run_id: str,
+        reason: str,
+    ) -> LibraryIngestResponse | None:
+        with self._lock:
+            item = next((row for row in self._library if row.id == item_id), None)
+            run = next((row for row in self._runs if row.id == run_id), None)
+            if item is None or run is None:
+                return None
+            item.status = LibraryStatus.BLOCKED
+            item.description = f"{item.description} Ingestion blocked: {reason}"
+            run.status = RunStatus.FAILED
+            run.progress = 100
+            run.scheduling_state = "failed"
+            run.current_stage = "Scheduling failed"
+            run.completed_at = utc_now()
+            _fail_active_stage(run)
+            return LibraryIngestResponse(item=deepcopy(item), run=deepcopy(run))
+
+    def fail_run(self, run_id: str, reason: str) -> RunSummary | None:
+        with self._lock:
+            run = next((row for row in self._runs if row.id == run_id), None)
+            if run is None:
+                return None
+            run.status = RunStatus.FAILED
+            run.progress = 100
+            run.scheduling_state = "failed"
+            run.current_stage = "Scheduling failed"
+            run.completed_at = utc_now()
+            _fail_active_stage(run)
+            for approval in self._approvals:
+                if approval.run_id == run_id and approval.state == ApprovalState.PENDING:
+                    approval.state = ApprovalState.CANCELLED
+                    approval.rationale = reason
+                    approval.decided_at = utc_now()
+            return deepcopy(run)
+
+    def set_run_orchestration(
+        self,
+        run_id: str,
+        orchestration_input: dict[str, Any],
+    ) -> RunSummary | None:
+        with self._lock:
+            run = next((row for row in self._runs if row.id == run_id), None)
+            if run is None:
+                return None
+            run.orchestration_input = deepcopy(orchestration_input)
+            run.scheduling_state = "pending" if run.scheduler_managed else "not_managed"
+            return deepcopy(run)
+
+    def mark_run_scheduling(
+        self,
+        run_id: str,
+        state: str,
+    ) -> RunSummary | None:
+        if state not in {"scheduled", "uncertain", "failed"}:
+            raise ValueError("Unsupported run scheduling state.")
+        with self._lock:
+            run = next((row for row in self._runs if row.id == run_id), None)
+            if run is None:
+                return None
+            was_reconciliation_placeholder = (
+                run.status == RunStatus.PLANNED and run.current_stage == "Scheduling reconciliation required"
+            )
+            run.scheduling_state = state
+            if state == "uncertain":
+                run.status = RunStatus.PLANNED
+                run.current_stage = "Scheduling reconciliation required"
+            elif state == "failed":
+                run.status = RunStatus.FAILED
+                run.progress = 100
+                run.current_stage = "Scheduling failed"
+                run.completed_at = utc_now()
+                _fail_active_stage(run)
+            elif was_reconciliation_placeholder and run.orchestration_input:
+                original_status = run.orchestration_input.get("ui_status")
+                if isinstance(original_status, str):
+                    run.status = RunStatus(original_status)
+                original_stage = run.orchestration_input.get("ui_current_stage")
+                if isinstance(original_stage, str):
+                    run.current_stage = original_stage
+                original_progress = run.orchestration_input.get("ui_progress")
+                if isinstance(original_progress, int):
+                    run.progress = original_progress
+            return deepcopy(run)
+
+    def runs(self) -> list[RunSummary]:
+        with self._lock:
+            return deepcopy(sorted(self._runs, key=lambda item: item.started_at, reverse=True))
+
+    def run(self, run_id: str) -> RunSummary | None:
+        with self._lock:
+            return deepcopy(next((item for item in self._runs if item.id == run_id), None))
+
+    def approvals(self) -> list[ApprovalRecord]:
+        with self._lock:
+            return deepcopy(sorted(self._approvals, key=lambda item: item.requested_at, reverse=True))
+
+    def approval(self, approval_id: str) -> ApprovalRecord | None:
+        with self._lock:
+            return deepcopy(
+                next(
+                    (item for item in self._approvals if item.id == approval_id),
+                    None,
+                )
+            )
+
+    def decide_approval(
+        self,
+        approval_id: str,
+        decision: ApprovalDecision,
+        identity: IdentityContext,
+    ) -> ApprovalRecord | None:
+        with self._lock:
+            approval = next(
+                (item for item in self._approvals if item.id == approval_id),
+                None,
+            )
+            if approval is None:
+                return None
+            if approval.state != ApprovalState.PENDING:
+                if approval.state == decision.decision:
+                    return deepcopy(approval)
+                raise ValueError("This approval has already been decided differently.")
+            approval.state = decision.decision
+            approval.approver_id = identity.user_id
+            approval.approver_name = identity.display_name
+            approval.decided_at = utc_now()
+            approval.rationale = decision.rationale
+            approval.event_delivery = "pending"
+            approval.decision_event_id = f"decision::{approval.id}"
+            run = next((item for item in self._runs if item.id == approval.run_id), None)
+            if run:
+                if run.scheduler_managed:
+                    run.status = (
+                        RunStatus.RUNNING
+                        if decision.decision == ApprovalState.APPROVED
+                        else RunStatus.BLOCKED
+                    )
+                    run.current_stage = (
+                        "Approved action queued"
+                        if decision.decision == ApprovalState.APPROVED
+                        else "Approval rejected"
+                    )
+                else:
+                    run.status = (
+                        RunStatus.COMPLETED
+                        if decision.decision == ApprovalState.APPROVED
+                        else RunStatus.BLOCKED
+                    )
+                    run.progress = 100
+                    run.current_stage = (
+                        "Complete"
+                        if decision.decision == ApprovalState.APPROVED
+                        else "Approval rejected"
+                    )
+                    run.completed_at = utc_now()
+                    if decision.decision == ApprovalState.APPROVED:
+                        _complete_stages(run)
+                    else:
+                        _fail_active_stage(run)
+            return deepcopy(approval)
+
+    def mark_approval_delivery(
+        self,
+        approval_id: str,
+        delivery: str,
+    ) -> ApprovalRecord | None:
+        if delivery not in {"delivered", "failed", "not_required"}:
+            raise ValueError("Unsupported approval event delivery state.")
+        with self._lock:
+            approval = next(
+                (item for item in self._approvals if item.id == approval_id),
+                None,
+            )
+            if approval is None:
+                return None
+            approval.event_delivery = delivery
+            return deepcopy(approval)
+
+    def add_approval(
+        self,
+        *,
+        run_id: str,
+        title: str,
+        gated_action: str,
+        destination: str,
+        requested_by: str,
+        evidence_summary: str,
+        risk: str,
+    ) -> ApprovalRecord:
+        record = ApprovalRecord(
+            id=f"approval-{uuid4().hex[:12]}",
+            run_id=run_id,
+            title=title,
+            state=ApprovalState.PENDING,
+            risk=risk,
+            gated_action=gated_action,
+            destination=destination,
+            requested_by=requested_by,
+            requested_at=utc_now(),
+            evidence_summary=evidence_summary,
+            idempotency_key=f"{run_id}-{uuid4().hex[:10]}",
+        )
+        with self._lock:
+            self._approvals.append(record)
+            run = next((item for item in self._runs if item.id == run_id), None)
+            if run:
+                run.approval_id = record.id
+            return deepcopy(record)
+
+    def connectors(self) -> list[ConnectorSetting]:
+        with self._lock:
+            return deepcopy(self._connectors)
+
+    def update_connector(
+        self,
+        connector_id: str,
+        update: ConnectorUpdate,
+    ) -> ConnectorSetting | None:
+        allowed_agents = {
+            "literature",
+            "grant",
+            "matching",
+            "dataset",
+            "institution",
+        }
+        if not set(update.assigned_agents).issubset(allowed_agents):
+            raise ValueError("Connector assignment contains an unknown specialist.")
+        if connector_id in {"pubmed", "grants_gov"} and not update.enabled:
+            raise ValueError("Required project connectors cannot be disabled.")
+        with self._lock:
+            connector = next(
+                (item for item in self._connectors if item.id == connector_id),
+                None,
+            )
+            if connector is None:
+                return None
+            connector.enabled = update.enabled
+            connector.assigned_agents = update.assigned_agents
+            return deepcopy(connector)
+
+    def record_connector_test(
+        self,
+        connector_id: str,
+        status: str,
+    ) -> ConnectorSetting | None:
+        with self._lock:
+            connector = next(
+                (item for item in self._connectors if item.id == connector_id),
+                None,
+            )
+            if connector is None:
+                return None
+            connector.test_status = status
+            connector.last_tested_at = utc_now()
+            return deepcopy(connector)
+
+    def agents(self) -> list[AgentSetting]:
+        with self._lock:
+            return deepcopy(self._agents)
+
+    def settings(self) -> ProjectSettings:
+        with self._lock:
+            return deepcopy(self._settings)
+
+    def update_settings(self, update: ProjectSettings) -> ProjectSettings:
+        if update.project_id != self._settings.project_id:
+            raise ValueError("The project identifier cannot be changed.")
+        if update.online_research_default:
+            raise ValueError("Online research must remain opt-in per run.")
+        with self._lock:
+            self._settings = deepcopy(update)
+            return deepcopy(self._settings)
+
+    def add_run(
+        self,
+        *,
+        run_id: str,
+        capability: Capability,
+        title: str,
+        owner: str,
+        status: RunStatus = RunStatus.COMPLETED,
+        progress: int = 100,
+        current_stage: str = "Complete",
+        stages: list[RunStage] | None = None,
+        artifact_count: int = 1,
+        scheduler_managed: bool = False,
+        orchestration_input: dict[str, Any] | None = None,
+    ) -> RunSummary:
+        now = utc_now()
+        record = RunSummary(
+            id=run_id,
+            durable_instance_id=f"research-{run_id}",
+            project_id=self.project_id,
+            capability=capability,
+            title=title,
+            status=status,
+            progress=progress,
+            current_stage=current_stage,
+            owner=owner,
+            started_at=now,
+            completed_at=now if status == RunStatus.COMPLETED else None,
+            artifact_count=artifact_count,
+            scheduler_managed=scheduler_managed,
+            scheduling_state="pending" if scheduler_managed else "not_managed",
+            orchestration_input=deepcopy(orchestration_input),
+            stages=stages or [],
+        )
+        with self._lock:
+            existing_index = next(
+                (index for index, item in enumerate(self._runs) if item.id == run_id),
+                None,
+            )
+            if existing_index is None:
+                self._runs.append(record)
+            else:
+                self._runs[existing_index] = record
+            return deepcopy(record)
+
+
+def _seed_library() -> list[LibraryItem]:
+    now = utc_now()
+    rows = [
+        (
+            "paper-rag",
+            "Provenance-first retrieval for research synthesis",
+            "Paper",
+            "PubMed",
+            6,
+            "CC BY 4.0",
+            "public",
+            ["retrieval", "citations"],
+        ),
+        (
+            "paper-human",
+            "Human review gates for evidence workflows",
+            "Paper",
+            "Europe PMC",
+            4,
+            "CC BY 4.0",
+            "public",
+            ["human-in-the-loop"],
+        ),
+        (
+            "grant-open",
+            "Open Research Infrastructure Opportunity",
+            "Funding notice",
+            "Grants.gov",
+            8,
+            "U.S. Government Work",
+            "public",
+            ["grant", "open-science"],
+        ),
+        (
+            "policy-irb",
+            "IRB guidance for AI-assisted research",
+            "Policy",
+            "Institutional Library",
+            5,
+            "Institutional",
+            "restricted",
+            ["IRB", "policy"],
+        ),
+        (
+            "policy-retention",
+            "Research records retention standard",
+            "Policy",
+            "Institutional Library",
+            3,
+            "Institutional",
+            "internal",
+            ["records", "retention"],
+        ),
+        (
+            "dataset-outcomes",
+            "Pilot outcomes.csv",
+            "Dataset",
+            "Workspace upload",
+            1,
+            "Project supplied",
+            "restricted",
+            ["pilot", "outcomes"],
+        ),
+        (
+            "person-chen",
+            "Dr. Maya Chen — Computational Biology",
+            "Person",
+            "Faculty directory",
+            2,
+            "Institutional",
+            "internal",
+            ["genomics", "reproducibility"],
+        ),
+        (
+            "facility-imaging",
+            "Advanced Imaging Core",
+            "Facility",
+            "Core directory",
+            2,
+            "Institutional",
+            "internal",
+            ["microscopy", "image-analysis"],
+        ),
+        (
+            "template-dmp",
+            "Data-management plan template",
+            "Template",
+            "Research Office",
+            3,
+            "Institutional",
+            "internal",
+            ["DMP", "template"],
+        ),
+    ]
+    return [
+        LibraryItem(
+            id=row[0],
+            title=row[1],
+            kind=row[2],
+            source=row[3],
+            status=LibraryStatus.READY,
+            access=row[6],
+            version="1.0",
+            checksum=f"sha256:{row[0]}-fixture",
+            license=row[5],
+            added_at=now,
+            evidence_count=row[4],
+            connector=row[3],
+            provider=row[3],
+            publication_year=2026,
+            description=f"Verified {row[2].lower()} record available to this project.",
+            tags=row[7],
+        )
+        for row in rows
+    ]
+
+
+def _seed_runs(project_id: str) -> list[RunSummary]:
+    now = utc_now()
+    rows = [
+        (
+            "run-lit-001",
+            Capability.LITERATURE,
+            "Reproducible synthesis protocol",
+            RunStatus.COMPLETED,
+            100,
+            "Citation audit complete",
+            2,
+        ),
+        (
+            "run-grant-001",
+            Capability.GRANT,
+            "Open infrastructure application",
+            RunStatus.WAITING_FOR_APPROVAL,
+            86,
+            "Reviewer approval",
+            4,
+        ),
+        (
+            "run-match-001",
+            Capability.MATCHING,
+            "Genomics collaborator shortlist",
+            RunStatus.COMPLETED,
+            100,
+            "Shortlist confirmed",
+            1,
+        ),
+        (
+            "run-data-001",
+            Capability.DATASET,
+            "Pilot outcomes profile",
+            RunStatus.BLOCKED,
+            15,
+            "Compute adapter not configured",
+            3,
+        ),
+        (
+            "run-policy-001",
+            Capability.INSTITUTIONAL_QA,
+            "IRB disclosure guidance",
+            RunStatus.COMPLETED,
+            100,
+            "Answer audited",
+            1,
+        ),
+    ]
+    return [
+        RunSummary(
+            id=row[0],
+            durable_instance_id=f"research-{row[0]}",
+            project_id=project_id,
+            capability=row[1],
+            title=row[2],
+            status=row[3],
+            progress=row[4],
+            current_stage=row[5],
+            owner="Dr. Maya Chen",
+            started_at=now,
+            completed_at=now if row[3] == RunStatus.COMPLETED else None,
+            artifact_count=row[6],
+            approval_id=("approval-grant-export" if row[0] == "run-grant-001" else None),
+        )
+        for row in rows
+    ]
+
+
+def _seed_approvals() -> list[ApprovalRecord]:
+    now = utc_now()
+    return [
+        ApprovalRecord(
+            id="approval-grant-export",
+            run_id="run-grant-001",
+            title="Release grant package for institutional review",
+            state=ApprovalState.PENDING,
+            risk="High",
+            gated_action="Export package version 0.8 and notify the assigned research-office reviewer.",
+            destination="SharePoint research site / Grant reviews",
+            requested_by="grant-agent",
+            requested_at=now,
+            evidence_summary=(
+                "7/7 requirements mapped; 2 project fact gaps remain; no unsupported commitments detected."
+            ),
+            idempotency_key="grant-export-run-grant-001-v08",
+        ),
+    ]
+
+
+def _connector(
+    id: str,
+    name: str,
+    category: str,
+    description: str,
+    agents: list[str],
+    terms_url: str,
+    capabilities: list[str],
+    *,
+    auth_kind: str = "None",
+    secret_status: str = "Not required",
+    test_status: str = "ready",
+) -> ConnectorSetting:
+    return ConnectorSetting(
+        id=id,
+        name=name,
+        category=category,
+        description=description,
+        auth_kind=auth_kind,
+        secret_status=secret_status,
+        enabled=True,
+        test_status=test_status,
+        assigned_agents=agents,
+        terms_url=HttpUrl(terms_url),
+        data_boundary="Public metadata only; query text is sent to the provider.",
+        capabilities=capabilities,
+    )
+
+
+def _seed_connectors() -> list[ConnectorSetting]:
+    return [
+        _connector(
+            "pubmed",
+            "PubMed",
+            "Literature",
+            "Biomedical citations and abstracts from NCBI.",
+            ["literature"],
+            "https://www.ncbi.nlm.nih.gov/home/about/policies/",
+            ["Search", "Metadata"],
+        ),
+        _connector(
+            "europe_pmc",
+            "Europe PMC",
+            "Literature",
+            "Life-sciences publications, grants, and links.",
+            ["literature"],
+            "https://europepmc.org/terms",
+            ["Search", "Metadata"],
+        ),
+        _connector(
+            "crossref",
+            "Crossref",
+            "Literature",
+            "DOI metadata and scholarly work resolution.",
+            ["literature", "grant"],
+            "https://www.crossref.org/services/metadata-delivery/rest-api/",
+            ["DOI resolution", "Metadata"],
+        ),
+        _connector(
+            "openalex",
+            "OpenAlex",
+            "Discovery",
+            "Open catalog of works, people, venues, and institutions.",
+            ["literature", "matching", "dataset"],
+            "https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication",
+            ["Search", "Entity leads"],
+        ),
+        _connector(
+            "arxiv",
+            "arXiv",
+            "Literature",
+            "Preprint metadata for supported disciplines.",
+            ["literature"],
+            "https://info.arxiv.org/help/api/tou.html",
+            ["Search", "Preprints"],
+        ),
+        _connector(
+            "clinical_trials",
+            "ClinicalTrials.gov",
+            "Clinical research",
+            "Clinical study records from the U.S. NLM.",
+            ["literature"],
+            "https://clinicaltrials.gov/about-site/terms-conditions",
+            ["Trials", "Metadata"],
+        ),
+        _connector(
+            "grants_gov",
+            "Grants.gov",
+            "Funding",
+            "Authoritative U.S. federal opportunity records.",
+            ["grant"],
+            "https://www.grants.gov/web/grants/legal-privacy.html",
+            ["Opportunities", "Requirements"],
+        ),
+        _connector(
+            "nih_reporter",
+            "NIH RePORTER",
+            "Funding",
+            "NIH funded-project and investigator metadata.",
+            ["grant", "matching"],
+            "https://reporter.nih.gov/termsconditions",
+            ["Awards", "Project leads"],
+        ),
+        _connector(
+            "datacite",
+            "DataCite",
+            "Datasets",
+            "DOI metadata for datasets and research outputs.",
+            ["literature", "dataset"],
+            "https://support.datacite.org/docs/terms-and-conditions",
+            ["Dataset discovery", "DOI resolution"],
+        ),
+        _connector(
+            "orcid",
+            "ORCID",
+            "Identity",
+            "Public researcher identifier records.",
+            ["matching"],
+            "https://info.orcid.org/terms-of-use/",
+            ["Identity resolution"],
+        ),
+        _connector(
+            "ror",
+            "ROR",
+            "Identity",
+            "Open identifiers for research organizations.",
+            ["matching"],
+            "https://ror.org/terms/",
+            ["Organization resolution"],
+        ),
+        _connector(
+            "semantic_scholar",
+            "Semantic Scholar",
+            "Literature",
+            "Paper and citation graph metadata.",
+            ["literature"],
+            "https://www.semanticscholar.org/product/api/license",
+            ["Search", "Citation graph"],
+            auth_kind="API key recommended",
+            secret_status="Optional secret not configured",
+            test_status="ready_with_key",
+        ),
+    ]
+
+
+def _seed_agents() -> list[AgentSetting]:
+    return [
+        AgentSetting(
+            id="coordinator",
+            name="Research coordinator",
+            model_tier="Fast",
+            status="Active",
+            web_access="Never direct",
+            workflow_steps=["Classify", "Route", "Reconcile"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="literature",
+            name="Literature synthesis",
+            model_tier="Primary",
+            status="Active",
+            web_access="Opt-in public only",
+            workflow_steps=["Protocol", "Search", "Screen", "Extract", "Synthesize", "Audit"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="grant",
+            name="Grant development",
+            model_tier="Primary",
+            status="Active",
+            web_access="Opportunity only",
+            workflow_steps=["Requirements", "Facts", "Aims", "Draft", "Compliance", "Red team"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="matching",
+            name="PI & resource matching",
+            model_tier="Fast",
+            status="Active",
+            web_access="Public metadata leads",
+            workflow_steps=["Criteria", "Filter", "Resolve", "Score", "Compare"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="dataset",
+            name="Dataset interpretation",
+            model_tier="Fast",
+            status="Active",
+            web_access="No raw data",
+            workflow_steps=["Validate", "Profile", "Plan", "Compute", "Interpret"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="institution",
+            name="Institutional guidance",
+            model_tier="Fast",
+            status="Active",
+            web_access="Forbidden",
+            workflow_steps=["Scope", "Authorize", "Version", "Conflict", "Answer"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="literature_online",
+            name="Literature public researcher",
+            model_tier="Fast",
+            status="Active",
+            web_access="Public-only deployment",
+            workflow_steps=["Public query", "Metadata", "Web", "Source handoff"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="grant_online",
+            name="Grant opportunity researcher",
+            model_tier="Fast",
+            status="Active",
+            web_access="Public opportunity only",
+            workflow_steps=["Public notice", "Funding metadata", "Verify URL"],
+            deployment="Foundry Hosted Agent",
+        ),
+        AgentSetting(
+            id="matching_online",
+            name="Public entity researcher",
+            model_tier="Fast",
+            status="Active",
+            web_access="Public metadata only",
+            workflow_steps=["Public criteria", "Resolve IDs", "Return leads"],
+            deployment="Foundry Hosted Agent",
+        ),
+    ]

@@ -1,0 +1,14 @@
+name: dataset-agent-builtins
+agent:
+    name: dataset-agent
+    kind: hosted
+    version: "3"
+dataset:
+    local_uri: evals/dataset.jsonl
+evaluators:
+    - builtin.relevance
+    - builtin.task_adherence
+    - builtin.indirect_attack
+options:
+    eval_model: gpt-5.4-mini
+max_samples: 15

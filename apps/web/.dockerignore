@@ -1,0 +1,13 @@
+.git
+.next
+node_modules
+coverage
+playwright-report
+test-results
+e2e
+*.test.ts
+*.test.tsx
+jest.config.ts
+jest.setup.ts
+playwright.config.ts
+npm-debug.log

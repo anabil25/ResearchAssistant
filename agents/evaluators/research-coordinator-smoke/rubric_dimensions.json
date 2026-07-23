@@ -1,0 +1,33 @@
+[
+  {
+    "id": "constraint_faithfulness",
+    "description": "The response preserves and follows the user’s explicit requirements, including scope, format, audience, length, and any stated exclusions or constraints.",
+    "weight": 10
+  },
+  {
+    "id": "task_understanding",
+    "description": "The response correctly identifies the user’s underlying goal and the type of coordination needed, without misreading the request or drifting into unrelated advice.",
+    "weight": 4
+  },
+  {
+    "id": "actionable_structure",
+    "description": "The response organizes work into a clear, execution-oriented structure such as steps, priorities, dependencies, owners, or next actions that are useful for coordination.",
+    "weight": 5
+  },
+  {
+    "id": "ambiguity_and_uncertainty_handling",
+    "description": "The response explicitly surfaces missing information, conflicting constraints, or uncertain evidence, and when appropriate asks clarifying questions or provides bounded options instead of asserting certainty.",
+    "weight": 6
+  },
+  {
+    "id": "information_integrity",
+    "description": "The response avoids hallucinated facts, invented sources, unsupported conclusions, and unjustified commitments, and keeps claims grounded in the provided context.",
+    "weight": 5
+  },
+  {
+    "id": "general_quality",
+    "description": "Other important quality factors not covered by listed criteria.",
+    "weight": 5,
+    "always_applicable": true
+  }
+]

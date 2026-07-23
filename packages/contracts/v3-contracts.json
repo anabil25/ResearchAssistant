@@ -1,0 +1,4221 @@
+{
+  "generated_at": "deterministic",
+  "schema_version": "research-assistant.v3",
+  "schemas": {
+    "ApprovalDecisionV3": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_id": {
+          "title": "Approval Id",
+          "type": "string"
+        },
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decided_by": {
+          "title": "Decided By",
+          "type": "string"
+        },
+        "decision": {
+          "enum": [
+            "approved",
+            "rejected",
+            "changes_requested"
+          ],
+          "title": "Decision",
+          "type": "string"
+        },
+        "rationale": {
+          "maxLength": 2000,
+          "minLength": 3,
+          "title": "Rationale",
+          "type": "string"
+        }
+      },
+      "required": [
+        "approval_id",
+        "decision",
+        "rationale",
+        "decided_by"
+      ],
+      "title": "ApprovalDecisionV3",
+      "type": "object"
+    },
+    "ApprovalRequestV3": {
+      "additionalProperties": false,
+      "properties": {
+        "action": {
+          "maxLength": 2000,
+          "minLength": 3,
+          "title": "Action",
+          "type": "string"
+        },
+        "destination": {
+          "maxLength": 1000,
+          "minLength": 1,
+          "title": "Destination",
+          "type": "string"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "expires_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expires At"
+        },
+        "id": {
+          "pattern": "^approval-[a-z0-9-]{3,96}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Node Id"
+        },
+        "payload_digest": {
+          "pattern": "^sha256:[a-f0-9]{64}$",
+          "title": "Payload Digest",
+          "type": "string"
+        },
+        "policy_reason": {
+          "title": "Policy Reason",
+          "type": "string"
+        },
+        "requested_at": {
+          "format": "date-time",
+          "title": "Requested At",
+          "type": "string"
+        },
+        "requested_by": {
+          "title": "Requested By",
+          "type": "string"
+        },
+        "run_id": {
+          "title": "Run Id",
+          "type": "string"
+        },
+        "state": {
+          "default": "pending",
+          "enum": [
+            "pending",
+            "approved",
+            "rejected",
+            "changes_requested",
+            "expired",
+            "withdrawn"
+          ],
+          "title": "State",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "run_id",
+        "action",
+        "destination",
+        "payload_digest",
+        "policy_reason",
+        "requested_by"
+      ],
+      "title": "ApprovalRequestV3",
+      "type": "object"
+    },
+    "ConnectorContractV3": {
+      "$defs": {
+        "Capability": {
+          "enum": [
+            "literature",
+            "grant",
+            "matching",
+            "dataset",
+            "institutional_qa",
+            "orchestration"
+          ],
+          "title": "Capability",
+          "type": "string"
+        },
+        "ConnectorAuthMode": {
+          "enum": [
+            "none",
+            "managed_identity",
+            "key_vault_secret",
+            "oauth_user"
+          ],
+          "title": "ConnectorAuthMode",
+          "type": "string"
+        },
+        "ConnectorLifecycle": {
+          "enum": [
+            "draft",
+            "validating",
+            "canary",
+            "active",
+            "deprecated",
+            "failed"
+          ],
+          "title": "ConnectorLifecycle",
+          "type": "string"
+        },
+        "ConnectorProtocol": {
+          "enum": [
+            "openapi",
+            "mcp",
+            "web_adapter"
+          ],
+          "title": "ConnectorProtocol",
+          "type": "string"
+        },
+        "ToolboxBindingV3": {
+          "additionalProperties": false,
+          "properties": {
+            "default_version": {
+              "title": "Default Version",
+              "type": "boolean"
+            },
+            "require_approval": {
+              "enum": [
+                "always",
+                "never"
+              ],
+              "title": "Require Approval",
+              "type": "string"
+            },
+            "server_label": {
+              "title": "Server Label",
+              "type": "string"
+            },
+            "toolbox_name": {
+              "title": "Toolbox Name",
+              "type": "string"
+            },
+            "toolbox_version": {
+              "title": "Toolbox Version",
+              "type": "string"
+            }
+          },
+          "required": [
+            "toolbox_name",
+            "toolbox_version",
+            "server_label",
+            "require_approval",
+            "default_version"
+          ],
+          "title": "ToolboxBindingV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "allowed_hosts": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Allowed Hosts",
+          "type": "array"
+        },
+        "allowed_path_prefixes": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Allowed Path Prefixes",
+          "type": "array"
+        },
+        "apim_api_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Apim Api Version"
+        },
+        "apim_revision": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Apim Revision"
+        },
+        "assigned_capabilities": {
+          "items": {
+            "$ref": "#/$defs/Capability"
+          },
+          "title": "Assigned Capabilities",
+          "type": "array"
+        },
+        "auth_mode": {
+          "$ref": "#/$defs/ConnectorAuthMode"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9_]{1,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "license_summary": {
+          "title": "License Summary",
+          "type": "string"
+        },
+        "lifecycle": {
+          "$ref": "#/$defs/ConnectorLifecycle"
+        },
+        "mcp_server_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Mcp Server Version"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "protocol": {
+          "$ref": "#/$defs/ConnectorProtocol"
+        },
+        "terms_url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Terms Url",
+          "type": "string"
+        },
+        "toolbox_binding": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ToolboxBindingV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "protocol",
+        "auth_mode",
+        "lifecycle",
+        "allowed_hosts",
+        "allowed_path_prefixes",
+        "terms_url",
+        "license_summary"
+      ],
+      "title": "ConnectorContractV3",
+      "type": "object"
+    },
+    "DatasetAnalysisStepV3": {
+      "additionalProperties": false,
+      "properties": {
+        "approval_required": {
+          "title": "Approval Required",
+          "type": "boolean"
+        },
+        "code_language": {
+          "enum": [
+            "python",
+            "javascript",
+            "shell"
+          ],
+          "title": "Code Language",
+          "type": "string"
+        },
+        "deterministic": {
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "id": {
+          "pattern": "^[a-z][a-z0-9-]{1,63}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "method": {
+          "title": "Method",
+          "type": "string"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "question",
+        "method",
+        "code_language",
+        "deterministic",
+        "approval_required"
+      ],
+      "title": "DatasetAnalysisStepV3",
+      "type": "object"
+    },
+    "DatasetAssetV3": {
+      "$defs": {
+        "DatasetAssetState": {
+          "enum": [
+            "quarantined",
+            "validated",
+            "rejected",
+            "ready"
+          ],
+          "title": "DatasetAssetState",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "blob_uri": {
+          "title": "Blob Uri",
+          "type": "string"
+        },
+        "checksum": {
+          "title": "Checksum",
+          "type": "string"
+        },
+        "content_type": {
+          "title": "Content Type",
+          "type": "string"
+        },
+        "filename": {
+          "title": "Filename",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "owner_id": {
+          "title": "Owner Id",
+          "type": "string"
+        },
+        "size_bytes": {
+          "exclusiveMinimum": 0,
+          "title": "Size Bytes",
+          "type": "integer"
+        },
+        "state": {
+          "$ref": "#/$defs/DatasetAssetState"
+        }
+      },
+      "required": [
+        "id",
+        "filename",
+        "content_type",
+        "size_bytes",
+        "checksum",
+        "blob_uri",
+        "state",
+        "owner_id"
+      ],
+      "title": "DatasetAssetV3",
+      "type": "object"
+    },
+    "DatasetExecutionV3": {
+      "additionalProperties": false,
+      "properties": {
+        "allowed_data_classification": {
+          "const": "public_or_synthetic",
+          "default": "public_or_synthetic",
+          "title": "Allowed Data Classification",
+          "type": "string"
+        },
+        "code_checksum": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Code Checksum"
+        },
+        "environment_digest": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Environment Digest"
+        },
+        "foundry_response_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Foundry Response Id"
+        },
+        "output_artifact_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Output Artifact Ids",
+          "type": "array"
+        },
+        "project_scoped_context": {
+          "const": true,
+          "default": true,
+          "title": "Project Scoped Context",
+          "type": "boolean"
+        },
+        "status": {
+          "enum": [
+            "planned",
+            "waiting_for_approval",
+            "running",
+            "completed",
+            "failed",
+            "cancelled"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "tool_name": {
+          "const": "code_interpreter",
+          "default": "code_interpreter",
+          "title": "Tool Name",
+          "type": "string"
+        },
+        "toolbox_name": {
+          "default": "research-dataset",
+          "title": "Toolbox Name",
+          "type": "string"
+        }
+      },
+      "required": [
+        "status"
+      ],
+      "title": "DatasetExecutionV3",
+      "type": "object"
+    },
+    "DatasetWorkspaceV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "DatasetAnalysisStepV3": {
+          "additionalProperties": false,
+          "properties": {
+            "approval_required": {
+              "title": "Approval Required",
+              "type": "boolean"
+            },
+            "code_language": {
+              "enum": [
+                "python",
+                "javascript",
+                "shell"
+              ],
+              "title": "Code Language",
+              "type": "string"
+            },
+            "deterministic": {
+              "title": "Deterministic",
+              "type": "boolean"
+            },
+            "id": {
+              "pattern": "^[a-z][a-z0-9-]{1,63}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "method": {
+              "title": "Method",
+              "type": "string"
+            },
+            "question": {
+              "title": "Question",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "question",
+            "method",
+            "code_language",
+            "deterministic",
+            "approval_required"
+          ],
+          "title": "DatasetAnalysisStepV3",
+          "type": "object"
+        },
+        "DatasetAssetState": {
+          "enum": [
+            "quarantined",
+            "validated",
+            "rejected",
+            "ready"
+          ],
+          "title": "DatasetAssetState",
+          "type": "string"
+        },
+        "DatasetAssetV3": {
+          "additionalProperties": false,
+          "properties": {
+            "blob_uri": {
+              "title": "Blob Uri",
+              "type": "string"
+            },
+            "checksum": {
+              "title": "Checksum",
+              "type": "string"
+            },
+            "content_type": {
+              "title": "Content Type",
+              "type": "string"
+            },
+            "filename": {
+              "title": "Filename",
+              "type": "string"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "owner_id": {
+              "title": "Owner Id",
+              "type": "string"
+            },
+            "size_bytes": {
+              "exclusiveMinimum": 0,
+              "title": "Size Bytes",
+              "type": "integer"
+            },
+            "state": {
+              "$ref": "#/$defs/DatasetAssetState"
+            }
+          },
+          "required": [
+            "id",
+            "filename",
+            "content_type",
+            "size_bytes",
+            "checksum",
+            "blob_uri",
+            "state",
+            "owner_id"
+          ],
+          "title": "DatasetAssetV3",
+          "type": "object"
+        },
+        "DatasetExecutionV3": {
+          "additionalProperties": false,
+          "properties": {
+            "allowed_data_classification": {
+              "const": "public_or_synthetic",
+              "default": "public_or_synthetic",
+              "title": "Allowed Data Classification",
+              "type": "string"
+            },
+            "code_checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Code Checksum"
+            },
+            "environment_digest": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Environment Digest"
+            },
+            "foundry_response_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Foundry Response Id"
+            },
+            "output_artifact_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Output Artifact Ids",
+              "type": "array"
+            },
+            "project_scoped_context": {
+              "const": true,
+              "default": true,
+              "title": "Project Scoped Context",
+              "type": "boolean"
+            },
+            "status": {
+              "enum": [
+                "planned",
+                "waiting_for_approval",
+                "running",
+                "completed",
+                "failed",
+                "cancelled"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "tool_name": {
+              "const": "code_interpreter",
+              "default": "code_interpreter",
+              "title": "Tool Name",
+              "type": "string"
+            },
+            "toolbox_name": {
+              "default": "research-dataset",
+              "title": "Toolbox Name",
+              "type": "string"
+            }
+          },
+          "required": [
+            "status"
+          ],
+          "title": "DatasetExecutionV3",
+          "type": "object"
+        },
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "ResearchArtifactV3": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "created_by": {
+              "title": "Created By",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReferenceV3"
+              },
+              "title": "Evidence",
+              "type": "array"
+            },
+            "id": {
+              "pattern": "^artifact-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            },
+            "markdown": {
+              "maxLength": 200000,
+              "title": "Markdown",
+              "type": "string"
+            },
+            "schema_version": {
+              "const": "research-assistant.v3",
+              "default": "research-assistant.v3",
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "source_run_id": {
+              "title": "Source Run Id",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 240,
+              "minLength": 3,
+              "title": "Title",
+              "type": "string"
+            },
+            "unsupported_claims": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported Claims",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title",
+            "markdown",
+            "source_run_id",
+            "created_by"
+          ],
+          "title": "ResearchArtifactV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "analysis_plan": {
+          "items": {
+            "$ref": "#/$defs/DatasetAnalysisStepV3"
+          },
+          "title": "Analysis Plan",
+          "type": "array"
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchArtifactV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "assets": {
+          "items": {
+            "$ref": "#/$defs/DatasetAssetV3"
+          },
+          "title": "Assets",
+          "type": "array"
+        },
+        "execution": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DatasetExecutionV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        }
+      },
+      "title": "DatasetWorkspaceV3",
+      "type": "object"
+    },
+    "EligibilityEvaluationV3": {
+      "additionalProperties": false,
+      "properties": {
+        "deterministic": {
+          "default": true,
+          "title": "Deterministic",
+          "type": "boolean"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "missing_fact_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Missing Fact Ids",
+          "type": "array"
+        },
+        "result": {
+          "enum": [
+            "pass",
+            "fail",
+            "unknown"
+          ],
+          "title": "Result",
+          "type": "string"
+        },
+        "rule_id": {
+          "title": "Rule Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "rule_id",
+        "label",
+        "result"
+      ],
+      "title": "EligibilityEvaluationV3",
+      "type": "object"
+    },
+    "EvidenceReferenceV3": {
+      "$defs": {
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "canonical_url": {
+          "anyOf": [
+            {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Canonical Url"
+        },
+        "checksum": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Checksum"
+        },
+        "chunk_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Chunk Id"
+        },
+        "citation_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Citation Id"
+        },
+        "id": {
+          "pattern": "^evidence-[a-z0-9-]{3,96}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "quote": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Quote"
+        },
+        "resolution": {
+          "$ref": "#/$defs/EvidenceResolution"
+        },
+        "retrieved_at": {
+          "format": "date-time",
+          "title": "Retrieved At",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "source_id",
+        "title",
+        "resolution"
+      ],
+      "title": "EvidenceReferenceV3",
+      "type": "object"
+    },
+    "ExtractionRecordV3": {
+      "$defs": {
+        "ExtractionValueV3": {
+          "additionalProperties": false,
+          "properties": {
+            "confidence": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Confidence",
+              "type": "number"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "field_id": {
+              "title": "Field Id",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            }
+          },
+          "required": [
+            "field_id",
+            "value",
+            "confidence"
+          ],
+          "title": "ExtractionValueV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        },
+        "values": {
+          "items": {
+            "$ref": "#/$defs/ExtractionValueV3"
+          },
+          "title": "Values",
+          "type": "array"
+        }
+      },
+      "required": [
+        "source_id",
+        "values"
+      ],
+      "title": "ExtractionRecordV3",
+      "type": "object"
+    },
+    "GrantDiscoveryQueryV3": {
+      "additionalProperties": false,
+      "properties": {
+        "agencies": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Agencies",
+          "type": "array"
+        },
+        "connector_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Connector Ids",
+          "type": "array"
+        },
+        "deadline_from": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline From"
+        },
+        "deadline_to": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline To"
+        },
+        "keywords": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Keywords",
+          "type": "array"
+        },
+        "saved_search_name": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Saved Search Name"
+        }
+      },
+      "required": [
+        "keywords",
+        "connector_ids"
+      ],
+      "title": "GrantDiscoveryQueryV3",
+      "type": "object"
+    },
+    "GrantOpportunityV3": {
+      "additionalProperties": false,
+      "properties": {
+        "amendment_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Amendment Ids",
+          "type": "array"
+        },
+        "canonical_url": {
+          "format": "uri",
+          "maxLength": 2083,
+          "minLength": 1,
+          "title": "Canonical Url",
+          "type": "string"
+        },
+        "connector_id": {
+          "title": "Connector Id",
+          "type": "string"
+        },
+        "deadline": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Deadline"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "sponsor": {
+          "title": "Sponsor",
+          "type": "string"
+        },
+        "status": {
+          "enum": [
+            "forecast",
+            "open",
+            "closed",
+            "archived"
+          ],
+          "title": "Status",
+          "type": "string"
+        },
+        "title": {
+          "title": "Title",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "connector_id",
+        "sponsor",
+        "title",
+        "canonical_url",
+        "status"
+      ],
+      "title": "GrantOpportunityV3",
+      "type": "object"
+    },
+    "GrantWorkspaceV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "EligibilityEvaluationV3": {
+          "additionalProperties": false,
+          "properties": {
+            "deterministic": {
+              "default": true,
+              "title": "Deterministic",
+              "type": "boolean"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "missing_fact_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Missing Fact Ids",
+              "type": "array"
+            },
+            "result": {
+              "enum": [
+                "pass",
+                "fail",
+                "unknown"
+              ],
+              "title": "Result",
+              "type": "string"
+            },
+            "rule_id": {
+              "title": "Rule Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "rule_id",
+            "label",
+            "result"
+          ],
+          "title": "EligibilityEvaluationV3",
+          "type": "object"
+        },
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "GrantDiscoveryQueryV3": {
+          "additionalProperties": false,
+          "properties": {
+            "agencies": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Agencies",
+              "type": "array"
+            },
+            "connector_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Connector Ids",
+              "type": "array"
+            },
+            "deadline_from": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Deadline From"
+            },
+            "deadline_to": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Deadline To"
+            },
+            "keywords": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Keywords",
+              "type": "array"
+            },
+            "saved_search_name": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Saved Search Name"
+            }
+          },
+          "required": [
+            "keywords",
+            "connector_ids"
+          ],
+          "title": "GrantDiscoveryQueryV3",
+          "type": "object"
+        },
+        "GrantOpportunityV3": {
+          "additionalProperties": false,
+          "properties": {
+            "amendment_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Amendment Ids",
+              "type": "array"
+            },
+            "canonical_url": {
+              "format": "uri",
+              "maxLength": 2083,
+              "minLength": 1,
+              "title": "Canonical Url",
+              "type": "string"
+            },
+            "connector_id": {
+              "title": "Connector Id",
+              "type": "string"
+            },
+            "deadline": {
+              "anyOf": [
+                {
+                  "format": "date-time",
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Deadline"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "sponsor": {
+              "title": "Sponsor",
+              "type": "string"
+            },
+            "status": {
+              "enum": [
+                "forecast",
+                "open",
+                "closed",
+                "archived"
+              ],
+              "title": "Status",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "connector_id",
+            "sponsor",
+            "title",
+            "canonical_url",
+            "status"
+          ],
+          "title": "GrantOpportunityV3",
+          "type": "object"
+        },
+        "ResearchArtifactV3": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "created_by": {
+              "title": "Created By",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReferenceV3"
+              },
+              "title": "Evidence",
+              "type": "array"
+            },
+            "id": {
+              "pattern": "^artifact-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            },
+            "markdown": {
+              "maxLength": 200000,
+              "title": "Markdown",
+              "type": "string"
+            },
+            "schema_version": {
+              "const": "research-assistant.v3",
+              "default": "research-assistant.v3",
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "source_run_id": {
+              "title": "Source Run Id",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 240,
+              "minLength": 3,
+              "title": "Title",
+              "type": "string"
+            },
+            "unsupported_claims": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported Claims",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title",
+            "markdown",
+            "source_run_id",
+            "created_by"
+          ],
+          "title": "ResearchArtifactV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchArtifactV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "discovery": {
+          "$ref": "#/$defs/GrantDiscoveryQueryV3"
+        },
+        "eligibility": {
+          "items": {
+            "$ref": "#/$defs/EligibilityEvaluationV3"
+          },
+          "title": "Eligibility",
+          "type": "array"
+        },
+        "export_ready": {
+          "default": false,
+          "title": "Export Ready",
+          "type": "boolean"
+        },
+        "opportunities": {
+          "items": {
+            "$ref": "#/$defs/GrantOpportunityV3"
+          },
+          "title": "Opportunities",
+          "type": "array"
+        },
+        "review_findings": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Review Findings",
+          "type": "array"
+        },
+        "selected_opportunity_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Selected Opportunity Id"
+        }
+      },
+      "required": [
+        "discovery"
+      ],
+      "title": "GrantWorkspaceV3",
+      "type": "object"
+    },
+    "InstitutionalAnswerV3": {
+      "$defs": {
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "InstitutionalConflictV3": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "title": "Description",
+              "type": "string"
+            },
+            "severity": {
+              "enum": [
+                "info",
+                "warning",
+                "blocking"
+              ],
+              "title": "Severity",
+              "type": "string"
+            },
+            "source_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "title": "Source Ids",
+              "type": "array"
+            },
+            "topic": {
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic",
+            "source_ids",
+            "description",
+            "severity"
+          ],
+          "title": "InstitutionalConflictV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "abstained": {
+          "title": "Abstained",
+          "type": "boolean"
+        },
+        "answer_markdown": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "title": "Answer Markdown"
+        },
+        "conflicts": {
+          "items": {
+            "$ref": "#/$defs/InstitutionalConflictV3"
+          },
+          "title": "Conflicts",
+          "type": "array"
+        },
+        "escalation": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Escalation"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceReferenceV3"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "question": {
+          "title": "Question",
+          "type": "string"
+        }
+      },
+      "required": [
+        "question",
+        "answer_markdown",
+        "abstained"
+      ],
+      "title": "InstitutionalAnswerV3",
+      "type": "object"
+    },
+    "InstitutionalCorpusV3": {
+      "additionalProperties": false,
+      "properties": {
+        "authorized": {
+          "title": "Authorized",
+          "type": "boolean"
+        },
+        "enabled": {
+          "title": "Enabled",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "label": {
+          "title": "Label",
+          "type": "string"
+        },
+        "source_kind": {
+          "enum": [
+            "azure_ai_search",
+            "file_search",
+            "work_iq"
+          ],
+          "title": "Source Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "label",
+        "enabled",
+        "authorized",
+        "source_kind"
+      ],
+      "title": "InstitutionalCorpusV3",
+      "type": "object"
+    },
+    "InstitutionalWorkspaceV3": {
+      "$defs": {
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "InstitutionalAnswerV3": {
+          "additionalProperties": false,
+          "properties": {
+            "abstained": {
+              "title": "Abstained",
+              "type": "boolean"
+            },
+            "answer_markdown": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Answer Markdown"
+            },
+            "conflicts": {
+              "items": {
+                "$ref": "#/$defs/InstitutionalConflictV3"
+              },
+              "title": "Conflicts",
+              "type": "array"
+            },
+            "escalation": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Escalation"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReferenceV3"
+              },
+              "title": "Evidence",
+              "type": "array"
+            },
+            "question": {
+              "title": "Question",
+              "type": "string"
+            }
+          },
+          "required": [
+            "question",
+            "answer_markdown",
+            "abstained"
+          ],
+          "title": "InstitutionalAnswerV3",
+          "type": "object"
+        },
+        "InstitutionalConflictV3": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "title": "Description",
+              "type": "string"
+            },
+            "severity": {
+              "enum": [
+                "info",
+                "warning",
+                "blocking"
+              ],
+              "title": "Severity",
+              "type": "string"
+            },
+            "source_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 2,
+              "title": "Source Ids",
+              "type": "array"
+            },
+            "topic": {
+              "title": "Topic",
+              "type": "string"
+            }
+          },
+          "required": [
+            "topic",
+            "source_ids",
+            "description",
+            "severity"
+          ],
+          "title": "InstitutionalConflictV3",
+          "type": "object"
+        },
+        "InstitutionalCorpusV3": {
+          "additionalProperties": false,
+          "properties": {
+            "authorized": {
+              "title": "Authorized",
+              "type": "boolean"
+            },
+            "enabled": {
+              "title": "Enabled",
+              "type": "boolean"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "source_kind": {
+              "enum": [
+                "azure_ai_search",
+                "file_search",
+                "work_iq"
+              ],
+              "title": "Source Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "enabled",
+            "authorized",
+            "source_kind"
+          ],
+          "title": "InstitutionalCorpusV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "answer": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/InstitutionalAnswerV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "corpora": {
+          "items": {
+            "$ref": "#/$defs/InstitutionalCorpusV3"
+          },
+          "title": "Corpora",
+          "type": "array"
+        },
+        "work_iq_ready": {
+          "default": false,
+          "title": "Work Iq Ready",
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "corpora"
+      ],
+      "title": "InstitutionalWorkspaceV3",
+      "type": "object"
+    },
+    "LiteratureProtocolV3": {
+      "additionalProperties": false,
+      "properties": {
+        "date_from": {
+          "maximum": 2100,
+          "minimum": 1000,
+          "title": "Date From",
+          "type": "integer"
+        },
+        "date_to": {
+          "maximum": 2100,
+          "minimum": 1000,
+          "title": "Date To",
+          "type": "integer"
+        },
+        "exclusion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Exclusion Criteria",
+          "type": "array"
+        },
+        "framework": {
+          "default": "freeform",
+          "enum": [
+            "freeform",
+            "pico",
+            "pcc",
+            "spider"
+          ],
+          "title": "Framework",
+          "type": "string"
+        },
+        "inclusion_criteria": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Inclusion Criteria",
+          "type": "array"
+        },
+        "languages": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Languages",
+          "type": "array"
+        },
+        "protocol_version": {
+          "pattern": "^\\d+\\.\\d+$",
+          "title": "Protocol Version",
+          "type": "string"
+        },
+        "question": {
+          "maxLength": 4000,
+          "minLength": 3,
+          "title": "Question",
+          "type": "string"
+        },
+        "source_connector_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Connector Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "question",
+        "date_from",
+        "date_to",
+        "source_connector_ids",
+        "inclusion_criteria",
+        "exclusion_criteria",
+        "protocol_version"
+      ],
+      "title": "LiteratureProtocolV3",
+      "type": "object"
+    },
+    "LiteratureWorkspaceV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "ExtractionRecordV3": {
+          "additionalProperties": false,
+          "properties": {
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "values": {
+              "items": {
+                "$ref": "#/$defs/ExtractionValueV3"
+              },
+              "title": "Values",
+              "type": "array"
+            }
+          },
+          "required": [
+            "source_id",
+            "values"
+          ],
+          "title": "ExtractionRecordV3",
+          "type": "object"
+        },
+        "ExtractionValueV3": {
+          "additionalProperties": false,
+          "properties": {
+            "confidence": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Confidence",
+              "type": "number"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "field_id": {
+              "title": "Field Id",
+              "type": "string"
+            },
+            "value": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "number"
+                },
+                {
+                  "type": "boolean"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Value"
+            }
+          },
+          "required": [
+            "field_id",
+            "value",
+            "confidence"
+          ],
+          "title": "ExtractionValueV3",
+          "type": "object"
+        },
+        "LiteratureProtocolV3": {
+          "additionalProperties": false,
+          "properties": {
+            "date_from": {
+              "maximum": 2100,
+              "minimum": 1000,
+              "title": "Date From",
+              "type": "integer"
+            },
+            "date_to": {
+              "maximum": 2100,
+              "minimum": 1000,
+              "title": "Date To",
+              "type": "integer"
+            },
+            "exclusion_criteria": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Exclusion Criteria",
+              "type": "array"
+            },
+            "framework": {
+              "default": "freeform",
+              "enum": [
+                "freeform",
+                "pico",
+                "pcc",
+                "spider"
+              ],
+              "title": "Framework",
+              "type": "string"
+            },
+            "inclusion_criteria": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Inclusion Criteria",
+              "type": "array"
+            },
+            "languages": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Languages",
+              "type": "array"
+            },
+            "protocol_version": {
+              "pattern": "^\\d+\\.\\d+$",
+              "title": "Protocol Version",
+              "type": "string"
+            },
+            "question": {
+              "maxLength": 4000,
+              "minLength": 3,
+              "title": "Question",
+              "type": "string"
+            },
+            "source_connector_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Source Connector Ids",
+              "type": "array"
+            }
+          },
+          "required": [
+            "question",
+            "date_from",
+            "date_to",
+            "source_connector_ids",
+            "inclusion_criteria",
+            "exclusion_criteria",
+            "protocol_version"
+          ],
+          "title": "LiteratureProtocolV3",
+          "type": "object"
+        },
+        "LiteratureView": {
+          "enum": [
+            "protocol",
+            "screen",
+            "extract",
+            "synthesize",
+            "audit"
+          ],
+          "title": "LiteratureView",
+          "type": "string"
+        },
+        "ResearchArtifactV3": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "created_by": {
+              "title": "Created By",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReferenceV3"
+              },
+              "title": "Evidence",
+              "type": "array"
+            },
+            "id": {
+              "pattern": "^artifact-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            },
+            "markdown": {
+              "maxLength": 200000,
+              "title": "Markdown",
+              "type": "string"
+            },
+            "schema_version": {
+              "const": "research-assistant.v3",
+              "default": "research-assistant.v3",
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "source_run_id": {
+              "title": "Source Run Id",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 240,
+              "minLength": 3,
+              "title": "Title",
+              "type": "string"
+            },
+            "unsupported_claims": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported Claims",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title",
+            "markdown",
+            "source_run_id",
+            "created_by"
+          ],
+          "title": "ResearchArtifactV3",
+          "type": "object"
+        },
+        "ScreeningDecisionV3": {
+          "enum": [
+            "include",
+            "exclude",
+            "maybe"
+          ],
+          "title": "ScreeningDecisionV3",
+          "type": "string"
+        },
+        "ScreeningRecordV3": {
+          "additionalProperties": false,
+          "properties": {
+            "decided_at": {
+              "format": "date-time",
+              "title": "Decided At",
+              "type": "string"
+            },
+            "decided_by": {
+              "title": "Decided By",
+              "type": "string"
+            },
+            "decision": {
+              "$ref": "#/$defs/ScreeningDecisionV3"
+            },
+            "duplicate_group": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Duplicate Group"
+            },
+            "reason": {
+              "maxLength": 2000,
+              "minLength": 3,
+              "title": "Reason",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "source_id",
+            "decision",
+            "reason",
+            "decided_by"
+          ],
+          "title": "ScreeningRecordV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "active_view": {
+          "$ref": "#/$defs/LiteratureView"
+        },
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchArtifactV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "extraction": {
+          "items": {
+            "$ref": "#/$defs/ExtractionRecordV3"
+          },
+          "title": "Extraction",
+          "type": "array"
+        },
+        "protocol": {
+          "$ref": "#/$defs/LiteratureProtocolV3"
+        },
+        "screening": {
+          "items": {
+            "$ref": "#/$defs/ScreeningRecordV3"
+          },
+          "title": "Screening",
+          "type": "array"
+        },
+        "unresolved_evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unresolved Evidence Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "active_view",
+        "protocol"
+      ],
+      "title": "LiteratureWorkspaceV3",
+      "type": "object"
+    },
+    "MatchCandidateV3": {
+      "$defs": {
+        "MatchEntityType": {
+          "enum": [
+            "person",
+            "facility",
+            "equipment",
+            "method",
+            "dataset",
+            "template"
+          ],
+          "title": "MatchEntityType",
+          "type": "string"
+        },
+        "MatchScoreComponentV3": {
+          "additionalProperties": false,
+          "properties": {
+            "contribution": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Contribution",
+              "type": "number"
+            },
+            "criterion_id": {
+              "title": "Criterion Id",
+              "type": "string"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "match": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Match",
+              "type": "number"
+            },
+            "weight": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Weight",
+              "type": "number"
+            }
+          },
+          "required": [
+            "criterion_id",
+            "label",
+            "weight",
+            "match",
+            "contribution",
+            "evidence_ids"
+          ],
+          "title": "MatchScoreComponentV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "availability": {
+          "enum": [
+            "unknown",
+            "available",
+            "unavailable"
+          ],
+          "title": "Availability",
+          "type": "string"
+        },
+        "components": {
+          "items": {
+            "$ref": "#/$defs/MatchScoreComponentV3"
+          },
+          "title": "Components",
+          "type": "array"
+        },
+        "entity_type": {
+          "$ref": "#/$defs/MatchEntityType"
+        },
+        "evidence_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Evidence Ids",
+          "type": "array"
+        },
+        "hard_filters_passed": {
+          "title": "Hard Filters Passed",
+          "type": "boolean"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "score": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Score",
+          "type": "number"
+        }
+      },
+      "required": [
+        "id",
+        "name",
+        "entity_type",
+        "hard_filters_passed",
+        "score",
+        "components",
+        "evidence_ids",
+        "availability"
+      ],
+      "title": "MatchCandidateV3",
+      "type": "object"
+    },
+    "MatchNeedV3": {
+      "$defs": {
+        "MatchConstraintV3": {
+          "additionalProperties": false,
+          "properties": {
+            "hard_filter": {
+              "title": "Hard Filter",
+              "type": "boolean"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value",
+              "type": "string"
+            },
+            "weight": {
+              "default": 0,
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Weight",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "value",
+            "hard_filter"
+          ],
+          "title": "MatchConstraintV3",
+          "type": "object"
+        },
+        "MatchEntityType": {
+          "enum": [
+            "person",
+            "facility",
+            "equipment",
+            "method",
+            "dataset",
+            "template"
+          ],
+          "title": "MatchEntityType",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "constraints": {
+          "items": {
+            "$ref": "#/$defs/MatchConstraintV3"
+          },
+          "title": "Constraints",
+          "type": "array"
+        },
+        "description": {
+          "maxLength": 4000,
+          "minLength": 3,
+          "title": "Description",
+          "type": "string"
+        },
+        "entity_types": {
+          "items": {
+            "$ref": "#/$defs/MatchEntityType"
+          },
+          "minItems": 1,
+          "title": "Entity Types",
+          "type": "array"
+        },
+        "source_connector_ids": {
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1,
+          "title": "Source Connector Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "description",
+        "entity_types",
+        "source_connector_ids"
+      ],
+      "title": "MatchNeedV3",
+      "type": "object"
+    },
+    "MatchingWorkspaceV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        },
+        "MatchCandidateV3": {
+          "additionalProperties": false,
+          "properties": {
+            "availability": {
+              "enum": [
+                "unknown",
+                "available",
+                "unavailable"
+              ],
+              "title": "Availability",
+              "type": "string"
+            },
+            "components": {
+              "items": {
+                "$ref": "#/$defs/MatchScoreComponentV3"
+              },
+              "title": "Components",
+              "type": "array"
+            },
+            "entity_type": {
+              "$ref": "#/$defs/MatchEntityType"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "hard_filters_passed": {
+              "title": "Hard Filters Passed",
+              "type": "boolean"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "name": {
+              "title": "Name",
+              "type": "string"
+            },
+            "score": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Score",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "name",
+            "entity_type",
+            "hard_filters_passed",
+            "score",
+            "components",
+            "evidence_ids",
+            "availability"
+          ],
+          "title": "MatchCandidateV3",
+          "type": "object"
+        },
+        "MatchConstraintV3": {
+          "additionalProperties": false,
+          "properties": {
+            "hard_filter": {
+              "title": "Hard Filter",
+              "type": "boolean"
+            },
+            "id": {
+              "title": "Id",
+              "type": "string"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "value": {
+              "title": "Value",
+              "type": "string"
+            },
+            "weight": {
+              "default": 0,
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Weight",
+              "type": "number"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "value",
+            "hard_filter"
+          ],
+          "title": "MatchConstraintV3",
+          "type": "object"
+        },
+        "MatchEntityType": {
+          "enum": [
+            "person",
+            "facility",
+            "equipment",
+            "method",
+            "dataset",
+            "template"
+          ],
+          "title": "MatchEntityType",
+          "type": "string"
+        },
+        "MatchNeedV3": {
+          "additionalProperties": false,
+          "properties": {
+            "constraints": {
+              "items": {
+                "$ref": "#/$defs/MatchConstraintV3"
+              },
+              "title": "Constraints",
+              "type": "array"
+            },
+            "description": {
+              "maxLength": 4000,
+              "minLength": 3,
+              "title": "Description",
+              "type": "string"
+            },
+            "entity_types": {
+              "items": {
+                "$ref": "#/$defs/MatchEntityType"
+              },
+              "minItems": 1,
+              "title": "Entity Types",
+              "type": "array"
+            },
+            "source_connector_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Source Connector Ids",
+              "type": "array"
+            }
+          },
+          "required": [
+            "description",
+            "entity_types",
+            "source_connector_ids"
+          ],
+          "title": "MatchNeedV3",
+          "type": "object"
+        },
+        "MatchScoreComponentV3": {
+          "additionalProperties": false,
+          "properties": {
+            "contribution": {
+              "maximum": 100,
+              "minimum": 0,
+              "title": "Contribution",
+              "type": "number"
+            },
+            "criterion_id": {
+              "title": "Criterion Id",
+              "type": "string"
+            },
+            "evidence_ids": {
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "title": "Evidence Ids",
+              "type": "array"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "match": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Match",
+              "type": "number"
+            },
+            "weight": {
+              "maximum": 1,
+              "minimum": 0,
+              "title": "Weight",
+              "type": "number"
+            }
+          },
+          "required": [
+            "criterion_id",
+            "label",
+            "weight",
+            "match",
+            "contribution",
+            "evidence_ids"
+          ],
+          "title": "MatchScoreComponentV3",
+          "type": "object"
+        },
+        "ResearchArtifactV3": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "created_by": {
+              "title": "Created By",
+              "type": "string"
+            },
+            "evidence": {
+              "items": {
+                "$ref": "#/$defs/EvidenceReferenceV3"
+              },
+              "title": "Evidence",
+              "type": "array"
+            },
+            "id": {
+              "pattern": "^artifact-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            },
+            "markdown": {
+              "maxLength": 200000,
+              "title": "Markdown",
+              "type": "string"
+            },
+            "schema_version": {
+              "const": "research-assistant.v3",
+              "default": "research-assistant.v3",
+              "title": "Schema Version",
+              "type": "string"
+            },
+            "source_run_id": {
+              "title": "Source Run Id",
+              "type": "string"
+            },
+            "title": {
+              "maxLength": 240,
+              "minLength": 3,
+              "title": "Title",
+              "type": "string"
+            },
+            "unsupported_claims": {
+              "items": {
+                "type": "string"
+              },
+              "title": "Unsupported Claims",
+              "type": "array"
+            }
+          },
+          "required": [
+            "id",
+            "kind",
+            "title",
+            "markdown",
+            "source_run_id",
+            "created_by"
+          ],
+          "title": "ResearchArtifactV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "artifact": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/ResearchArtifactV3"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "candidates": {
+          "items": {
+            "$ref": "#/$defs/MatchCandidateV3"
+          },
+          "title": "Candidates",
+          "type": "array"
+        },
+        "need": {
+          "$ref": "#/$defs/MatchNeedV3"
+        },
+        "shortlist_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Shortlist Ids",
+          "type": "array"
+        }
+      },
+      "required": [
+        "need"
+      ],
+      "title": "MatchingWorkspaceV3",
+      "type": "object"
+    },
+    "ResearchArtifactV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "EvidenceReferenceV3": {
+          "additionalProperties": false,
+          "properties": {
+            "canonical_url": {
+              "anyOf": [
+                {
+                  "format": "uri",
+                  "maxLength": 2083,
+                  "minLength": 1,
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Canonical Url"
+            },
+            "checksum": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Checksum"
+            },
+            "chunk_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Chunk Id"
+            },
+            "citation_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Citation Id"
+            },
+            "id": {
+              "pattern": "^evidence-[a-z0-9-]{3,96}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "quote": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Quote"
+            },
+            "resolution": {
+              "$ref": "#/$defs/EvidenceResolution"
+            },
+            "retrieved_at": {
+              "format": "date-time",
+              "title": "Retrieved At",
+              "type": "string"
+            },
+            "source_id": {
+              "title": "Source Id",
+              "type": "string"
+            },
+            "title": {
+              "title": "Title",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_id",
+            "title",
+            "resolution"
+          ],
+          "title": "EvidenceReferenceV3",
+          "type": "object"
+        },
+        "EvidenceResolution": {
+          "enum": [
+            "verified",
+            "unsupported",
+            "blocked"
+          ],
+          "title": "EvidenceResolution",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "created_at": {
+          "format": "date-time",
+          "title": "Created At",
+          "type": "string"
+        },
+        "created_by": {
+          "title": "Created By",
+          "type": "string"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/EvidenceReferenceV3"
+          },
+          "title": "Evidence",
+          "type": "array"
+        },
+        "id": {
+          "pattern": "^artifact-[a-z0-9-]{3,96}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "kind": {
+          "$ref": "#/$defs/ArtifactKind"
+        },
+        "markdown": {
+          "maxLength": 200000,
+          "title": "Markdown",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "research-assistant.v3",
+          "default": "research-assistant.v3",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "source_run_id": {
+          "title": "Source Run Id",
+          "type": "string"
+        },
+        "title": {
+          "maxLength": 240,
+          "minLength": 3,
+          "title": "Title",
+          "type": "string"
+        },
+        "unsupported_claims": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Unsupported Claims",
+          "type": "array"
+        }
+      },
+      "required": [
+        "id",
+        "kind",
+        "title",
+        "markdown",
+        "source_run_id",
+        "created_by"
+      ],
+      "title": "ResearchArtifactV3",
+      "type": "object"
+    },
+    "RunContractV3": {
+      "$defs": {
+        "ArtifactKind": {
+          "enum": [
+            "literature_synthesis",
+            "grant_package",
+            "match_shortlist",
+            "dataset_report",
+            "institutional_answer",
+            "workflow_definition"
+          ],
+          "title": "ArtifactKind",
+          "type": "string"
+        },
+        "Capability": {
+          "enum": [
+            "literature",
+            "grant",
+            "matching",
+            "dataset",
+            "institutional_qa",
+            "orchestration"
+          ],
+          "title": "Capability",
+          "type": "string"
+        },
+        "RunArtifactV3": {
+          "additionalProperties": false,
+          "properties": {
+            "artifact_id": {
+              "title": "Artifact Id",
+              "type": "string"
+            },
+            "blob_uri": {
+              "title": "Blob Uri",
+              "type": "string"
+            },
+            "checksum": {
+              "title": "Checksum",
+              "type": "string"
+            },
+            "kind": {
+              "$ref": "#/$defs/ArtifactKind"
+            }
+          },
+          "required": [
+            "artifact_id",
+            "kind",
+            "blob_uri",
+            "checksum"
+          ],
+          "title": "RunArtifactV3",
+          "type": "object"
+        },
+        "RunEventV3": {
+          "additionalProperties": false,
+          "properties": {
+            "created_at": {
+              "format": "date-time",
+              "title": "Created At",
+              "type": "string"
+            },
+            "event_type": {
+              "title": "Event Type",
+              "type": "string"
+            },
+            "message": {
+              "title": "Message",
+              "type": "string"
+            },
+            "node_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Node Id"
+            },
+            "sequence": {
+              "minimum": 0,
+              "title": "Sequence",
+              "type": "integer"
+            },
+            "status": {
+              "title": "Status",
+              "type": "string"
+            },
+            "trace_id": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "default": null,
+              "title": "Trace Id"
+            }
+          },
+          "required": [
+            "sequence",
+            "event_type",
+            "status",
+            "message"
+          ],
+          "title": "RunEventV3",
+          "type": "object"
+        },
+        "RunStatus": {
+          "enum": [
+            "planned",
+            "running",
+            "waiting_for_approval",
+            "partial",
+            "blocked",
+            "completed",
+            "cancelled",
+            "failed"
+          ],
+          "title": "RunStatus",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "artifacts": {
+          "items": {
+            "$ref": "#/$defs/RunArtifactV3"
+          },
+          "title": "Artifacts",
+          "type": "array"
+        },
+        "capability": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/Capability"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "completed_at": {
+          "anyOf": [
+            {
+              "format": "date-time",
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Completed At"
+        },
+        "current_node_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Current Node Id"
+        },
+        "events": {
+          "items": {
+            "$ref": "#/$defs/RunEventV3"
+          },
+          "title": "Events",
+          "type": "array"
+        },
+        "execution_mode": {
+          "enum": [
+            "request",
+            "agent_framework",
+            "durable_agent_framework",
+            "durable_task",
+            "routine"
+          ],
+          "title": "Execution Mode",
+          "type": "string"
+        },
+        "id": {
+          "title": "Id",
+          "type": "string"
+        },
+        "pending_approval_ids": {
+          "items": {
+            "type": "string"
+          },
+          "title": "Pending Approval Ids",
+          "type": "array"
+        },
+        "progress": {
+          "maximum": 100,
+          "minimum": 0,
+          "title": "Progress",
+          "type": "integer"
+        },
+        "project_id": {
+          "title": "Project Id",
+          "type": "string"
+        },
+        "schema_version": {
+          "const": "research-assistant.v3",
+          "default": "research-assistant.v3",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "started_at": {
+          "format": "date-time",
+          "title": "Started At",
+          "type": "string"
+        },
+        "status": {
+          "$ref": "#/$defs/RunStatus"
+        },
+        "tenant_id": {
+          "title": "Tenant Id",
+          "type": "string"
+        },
+        "trace_id": {
+          "title": "Trace Id",
+          "type": "string"
+        },
+        "workflow_id": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow Id"
+        },
+        "workflow_version": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Workflow Version"
+        }
+      },
+      "required": [
+        "id",
+        "tenant_id",
+        "project_id",
+        "status",
+        "progress",
+        "execution_mode",
+        "trace_id"
+      ],
+      "title": "RunContractV3",
+      "type": "object"
+    },
+    "ScreeningRecordV3": {
+      "$defs": {
+        "ScreeningDecisionV3": {
+          "enum": [
+            "include",
+            "exclude",
+            "maybe"
+          ],
+          "title": "ScreeningDecisionV3",
+          "type": "string"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "decided_at": {
+          "format": "date-time",
+          "title": "Decided At",
+          "type": "string"
+        },
+        "decided_by": {
+          "title": "Decided By",
+          "type": "string"
+        },
+        "decision": {
+          "$ref": "#/$defs/ScreeningDecisionV3"
+        },
+        "duplicate_group": {
+          "anyOf": [
+            {
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Duplicate Group"
+        },
+        "reason": {
+          "maxLength": 2000,
+          "minLength": 3,
+          "title": "Reason",
+          "type": "string"
+        },
+        "source_id": {
+          "title": "Source Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "source_id",
+        "decision",
+        "reason",
+        "decided_by"
+      ],
+      "title": "ScreeningRecordV3",
+      "type": "object"
+    },
+    "WorkflowDefinitionV3": {
+      "$defs": {
+        "WorkflowEdgeV3": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "pattern": "^[a-z][a-z0-9-]{1,63}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "source_node_id": {
+              "title": "Source Node Id",
+              "type": "string"
+            },
+            "source_port_id": {
+              "title": "Source Port Id",
+              "type": "string"
+            },
+            "target_node_id": {
+              "title": "Target Node Id",
+              "type": "string"
+            },
+            "target_port_id": {
+              "title": "Target Port Id",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "source_node_id",
+            "source_port_id",
+            "target_node_id",
+            "target_port_id"
+          ],
+          "title": "WorkflowEdgeV3",
+          "type": "object"
+        },
+        "WorkflowNodeKind": {
+          "enum": [
+            "studio",
+            "agent",
+            "a2a_agent",
+            "toolbox_tool",
+            "retrieval",
+            "transform",
+            "condition",
+            "parallel",
+            "join",
+            "approval",
+            "delay",
+            "export"
+          ],
+          "title": "WorkflowNodeKind",
+          "type": "string"
+        },
+        "WorkflowNodeV3": {
+          "additionalProperties": false,
+          "properties": {
+            "approval_required": {
+              "default": false,
+              "title": "Approval Required",
+              "type": "boolean"
+            },
+            "config": {
+              "additionalProperties": true,
+              "title": "Config",
+              "type": "object"
+            },
+            "id": {
+              "pattern": "^[a-z][a-z0-9-]{1,63}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "inputs": {
+              "items": {
+                "$ref": "#/$defs/WorkflowPortV3"
+              },
+              "title": "Inputs",
+              "type": "array"
+            },
+            "kind": {
+              "$ref": "#/$defs/WorkflowNodeKind"
+            },
+            "label": {
+              "title": "Label",
+              "type": "string"
+            },
+            "outputs": {
+              "items": {
+                "$ref": "#/$defs/WorkflowPortV3"
+              },
+              "title": "Outputs",
+              "type": "array"
+            },
+            "retry_limit": {
+              "default": 0,
+              "maximum": 10,
+              "minimum": 0,
+              "title": "Retry Limit",
+              "type": "integer"
+            }
+          },
+          "required": [
+            "id",
+            "label",
+            "kind"
+          ],
+          "title": "WorkflowNodeV3",
+          "type": "object"
+        },
+        "WorkflowPortV3": {
+          "additionalProperties": false,
+          "properties": {
+            "id": {
+              "pattern": "^[a-z][a-z0-9-]{1,63}$",
+              "title": "Id",
+              "type": "string"
+            },
+            "required": {
+              "default": true,
+              "title": "Required",
+              "type": "boolean"
+            },
+            "schema_ref": {
+              "title": "Schema Ref",
+              "type": "string"
+            }
+          },
+          "required": [
+            "id",
+            "schema_ref"
+          ],
+          "title": "WorkflowPortV3",
+          "type": "object"
+        },
+        "WorkflowTriggerV3": {
+          "additionalProperties": false,
+          "properties": {
+            "config": {
+              "additionalProperties": true,
+              "title": "Config",
+              "type": "object"
+            },
+            "kind": {
+              "enum": [
+                "manual",
+                "schedule",
+                "webhook",
+                "github_issue",
+                "library_ingest"
+              ],
+              "title": "Kind",
+              "type": "string"
+            }
+          },
+          "required": [
+            "kind"
+          ],
+          "title": "WorkflowTriggerV3",
+          "type": "object"
+        }
+      },
+      "additionalProperties": false,
+      "properties": {
+        "active": {
+          "default": false,
+          "title": "Active",
+          "type": "boolean"
+        },
+        "edges": {
+          "items": {
+            "$ref": "#/$defs/WorkflowEdgeV3"
+          },
+          "title": "Edges",
+          "type": "array"
+        },
+        "execution_mode": {
+          "enum": [
+            "agent_framework",
+            "durable_agent_framework",
+            "durable_task"
+          ],
+          "title": "Execution Mode",
+          "type": "string"
+        },
+        "id": {
+          "pattern": "^workflow-[a-z0-9-]{3,96}$",
+          "title": "Id",
+          "type": "string"
+        },
+        "name": {
+          "title": "Name",
+          "type": "string"
+        },
+        "nodes": {
+          "items": {
+            "$ref": "#/$defs/WorkflowNodeV3"
+          },
+          "minItems": 1,
+          "title": "Nodes",
+          "type": "array"
+        },
+        "schema_version": {
+          "const": "research-assistant.v3",
+          "default": "research-assistant.v3",
+          "title": "Schema Version",
+          "type": "string"
+        },
+        "trigger": {
+          "$ref": "#/$defs/WorkflowTriggerV3"
+        },
+        "version": {
+          "pattern": "^\\d+\\.\\d+\\.\\d+$",
+          "title": "Version",
+          "type": "string"
+        }
+      },
+      "required": [
+        "id",
+        "version",
+        "name",
+        "trigger",
+        "nodes",
+        "execution_mode"
+      ],
+      "title": "WorkflowDefinitionV3",
+      "type": "object"
+    }
+  }
+}

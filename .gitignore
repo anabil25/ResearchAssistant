@@ -1,0 +1,43 @@
+# Azure Developer CLI environment state
+.azure/*
+!.azure/.gitignore
+!.azure/deployment-plan.md
+
+# Secrets and local configuration
+.env
+.env.*
+!.env.example
+agents/.env
+agents/.foundry/
+
+# Python
+.venv/
+.venv-provision/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+dist/
+build/
+*.egg-info/
+
+# Node / Next / Playwright
+**/node_modules/
+apps/web/.next/
+apps/web/out/
+apps/web/coverage/
+apps/web/playwright-report/
+apps/web/test-results/
+
+# Generated infrastructure artifacts
+infra/main.json
+infra/*.arm.json
+
+# Editors and operating systems
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

@@ -1,0 +1,61 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentParameters.json#",
+  "contentVersion": "1.0.0.0",
+  "parameters": {
+    "deployments": {
+      "value": [
+        {
+          "name": "gpt-5.6-sol",
+          "model": {
+            "format": "OpenAI",
+            "name": "gpt-5.6-sol",
+            "version": "2026-07-09"
+          },
+          "sku": {
+            "capacity": 30,
+            "name": "DataZoneStandard"
+          }
+        },
+        {
+          "name": "gpt-5.4-mini",
+          "model": {
+            "format": "OpenAI",
+            "name": "gpt-5.4-mini",
+            "version": "2026-03-17"
+          },
+          "sku": {
+            "capacity": 30,
+            "name": "DataZoneStandard"
+          }
+        },
+        {
+          "name": "text-embedding-3-large",
+          "model": {
+            "format": "OpenAI",
+            "name": "text-embedding-3-large",
+            "version": "1"
+          },
+          "sku": {
+            "capacity": 50,
+            "name": "DataZoneStandard"
+          }
+        }
+      ]
+    },
+    "includeAcr": {
+      "value": true
+    },
+    "principalId": {
+      "value": "${AZURE_PRINCIPAL_ID}"
+    },
+    "principalType": {
+      "value": "${AZURE_PRINCIPAL_TYPE=User}"
+    },
+    "apimPublisherName": {
+      "value": "${APIM_PUBLISHER_NAME=Research Assistant Accelerator}"
+    },
+    "apimPublisherEmail": {
+      "value": "${APIM_PUBLISHER_EMAIL=noreply@example.invalid}"
+    }
+  }
+}

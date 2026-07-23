@@ -1,0 +1,9 @@
+description: Governed public funding discovery tools
+tools:
+  - type: web_search
+    name: web_search
+    require_approval: "never"
+  - type: mcp
+    server_label: research-connectors
+    project_connection_id: research-connectors-apim
+    require_approval: "never"
