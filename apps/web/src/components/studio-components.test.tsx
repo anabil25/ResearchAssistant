@@ -644,7 +644,7 @@ describe("MatchingStudio", () => {
 });
 
 describe("DatasetStudio", () => {
-  it("validates a bounded CSV file, uploads it, and requires plan approval before profiling", async () => {
+  it("uploads a bounded CSV but keeps compute unavailable without trusted approval", async () => {
     const user = userEvent.setup();
     mockedUploadLibraryItem.mockResolvedValue({
       item: {
@@ -706,18 +706,18 @@ describe("DatasetStudio", () => {
       screen.getByRole("button", { name: "Upload to Library" }),
     );
     expect(mockedUploadLibraryItem).toHaveBeenCalledTimes(1);
-
-    await user.click(
-      screen.getByLabelText(
+    expect(
+      screen.getByText(
+        /Dataset compute is unavailable until a trusted server-side approval service is configured/,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByText(
         /I approve sending this bounded dataset to the Foundry Dataset Agent/,
       ),
-    );
-    expect(runButton).toBeEnabled();
-
-    await user.click(runButton);
-    const inputs = onRun.mock.calls[0][2].inputs;
-    expect(inputs.filename).toBe("sample.csv");
-    expect(inputs.csv_text).toContain("a,b");
+    ).not.toBeInTheDocument();
+    expect(runButton).toBeDisabled();
+    expect(onRun).not.toHaveBeenCalled();
   });
 
   it("rejects an oversized file client-side without pretending to profile it", async () => {

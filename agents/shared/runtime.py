@@ -78,7 +78,8 @@ def run_profile(
             conversation_store=conversation_store,
             long_term_memory_store=long_term_memory_store,
             audit_sink=audit_sink,
-        )
+        ),
+        configure_observability=None,
     ).run()
 
 

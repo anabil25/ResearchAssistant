@@ -24,6 +24,7 @@ from agent_framework import (
 )
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 from openai import APIStatusError
+from opentelemetry import trace
 from pydantic import ValidationError
 from shared.approvals import (
     ApprovalConsumptionDisposition,
@@ -4676,8 +4677,13 @@ def test_runtime_adapter_builds_describes_and_runs_host(
     calls: list[Any] = []
 
     class Host:
-        def __init__(self, agent: Any) -> None:
-            calls.append(agent)
+        def __init__(
+            self,
+            agent: Any,
+            *,
+            configure_observability: object,
+        ) -> None:
+            calls.append((agent, configure_observability))
 
         def run(self) -> None:
             calls.append("run")
@@ -4689,7 +4695,7 @@ def test_runtime_adapter_builds_describes_and_runs_host(
         lambda profile_id, **_kwargs: f"agent:{profile_id}",
     )
     runtime.run_profile("dataset")
-    assert calls == ["agent:dataset", "run"]
+    assert calls == [("agent:dataset", None), "run"]
 
 
 def test_tools_are_bounded_to_profile_and_configured_destination(
@@ -6063,8 +6069,10 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
             allow_test_idempotency_store=True,
             allow_test_approval_adapter=True,
         )
-        server = ResponsesHostServer(agent)
+        tracer_provider = trace.get_tracer_provider()
+        server = ResponsesHostServer(agent, configure_observability=None)
         assert server is not None
+        assert trace.get_tracer_provider() is tracer_provider
 
     async def invoke(request: SpecialistRequest) -> SpecialistResult:
         return SpecialistResult(
@@ -6082,7 +6090,15 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
         **_trusted_scope(coordinator.MANIFEST),
         release_attestor=_release_attestor(coordinator.MANIFEST),
     )
-    assert ResponsesHostServer(coordinator_agent) is not None
+    tracer_provider = trace.get_tracer_provider()
+    assert (
+        ResponsesHostServer(
+            coordinator_agent,
+            configure_observability=None,
+        )
+        is not None
+    )
+    assert trace.get_tracer_provider() is tracer_provider
 
 
 def test_coordinator_factory_fails_closed_for_future_privileged_toolbox_capability(
@@ -6215,8 +6231,13 @@ def test_all_nine_agent_specific_factories_are_first_class(
     coordinator_calls: list[Any] = []
 
     class CoordinatorHost:
-        def __init__(self, agent: Any) -> None:
-            coordinator_calls.append(agent)
+        def __init__(
+            self,
+            agent: Any,
+            *,
+            configure_observability: object,
+        ) -> None:
+            coordinator_calls.append((agent, configure_observability))
 
         def run(self) -> None:
             coordinator_calls.append("run")
@@ -6224,5 +6245,5 @@ def test_all_nine_agent_specific_factories_are_first_class(
     monkeypatch.setattr(coordinator, "build_agent", lambda: "coordinator-agent")
     monkeypatch.setattr(coordinator, "ResponsesHostServer", CoordinatorHost)
     coordinator.run()
-    assert coordinator_calls == ["coordinator-agent", "run"]
+    assert coordinator_calls == [("coordinator-agent", None), "run"]
     assert set(ids) == {manifest.id for manifest in list_manifests()}

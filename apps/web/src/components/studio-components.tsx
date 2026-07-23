@@ -1855,7 +1855,6 @@ export function DatasetStudio({
   running,
   error,
   workflow,
-  onRun,
   onRefresh,
 }: StudioProps) {
   const [objective, setObjective] = useState(
@@ -1863,10 +1862,8 @@ export function DatasetStudio({
   );
   const [assetMode, setAssetMode] = useState<DatasetAssetMode>("sample");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
-  const [csvText, setCsvText] = useState<string | null>(null);
   const [fileKind, setFileKind] = useState<"csv" | "json" | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
-  const [planApproved, setPlanApproved] = useState(false);
   const [libraryUploadStatus, setLibraryUploadStatus] = useState<
     "idle" | "uploading" | "uploaded" | "error"
   >("idle");
@@ -1900,15 +1897,6 @@ export function DatasetStudio({
     setAssetMode("upload");
     setLibraryUploadStatus("idle");
     setLibraryUploadError(null);
-    setPlanApproved(false);
-    setCsvText(null);
-    if (isCsv) {
-      const reader = new FileReader();
-      reader.onload = () => {
-        setCsvText(typeof reader.result === "string" ? reader.result : null);
-      };
-      reader.readAsText(file);
-    }
   };
 
   const uploadToLibrary = () => {
@@ -1940,16 +1928,13 @@ export function DatasetStudio({
       });
   };
 
-  const runDisabled =
-    running || !planApproved || (assetMode === "upload" && !uploadedFile);
-
   return (
     <div className="studio-page dataset-studio">
       <StudioHeader
         icon={BarChart3}
         eyebrow="Deterministic analysis"
         title="Dataset Lab"
-        description="Approve the bounded input, then let the Foundry Dataset Agent analyze it with the managed Code Interpreter tool."
+        description="Upload bounded data to the governed library. Dataset compute stays unavailable until a trusted server-side approval service is configured."
         workflow={workflow}
         status={dataset ? dataset.run.status.replaceAll("_", " ") : "Asset selection"}
       />
@@ -1957,40 +1942,13 @@ export function DatasetStudio({
       <form
         onSubmit={(event) => {
           event.preventDefault();
-          if (runDisabled) return;
-          const inputs =
-            assetMode === "upload" && uploadedFile
-              ? {
-                  filename: uploadedFile.name,
-                  estimated_bytes: uploadedFile.size,
-                  compute_adapter_configured: true,
-                  analysis_approved: planApproved,
-                  ...(csvText ? { csv_text: csvText } : {}),
-                }
-              : assetMode === "large"
-                ? {
-                    filename: "clinical-events-archive.parquet",
-                    estimated_bytes: 1_200_000_000_000,
-                    compute_adapter_configured: true,
-                    analysis_approved: planApproved,
-                  }
-                : {
-                    filename: "pilot-outcomes.csv",
-                    estimated_bytes: 4_000_000,
-                    compute_adapter_configured: true,
-                    analysis_approved: planApproved,
-                  };
-          void onRun("dataset", objective, { inputs });
         }}
       >
         <section className="asset-picker" aria-label="Dataset assets">
           <button
             type="button"
             data-active={assetMode === "sample"}
-            onClick={() => {
-              setAssetMode("sample");
-              setPlanApproved(false);
-            }}
+            onClick={() => setAssetMode("sample")}
           >
             <span className="asset-icon">
               <FileText size={19} />
@@ -2004,10 +1962,7 @@ export function DatasetStudio({
           <button
             type="button"
             data-active={largeAsset}
-            onClick={() => {
-              setAssetMode("large");
-              setPlanApproved(false);
-            }}
+            onClick={() => setAssetMode("large")}
           >
             <span className="asset-icon">
               <FlaskConical size={19} />
@@ -2047,7 +2002,7 @@ export function DatasetStudio({
               onChange={(event) => setObjective(event.target.value)}
             />
           </label>
-          <RunButton running={running} disabled={runDisabled}>
+          <RunButton running={running} disabled>
             Analyze with Foundry Code Interpreter
           </RunButton>
         </section>
@@ -2086,18 +2041,12 @@ export function DatasetStudio({
               ) : null}
             </div>
           ) : null}
-          <label className="check-row plan-approval-check">
-            <input
-              type="checkbox"
-              checked={planApproved}
-              onChange={(event) => setPlanApproved(event.target.checked)}
-            />
-            <span>
-              I approve sending this bounded dataset to the Foundry Dataset
-              Agent and its project-scoped Code Interpreter. Public/synthetic
-              accelerator data only.
-            </span>
-          </label>
+          <div className="confirmation-note" role="status">
+            <ShieldCheck size={17} />
+            Dataset compute is unavailable until a trusted server-side approval
+            service is configured. Client checkboxes and identifiers cannot
+            authorize Code Interpreter access.
+          </div>
         </section>
 
         <div className="dataset-grid">
@@ -2158,9 +2107,7 @@ export function DatasetStudio({
                 <span className="eyebrow">Analysis plan</span>
                 <h2>Methods before prose</h2>
               </div>
-              <span className="subtle-chip">
-                {planApproved ? "Plan approved" : "Pending approval"}
-              </span>
+              <span className="subtle-chip">Compute unavailable</span>
             </div>
             {(dataset?.analysis_plan ?? [
               {

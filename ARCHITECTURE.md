@@ -72,6 +72,10 @@ flowchart LR
 - Governance telemetry emits hashed tenant, actor, approval, and idempotency
   identifiers plus release/capability/outcome metadata. Payloads, queries,
   credentials, evidence content, and raw decision references are excluded.
+- Hosted `ResponsesHostServer` entry points explicitly disable the beta
+  hosting SDK's default observability initializer. Hosted exporters remain
+  off until an application-owned configurator with deterministic lifecycle
+  and managed-identity policy is injected.
 - In-memory state, approval, idempotency, and attestation providers are local
   or test-only. Hosted conversation, user, project, or private-agent
   persistence stays disabled unless an application-owned durable provider is

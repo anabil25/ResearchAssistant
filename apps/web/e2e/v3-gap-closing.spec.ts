@@ -263,7 +263,7 @@ test.describe("Matching Explorer interactions", () => {
 });
 
 test.describe("Dataset Lab interactions", () => {
-  test("uploads a real bounded CSV file and requires plan approval before profiling", async ({
+  test("uploads a real bounded CSV file but keeps compute explicitly unavailable", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -291,22 +291,17 @@ test.describe("Dataset Lab interactions", () => {
     );
     await page.getByRole("button", { name: "Upload to Library" }).click();
     expect((await uploadResponsePromise).status()).toBe(200);
-
-    await page
-      .getByLabel(
+    await expect(runButton).toBeDisabled();
+    await expect(
+      page.getByText(
+        /Dataset compute is unavailable until a trusted server-side approval service is configured/,
+      ),
+    ).toBeVisible();
+    await expect(
+      page.getByText(
         /I approve sending this bounded dataset to the Foundry Dataset Agent/,
-      )
-      .check();
-    await expect(runButton).toBeEnabled();
-
-    const payload = await runStudioAndCapturePayload(
-      page,
-      "dataset",
-      "Analyze with Foundry Code Interpreter",
-    );
-    expect(payload.inputs.filename).toBe("pilot.csv");
-    expect(String(payload.inputs.csv_text)).toContain("id,outcome");
-    await expect(page.locator(".schema-row").first()).toBeVisible();
+      ),
+    ).toHaveCount(0);
   });
 });
 

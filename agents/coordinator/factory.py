@@ -89,7 +89,7 @@ def build_agent(
 
 
 def run() -> None:
-    ResponsesHostServer(build_agent()).run()
+    ResponsesHostServer(build_agent(), configure_observability=None).run()
 
 
 __all__ = ["FACTORY", "MANIFEST", "build_agent", "build_coordinator_workflow", "run"]
