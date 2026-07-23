@@ -77,7 +77,10 @@ from research_assistant_api.schemas import (
 )
 from research_assistant_api.search_repository import build_research_service
 from research_assistant_api.studios import StudioService, validate_agent_insight
-from research_assistant_api.telemetry import configure_telemetry
+from research_assistant_api.telemetry import (
+    configure_telemetry,
+    shutdown_telemetry,
+)
 from research_assistant_api.workspace import (
     AgentSetting,
     ApprovalDecision,
@@ -96,7 +99,11 @@ from research_assistant_api.workspace import (
     WorkspaceSummary,
 )
 
-configure_telemetry("research-assistant-api")
+settings = get_settings()
+_TELEMETRY_MODE = configure_telemetry(
+    "research-assistant-api",
+    environment=settings.environment,
+)
 logger = logging.getLogger(__name__)
 
 
@@ -121,6 +128,8 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         cast(RunScheduler, application.state.scheduler).close()
         await cast(ConnectorGateway, application.state.connector_gateway).close()
+        if _TELEMETRY_MODE == "azure-monitor":
+            shutdown_telemetry()
 
 
 app = FastAPI(
@@ -129,7 +138,6 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-settings = get_settings()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=settings.allowed_origins,

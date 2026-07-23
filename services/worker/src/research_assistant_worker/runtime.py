@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import os
 from threading import Event
 
 from azure.core.credentials import TokenCredential
@@ -8,7 +9,10 @@ from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from durabletask.azuremanaged.worker import DurableTaskSchedulerWorker
 
 from research_assistant_worker.config import parse_scheduler_settings
-from research_assistant_worker.telemetry import configure_telemetry
+from research_assistant_worker.telemetry import (
+    configure_telemetry,
+    shutdown_telemetry,
+)
 from research_assistant_worker.workflows import (
     complete_run,
     execute_workflow_step,
@@ -45,13 +49,19 @@ def build_worker() -> DurableTaskSchedulerWorker:
 
 
 def main() -> None:
-    configure_telemetry("research-assistant-worker")
+    configure_telemetry(
+        "research-assistant-worker",
+        environment=os.getenv("RESEARCH_ENVIRONMENT") or os.getenv("AZURE_ENV_NAME"),
+    )
     logging.basicConfig(level=logging.INFO)
-    worker = build_worker()
-    worker.start()  # type: ignore[no-untyped-call]
+    worker: DurableTaskSchedulerWorker | None = None
     try:
+        worker = build_worker()
+        worker.start()  # type: ignore[no-untyped-call]
         Event().wait()
     except KeyboardInterrupt:
         logging.info("Worker shutdown requested")
     finally:
-        worker.stop()  # type: ignore[no-untyped-call]
+        if worker is not None:
+            worker.stop()  # type: ignore[no-untyped-call]
+        shutdown_telemetry()
