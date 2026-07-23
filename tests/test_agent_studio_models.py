@@ -54,8 +54,8 @@ from research_assistant_api.agent_studio.models import (
     SpecialistPolicy,
     StudioApprovalRecord,
     TemplateProvenance,
-    ToolRegistration,
     ToolRegistrationKind,
+    ToolRegistrationSpec,
     WorkspaceConnectionRef,
     role_at_least,
 )
@@ -73,11 +73,15 @@ def _binding() -> CapabilityBinding:
     return CapabilityBinding(
         descriptor_id="foundry.azure_ai_search",
         descriptor_version="7",
+        descriptor_digest="sha256:descriptor",
         operation="search",
         instance_id="instance-1",
         pinned_provider_version="2026.07",
-        schema_digest="sha256:binding",
+        instance_fingerprint="sha256:instance",
+        input_schema_digest="sha256:input",
+        output_schema_digest="sha256:output",
         config={"index": "docs"},
+        config_hash="sha256:config",
         connection_ref="conn-search",
         policy_ref="policy://search",
         attached_by="user-1",
@@ -238,7 +242,7 @@ def test_related_models_construct_and_default_factories_execute() -> None:
         target=RuntimeTarget.CUSTOM_HOSTED,
         reasons=("requires_custom_code",),
     )
-    tool_registration = ToolRegistration(
+    tool_registration = ToolRegistrationSpec(
         id="tool-1",
         tenant_id="tenant-1",
         logical_agent_id=manifest.logical_agent_id,

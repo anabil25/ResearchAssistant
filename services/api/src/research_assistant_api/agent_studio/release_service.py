@@ -42,8 +42,8 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     ReleaseStatus,
     StudioApprovalRecord,
-    ToolRegistration,
     ToolRegistrationKind,
+    ToolRegistrationSpec,
     role_at_least,
     utc_now,
 )
@@ -625,7 +625,7 @@ class ReleaseService:
         handler_ref: str,
         registered_by: str,
         actor_role: AgentRole,
-    ) -> ToolRegistration:
+    ) -> ToolRegistrationSpec:
         """Register the runtime handler for a GA capability operation.
 
         Distinct from attaching a ``CapabilityBinding`` to a manifest: this
@@ -635,7 +635,7 @@ class ReleaseService:
         """
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
         self._registry.validate_attachment(descriptor_id=descriptor_id, operation=operation)
-        registration = ToolRegistration(
+        registration = ToolRegistrationSpec(
             id=str(uuid4()),
             tenant_id=tenant_id,
             logical_agent_id=logical_agent_id,
@@ -647,7 +647,7 @@ class ReleaseService:
         )
         return self._store.create_tool_registration(registration)
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
+    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
         return self._store.list_tool_registrations(tenant_id, logical_agent_id)
 
 

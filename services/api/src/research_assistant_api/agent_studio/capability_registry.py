@@ -24,7 +24,10 @@ the real provider adapter has not yet been wired at this call site.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import datetime
+from typing import Any
 
 from research_assistant_api.agent_studio.capability_discovery import (
     CapabilityDiscoverySource,
@@ -47,6 +50,78 @@ _LEARN_TOOL_CATALOG_URL = (
 
 class CapabilityAttachmentError(ValueError):
     """Raised when an attempted capability attachment is not GA-eligible."""
+
+
+def _canonical_digest(payload: Any) -> str:
+    """Canonical ``sha256:``-prefixed digest of a JSON-serializable payload.
+
+    Same convention used by ``schema_ref_resolver.compute_schema_digest``
+    (sorted-key, compact-separator canonical JSON) so every content digest
+    in this package is computed identically.
+    """
+
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def compute_descriptor_digest(descriptor: CapabilityDescriptor) -> str:
+    """Content digest of a ``CapabilityDescriptor``, pinned by attaching bindings.
+
+    Pins the descriptor's *content*, not just its ``version`` string, so a
+    catalog edit that changes semantics without bumping the version cannot
+    silently change an already-attached binding's behavior.
+    """
+
+    return _canonical_digest(descriptor.model_dump(mode="json"))
+
+
+def compute_config_hash(config: dict[str, Any]) -> str:
+    """Canonical digest of a binding's non-secret ``config`` dict."""
+
+    return _canonical_digest(config)
+
+
+def compute_instance_fingerprint(
+    descriptor: CapabilityDescriptor, instance: CapabilityInstance
+) -> str:
+    """Canonical digest pinning a discovered ``CapabilityInstance``.
+
+    Pins provider/descriptor/operation identity, operation definitions and
+    versions, side-effect destinations, tenant/data boundaries, and
+    non-secret discovered configuration. Deliberately excludes
+    health/timestamps/secrets/credential material so a readiness flap alone
+    never invalidates a pinned binding — only a genuine reconfiguration
+    (different descriptor content, different operations, different
+    instance/tenant/project/connection identity, or different discovered
+    config) changes this value.
+    """
+
+    payload = {
+        "provider": descriptor.provider,
+        "descriptor_id": descriptor.id,
+        "descriptor_version": descriptor.version,
+        "descriptor_digest": compute_descriptor_digest(descriptor),
+        "operations": sorted(
+            (
+                {
+                    "name": op.name,
+                    "maturity": op.maturity.value,
+                    "operation_class": op.operation_class.value,
+                    "input_schema_digest": op.input_schema_digest,
+                    "output_schema_digest": op.output_schema_digest,
+                    "side_effect_destinations": sorted(op.side_effect_destinations),
+                }
+                for op in descriptor.operations
+            ),
+            key=lambda entry: str(entry["name"]),
+        ),
+        "instance_id": instance.id,
+        "tenant_id": instance.tenant_id,
+        "project_id": instance.project_id,
+        "discovered_provider_version": instance.discovered_provider_version,
+        "config_fingerprint": instance.config_fingerprint,
+    }
+    return _canonical_digest(payload)
 
 
 def _ga(
@@ -483,9 +558,25 @@ class CapabilityRegistry:
         discovered facts; nothing here fabricates readiness/health), but
         held in-memory for now — consistent with the rest of the registry,
         which is itself an in-memory catalog seeded at process start.
+
+        The instance must reference a known ``descriptor_id`` — a
+        fingerprint cannot honestly pin a descriptor this registry does not
+        have, so an unknown reference fails closed rather than registering
+        an un-pinnable instance. ``instance_fingerprint`` is always
+        (re)computed here from the current descriptor + instance facts,
+        never trusted verbatim from the caller, so registration cannot be
+        used to smuggle in a stale or fabricated pin.
         """
-        self._instances[instance.id] = instance
-        return instance
+        descriptor = self._descriptors.get(instance.descriptor_id)
+        if descriptor is None:
+            raise CapabilityAttachmentError(
+                f"Capability instance references unknown descriptor '{instance.descriptor_id}'."
+            )
+        stamped = instance.model_copy(
+            update={"instance_fingerprint": compute_instance_fingerprint(descriptor, instance)}
+        )
+        self._instances[stamped.id] = stamped
+        return stamped
 
     def get_instance(self, instance_id: str) -> CapabilityInstance | None:
         return self._instances.get(instance_id)
@@ -563,6 +654,7 @@ class CapabilityRegistry:
             )
         descriptor = self._descriptors[descriptor_id]
         pinned_provider_version: str | None = None
+        instance_fingerprint: str | None = None
         if instance_id is not None:
             instance = self._instances.get(instance_id)
             if instance is None:
@@ -578,17 +670,64 @@ class CapabilityRegistry:
                     f"{instance.unavailable_reason or 'no reason supplied'}."
                 )
             pinned_provider_version = instance.discovered_provider_version
+            instance_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
+                descriptor, instance
+            )
+        resolved_config = dict(config or {})
         return CapabilityBinding(
             descriptor_id=descriptor_id,
             descriptor_version=descriptor.version,
+            descriptor_digest=compute_descriptor_digest(descriptor),
             operation=operation,
             instance_id=instance_id,
             pinned_provider_version=pinned_provider_version,
-            config=dict(config or {}),
+            instance_fingerprint=instance_fingerprint,
+            input_schema_digest=resolved.input_schema_digest,
+            output_schema_digest=resolved.output_schema_digest,
+            config=resolved_config,
+            config_hash=compute_config_hash(resolved_config),
             connection_ref=connection_ref,
             policy_ref=policy_ref,
             attached_by=attached_by,
         )
+
+    def check_binding_freshness(self, binding: CapabilityBinding) -> str | None:
+        """Return a stale-binding reason, or ``None`` if the binding is fresh.
+
+        Re-resolves the binding's ``descriptor_id``/``instance_id`` against
+        the *current* registry state and compares digests/fingerprints. A
+        release/invoke path must call this and hard-fail on a non-``None``
+        result — a binding whose pinned descriptor/instance no longer
+        matches the live catalog must never be silently honored.
+        """
+        descriptor = self._descriptors.get(binding.descriptor_id)
+        if descriptor is None:
+            return f"Descriptor '{binding.descriptor_id}' is no longer in the catalog."
+        current_descriptor_digest = compute_descriptor_digest(descriptor)
+        if binding.descriptor_digest is not None and current_descriptor_digest != binding.descriptor_digest:
+            return (
+                f"Descriptor '{binding.descriptor_id}' content has changed since attach "
+                "(descriptor_digest mismatch)."
+            )
+        if binding.instance_id is not None:
+            instance = self._instances.get(binding.instance_id)
+            if instance is None:
+                return f"Capability instance '{binding.instance_id}' is no longer registered."
+            if instance.readiness == InstanceReadiness.UNAVAILABLE:
+                return (
+                    f"Capability instance '{binding.instance_id}' is unavailable: "
+                    f"{instance.unavailable_reason or 'no reason supplied'}."
+                )
+            if binding.instance_fingerprint is not None:
+                current_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
+                    descriptor, instance
+                )
+                if current_fingerprint != binding.instance_fingerprint:
+                    return (
+                        f"Capability instance '{binding.instance_id}' has been reconfigured since attach "
+                        "(instance_fingerprint mismatch) — rebind and re-review before release/invoke."
+                    )
+        return None
 
 
 def default_registry(source: CapabilityDiscoverySource | None = None) -> CapabilityRegistry:

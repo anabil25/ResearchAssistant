@@ -29,7 +29,7 @@ from research_assistant_api.agent_studio.models import (
     OwnershipGrant,
     ReleaseGateReport,
     StudioApprovalRecord,
-    ToolRegistration,
+    ToolRegistrationSpec,
     role_at_least,
 )
 
@@ -64,7 +64,7 @@ class AgentStudioStore:
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
-        self._tool_registrations: dict[str, ToolRegistration] = {}
+        self._tool_registrations: dict[str, ToolRegistrationSpec] = {}
         self._tool_registrations_by_agent: dict[tuple[str, str], list[str]] = {}
         self._builder_proposals: dict[str, BuilderProposal] = {}
         self._builder_proposals_by_agent: dict[tuple[str, str], list[str]] = {}
@@ -321,14 +321,14 @@ class AgentStudioStore:
 
     # -- Tool registrations (runtime handler wiring) -----------------------
 
-    def create_tool_registration(self, registration: ToolRegistration) -> ToolRegistration:
+    def create_tool_registration(self, registration: ToolRegistrationSpec) -> ToolRegistrationSpec:
         self._tool_registrations[registration.id] = registration
         self._tool_registrations_by_agent.setdefault(
             (registration.tenant_id, registration.logical_agent_id), []
         ).append(registration.id)
         return registration
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
+    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
         ids = self._tool_registrations_by_agent.get((tenant_id, logical_agent_id), [])
         return tuple(self._tool_registrations[registration_id] for registration_id in ids)
 

@@ -34,7 +34,7 @@ from research_assistant_api.agent_studio.models import (
     OwnershipGrant,
     ReleaseGateReport,
     StudioApprovalRecord,
-    ToolRegistration,
+    ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
 from research_assistant_api.config import Settings
@@ -449,7 +449,7 @@ class CosmosAgentStudioStore(AgentStudioStore):
 
     # -- Tool registrations (runtime handler wiring) -----------------------
 
-    def create_tool_registration(self, registration: ToolRegistration) -> ToolRegistration:
+    def create_tool_registration(self, registration: ToolRegistrationSpec) -> ToolRegistrationSpec:
         super().create_tool_registration(registration)
         self._governance_container.upsert_item(
             {
@@ -462,10 +462,10 @@ class CosmosAgentStudioStore(AgentStudioStore):
         )
         return registration
 
-    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistration, ...]:
+    def list_tool_registrations(self, tenant_id: str, logical_agent_id: str) -> tuple[ToolRegistrationSpec, ...]:
         documents = self._query(self._governance_container, "tool_registration", tenant_id)
         for document in documents:
-            registration = ToolRegistration.model_validate(document["payload"])
+            registration = ToolRegistrationSpec.model_validate(document["payload"])
             if registration.id not in self._tool_registrations:
                 AgentStudioStore.create_tool_registration(self, registration)
         return super().list_tool_registrations(tenant_id, logical_agent_id)

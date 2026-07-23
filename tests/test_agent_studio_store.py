@@ -25,8 +25,8 @@ from research_assistant_api.agent_studio.models import (
     ReleaseStatus,
     RuntimeTarget,
     StudioApprovalRecord,
-    ToolRegistration,
     ToolRegistrationKind,
+    ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError
 
@@ -197,8 +197,8 @@ def _tool_registration(
     registration_id: str = "reg-1",
     logical_agent_id: str = AGENT_ID,
     tenant_id: str = TENANT,
-) -> ToolRegistration:
-    return ToolRegistration(
+) -> ToolRegistrationSpec:
+    return ToolRegistrationSpec(
         id=registration_id,
         tenant_id=tenant_id,
         logical_agent_id=logical_agent_id,

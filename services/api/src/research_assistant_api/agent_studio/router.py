@@ -58,7 +58,7 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     ResolvedAgentContract,
     StudioApprovalRecord,
-    ToolRegistration,
+    ToolRegistrationSpec,
 )
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
@@ -330,14 +330,14 @@ def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) ->
 
 @router.post(
     "/agents/{logical_agent_id}/tool-registrations",
-    response_model=ToolRegistration,
+    response_model=ToolRegistrationSpec,
     status_code=status.HTTP_201_CREATED,
 )
 def register_tool(
     request: Request,
     logical_agent_id: str,
     payload: RegisterToolRequest,
-) -> ToolRegistration:
+) -> ToolRegistrationSpec:
     """Register the runtime handler for a GA capability operation.
 
     Rejects operations that are not GA-attachable with the same honest
@@ -363,8 +363,8 @@ def register_tool(
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
-@router.get("/agents/{logical_agent_id}/tool-registrations", response_model=list[ToolRegistration])
-def list_tool_registrations(request: Request, logical_agent_id: str) -> list[ToolRegistration]:
+@router.get("/agents/{logical_agent_id}/tool-registrations", response_model=list[ToolRegistrationSpec])
+def list_tool_registrations(request: Request, logical_agent_id: str) -> list[ToolRegistrationSpec]:
     identity = _identity(request)
     return list(_release_service(request).list_tool_registrations(identity.tenant_id, logical_agent_id))
 

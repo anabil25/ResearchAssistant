@@ -16,9 +16,13 @@ from research_assistant_api.agent_studio.capability_registry import (
     CapabilityRegistry,
     _retired,
     _unknown,
+    compute_config_hash,
+    compute_descriptor_digest,
+    compute_instance_fingerprint,
     default_registry,
 )
 from research_assistant_api.agent_studio.models import (
+    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
     CapabilityOperation,
@@ -190,7 +194,10 @@ def test_default_registry_builds_entirely_from_source_when_supplied() -> None:
     # Only the source's descriptor is present — the local seed is not mixed in.
     assert registry.catalog() == (custom_descriptor,)
     assert registry.get("foundry.web_search") is None
-    assert registry.get_instance("instance-a") == instance
+    stored = registry.get_instance("instance-a")
+    assert stored is not None
+    assert stored.model_copy(update={"instance_fingerprint": None}) == instance
+    assert stored.instance_fingerprint is not None
 
 
 def test_from_source_builds_registry_and_registers_instances() -> None:
@@ -206,7 +213,10 @@ def test_from_source_builds_registry_and_registers_instances() -> None:
     registry = CapabilityRegistry.from_source(source)
 
     assert registry.catalog() == (custom_descriptor,)
-    assert registry.get_instance("instance-a") == instance
+    stored = registry.get_instance("instance-a")
+    assert stored is not None
+    assert stored.model_copy(update={"instance_fingerprint": None}) == instance
+    assert stored.instance_fingerprint is not None
 
 
 def test_from_source_with_null_source_yields_empty_registry() -> None:
@@ -389,3 +399,177 @@ def test_attach_rejects_requires_approval_operation_with_no_policy_ref_supplied(
             attached_by="user-1",
             connection_ref="conn-azure-functions",
         )
+
+
+def test_register_instance_rejects_unknown_descriptor() -> None:
+    """An instance cannot honestly pin a descriptor the registry doesn't have."""
+    registry = CapabilityRegistry(descriptors=())
+
+    with pytest.raises(CapabilityAttachmentError, match="unknown descriptor"):
+        registry.register_instance(_instance(instance_id="orphan", descriptor_id="nowhere.search"))
+
+
+def test_attach_stamps_digests_and_fingerprint_on_binding() -> None:
+    registry = default_registry()
+    descriptor = registry.get("foundry.azure_ai_search")
+    assert descriptor is not None
+    instance = registry.register_instance(
+        _instance(instance_id="search-fp", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+        config={"index": "docs"},
+    )
+
+    assert binding.descriptor_digest == compute_descriptor_digest(descriptor)
+    assert binding.instance_fingerprint == instance.instance_fingerprint
+    assert binding.config_hash == compute_config_hash({"index": "docs"})
+    operation = descriptor.operation("search")
+    assert operation is not None
+    assert binding.input_schema_digest == operation.input_schema_digest
+    assert binding.output_schema_digest == operation.output_schema_digest
+
+
+def test_compute_instance_fingerprint_is_deterministic_and_sensitive_to_content() -> None:
+    descriptor = _descriptor("custom.fp", CapabilityOperation(name="run", maturity=OperationMaturity.GA))
+    instance = _instance(instance_id="fp-1", descriptor_id="custom.fp")
+
+    fingerprint_a = compute_instance_fingerprint(descriptor, instance)
+    fingerprint_b = compute_instance_fingerprint(descriptor, instance)
+    assert fingerprint_a == fingerprint_b
+    assert fingerprint_a.startswith("sha256:")
+
+    changed_instance = instance.model_copy(update={"discovered_provider_version": "2099.01"})
+    assert compute_instance_fingerprint(descriptor, changed_instance) != fingerprint_a
+
+
+def test_check_binding_freshness_fresh_binding_returns_none() -> None:
+    registry = default_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="fresh-1", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+
+    assert registry.check_binding_freshness(binding) is None
+
+
+def test_check_binding_freshness_no_instance_pin_is_fresh_when_descriptor_matches() -> None:
+    registry = default_registry()
+    binding = registry.attach(
+        descriptor_id="foundry.web_search", operation="search", attached_by="user-1"
+    )
+
+    assert registry.check_binding_freshness(binding) is None
+
+
+def test_check_binding_freshness_detects_unknown_descriptor() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    stale_registry = CapabilityRegistry(descriptors=())
+
+    reason = stale_registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "no longer in the catalog" in reason
+
+
+def test_check_binding_freshness_detects_descriptor_digest_drift() -> None:
+    registry = default_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    drifted = binding.model_copy(update={"descriptor_digest": "sha256:tampered"})
+
+    reason = registry.check_binding_freshness(drifted)
+    assert reason is not None
+    assert "descriptor_digest mismatch" in reason
+
+
+def test_check_binding_freshness_detects_missing_instance() -> None:
+    registry = default_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="going-away", descriptor_id="foundry.azure_ai_search")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+    fresh_registry = CapabilityRegistry(descriptors=registry.catalog())
+
+    reason = fresh_registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "no longer registered" in reason
+
+
+def test_check_binding_freshness_detects_unavailable_instance() -> None:
+    registry = default_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="flaky", descriptor_id="foundry.azure_ai_search")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+    registry.register_instance(
+        _instance(
+            instance_id="flaky",
+            descriptor_id="foundry.azure_ai_search",
+            readiness=InstanceReadiness.UNAVAILABLE,
+            unavailable_reason="connection revoked",
+        )
+    )
+
+    reason = registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "connection revoked" in reason
+
+
+def test_check_binding_freshness_detects_instance_fingerprint_drift() -> None:
+    registry = default_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="reconfig", descriptor_id="foundry.azure_ai_search", version="2026.07")
+    )
+    binding = registry.attach(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        attached_by="user-1",
+        instance_id=instance.id,
+    )
+    # Reconfiguration: same instance id, different discovered provider version
+    # changes the fingerprint without changing readiness.
+    registry.register_instance(
+        _instance(instance_id="reconfig", descriptor_id="foundry.azure_ai_search", version="2027.01")
+    )
+
+    reason = registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "reconfigured since attach" in reason
+
+
+def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() -> None:
+    """A binding constructed directly (not via ``attach``) with no digest/
+    fingerprint pins has nothing to compare against, so it is trivially
+    reported fresh — the absence of a pin is a caller-authoring choice, not
+    something this check can retroactively invent evidence for."""
+    registry = default_registry()
+    instance = registry.register_instance(
+        _instance(instance_id="unpinned", descriptor_id="foundry.azure_ai_search")
+    )
+    binding = CapabilityBinding(
+        descriptor_id="foundry.azure_ai_search",
+        operation="search",
+        instance_id=instance.id,
+        attached_by="user-1",
+    )
+
+    assert registry.check_binding_freshness(binding) is None

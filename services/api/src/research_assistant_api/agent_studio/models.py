@@ -277,10 +277,25 @@ class CapabilityInstance(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
     descriptor_id: str = Field(min_length=1, max_length=160)
+    #: The exact ``CapabilityDescriptor.version`` consulted when this
+    #: instance was discovered/registered — the descriptor-side half of the
+    #: pin that ``CapabilityBinding.descriptor_digest``/``instance_fingerprint``
+    #: freeze at attach time.
+    descriptor_version: str = Field(default="1", min_length=1, max_length=40)
     discovered_provider_version: str | None = None
     readiness: InstanceReadiness = InstanceReadiness.UNAVAILABLE
     health_status: HealthStatus = HealthStatus.UNKNOWN
     config_fingerprint: str | None = None
+    #: Canonical digest pinning provider/descriptor/operation identity,
+    #: operation definitions/versions, side-effect destinations, tenant/data
+    #: boundaries, and non-secret discovered configuration for *this*
+    #: instance — see ``capability_registry.compute_instance_fingerprint``.
+    #: Excludes health/timestamps/secrets/credential material, so a
+    #: readiness flap alone never invalidates a pinned binding. Computed at
+    #: discovery/registration time and copied into any ``CapabilityBinding``
+    #: that attaches this instance, so reconfiguration (not just health
+    #: drift) is independently detectable before release/invoke.
+    instance_fingerprint: str | None = None
     unavailable_reason: str | None = None
     discovered_at: datetime = Field(default_factory=utc_now)
     registered_by: str = Field(min_length=1, max_length=200)
@@ -291,22 +306,39 @@ class CapabilityBinding(BaseModel):
 
     Distinct from ``CapabilityDescriptor`` (the catalog/governance entry),
     ``CapabilityInstance`` (the discovered tenant/project resource), and
-    ``ToolRegistration`` (the runtime handler wiring below): ``CapabilityBinding``
+    ``ToolRegistrationSpec`` (the runtime handler wiring below): ``CapabilityBinding``
     only records that this manifest has chosen to use ``descriptor_id.operation``
-    at ``descriptor_version``/``pinned_provider_version``/``schema_digest``,
-    pointed at a specific ``instance_id`` (when the operation requires a
-    discovered resource) via ``connection_ref``, with what config and policy.
+    at ``descriptor_version``/``pinned_provider_version``, pointed at a specific
+    ``instance_id`` (when the operation requires a discovered resource) via
+    ``connection_ref``, with what config and policy.
+
+    ``descriptor_digest`` pins the *content* of the attached descriptor (not
+    just its declared ``descriptor_version`` string) so a catalog edit that
+    bumps content without bumping the version string cannot silently change
+    an already-attached binding's behavior. ``input_schema_digest``/
+    ``output_schema_digest`` are copied from the resolved
+    ``CapabilityOperation`` at attach time — independent digests because a
+    descriptor's operations can have distinct I/O shapes. ``instance_fingerprint``
+    is copied from the resolved ``CapabilityInstance`` at attach time (see
+    ``CapabilityInstance.instance_fingerprint``); release/invoke re-checks it
+    against the current instance and hard-fails on drift (stale binding).
+    ``config_hash`` is a canonical digest of ``config`` computed at attach
+    time so any later config drift is independently detectable.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     descriptor_id: str = Field(min_length=1, max_length=160)
     descriptor_version: str = Field(default="1", min_length=1, max_length=40)
+    descriptor_digest: str | None = None
     operation: str = Field(min_length=1, max_length=120)
     instance_id: str | None = None
     pinned_provider_version: str | None = None
-    schema_digest: str | None = None
+    instance_fingerprint: str | None = None
+    input_schema_digest: str | None = None
+    output_schema_digest: str | None = None
     config: dict[str, Any] = Field(default_factory=dict)
+    config_hash: str | None = None
     connection_ref: str | None = None
     policy_ref: str | None = None
     attached_by: str = Field(min_length=1, max_length=200)
@@ -320,16 +352,21 @@ class ToolRegistrationKind(StrEnum):
     CUSTOM_HANDLER = "custom_handler"
 
 
-class ToolRegistration(BaseModel):
-    """Runtime handler wiring for a ``CapabilityBinding``.
+class ToolRegistrationSpec(BaseModel):
+    """Persisted *spec* declaring how a ``CapabilityBinding`` is dispatched.
 
     Separate from ``CapabilityDescriptor`` (catalog/governance) and
     ``CapabilityBinding`` (agent attachment/config/version pin): this record
     declares *how* an attached operation is dispatched at runtime — resolved
     natively by the Managed Foundry runtime, or routed to an
-    application-owned handler for the Custom Hosted runtime. Immutable once
-    created; re-pointing a tool to a different handler creates a new
-    registration rather than mutating this one.
+    application-owned handler for the Custom Hosted runtime.
+
+    This is a *spec* (data), not a runtime handler: ``handler_ref`` is an
+    opaque reference the harness/provider compiler resolves into the actual
+    non-serializable, callable ``ToolRegistration`` object at dispatch time.
+    This backend never constructs or serializes a callable handler — only
+    this spec. Immutable once created; re-pointing a tool to a different
+    handler creates a new spec rather than mutating this one.
     """
 
     model_config = ConfigDict(frozen=True)
