@@ -11,15 +11,16 @@ Custom Hosted code is modeled as a non-Foundry-native capability so it is
 never eligible for Managed Foundry runtime selection.
 
 This module intentionally hard-codes the maturity for the built-in catalog
-(no network call at import time). It is a **transitional, local-only
-fallback**: the platform correction requires Agent Studio to *consume*
-provider discovery through an interface owned by the integration/harness
-session rather than duplicate Foundry/tool discovery here. See
-``capability_discovery.CapabilityDiscoverySource`` for that seam —
-``CapabilityRegistry.from_source`` builds a registry entirely from an
-injected source's output (no seed mixed in), and ``default_registry`` only
-falls back to this hard-coded seed when no source is supplied, e.g. while
-the real provider adapter has not yet been wired at this call site.
+(no network call at import time), but that seed is **test-fixture-only**:
+see ``seeded_test_registry`` below. It must never be reachable from a
+production path. ``default_registry()`` (no arguments) instead returns an
+honest, empty, explicitly-``unavailable`` registry — the platform correction
+requires Agent Studio to *consume* provider discovery through an interface
+owned by the integration/harness session rather than duplicate Foundry/tool
+discovery here (see ``capability_discovery.CapabilityDiscoverySource`` for
+that seam). ``CapabilityRegistry.from_source``/``build_registry_from_source``
+build a registry entirely from an injected source's (scope-aware, async)
+discovery output — no seed mixed in, ever.
 """
 
 from __future__ import annotations
@@ -30,7 +31,9 @@ from datetime import datetime
 from typing import Any
 
 from research_assistant_api.agent_studio.capability_discovery import (
+    CapabilityDiscoveryRequest,
     CapabilityDiscoverySource,
+    discover_with_timeout,
 )
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
@@ -43,7 +46,6 @@ from research_assistant_api.agent_studio.models import (
     CapabilityOperation,
     CapabilityOperationRef,
     CapabilityPolicyRef,
-    InstanceReadiness,
     OperationClass,
     OperationLifecycle,
     OperationMaturity,
@@ -544,33 +546,101 @@ class CapabilityRegistry:
     than in a separate store.
     """
 
-    def __init__(self, descriptors: tuple[CapabilityDescriptor, ...] | None = None) -> None:
-        seed = descriptors if descriptors is not None else _seed_descriptors()
+    def __init__(
+        self,
+        descriptors: tuple[CapabilityDescriptor, ...] | None = None,
+        *,
+        available: bool = True,
+        unavailable_reason: str | None = None,
+    ) -> None:
+        """Construct a registry directly from ``descriptors`` (default: empty).
+
+        Unlike the pre-correction behavior, a bare ``CapabilityRegistry()``
+        with no arguments is **not** seeded with the hard-coded Foundry
+        catalog — it is an honest, empty catalog. The hard-coded seed is
+        only ever reachable via ``seeded_test_registry`` (test-fixture-only).
+
+        ``available``/``unavailable_reason`` mirror
+        ``capability_discovery.CapabilityDiscoveryResult``'s honest-empty
+        vs explicitly-unavailable distinction so a registry built with no
+        configured source (see ``default_registry``) can say so, rather
+        than looking identical to a registry whose source genuinely
+        reported zero capabilities.
+        """
+        if not available and not unavailable_reason:
+            raise ValueError("An unavailable registry must carry a non-empty unavailable_reason")
+        if available and unavailable_reason is not None:
+            raise ValueError("An available registry must not carry an unavailable_reason")
+        seed = descriptors if descriptors is not None else ()
         self._descriptors: dict[str, CapabilityDescriptor] = {descriptor.id: descriptor for descriptor in seed}
         self._instances: dict[str, CapabilityInstance] = {}
         self._warnings: tuple[str, ...] = ()
         self._refreshed_at: datetime = utc_now()
+        self._available = available
+        self._unavailable_reason = unavailable_reason
 
     @classmethod
-    def from_source(cls, source: CapabilityDiscoverySource) -> CapabilityRegistry:
-        """Build a registry entirely from a ``CapabilityDiscoverySource``.
+    async def from_source(
+        cls, source: CapabilityDiscoverySource, request: CapabilityDiscoveryRequest
+    ) -> CapabilityRegistry:
+        """Build a registry entirely from a scope-aware ``CapabilityDiscoverySource``.
 
         No local seed catalog is mixed in: the injected source is treated
-        as the authoritative, real discovery output (or an honestly empty
-        one), never merged with or silently overridden by hard-coded data.
-        Discovered instances are registered immediately so they resolve via
+        as the authoritative, real discovery output (or an honestly
+        unavailable/empty one), never merged with or silently overridden by
+        hard-coded data. The call is bounded by ``request.timeout_seconds``
+        (see ``capability_discovery.discover_with_timeout``) so a hung or
+        cancelled provider degrades to an honest ``available=False``
+        registry rather than hanging or raising.
+
+        Every returned instance is validated against ``request.scope``:
+        an instance whose ``tenant_id``/``project_id`` does not match the
+        requested scope is a **cross-scope rejection** — it is dropped and
+        recorded as a warning rather than trusted, because a source must
+        never be able to leak another tenant/project's discovered
+        instances into this scope's registry. Discovered instances that do
+        match are registered immediately so they resolve via
         ``get_instance``/``instances_for`` without a separate wiring step.
         Discovery ``warnings`` are preserved (surfaced via ``/capabilities/
         discovery`` for admins/operators) and ``refreshed_at`` records when
         this discovery pass ran.
         """
-        result = source.discover()
-        registry = cls(descriptors=result.descriptors)
+        result = await discover_with_timeout(source, request)
+        registry = cls(
+            descriptors=result.descriptors,
+            available=result.available,
+            unavailable_reason=result.unavailable_reason,
+        )
+        warnings = list(result.warnings)
         for instance in result.instances:
+            if instance.tenant_id != request.scope.tenant_id or instance.project_id != request.scope.project_id:
+                warnings.append(
+                    f"Discovery source returned instance '{instance.id}' scoped to tenant "
+                    f"'{instance.tenant_id}'/project '{instance.project_id}', which does not match the "
+                    f"requested scope ('{request.scope.tenant_id}'/'{request.scope.project_id}'); rejected."
+                )
+                continue
             registry.register_instance(instance)
-        registry._warnings = result.warnings
+        registry._warnings = tuple(warnings)
         registry._refreshed_at = utc_now()
         return registry
+
+    @property
+    def available(self) -> bool:
+        """Whether this registry's catalog reflects a usable discovery source.
+
+        ``False`` means no capability discovery provider is configured/
+        reachable right now (see ``default_registry``/
+        ``NullCapabilityDiscoverySource``) — distinct from ``True`` with an
+        empty ``catalog()``, which means discovery ran and honestly found
+        nothing.
+        """
+        return self._available
+
+    @property
+    def unavailable_reason(self) -> str | None:
+        """Honest reason ``available`` is ``False``; ``None`` when available."""
+        return self._unavailable_reason
 
     @property
     def warnings(self) -> tuple[str, ...]:
@@ -717,10 +787,10 @@ class CapabilityRegistry:
                     f"Capability instance '{instance_id}' belongs to descriptor "
                     f"'{instance.descriptor_id}', not '{descriptor_id}'."
                 )
-            if instance.readiness == InstanceReadiness.UNAVAILABLE:
+            if not instance.is_bindable:
                 raise CapabilityAttachmentError(
-                    f"Capability instance '{instance_id}' is unavailable: "
-                    f"{instance.unavailable_reason or 'no reason supplied'}."
+                    f"Capability instance '{instance_id}' is not ready to attach "
+                    f"({instance.readiness.value}): {instance.unavailable_reason or 'no reason supplied'}."
                 )
             pinned_provider_version = instance.discovered_provider_version
             instance_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
@@ -813,10 +883,11 @@ class CapabilityRegistry:
             instance = self._instances.get(instance_id)
             if instance is None:
                 return f"Capability instance '{instance_id}' is no longer registered."
-            if instance.readiness == InstanceReadiness.UNAVAILABLE:
+            if not instance.is_bindable:
                 return (
-                    f"Capability instance '{instance_id}' is unavailable: "
-                    f"{instance.unavailable_reason or 'no reason supplied'}."
+                    f"Capability instance '{instance_id}' is no longer ready ({instance.readiness.value}): "
+                    f"{instance.unavailable_reason or 'no reason supplied'} — rebind and re-review before "
+                    "release/invoke."
                 )
             if binding.instance_ref.fingerprint is not None:
                 current_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
@@ -830,16 +901,51 @@ class CapabilityRegistry:
         return None
 
 
-def default_registry(source: CapabilityDiscoverySource | None = None) -> CapabilityRegistry:
-    """Build the process-default capability registry.
+def seeded_test_registry(descriptors: tuple[CapabilityDescriptor, ...] | None = None) -> CapabilityRegistry:
+    """Test-fixture-only registry seeded with the hard-coded Foundry catalog.
 
-    When ``source`` is supplied (a real provider-integration adapter), the
-    registry is built entirely from its discovery output via
-    ``CapabilityRegistry.from_source`` — the local hard-coded seed catalog
-    is not consulted at all. When no source is supplied (no adapter wired
-    at this call site yet), this falls back to the documented local seed as
-    a transitional default.
+    **Must never be called from a production path.** This is the only
+    reachable use of ``_seed_descriptors()`` in this module; it exists so
+    unit/integration tests can exercise attach/binding/gate/runtime-selection
+    logic against a realistic, populated catalog without a live provider
+    integration. Production composition must use ``default_registry()``
+    (honest, unconfigured-by-default) or ``build_registry_from_source`` with
+    a real adapter instead.
     """
-    if source is not None:
-        return CapabilityRegistry.from_source(source)
-    return CapabilityRegistry()
+    return CapabilityRegistry(descriptors if descriptors is not None else _seed_descriptors())
+
+
+def default_registry() -> CapabilityRegistry:
+    """Build the process-default capability registry with no source configured.
+
+    Returns an honest, empty, explicitly ``unavailable`` registry — it never
+    falls back to the hard-coded seed catalog (see ``seeded_test_registry``
+    for that test-only fixture). Production composition that has not yet
+    wired a real ``CapabilityDiscoverySource`` adapter should use this
+    directly, or equivalently call ``build_registry_from_source`` with a
+    ``NullCapabilityDiscoverySource``; both surface the same explicit
+    "provider integration unavailable" signal rather than an
+    indistinguishable empty success.
+    """
+    return CapabilityRegistry(
+        available=False,
+        unavailable_reason=(
+            "No capability discovery provider is configured for this deployment; provider "
+            "integration is unavailable."
+        ),
+    )
+
+
+async def build_registry_from_source(
+    source: CapabilityDiscoverySource, request: CapabilityDiscoveryRequest
+) -> CapabilityRegistry:
+    """Build a registry from a real, scope-aware ``CapabilityDiscoverySource``.
+
+    Thin, explicitly-named wrapper over ``CapabilityRegistry.from_source``
+    for call sites (route handlers, app composition) that want a
+    module-level function rather than the classmethod. This is the call
+    production composition should use once a real provider adapter exists;
+    until then, ``default_registry()`` (or this function called with
+    ``NullCapabilityDiscoverySource``) is the honest default.
+    """
+    return await CapabilityRegistry.from_source(source, request)

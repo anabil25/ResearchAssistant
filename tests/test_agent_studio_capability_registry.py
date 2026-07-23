@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 
 import pytest
 from research_assistant_api.agent_studio.capability_discovery import (
+    CapabilityDiscoveryRequest,
     CapabilityDiscoveryResult,
     InMemoryCapabilityDiscoverySource,
     NullCapabilityDiscoverySource,
@@ -16,10 +17,12 @@ from research_assistant_api.agent_studio.capability_registry import (
     CapabilityRegistry,
     _retired,
     _unknown,
+    build_registry_from_source,
     compute_config_hash,
     compute_descriptor_digest,
     compute_instance_fingerprint,
     default_registry,
+    seeded_test_registry,
 )
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
@@ -34,6 +37,7 @@ from research_assistant_api.agent_studio.models import (
     OperationLifecycle,
     OperationMaturity,
 )
+from research_assistant_api.agent_studio.scope import ScopeContext
 
 
 def _descriptor(
@@ -71,8 +75,22 @@ def _instance(
     )
 
 
-def test_default_registry_seeds_known_capabilities_and_operation_metadata() -> None:
-    registry = default_registry()
+def _request(
+    *,
+    tenant_id: str = "tenant-1",
+    project_id: str = "project-1",
+    timeout_seconds: float = 5.0,
+) -> CapabilityDiscoveryRequest:
+    return CapabilityDiscoveryRequest(
+        scope=ScopeContext(tenant_id=tenant_id, project_id=project_id),
+        principal="user-1",
+        correlation_id="correlation-1",
+        timeout_seconds=timeout_seconds,
+    )
+
+
+def test_seeded_test_registry_seeds_known_capabilities_and_operation_metadata() -> None:
+    registry = seeded_test_registry()
 
     ids = {descriptor.id for descriptor in registry.catalog()}
     assert "foundry.web_search" in ids
@@ -108,7 +126,7 @@ def test_default_registry_seeds_known_capabilities_and_operation_metadata() -> N
 
 
 def test_validate_attachment_accepts_ga_operation() -> None:
-    resolved = default_registry().validate_attachment(
+    resolved = seeded_test_registry().validate_attachment(
         descriptor_id="foundry.web_search",
         operation="search",
     )
@@ -128,7 +146,7 @@ def test_validate_attachment_rejects_unknown_descriptor_or_operation(
     message: str,
 ) -> None:
     with pytest.raises(CapabilityAttachmentError, match=message):
-        default_registry().validate_attachment(descriptor_id=descriptor_id, operation=operation)
+        seeded_test_registry().validate_attachment(descriptor_id=descriptor_id, operation=operation)
 
 
 def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_deprecated() -> None:
@@ -180,59 +198,155 @@ def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_deprec
         registry.validate_attachment(descriptor_id="custom.deprecated", operation="run")
 
 
-def test_default_registry_uses_seed_when_no_source_supplied() -> None:
+def test_capability_registry_rejects_unavailable_registry_with_no_reason() -> None:
+    with pytest.raises(ValueError, match="must carry a non-empty unavailable_reason"):
+        CapabilityRegistry(available=False)
+
+
+def test_capability_registry_rejects_available_registry_with_reason() -> None:
+    with pytest.raises(ValueError, match="must not carry an unavailable_reason"):
+        CapabilityRegistry(available=True, unavailable_reason="should not be set")
+
+
+def test_capability_registry_exposes_refreshed_at_timestamp() -> None:
+    before = datetime.now(UTC)
+    registry = CapabilityRegistry()
+    after = datetime.now(UTC)
+
+    assert before <= registry.refreshed_at <= after
+
+
+def test_default_registry_is_honest_unavailable_with_no_seed() -> None:
+    """``default_registry()`` (no source configured) must never fabricate the
+    hard-coded seed catalog — it is an explicit, honest ``available=False``
+    registry, distinguishable from a source that genuinely found nothing."""
     registry = default_registry()
 
-    assert registry.get("foundry.web_search") is not None
-
-
-def test_default_registry_builds_entirely_from_source_when_supplied() -> None:
-    custom_descriptor = _descriptor(
-        "custom.only",
-        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
-    )
-    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
-    source = InMemoryCapabilityDiscoverySource(
-        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
-    )
-
-    registry = default_registry(source=source)
-
-    # Only the source's descriptor is present — the local seed is not mixed in.
-    assert registry.catalog() == (custom_descriptor,)
-    assert registry.get("foundry.web_search") is None
-    stored = registry.get_instance("instance-a")
-    assert stored is not None
-    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
-    assert stored.instance_fingerprint is not None
-    assert stored.descriptor_digest is not None
-
-
-def test_from_source_builds_registry_and_registers_instances() -> None:
-    custom_descriptor = _descriptor(
-        "custom.only",
-        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
-    )
-    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
-    source = InMemoryCapabilityDiscoverySource(
-        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
-    )
-
-    registry = CapabilityRegistry.from_source(source)
-
-    assert registry.catalog() == (custom_descriptor,)
-    stored = registry.get_instance("instance-a")
-    assert stored is not None
-    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
-    assert stored.instance_fingerprint is not None
-    assert stored.descriptor_digest is not None
-
-
-def test_from_source_with_null_source_yields_empty_registry() -> None:
-    registry = CapabilityRegistry.from_source(NullCapabilityDiscoverySource())
-
+    assert registry.available is False
+    assert registry.unavailable_reason is not None
     assert registry.catalog() == ()
     assert registry.get("foundry.web_search") is None
+
+
+@pytest.mark.asyncio
+async def test_build_registry_from_source_builds_entirely_from_source() -> None:
+    custom_descriptor = _descriptor(
+        "custom.only",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
+    )
+    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
+    source = InMemoryCapabilityDiscoverySource(
+        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
+    )
+
+    registry = await build_registry_from_source(source, _request())
+
+    # Only the source's descriptor is present — the local seed is not mixed in.
+    assert registry.available is True
+    assert registry.unavailable_reason is None
+    assert registry.catalog() == (custom_descriptor,)
+    assert registry.get("foundry.web_search") is None
+    stored = registry.get_instance("instance-a")
+    assert stored is not None
+    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
+    assert stored.instance_fingerprint is not None
+    assert stored.descriptor_digest is not None
+
+
+@pytest.mark.asyncio
+async def test_from_source_builds_registry_and_registers_instances() -> None:
+    custom_descriptor = _descriptor(
+        "custom.only",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA),
+    )
+    instance = _instance(instance_id="instance-a", descriptor_id="custom.only")
+    source = InMemoryCapabilityDiscoverySource(
+        CapabilityDiscoveryResult(descriptors=(custom_descriptor,), instances=(instance,))
+    )
+
+    registry = await CapabilityRegistry.from_source(source, _request())
+
+    assert registry.catalog() == (custom_descriptor,)
+    stored = registry.get_instance("instance-a")
+    assert stored is not None
+    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
+    assert stored.instance_fingerprint is not None
+    assert stored.descriptor_digest is not None
+
+
+@pytest.mark.asyncio
+async def test_from_source_with_null_source_yields_explicit_unavailable_registry() -> None:
+    """Distinct from an empty-but-successful result: a null/unconfigured
+    source must surface as ``available=False``, not an indistinguishable
+    empty catalog."""
+    registry = await CapabilityRegistry.from_source(NullCapabilityDiscoverySource(), _request())
+
+    assert registry.available is False
+    assert registry.unavailable_reason is not None
+    assert registry.catalog() == ()
+    assert registry.get("foundry.web_search") is None
+
+
+@pytest.mark.asyncio
+async def test_from_source_honest_empty_success_is_available_true() -> None:
+    """A source that is reachable and genuinely has nothing to report is
+    ``available=True`` with empty catalog/instances — never confused with
+    ``NullCapabilityDiscoverySource``'s explicit unavailability."""
+    source = InMemoryCapabilityDiscoverySource(CapabilityDiscoveryResult())
+
+    registry = await CapabilityRegistry.from_source(source, _request())
+
+    assert registry.available is True
+    assert registry.unavailable_reason is None
+    assert registry.catalog() == ()
+
+
+@pytest.mark.asyncio
+async def test_from_source_rejects_instances_outside_requested_scope() -> None:
+    """A source must not be able to leak another tenant/project's discovered
+    instances into this scope's registry: mismatched instances are dropped
+    and recorded as a warning rather than trusted."""
+    descriptor = _descriptor("custom.scoped", CapabilityOperation(name="run", maturity=OperationMaturity.GA))
+    in_scope = _instance(instance_id="in-scope", descriptor_id="custom.scoped")
+    cross_tenant = _instance(instance_id="cross-tenant", descriptor_id="custom.scoped", tenant_id="tenant-9")
+    cross_project = _instance(instance_id="cross-project", descriptor_id="custom.scoped", project_id="project-9")
+    source = InMemoryCapabilityDiscoverySource(
+        CapabilityDiscoveryResult(descriptors=(descriptor,), instances=(in_scope, cross_tenant, cross_project))
+    )
+
+    registry = await CapabilityRegistry.from_source(source, _request(tenant_id="tenant-1", project_id="project-1"))
+
+    assert registry.get_instance("in-scope") is not None
+    assert registry.get_instance("cross-tenant") is None
+    assert registry.get_instance("cross-project") is None
+    assert len(registry.warnings) == 2
+    assert all("does not match the requested scope" in warning for warning in registry.warnings)
+
+
+@pytest.mark.asyncio
+async def test_from_source_translates_timeout_into_unavailable_registry() -> None:
+    """A provider that hangs past its timeout budget must degrade to an
+    honest ``available=False`` registry rather than hanging the caller."""
+    slow_source = InMemoryCapabilityDiscoverySource(delay_seconds=0.2)
+
+    registry = await CapabilityRegistry.from_source(slow_source, _request(timeout_seconds=0.01))
+
+    assert registry.available is False
+    assert registry.unavailable_reason is not None
+    assert "timed out" in registry.unavailable_reason
+
+
+@pytest.mark.asyncio
+async def test_from_source_translates_cancellation_into_unavailable_registry() -> None:
+    """A provider that is cancelled mid-discovery must also degrade to an
+    honest ``available=False`` registry rather than propagating."""
+    cancelling_source = InMemoryCapabilityDiscoverySource(raise_cancelled=True)
+
+    registry = await CapabilityRegistry.from_source(cancelling_source, _request())
+
+    assert registry.available is False
+    assert registry.unavailable_reason is not None
+    assert "cancelled" in registry.unavailable_reason
 
 
 def test_custom_registry_can_replace_seed_catalog() -> None:
@@ -278,7 +392,7 @@ def test_register_instance_lookup_and_filtering_by_tenant_and_project() -> None:
 
 
 def test_attach_returns_binding_with_instance_pin_and_copied_config() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(
             instance_id="search-1",
@@ -313,7 +427,7 @@ def test_attach_returns_binding_with_instance_pin_and_copied_config() -> None:
 
 
 def test_attach_without_instance_defaults_to_empty_config_and_no_pin() -> None:
-    binding = default_registry().attach(
+    binding = seeded_test_registry().attach(
         descriptor_id="foundry.web_search",
         operation="search",
         attached_by="user-1",
@@ -326,7 +440,7 @@ def test_attach_without_instance_defaults_to_empty_config_and_no_pin() -> None:
 
 
 def test_attach_rejects_missing_instance_wrong_descriptor_and_unavailable_instance() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
 
     with pytest.raises(CapabilityAttachmentError, match="is not registered"):
         registry.attach(
@@ -367,7 +481,90 @@ def test_attach_rejects_missing_instance_wrong_descriptor_and_unavailable_instan
         )
 
 
-def test_validate_attachment_rejects_requires_approval_operation_without_policy_ref() -> None:
+@pytest.mark.parametrize("readiness", list(InstanceReadiness))
+def test_instance_is_bindable_only_when_ready(readiness: InstanceReadiness) -> None:
+    """Every non-``READY`` state (``DEGRADED``, ``UNAUTHORIZED``,
+    ``NEEDS_CONSENT``, ``MISCONFIGURED``, ``UNAVAILABLE``) is not bindable —
+    bindability is never collapsed to a boolean "unavailable" check."""
+    instance = _instance(
+        instance_id="readiness-probe",
+        descriptor_id="foundry.azure_ai_search",
+        readiness=readiness,
+        unavailable_reason=None if readiness is InstanceReadiness.READY else "not usable right now",
+    )
+    assert instance.is_bindable is (readiness is InstanceReadiness.READY)
+
+
+@pytest.mark.parametrize(
+    "readiness",
+    [
+        InstanceReadiness.DEGRADED,
+        InstanceReadiness.UNAUTHORIZED,
+        InstanceReadiness.NEEDS_CONSENT,
+        InstanceReadiness.MISCONFIGURED,
+        InstanceReadiness.UNAVAILABLE,
+    ],
+)
+def test_attach_rejects_every_non_ready_readiness_state(readiness: InstanceReadiness) -> None:
+    registry = seeded_test_registry()
+    instance = registry.register_instance(
+        _instance(
+            instance_id=f"not-ready-{readiness.value}",
+            descriptor_id="foundry.azure_ai_search",
+            readiness=readiness,
+            unavailable_reason=f"reason: {readiness.value}",
+        )
+    )
+
+    with pytest.raises(CapabilityAttachmentError, match=re.escape(f"reason: {readiness.value}")):
+        registry.attach(
+            descriptor_id="foundry.azure_ai_search",
+            operation="search",
+            attached_by="user-1",
+            instance_id=instance.id,
+        )
+
+
+def test_register_instance_never_trusts_caller_supplied_digest_or_fingerprint() -> None:
+    """``register_instance`` always independently recomputes ``instance_fingerprint``/
+    ``descriptor_digest`` from the current descriptor+instance facts — a
+    caller/source cannot smuggle in a fabricated pin."""
+    registry = seeded_test_registry()
+    fabricated = _instance(instance_id="fabricated", descriptor_id="foundry.azure_ai_search").model_copy(
+        update={"instance_fingerprint": "sha256:fabricated", "descriptor_digest": "sha256:fabricated"}
+    )
+
+    stored = registry.register_instance(fabricated)
+
+    assert stored.instance_fingerprint != "sha256:fabricated"
+    assert stored.descriptor_digest != "sha256:fabricated"
+    descriptor = registry.get("foundry.azure_ai_search")
+    assert descriptor is not None
+    assert stored.descriptor_digest == compute_descriptor_digest(descriptor)
+    assert stored.instance_fingerprint == compute_instance_fingerprint(descriptor, fabricated)
+
+
+def test_check_binding_freshness_detects_provider_schema_drift_across_discovery_passes() -> None:
+    """Simulates real provider schema drift: a descriptor's content changes
+    between two discovery passes (not a hand-tampered binding) and a
+    binding attached against the earlier pass is correctly flagged stale."""
+    descriptor_v1 = _descriptor(
+        "custom.drift", CapabilityOperation(name="run", maturity=OperationMaturity.GA, version="1")
+    )
+    registry_v1 = CapabilityRegistry((descriptor_v1,))
+    binding = registry_v1.attach(descriptor_id="custom.drift", operation="run", attached_by="user-1")
+
+    descriptor_v2 = _descriptor(
+        "custom.drift", CapabilityOperation(name="run", maturity=OperationMaturity.GA, version="2")
+    )
+    registry_v2 = CapabilityRegistry((descriptor_v2,))
+
+    reason = registry_v2.check_binding_freshness(binding)
+    assert reason is not None
+    assert "descriptor_ref.digest mismatch" in reason
+
+
+
     """An operation flagged ``requires_approval`` with no ``approval_policy_ref``
     declared in the catalog is an unsatisfiable authoring inconsistency."""
     registry = CapabilityRegistry(
@@ -404,7 +601,7 @@ def test_attach_rejects_requires_approval_operation_with_no_policy_ref_supplied(
         CapabilityAttachmentError,
         match="so a policy_ref identifying the governing approval policy must be supplied",
     ):
-        default_registry().attach(
+        seeded_test_registry().attach(
             descriptor_id="foundry.azure_functions",
             operation="invoke",
             attached_by="user-1",
@@ -421,7 +618,7 @@ def test_register_instance_rejects_unknown_descriptor() -> None:
 
 
 def test_attach_stamps_digests_and_fingerprint_on_binding() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     descriptor = registry.get("foundry.azure_ai_search")
     assert descriptor is not None
     instance = registry.register_instance(
@@ -460,7 +657,7 @@ def test_compute_instance_fingerprint_is_deterministic_and_sensitive_to_content(
 
 
 def test_check_binding_freshness_fresh_binding_returns_none() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="fresh-1", descriptor_id="foundry.azure_ai_search", version="2026.07")
     )
@@ -475,7 +672,7 @@ def test_check_binding_freshness_fresh_binding_returns_none() -> None:
 
 
 def test_check_binding_freshness_no_instance_pin_is_fresh_when_descriptor_matches() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(
         descriptor_id="foundry.web_search", operation="search", attached_by="user-1"
     )
@@ -484,7 +681,7 @@ def test_check_binding_freshness_no_instance_pin_is_fresh_when_descriptor_matche
 
 
 def test_check_binding_freshness_detects_unknown_descriptor() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     stale_registry = CapabilityRegistry(descriptors=())
 
@@ -494,7 +691,7 @@ def test_check_binding_freshness_detects_unknown_descriptor() -> None:
 
 
 def test_check_binding_freshness_detects_descriptor_digest_drift() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     drifted = binding.model_copy(
         update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
@@ -506,7 +703,7 @@ def test_check_binding_freshness_detects_descriptor_digest_drift() -> None:
 
 
 def test_check_binding_freshness_detects_missing_instance() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="going-away", descriptor_id="foundry.azure_ai_search")
     )
@@ -524,7 +721,7 @@ def test_check_binding_freshness_detects_missing_instance() -> None:
 
 
 def test_check_binding_freshness_detects_unavailable_instance() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="flaky", descriptor_id="foundry.azure_ai_search")
     )
@@ -549,7 +746,7 @@ def test_check_binding_freshness_detects_unavailable_instance() -> None:
 
 
 def test_check_binding_freshness_detects_instance_fingerprint_drift() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="reconfig", descriptor_id="foundry.azure_ai_search", version="2026.07")
     )
@@ -575,7 +772,7 @@ def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() 
     fingerprint pins has nothing to compare against, so it is trivially
     reported fresh — the absence of a pin is a caller-authoring choice, not
     something this check can retroactively invent evidence for."""
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         _instance(instance_id="unpinned", descriptor_id="foundry.azure_ai_search")
     )

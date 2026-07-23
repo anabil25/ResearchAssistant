@@ -1,7 +1,7 @@
 # mypy: disable-error-code=import-untyped
 from __future__ import annotations
 
-from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.capability_registry import seeded_test_registry
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
@@ -37,7 +37,7 @@ def _binding(descriptor_id: str, operation: str) -> CapabilityBinding:
 
 
 def test_select_runtime_managed_foundry_when_no_disqualifiers() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(
         capabilities=(_binding("foundry.web_search", "search"),)
     )
@@ -47,7 +47,7 @@ def test_select_runtime_managed_foundry_when_no_disqualifiers() -> None:
 
 
 def test_select_runtime_custom_hosted_when_custom_code_required() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(runtime_requirements=RuntimeRequirements(requires_custom_code=True))
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -55,7 +55,7 @@ def test_select_runtime_custom_hosted_when_custom_code_required() -> None:
 
 
 def test_select_runtime_custom_hosted_when_custom_orchestration_required() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(runtime_requirements=RuntimeRequirements(requires_custom_orchestration_workflow=True))
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -63,7 +63,7 @@ def test_select_runtime_custom_hosted_when_custom_orchestration_required() -> No
 
 
 def test_select_runtime_custom_hosted_when_non_ga_tool_required() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(runtime_requirements=RuntimeRequirements(requires_non_ga_tool=True))
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -71,7 +71,7 @@ def test_select_runtime_custom_hosted_when_non_ga_tool_required() -> None:
 
 
 def test_select_runtime_custom_hosted_when_model_source_not_project_deployed() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(runtime_requirements=RuntimeRequirements(uses_project_deployed_model_only=False))
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -88,7 +88,7 @@ def test_select_runtime_custom_hosted_when_capability_missing_from_catalog() -> 
 
 
 def test_select_runtime_custom_hosted_when_capability_not_foundry_native() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(
         capabilities=(_binding("custom.hosted_code", "run"),)
     )
@@ -98,7 +98,7 @@ def test_select_runtime_custom_hosted_when_capability_not_foundry_native() -> No
 
 
 def test_select_runtime_custom_hosted_when_operation_not_declared() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(
         capabilities=(_binding("foundry.web_search", "not_declared"),)
     )
@@ -108,7 +108,7 @@ def test_select_runtime_custom_hosted_when_operation_not_declared() -> None:
 
 
 def test_select_runtime_custom_hosted_when_operation_not_ga() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(
         capabilities=(_binding("foundry.code_interpreter", "custom_environment"),)
     )
@@ -118,7 +118,7 @@ def test_select_runtime_custom_hosted_when_operation_not_ga() -> None:
 
 
 def test_select_runtime_collects_multiple_disqualifiers() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     manifest = _manifest(
         runtime_requirements=RuntimeRequirements(requires_custom_code=True, requires_non_ga_tool=True),
         capabilities=(_binding("custom.hosted_code", "run"),),

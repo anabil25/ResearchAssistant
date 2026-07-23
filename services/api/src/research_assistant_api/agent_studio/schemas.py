@@ -233,6 +233,12 @@ class CapabilityDiscoverySnapshot(BaseModel):
     ``warnings`` and the ``refreshed_at`` timestamp in one call. Never
     itself persisted -- it is a read-time projection over the current
     ``CapabilityRegistry`` state.
+
+    ``available``/``unavailable_reason`` distinguish "discovery ran and
+    honestly found nothing" (``available=True``, empty ``descriptors``/
+    ``instances``) from "no provider integration is configured/reachable
+    right now" (``available=False``) -- a UI must never render these two
+    situations identically.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -241,3 +247,5 @@ class CapabilityDiscoverySnapshot(BaseModel):
     instances: tuple[CapabilityInstance, ...]
     warnings: tuple[str, ...]
     refreshed_at: datetime
+    available: bool = True
+    unavailable_reason: str | None = None

@@ -20,7 +20,7 @@ from research_assistant_api.agent_studio.approvals import ApprovalError, idempot
 from research_assistant_api.agent_studio.capability_registry import (
     CapabilityAttachmentError,
     CapabilityRegistry,
-    default_registry,
+    seeded_test_registry,
 )
 from research_assistant_api.agent_studio.model_discovery import (
     InMemoryModelDiscovery,
@@ -100,7 +100,7 @@ class SpyAllocateStore(AgentStudioStore):
 def service() -> ReleaseService:
     return ReleaseService(
         AgentStudioStore(),
-        default_registry(),
+        seeded_test_registry(),
         model_discovery=InMemoryModelDiscovery(
             (ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),)
         ),
@@ -211,7 +211,7 @@ def _record_healthy_deployment(
 
 
 def test_manifest_hash_is_deterministic() -> None:
-    local_service = ReleaseService(AgentStudioStore(), default_registry())
+    local_service = ReleaseService(AgentStudioStore(), seeded_test_registry())
     _create_agent(local_service, logical_agent_id="agent-hash")
     draft = local_service._store.get_draft(_scope(), "agent-hash")
     assert draft is not None
@@ -670,7 +670,7 @@ def test_cut_version_uses_allocate_version_builder_and_freezes_fields() -> None:
     store = SpyAllocateStore()
     service = ReleaseService(
         store,
-        default_registry(),
+        seeded_test_registry(),
         model_discovery=InMemoryModelDiscovery(
             (ModelDeploymentRef(deployment_name="gpt-4o-mini", model_name="gpt-4o-mini", model_format="openai"),)
         ),
@@ -1722,7 +1722,7 @@ def _service_with_model_deployment_manifest(
     """Build a service with the given (fake or unavailable) model discovery
     and a draft manifest that declares a ``model_deployment``, ready for
     ``cut_version`` to trigger ``_revalidate_model_deployment``."""
-    local_service = ReleaseService(AgentStudioStore(), default_registry(), model_discovery=model_discovery)
+    local_service = ReleaseService(AgentStudioStore(), seeded_test_registry(), model_discovery=model_discovery)
     _create_agent(local_service, logical_agent_id=logical_agent_id)
     draft = local_service._store.get_draft(_scope(), logical_agent_id)
     assert draft is not None

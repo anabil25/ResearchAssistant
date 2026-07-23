@@ -12,7 +12,7 @@ if "research_assistant_api.agent_studio.cosmos_store" not in sys.modules:
     cosmos_store_stub.build_agent_studio_store = lambda *args, **kwargs: None
     sys.modules["research_assistant_api.agent_studio.cosmos_store"] = cosmos_store_stub
 
-from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, seeded_test_registry
 from research_assistant_api.agent_studio.deployment_service import DeploymentService, DeploymentServiceError
 from research_assistant_api.agent_studio.model_discovery import InMemoryModelDiscovery, UnavailableModelDiscovery
 from research_assistant_api.agent_studio.models import (
@@ -63,7 +63,7 @@ class ReleaseServiceHarness:
         model_discovery: InMemoryModelDiscovery | UnavailableModelDiscovery | None = None,
     ) -> None:
         self._store = store
-        self._registry = registry or default_registry()
+        self._registry = registry or seeded_test_registry()
         self._model_discovery = model_discovery or UnavailableModelDiscovery()
 
     def create_agent(
@@ -1319,7 +1319,7 @@ def test_deploy_raises_when_capability_approval_is_missing(
     store: AgentStudioStore,
 ) -> None:
     version = _capability_gated_version(release_service, store, logical_agent_id="agent-deploy-approval-missing")
-    deployment_service = DeploymentService(store, capability_registry=default_registry())
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
 
     with pytest.raises(DeploymentServiceError, match="requires approval but no approved record was found"):
         deployment_service.deploy(
@@ -1355,7 +1355,7 @@ def test_deploy_raises_when_capability_approval_content_hash_mismatches(
             content_hash="sha256:not-this-version",
         )
     )
-    deployment_service = DeploymentService(store, capability_registry=default_registry())
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
 
     with pytest.raises(DeploymentServiceError, match="bound to a different manifest content hash"):
         deployment_service.deploy(
@@ -1392,7 +1392,7 @@ def test_deploy_raises_when_capability_approval_has_expired(
             expires_at=datetime(2000, 1, 1, tzinfo=UTC),
         )
     )
-    deployment_service = DeploymentService(store, capability_registry=default_registry())
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
 
     with pytest.raises(DeploymentServiceError, match="approval has expired"):
         deployment_service.deploy(
@@ -1428,7 +1428,7 @@ def test_deploy_succeeds_when_capability_approval_is_valid(
             content_hash=version.manifest_hash,
         )
     )
-    deployment_service = DeploymentService(store, capability_registry=default_registry())
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
 
     record = deployment_service.deploy(
         tenant_id="demo",
@@ -1494,7 +1494,7 @@ def test_deploy_skips_capability_bindings_whose_operation_does_not_require_appro
         actor_role=AgentRole.OWNER,
     )
     _append_release(store, version, ReleaseStatus.GATED, created_by="user-1")
-    deployment_service = DeploymentService(store, capability_registry=default_registry())
+    deployment_service = DeploymentService(store, capability_registry=seeded_test_registry())
 
     record = deployment_service.deploy(
         tenant_id="demo",
@@ -1577,7 +1577,7 @@ def _model_deployment_gated_version(
 ) -> AgentVersion:
     release_service = ReleaseServiceHarness(
         store,
-        default_registry(),
+        seeded_test_registry(),
         model_discovery=InMemoryModelDiscovery(discovery_models),
     )
     _create_agent(release_service, logical_agent_id=logical_agent_id, owner=owner)

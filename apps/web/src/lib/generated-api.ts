@@ -1880,8 +1880,19 @@ export interface components {
          *     ``warnings`` and the ``refreshed_at`` timestamp in one call. Never
          *     itself persisted -- it is a read-time projection over the current
          *     ``CapabilityRegistry`` state.
+         *
+         *     ``available``/``unavailable_reason`` distinguish "discovery ran and
+         *     honestly found nothing" (``available=True``, empty ``descriptors``/
+         *     ``instances``) from "no provider integration is configured/reachable
+         *     right now" (``available=False``) -- a UI must never render these two
+         *     situations identically.
          */
         CapabilityDiscoverySnapshot: {
+            /**
+             * Available
+             * @default true
+             */
+            available: boolean;
             /** Descriptors */
             descriptors: components["schemas"]["CapabilityDescriptor"][];
             /** Instances */
@@ -1891,6 +1902,8 @@ export interface components {
              * Format: date-time
              */
             refreshed_at: string;
+            /** Unavailable Reason */
+            unavailable_reason?: string | null;
             /** Warnings */
             warnings: string[];
         };
@@ -2577,9 +2590,32 @@ export interface components {
         };
         /**
          * InstanceReadiness
+         * @description Provider-reported readiness of one discovered ``CapabilityInstance``.
+         *
+         *     Distinct, UI/product-relevant states rather than a boolean, so a caller
+         *     can render (and an operator can act on) *why* an instance is not
+         *     currently usable instead of a single undifferentiated "unavailable":
+         *
+         *     - ``READY``: usable now; the only state ``CapabilityRegistry.attach``/
+         *       ``check_binding_freshness`` treat as bindable.
+         *     - ``DEGRADED``: usable but the provider has signaled reduced health
+         *       (see ``CapabilityInstance.health_status`` for detail); not bindable.
+         *     - ``UNAUTHORIZED``: the configured credential/connection lacks
+         *       sufficient permission; distinct from ``NEEDS_CONSENT`` (no grant has
+         *       been requested/completed at all) and from generic ``UNAVAILABLE``.
+         *     - ``NEEDS_CONSENT``: an interactive user/admin consent grant is
+         *       required before the provider will serve this instance.
+         *     - ``MISCONFIGURED``: discovered but its configuration is invalid/
+         *       incomplete (e.g. a required setting is missing) — an operator action,
+         *       not a transient outage.
+         *     - ``UNAVAILABLE``: the fail-closed default and the catch-all for a
+         *       provider outage/removal with no more specific reason.
+         *
+         *     Never collapse these into a boolean; ``CapabilityInstance.unavailable_reason``
+         *     carries the honest, human-readable detail for any non-``READY`` state.
          * @enum {string}
          */
-        InstanceReadiness: "ready" | "degraded" | "unavailable";
+        InstanceReadiness: "ready" | "degraded" | "unavailable" | "unauthorized" | "needs_consent" | "misconfigured";
         /** InstitutionalStudioResult */
         InstitutionalStudioResult: {
             /** Abstained */

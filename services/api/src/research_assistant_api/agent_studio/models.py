@@ -290,9 +290,37 @@ class CapabilityDescriptor(BaseModel):
 
 
 class InstanceReadiness(StrEnum):
+    """Provider-reported readiness of one discovered ``CapabilityInstance``.
+
+    Distinct, UI/product-relevant states rather than a boolean, so a caller
+    can render (and an operator can act on) *why* an instance is not
+    currently usable instead of a single undifferentiated "unavailable":
+
+    - ``READY``: usable now; the only state ``CapabilityRegistry.attach``/
+      ``check_binding_freshness`` treat as bindable.
+    - ``DEGRADED``: usable but the provider has signaled reduced health
+      (see ``CapabilityInstance.health_status`` for detail); not bindable.
+    - ``UNAUTHORIZED``: the configured credential/connection lacks
+      sufficient permission; distinct from ``NEEDS_CONSENT`` (no grant has
+      been requested/completed at all) and from generic ``UNAVAILABLE``.
+    - ``NEEDS_CONSENT``: an interactive user/admin consent grant is
+      required before the provider will serve this instance.
+    - ``MISCONFIGURED``: discovered but its configuration is invalid/
+      incomplete (e.g. a required setting is missing) — an operator action,
+      not a transient outage.
+    - ``UNAVAILABLE``: the fail-closed default and the catch-all for a
+      provider outage/removal with no more specific reason.
+
+    Never collapse these into a boolean; ``CapabilityInstance.unavailable_reason``
+    carries the honest, human-readable detail for any non-``READY`` state.
+    """
+
     READY = "ready"
     DEGRADED = "degraded"
     UNAVAILABLE = "unavailable"
+    UNAUTHORIZED = "unauthorized"
+    NEEDS_CONSENT = "needs_consent"
+    MISCONFIGURED = "misconfigured"
 
 
 class CapabilityInstance(BaseModel):
@@ -338,9 +366,27 @@ class CapabilityInstance(BaseModel):
     #: that attaches this instance, so reconfiguration (not just health
     #: drift) is independently detectable before release/invoke.
     instance_fingerprint: str | None = None
+    #: Honest, human-readable detail for *any* non-``READY`` ``readiness``
+    #: state (unauthorized/needs-consent/misconfigured/degraded/unavailable)
+    #: — not only the ``UNAVAILABLE`` case despite the field's name (kept
+    #: for backward-compatible API/contract stability). ``None`` is expected
+    #: only when ``readiness == READY``.
     unavailable_reason: str | None = None
     discovered_at: datetime = Field(default_factory=utc_now)
     registered_by: str = Field(min_length=1, max_length=200)
+
+    @property
+    def is_bindable(self) -> bool:
+        """Whether this instance may be attached to a new ``CapabilityBinding``.
+
+        Only ``InstanceReadiness.READY`` is bindable — every other state
+        (``DEGRADED``, ``UNAUTHORIZED``, ``NEEDS_CONSENT``, ``MISCONFIGURED``,
+        ``UNAVAILABLE``) fails closed. A degraded-but-technically-reachable
+        instance is deliberately *not* bindable: attach/gate/deploy must
+        never silently pin a binding to an instance whose health is already
+        in question.
+        """
+        return self.readiness == InstanceReadiness.READY
 
 
 class CapabilityDescriptorRef(BaseModel):

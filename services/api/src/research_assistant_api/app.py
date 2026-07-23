@@ -143,6 +143,11 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     local/dev environments that don't configure Cosmos) in one stroke.
     """
     registry = default_registry()
+    # ``default_registry()`` takes no source and is never seeded with the
+    # hard-coded catalog (see capability_registry module docstring): until a
+    # real CapabilityDiscoverySource adapter is wired at this call site, the
+    # registry honestly reports ``available=False`` rather than looking like
+    # an empty-but-successful catalog.
     application.state.agent_studio_registry = registry
     model_discovery = build_model_discovery(settings)
     application.state.agent_studio_model_discovery = model_discovery

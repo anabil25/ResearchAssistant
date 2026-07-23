@@ -237,6 +237,8 @@ def get_capability_discovery(request: Request, project_id: str | None = None) ->
         instances=registry.instances_for(tenant_id=identity.tenant_id, project_id=project_id),
         warnings=registry.warnings,
         refreshed_at=registry.refreshed_at,
+        available=registry.available,
+        unavailable_reason=registry.unavailable_reason,
     )
 
 

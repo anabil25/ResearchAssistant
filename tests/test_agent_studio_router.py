@@ -20,7 +20,7 @@ from research_assistant_api.agent_studio.builder_service import (
 )
 from research_assistant_api.agent_studio.capability_registry import (
     CapabilityRegistry,
-    default_registry,
+    seeded_test_registry,
 )
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
 from research_assistant_api.agent_studio.memory_service import InMemoryMemoryStore, MemoryService
@@ -208,7 +208,7 @@ def store() -> AgentStudioStore:
 
 @pytest.fixture
 def registry() -> CapabilityRegistry:
-    return default_registry()
+    return seeded_test_registry()
 
 
 @pytest.fixture

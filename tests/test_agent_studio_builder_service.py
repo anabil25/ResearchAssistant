@@ -29,7 +29,7 @@ from research_assistant_api.agent_studio.builder_service import (
     diff_capability_bindings,
     diff_manifest_fields,
 )
-from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, seeded_test_registry
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
@@ -116,7 +116,7 @@ def _service(
     release_service: ReleaseService | None = None,
 ) -> BuilderService:
     resolved_store = store or AgentStudioStore()
-    resolved_release_service = release_service or ReleaseService(resolved_store, registry or default_registry())
+    resolved_release_service = release_service or ReleaseService(resolved_store, registry or seeded_test_registry())
     return BuilderService(
         store=resolved_store,
         generator=generator or InMemoryManifestProposalGenerator(
@@ -984,7 +984,7 @@ def test_apply_fails_when_capability_instance_drifts_between_propose_and_apply()
     delegates the manifest write to ``ReleaseService.update_draft()``
     (rather than a raw store write), this drift must be caught and hard-fail
     ``apply()`` even though the proposal itself was generated validly."""
-    registry = default_registry()
+    registry = seeded_test_registry()
     instance = registry.register_instance(
         CapabilityInstance(
             id="instance-drift",

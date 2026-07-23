@@ -1921,8 +1921,13 @@
       },
       "CapabilityDiscoverySnapshot": {
         "additionalProperties": false,
-        "description": "Combined descriptor/instance discovery read model.\n\nConvenience aggregate of ``GET /capabilities/descriptors`` and\n``GET /capabilities/instances`` for callers (e.g. the future node\npalette/compiler) that want both plus honest, non-fatal discovery\n``warnings`` and the ``refreshed_at`` timestamp in one call. Never\nitself persisted -- it is a read-time projection over the current\n``CapabilityRegistry`` state.",
+        "description": "Combined descriptor/instance discovery read model.\n\nConvenience aggregate of ``GET /capabilities/descriptors`` and\n``GET /capabilities/instances`` for callers (e.g. the future node\npalette/compiler) that want both plus honest, non-fatal discovery\n``warnings`` and the ``refreshed_at`` timestamp in one call. Never\nitself persisted -- it is a read-time projection over the current\n``CapabilityRegistry`` state.\n\n``available``/``unavailable_reason`` distinguish \"discovery ran and\nhonestly found nothing\" (``available=True``, empty ``descriptors``/\n``instances``) from \"no provider integration is configured/reachable\nright now\" (``available=False``) -- a UI must never render these two\nsituations identically.",
         "properties": {
+          "available": {
+            "default": true,
+            "title": "Available",
+            "type": "boolean"
+          },
           "descriptors": {
             "items": {
               "$ref": "#/components/schemas/CapabilityDescriptor"
@@ -1941,6 +1946,17 @@
             "format": "date-time",
             "title": "Refreshed At",
             "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
           },
           "warnings": {
             "items": {
@@ -3679,10 +3695,14 @@
         "type": "object"
       },
       "InstanceReadiness": {
+        "description": "Provider-reported readiness of one discovered ``CapabilityInstance``.\n\nDistinct, UI/product-relevant states rather than a boolean, so a caller\ncan render (and an operator can act on) *why* an instance is not\ncurrently usable instead of a single undifferentiated \"unavailable\":\n\n- ``READY``: usable now; the only state ``CapabilityRegistry.attach``/\n  ``check_binding_freshness`` treat as bindable.\n- ``DEGRADED``: usable but the provider has signaled reduced health\n  (see ``CapabilityInstance.health_status`` for detail); not bindable.\n- ``UNAUTHORIZED``: the configured credential/connection lacks\n  sufficient permission; distinct from ``NEEDS_CONSENT`` (no grant has\n  been requested/completed at all) and from generic ``UNAVAILABLE``.\n- ``NEEDS_CONSENT``: an interactive user/admin consent grant is\n  required before the provider will serve this instance.\n- ``MISCONFIGURED``: discovered but its configuration is invalid/\n  incomplete (e.g. a required setting is missing) \u2014 an operator action,\n  not a transient outage.\n- ``UNAVAILABLE``: the fail-closed default and the catch-all for a\n  provider outage/removal with no more specific reason.\n\nNever collapse these into a boolean; ``CapabilityInstance.unavailable_reason``\ncarries the honest, human-readable detail for any non-``READY`` state.",
         "enum": [
           "ready",
           "degraded",
-          "unavailable"
+          "unavailable",
+          "unauthorized",
+          "needs_consent",
+          "misconfigured"
         ],
         "title": "InstanceReadiness",
         "type": "string"

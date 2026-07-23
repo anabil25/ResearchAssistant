@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import UTC, datetime
 
 import pytest
-from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, default_registry
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry, seeded_test_registry
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
@@ -98,7 +98,7 @@ def _gate(report: ReleaseGateReport, name: GateName) -> GateResult:
 
 
 def test_run_gates_all_pass_for_custom_hosted_with_evidence() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
@@ -116,7 +116,7 @@ def test_run_gates_all_pass_for_custom_hosted_with_evidence() -> None:
 
 
 def test_run_gates_marks_build_not_applicable_for_managed_foundry() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
@@ -181,7 +181,7 @@ def _approval_record(
 def test_approval_gate_passes_when_no_binding_requires_approval() -> None:
     result = _approval_gate(
         _manifest(capabilities=(_binding("foundry.web_search", "search"),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
         "sha256:manifest-a",
         (),
         datetime(2030, 1, 1, tzinfo=UTC),
@@ -213,7 +213,7 @@ def test_approval_gate_skips_missing_descriptor_and_missing_operation() -> None:
 def test_approval_gate_fails_when_no_approved_record_exists() -> None:
     result = _approval_gate(
         _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
         "sha256:manifest-a",
         (),
         datetime(2030, 1, 1, tzinfo=UTC),
@@ -226,7 +226,7 @@ def test_approval_gate_fails_when_no_approved_record_exists() -> None:
 def test_approval_gate_fails_when_approval_bound_to_different_manifest_hash() -> None:
     result = _approval_gate(
         _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
         "sha256:manifest-a",
         (_approval_record(content_hash="sha256:manifest-b"),),
         datetime(2030, 1, 1, tzinfo=UTC),
@@ -239,7 +239,7 @@ def test_approval_gate_fails_when_approval_bound_to_different_manifest_hash() ->
 def test_approval_gate_fails_when_approval_expired() -> None:
     result = _approval_gate(
         _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
         "sha256:manifest-a",
         (_approval_record(expires_at=datetime(2029, 1, 1, tzinfo=UTC)),),
         datetime(2030, 1, 1, tzinfo=UTC),
@@ -252,7 +252,7 @@ def test_approval_gate_fails_when_approval_expired() -> None:
 def test_approval_gate_passes_with_matching_unexpired_approved_record() -> None:
     result = _approval_gate(
         _manifest(capabilities=(_binding("foundry.azure_functions", "invoke"),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
         "sha256:manifest-a",
         (_approval_record(expires_at=datetime(2031, 1, 1, tzinfo=UTC)),),
         datetime(2030, 1, 1, tzinfo=UTC),
@@ -262,7 +262,7 @@ def test_approval_gate_passes_with_matching_unexpired_approved_record() -> None:
 
 
 def test_run_gates_fails_report_when_required_capability_approval_is_missing() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     report = run_gates(
         version_id="version-1",
         report_id="report-1",
@@ -333,7 +333,7 @@ def test_auth_gate_fails_for_missing_catalog_and_missing_connection() -> None:
         _manifest(capabilities=(_binding("missing.capability", "search"),)),
         {},
     )
-    registry = default_registry()
+    registry = seeded_test_registry()
     missing_connection = _auth_gate(
         _manifest(capabilities=(_binding("foundry.file_search", "search"),)),
         registry.as_mapping(),
@@ -443,7 +443,7 @@ def test_contains_secret_recurses_through_supported_shapes(value: object, expect
 
 
 def test_security_gate_detects_embedded_secret_and_system_high_risk_public_capability() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     embedded_secret = _security_gate(
         _manifest(
             capabilities=(
@@ -472,7 +472,7 @@ def test_security_gate_detects_embedded_secret_and_system_high_risk_public_capab
 
 
 def test_binding_gate_passes_for_fresh_bindings() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
 
     result = _binding_gate(_manifest(capabilities=(binding,)), registry)
@@ -482,7 +482,7 @@ def test_binding_gate_passes_for_fresh_bindings() -> None:
 
 
 def test_binding_gate_passes_when_manifest_has_no_capabilities() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
 
     result = _binding_gate(_manifest(), registry)
 
@@ -490,7 +490,7 @@ def test_binding_gate_passes_when_manifest_has_no_capabilities() -> None:
 
 
 def test_binding_gate_fails_for_tampered_descriptor_digest() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     tampered = binding.model_copy(
         update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
@@ -503,7 +503,7 @@ def test_binding_gate_fails_for_tampered_descriptor_digest() -> None:
 
 
 def test_binding_gate_fails_for_descriptor_removed_from_live_registry() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     stale_registry = CapabilityRegistry(descriptors=())
 
@@ -514,7 +514,7 @@ def test_binding_gate_fails_for_descriptor_removed_from_live_registry() -> None:
 
 
 def test_binding_gate_aggregates_multiple_stale_bindings() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     first = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     second = registry.attach(descriptor_id="foundry.file_search", operation="search", attached_by="user-1")
     tampered_first = first.model_copy(
@@ -532,7 +532,7 @@ def test_binding_gate_aggregates_multiple_stale_bindings() -> None:
 
 
 def test_run_gates_hard_fails_when_a_capability_binding_is_stale() -> None:
-    registry = default_registry()
+    registry = seeded_test_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
     tampered = binding.model_copy(
         update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
@@ -556,7 +556,7 @@ def test_run_gates_hard_fails_when_a_capability_binding_is_stale() -> None:
 def test_security_gate_passes_for_safe_config_and_missing_descriptor_without_findings() -> None:
     safe = _security_gate(
         _manifest(capabilities=(_binding("foundry.web_search", "search", config={"retry_count": 3}),)),
-        default_registry().as_mapping(),
+        seeded_test_registry().as_mapping(),
     )
     missing_descriptor = _security_gate(
         _manifest(capabilities=(_binding("missing.capability", "search", config={"retry_count": 3}),)),
