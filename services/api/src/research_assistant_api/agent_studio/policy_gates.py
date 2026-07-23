@@ -26,7 +26,6 @@ from research_assistant_api.agent_studio.models import (
     GateName,
     GateResult,
     GateStatus,
-    OperationMaturity,
     ReleaseGateReport,
     RuntimeTarget,
     StudioApprovalRecord,
@@ -159,7 +158,7 @@ def _policy_gate(
             violations.append(f"capability '{instance.descriptor_id}' is not in the capability catalog")
             continue
         operation = descriptor.operation(instance.operation)
-        if operation is None or operation.maturity != OperationMaturity.GA:
+        if operation is None or not operation.is_bindable:
             violations.append(
                 f"capability '{instance.descriptor_id}.{instance.operation}' is not a GA operation "
                 "and cannot be released"

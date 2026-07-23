@@ -139,22 +139,37 @@ class RuntimeSelection(BaseModel):
 # --------------------------------------------------------------------------
 
 
-class OperationMaturity(StrEnum):
-    """Per-operation maturity. Only ``GA`` is ever attachable.
+class OperationLifecycle(StrEnum):
+    """Provider-declared *lifecycle* of a capability operation.
 
-    ``RETIRED`` marks an operation that was once available but has been
-    withdrawn (kept in the catalog for historical/audit visibility, never
-    attachable again). ``UNKNOWN`` is the fail-closed default for an
-    operation whose maturity could not be positively confirmed from
-    provenance (e.g. a discovery source that didn't report a maturity tier);
-    it is treated identically to ``UNAVAILABLE`` for attachment purposes —
-    "unknown" must never be silently treated as safe-to-attach.
+    Independent of ``OperationMaturity``: maturity is a claim about whether
+    an operation's behavior has been confirmed GA; lifecycle is a claim
+    about whether the provider still offers it at all. A ``GA`` operation
+    can still be ``DEPRECATED`` (still working, scheduled for removal) or
+    ``RETIRED`` (withdrawn, kept only for historical/audit visibility) —
+    both make the operation permanently non-attachable regardless of its
+    maturity value. ``bindable`` requires ``OperationMaturity.GA`` **and**
+    ``OperationLifecycle.ACTIVE`` (see ``CapabilityOperation.is_bindable``).
+    """
+
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    RETIRED = "retired"
+
+
+class OperationMaturity(StrEnum):
+    """Per-operation maturity. Only ``GA`` is ever attachable, and only when
+    ``OperationLifecycle`` is also ``ACTIVE``.
+
+    ``UNKNOWN`` is the fail-closed default for an operation whose maturity
+    could not be positively confirmed from provenance (e.g. a discovery
+    source that didn't report a maturity tier, or an operation that is
+    structurally inapplicable — such as custom code under a Managed Foundry
+    runtime); "unknown" must never be silently treated as safe-to-attach.
     """
 
     GA = "ga"
     PREVIEW = "preview"
-    UNAVAILABLE = "unavailable"
-    RETIRED = "retired"
     UNKNOWN = "unknown"
 
 
@@ -198,12 +213,20 @@ class CapabilityOperation(BaseModel):
     ``input_schema_digest``/``output_schema_digest`` are operation-level
     (independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),
     since a single descriptor's operations can have distinct I/O shapes.
+    ``version`` is the operation's own version (independent of
+    ``CapabilityDescriptor.version``, the whole-descriptor catalog version) —
+    ``CapabilityBinding.operation_version`` pins it at attach time so a later
+    per-operation version bump is independently detectable from a descriptor
+    content/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,
+    independent of ``maturity`` — see ``is_bindable``.
     """
 
     model_config = ConfigDict(frozen=True)
 
     name: str = Field(min_length=1, max_length=120)
+    version: str = Field(default="1", min_length=1, max_length=40)
     maturity: OperationMaturity
+    lifecycle: OperationLifecycle = OperationLifecycle.ACTIVE
     operation_class: OperationClass = OperationClass.READ
     risk: str = Field(default="low")
     side_effect_destinations: tuple[str, ...] = Field(default_factory=tuple)
@@ -220,6 +243,20 @@ class CapabilityOperation(BaseModel):
     idempotent: bool = False
     least_privilege_scopes: tuple[str, ...] = Field(default_factory=tuple)
     least_privilege_roles: tuple[str, ...] = Field(default_factory=tuple)
+
+    @property
+    def is_bindable(self) -> bool:
+        """Whether this operation is eligible for attachment.
+
+        Requires both ``OperationMaturity.GA`` (the operation's own maturity
+        claim) and ``OperationLifecycle.ACTIVE`` (the provider still offers
+        it) — a GA operation that has been ``deprecated``/``retired`` is no
+        longer bindable even though its maturity claim is unchanged. This is
+        the single source of truth consulted by attach-time validation, the
+        release policy gate, and deterministic runtime selection.
+        """
+
+        return self.maturity == OperationMaturity.GA and self.lifecycle == OperationLifecycle.ACTIVE
 
 
 class CapabilityDescriptor(BaseModel):
@@ -281,6 +318,12 @@ class CapabilityInstance(BaseModel):
     #: pin that ``CapabilityBinding.descriptor_digest``/``instance_fingerprint``
     #: freeze at attach time.
     descriptor_version: str = Field(default="1", min_length=1, max_length=40)
+    #: Content digest of the descriptor consulted at discovery/registration
+    #: time (see ``capability_registry.compute_descriptor_digest``), stamped
+    #: by ``CapabilityRegistry.register_instance``. Distinct from
+    #: ``descriptor_version`` (a catalog edit can change descriptor content
+    #: without bumping the version string); a ``CapabilityBinding`` pins both.
+    descriptor_digest: str | None = None
     discovered_provider_version: str | None = None
     readiness: InstanceReadiness = InstanceReadiness.UNAVAILABLE
     health_status: HealthStatus = HealthStatus.UNKNOWN
@@ -328,7 +371,13 @@ class CapabilityBinding(BaseModel):
     ``descriptor_digest`` — an operation whose declared destinations change
     (e.g. a provider widening what a "write" operation can reach) is
     detected explicitly by ``check_binding_freshness`` rather than only
-    incidentally via a whole-descriptor digest mismatch.
+    incidentally via a whole-descriptor digest mismatch. ``operation_version``
+    pins ``CapabilityOperation.version`` (per-operation, independent of
+    ``descriptor_version``) at attach time; freshness checks reject drift
+    on this field the same way they reject a ``descriptor_digest``/
+    ``instance_fingerprint`` mismatch, and also reject a binding whose
+    resolved operation is no longer ``is_bindable`` (moved to
+    non-``GA``/non-``ACTIVE``) since attach.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -337,6 +386,7 @@ class CapabilityBinding(BaseModel):
     descriptor_version: str = Field(default="1", min_length=1, max_length=40)
     descriptor_digest: str | None = None
     operation: str = Field(min_length=1, max_length=120)
+    operation_version: str | None = None
     instance_id: str | None = None
     pinned_provider_version: str | None = None
     instance_fingerprint: str | None = None

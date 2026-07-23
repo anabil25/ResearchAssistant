@@ -14,7 +14,6 @@ from collections.abc import Mapping
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     CapabilityDescriptor,
-    OperationMaturity,
     RuntimeSelection,
     RuntimeTarget,
 )
@@ -33,7 +32,8 @@ def select_runtime(
     * the manifest only uses project-deployed models;
     * every attached capability resolves to a catalog descriptor that is
       marked ``managed_foundry_native`` *and* whose specific attached
-      operation has ``OperationMaturity.GA``.
+      operation ``is_bindable`` (``OperationMaturity.GA`` **and**
+      ``OperationLifecycle.ACTIVE``).
 
     Any violation of the above appends a disqualifying reason and forces
     ``RuntimeTarget.CUSTOM_HOSTED``.
@@ -64,10 +64,11 @@ def select_runtime(
                 f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is not declared."
             )
             continue
-        if operation.maturity != OperationMaturity.GA:
+        if not operation.is_bindable:
             disqualifiers.append(
                 f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is "
-                f"{operation.maturity.value}, not GA."
+                f"{operation.maturity.value} maturity ({operation.lifecycle.value} lifecycle), "
+                "not GA+ACTIVE."
             )
 
     if disqualifiers:

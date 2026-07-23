@@ -28,6 +28,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityOperation,
     InstanceReadiness,
     OperationClass,
+    OperationLifecycle,
     OperationMaturity,
 )
 
@@ -127,7 +128,7 @@ def test_validate_attachment_rejects_unknown_descriptor_or_operation(
         default_registry().validate_attachment(descriptor_id=descriptor_id, operation=operation)
 
 
-def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_unavailable() -> None:
+def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_deprecated() -> None:
     verified_at = datetime(2026, 7, 23, tzinfo=UTC)
     registry = CapabilityRegistry(
         (
@@ -153,11 +154,11 @@ def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_unavai
             ),
             _descriptor("custom.unknown", _unknown("run")),
             _descriptor(
-                "custom.unavailable",
+                "custom.deprecated",
                 CapabilityOperation(
                     name="run",
-                    maturity=OperationMaturity.UNAVAILABLE,
-                    reason="Unavailable in this runtime.",
+                    maturity=OperationMaturity.GA,
+                    lifecycle=OperationLifecycle.DEPRECATED,
                 ),
             ),
         )
@@ -169,8 +170,11 @@ def test_validate_attachment_fails_closed_for_preview_retired_unknown_and_unavai
         registry.validate_attachment(descriptor_id="custom.retired", operation="run")
     with pytest.raises(CapabilityAttachmentError, match="Maturity has not yet been verified"):
         registry.validate_attachment(descriptor_id="custom.unknown", operation="run")
-    with pytest.raises(CapabilityAttachmentError, match=re.escape("Unavailable in this runtime.")):
-        registry.validate_attachment(descriptor_id="custom.unavailable", operation="run")
+    with pytest.raises(
+        CapabilityAttachmentError,
+        match=re.escape("is GA maturity but deprecated lifecycle (not active)"),
+    ):
+        registry.validate_attachment(descriptor_id="custom.deprecated", operation="run")
 
 
 def test_default_registry_uses_seed_when_no_source_supplied() -> None:
@@ -196,8 +200,9 @@ def test_default_registry_builds_entirely_from_source_when_supplied() -> None:
     assert registry.get("foundry.web_search") is None
     stored = registry.get_instance("instance-a")
     assert stored is not None
-    assert stored.model_copy(update={"instance_fingerprint": None}) == instance
+    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
     assert stored.instance_fingerprint is not None
+    assert stored.descriptor_digest is not None
 
 
 def test_from_source_builds_registry_and_registers_instances() -> None:
@@ -215,8 +220,9 @@ def test_from_source_builds_registry_and_registers_instances() -> None:
     assert registry.catalog() == (custom_descriptor,)
     stored = registry.get_instance("instance-a")
     assert stored is not None
-    assert stored.model_copy(update={"instance_fingerprint": None}) == instance
+    assert stored.model_copy(update={"instance_fingerprint": None, "descriptor_digest": None}) == instance
     assert stored.instance_fingerprint is not None
+    assert stored.descriptor_digest is not None
 
 
 def test_from_source_with_null_source_yields_empty_registry() -> None:
@@ -636,3 +642,58 @@ def test_check_binding_freshness_detects_destination_constraints_drift() -> None
     reason = registry.check_binding_freshness(drifted)
     assert reason is not None
     assert "destination_constraints mismatch" in reason
+
+
+def test_check_binding_freshness_detects_operation_no_longer_bindable() -> None:
+    descriptor = _descriptor(
+        "custom.lifecycle-test",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA, version="1"),
+    )
+    registry = CapabilityRegistry(descriptors=(descriptor,))
+    binding = registry.attach(descriptor_id="custom.lifecycle-test", operation="run", attached_by="user-1")
+
+    # Catalog update deprecates the operation without changing its name/version.
+    replacement_descriptor = _descriptor(
+        "custom.lifecycle-test",
+        CapabilityOperation(
+            name="run",
+            maturity=OperationMaturity.GA,
+            version="1",
+            lifecycle=OperationLifecycle.DEPRECATED,
+        ),
+    )
+    stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
+    binding = binding.model_copy(
+        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+    )
+
+    reason = stale_registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "no longer bindable" in reason
+    assert "deprecated lifecycle" in reason
+
+
+def test_check_binding_freshness_detects_operation_version_drift() -> None:
+    descriptor = _descriptor(
+        "custom.version-test",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA, version="1"),
+    )
+    registry = CapabilityRegistry(descriptors=(descriptor,))
+    binding = registry.attach(descriptor_id="custom.version-test", operation="run", attached_by="user-1")
+    assert binding.operation_version == "1"
+
+    # Catalog update bumps the operation's version while keeping it GA+ACTIVE.
+    replacement_descriptor = _descriptor(
+        "custom.version-test",
+        CapabilityOperation(name="run", maturity=OperationMaturity.GA, version="2"),
+    )
+    stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
+    binding = binding.model_copy(
+        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+    )
+
+    reason = stale_registry.check_binding_freshness(binding)
+    assert reason is not None
+    assert "operation_version mismatch" in reason
+    assert "pinned '1'" in reason
+    assert "now '2'" in reason

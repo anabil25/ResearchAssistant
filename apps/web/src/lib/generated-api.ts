@@ -1701,7 +1701,13 @@ export interface components {
          *     ``descriptor_digest`` — an operation whose declared destinations change
          *     (e.g. a provider widening what a "write" operation can reach) is
          *     detected explicitly by ``check_binding_freshness`` rather than only
-         *     incidentally via a whole-descriptor digest mismatch.
+         *     incidentally via a whole-descriptor digest mismatch. ``operation_version``
+         *     pins ``CapabilityOperation.version`` (per-operation, independent of
+         *     ``descriptor_version``) at attach time; freshness checks reject drift
+         *     on this field the same way they reject a ``descriptor_digest``/
+         *     ``instance_fingerprint`` mismatch, and also reject a binding whose
+         *     resolved operation is no longer ``is_bindable`` (moved to
+         *     non-``GA``/non-``ACTIVE``) since attach.
          */
         CapabilityBinding: {
             /**
@@ -1738,6 +1744,8 @@ export interface components {
             instance_id?: string | null;
             /** Operation */
             operation: string;
+            /** Operation Version */
+            operation_version?: string | null;
             /** Output Schema Digest */
             output_schema_digest?: string | null;
             /** Pinned Provider Version */
@@ -1857,6 +1865,8 @@ export interface components {
         CapabilityInstance: {
             /** Config Fingerprint */
             config_fingerprint?: string | null;
+            /** Descriptor Digest */
+            descriptor_digest?: string | null;
             /** Descriptor Id */
             descriptor_id: string;
             /**
@@ -1912,6 +1922,12 @@ export interface components {
          *     ``input_schema_digest``/``output_schema_digest`` are operation-level
          *     (independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),
          *     since a single descriptor's operations can have distinct I/O shapes.
+         *     ``version`` is the operation's own version (independent of
+         *     ``CapabilityDescriptor.version``, the whole-descriptor catalog version) —
+         *     ``CapabilityBinding.operation_version`` pins it at attach time so a later
+         *     per-operation version bump is independently detectable from a descriptor
+         *     content/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,
+         *     independent of ``maturity`` — see ``is_bindable``.
          */
         CapabilityOperation: {
             /** Approval Policy Ref */
@@ -1929,6 +1945,8 @@ export interface components {
             least_privilege_roles?: string[];
             /** Least Privilege Scopes */
             least_privilege_scopes?: string[];
+            /** @default active */
+            lifecycle: components["schemas"]["OperationLifecycle"];
             maturity: components["schemas"]["OperationMaturity"];
             /**
              * Max Retries
@@ -1961,6 +1979,11 @@ export interface components {
             source_version?: string | null;
             /** Timeout Seconds */
             timeout_seconds?: number | null;
+            /**
+             * Version
+             * @default 1
+             */
+            version: string;
         };
         /** CapabilitySpec */
         CapabilitySpec: {
@@ -2880,19 +2903,33 @@ export interface components {
          */
         OperationClass: "pure" | "read" | "write_reversible" | "write_irreversible" | "privileged";
         /**
-         * OperationMaturity
-         * @description Per-operation maturity. Only ``GA`` is ever attachable.
+         * OperationLifecycle
+         * @description Provider-declared *lifecycle* of a capability operation.
          *
-         *     ``RETIRED`` marks an operation that was once available but has been
-         *     withdrawn (kept in the catalog for historical/audit visibility, never
-         *     attachable again). ``UNKNOWN`` is the fail-closed default for an
-         *     operation whose maturity could not be positively confirmed from
-         *     provenance (e.g. a discovery source that didn't report a maturity tier);
-         *     it is treated identically to ``UNAVAILABLE`` for attachment purposes —
-         *     "unknown" must never be silently treated as safe-to-attach.
+         *     Independent of ``OperationMaturity``: maturity is a claim about whether
+         *     an operation's behavior has been confirmed GA; lifecycle is a claim
+         *     about whether the provider still offers it at all. A ``GA`` operation
+         *     can still be ``DEPRECATED`` (still working, scheduled for removal) or
+         *     ``RETIRED`` (withdrawn, kept only for historical/audit visibility) —
+         *     both make the operation permanently non-attachable regardless of its
+         *     maturity value. ``bindable`` requires ``OperationMaturity.GA`` **and**
+         *     ``OperationLifecycle.ACTIVE`` (see ``CapabilityOperation.is_bindable``).
          * @enum {string}
          */
-        OperationMaturity: "ga" | "preview" | "unavailable" | "retired" | "unknown";
+        OperationLifecycle: "active" | "deprecated" | "retired";
+        /**
+         * OperationMaturity
+         * @description Per-operation maturity. Only ``GA`` is ever attachable, and only when
+         *     ``OperationLifecycle`` is also ``ACTIVE``.
+         *
+         *     ``UNKNOWN`` is the fail-closed default for an operation whose maturity
+         *     could not be positively confirmed from provenance (e.g. a discovery
+         *     source that didn't report a maturity tier, or an operation that is
+         *     structurally inapplicable — such as custom code under a Managed Foundry
+         *     runtime); "unknown" must never be silently treated as safe-to-attach.
+         * @enum {string}
+         */
+        OperationMaturity: "ga" | "preview" | "unknown";
         /** PolicyConflict */
         PolicyConflict: {
             /** Description */

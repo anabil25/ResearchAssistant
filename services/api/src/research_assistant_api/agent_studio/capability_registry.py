@@ -39,6 +39,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityOperation,
     InstanceReadiness,
     OperationClass,
+    OperationLifecycle,
     OperationMaturity,
     utc_now,
 )
@@ -105,7 +106,9 @@ def compute_instance_fingerprint(
             (
                 {
                     "name": op.name,
+                    "version": op.version,
                     "maturity": op.maturity.value,
+                    "lifecycle": op.lifecycle.value,
                     "operation_class": op.operation_class.value,
                     "input_schema_digest": op.input_schema_digest,
                     "output_schema_digest": op.output_schema_digest,
@@ -127,6 +130,7 @@ def compute_instance_fingerprint(
 def _ga(
     name: str,
     *,
+    version: str = "1",
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
@@ -137,6 +141,7 @@ def _ga(
 ) -> CapabilityOperation:
     return CapabilityOperation(
         name=name,
+        version=version,
         maturity=OperationMaturity.GA,
         operation_class=operation_class,
         side_effect_destinations=side_effect_destinations,
@@ -152,6 +157,7 @@ def _preview(
     name: str,
     reason: str,
     *,
+    version: str = "1",
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
@@ -162,6 +168,7 @@ def _preview(
 ) -> CapabilityOperation:
     return CapabilityOperation(
         name=name,
+        version=version,
         maturity=OperationMaturity.PREVIEW,
         operation_class=operation_class,
         side_effect_destinations=side_effect_destinations,
@@ -174,30 +181,12 @@ def _preview(
     )
 
 
-def _unavailable(
-    name: str,
-    reason: str,
-    *,
-    operation_class: OperationClass = OperationClass.PRIVILEGED,
-    source_url: str | None = None,
-    source_version: str | None = None,
-    last_verified_at: datetime | None = None,
-) -> CapabilityOperation:
-    return CapabilityOperation(
-        name=name,
-        maturity=OperationMaturity.UNAVAILABLE,
-        operation_class=operation_class,
-        reason=reason,
-        source_url=source_url,
-        source_version=source_version,
-        last_verified_at=last_verified_at,
-    )
-
-
 def _retired(
     name: str,
     reason: str,
     *,
+    version: str = "1",
+    maturity: OperationMaturity = OperationMaturity.GA,
     operation_class: OperationClass = OperationClass.PRIVILEGED,
     source_url: str = _LEARN_TOOL_CATALOG_URL,
     source_version: str | None = None,
@@ -205,13 +194,18 @@ def _retired(
 ) -> CapabilityOperation:
     """An operation the provider has documented as retired/removed.
 
-    Fails closed like ``_unavailable``: ``validate_attachment`` rejects any
-    non-``GA`` maturity, so no special-casing is required beyond seeding the
-    honest ``retired`` value.
+    ``maturity`` defaults to ``GA`` — a retired operation typically *was* GA
+    before withdrawal, and its maturity claim does not change on retirement.
+    ``lifecycle=RETIRED`` is what actually fails it closed:
+    ``CapabilityOperation.is_bindable`` requires both ``GA`` maturity **and**
+    ``ACTIVE`` lifecycle, so a retired operation is never attachable
+    regardless of its (possibly still-``GA``) maturity value.
     """
     return CapabilityOperation(
         name=name,
-        maturity=OperationMaturity.RETIRED,
+        version=version,
+        maturity=maturity,
+        lifecycle=OperationLifecycle.RETIRED,
         operation_class=operation_class,
         reason=reason,
         source_url=source_url,
@@ -223,18 +217,24 @@ def _retired(
 def _unknown(
     name: str,
     *,
+    version: str = "1",
     operation_class: OperationClass = OperationClass.PRIVILEGED,
     reason: str = "Maturity has not yet been verified against official provenance.",
 ) -> CapabilityOperation:
-    """An operation whose maturity has not been verified.
+    """An operation whose maturity has not been verified (or does not apply).
 
-    ``unknown`` is deliberately fail-closed and non-attachable — identical
-    treatment to ``unavailable`` — until provenance (``source_url``/
-    ``source_version``/``last_verified_at``) is recorded and the maturity is
-    re-classified as ``ga``/``preview``/``retired``.
+    ``unknown`` is deliberately fail-closed and non-attachable until
+    provenance (``source_url``/``source_version``/``last_verified_at``) is
+    recorded and the maturity is re-classified as ``ga``/``preview``. Also
+    used for operations that are structurally inapplicable in a given
+    runtime (e.g. custom hosted code under Managed Foundry) via the
+    ``reason`` override, since ``OperationMaturity`` has no separate
+    "unavailable" tier — an inapplicable operation is, honestly, one whose
+    GA-maturity has not (and will never be) confirmed here.
     """
     return CapabilityOperation(
         name=name,
+        version=version,
         maturity=OperationMaturity.UNKNOWN,
         operation_class=operation_class,
         reason=reason,
@@ -485,7 +485,7 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
             provider="custom_hosted",
             title="Custom Hosted Code",
             description="Arbitrary application code running in a Custom Hosted container; not Foundry-native.",
-            operations=(_unavailable("run", "Custom code cannot run inside Managed Foundry runtime."),),
+            operations=(_unknown("run", reason="Custom code cannot run inside Managed Foundry runtime."),),
             risk_tier="high",
             data_boundary="project",
             managed_foundry_native=False,
@@ -573,7 +573,10 @@ class CapabilityRegistry:
                 f"Capability instance references unknown descriptor '{instance.descriptor_id}'."
             )
         stamped = instance.model_copy(
-            update={"instance_fingerprint": compute_instance_fingerprint(descriptor, instance)}
+            update={
+                "instance_fingerprint": compute_instance_fingerprint(descriptor, instance),
+                "descriptor_digest": compute_descriptor_digest(descriptor),
+            }
         )
         self._instances[stamped.id] = stamped
         return stamped
@@ -594,13 +597,16 @@ class CapabilityRegistry:
         descriptor_id: str,
         operation: str,
     ) -> CapabilityOperation:
-        """Validate that ``operation`` on ``descriptor_id`` is GA-attachable.
+        """Validate that ``operation`` on ``descriptor_id`` is GA+ACTIVE-attachable.
 
         Returns the resolved ``CapabilityOperation`` on success; raises
-        ``CapabilityAttachmentError`` with an honest reason otherwise. When
-        the operation ``requires_approval``, its declared
-        ``approval_policy_ref`` must be present — an operation flagged as
-        approval-gated with no governing policy reference is an
+        ``CapabilityAttachmentError`` with an honest reason otherwise.
+        Bindability requires ``CapabilityOperation.is_bindable`` (both
+        ``OperationMaturity.GA`` and ``OperationLifecycle.ACTIVE`` — a GA
+        operation that has been deprecated/retired is rejected the same as
+        a non-GA one). When the operation ``requires_approval``, its
+        declared ``approval_policy_ref`` must be present — an operation
+        flagged as approval-gated with no governing policy reference is an
         unsatisfiable, catalog-authoring inconsistency and must never be
         silently treated as attachable.
         """
@@ -610,8 +616,15 @@ class CapabilityRegistry:
         resolved = descriptor.operation(operation)
         if resolved is None:
             raise CapabilityAttachmentError(f"Capability '{descriptor_id}' has no operation '{operation}'.")
-        if resolved.maturity != OperationMaturity.GA:
-            reason = resolved.reason or f"Operation '{operation}' is {resolved.maturity.value}."
+        if not resolved.is_bindable:
+            if resolved.maturity != OperationMaturity.GA:
+                default_reason = f"Operation '{operation}' is {resolved.maturity.value}."
+            else:
+                default_reason = (
+                    f"Operation '{operation}' is GA maturity but {resolved.lifecycle.value} lifecycle "
+                    "(not active)."
+                )
+            reason = resolved.reason or default_reason
             raise CapabilityAttachmentError(
                 f"Cannot attach '{descriptor_id}.{operation}': {reason}"
             )
@@ -679,6 +692,7 @@ class CapabilityRegistry:
             descriptor_version=descriptor.version,
             descriptor_digest=compute_descriptor_digest(descriptor),
             operation=operation,
+            operation_version=resolved.version,
             instance_id=instance_id,
             pinned_provider_version=pinned_provider_version,
             instance_fingerprint=instance_fingerprint,
@@ -713,6 +727,18 @@ class CapabilityRegistry:
         current_operation = descriptor.operation(binding.operation)
         if current_operation is None:
             return f"Operation '{binding.operation}' no longer exists on descriptor '{binding.descriptor_id}'."
+        if not current_operation.is_bindable:
+            return (
+                f"Operation '{binding.descriptor_id}.{binding.operation}' is no longer bindable "
+                f"({current_operation.maturity.value} maturity / {current_operation.lifecycle.value} "
+                "lifecycle) — rebind and re-review before release/invoke."
+            )
+        if binding.operation_version is not None and current_operation.version != binding.operation_version:
+            return (
+                f"Operation '{binding.descriptor_id}.{binding.operation}' version has changed since attach "
+                f"(operation_version mismatch: pinned '{binding.operation_version}', now "
+                f"'{current_operation.version}') — rebind and re-review before release/invoke."
+            )
         if (
             binding.destination_constraints
             and tuple(current_operation.side_effect_destinations) != tuple(binding.destination_constraints)
