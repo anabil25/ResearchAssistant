@@ -7,7 +7,7 @@ import json
 import time
 from collections import OrderedDict
 from collections.abc import Awaitable, Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
@@ -29,6 +29,12 @@ from .errors import (
 )
 
 CapabilityHandler = Callable[[dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]]
+CapabilityHandlerResolver = Callable[
+    ["ProviderInstanceAttestation"],
+    CapabilityHandler,
+]
+_PROVIDER_ATTESTATION = object()
+_RUNTIME_ATTESTATION = object()
 
 
 class OperationClass(StrEnum):
@@ -96,74 +102,87 @@ class CapabilityDescriptor(BaseModel):
         return self
 
 
+class DescriptorReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
+    version: str = Field(min_length=1, max_length=128)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class OperationReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
+    version: str = Field(min_length=1, max_length=128)
+    input_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    output_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class InstanceReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
+    instance_id: str = Field(min_length=1, max_length=256)
+    discovered_version: str = Field(min_length=1, max_length=128)
+    fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ConfigurationReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str | None = Field(default=None, min_length=1, max_length=512)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ConnectionReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=512)
+    auth_mode: str = Field(min_length=1, max_length=128)
+    authorization_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class PolicyReference(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=512)
+    version: str = Field(min_length=1, max_length=128)
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class DestinationConstraints(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    constraints: tuple[str, ...]
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @model_validator(mode="after")
+    def digest_matches_constraints(self) -> DestinationConstraints:
+        if self.digest != _canonical_digest(self.constraints):
+            raise ValueError("allowed destination digest does not match its constraints")
+        return self
+
+
 class CapabilityBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    descriptor_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
-    descriptor_version: str = Field(min_length=1, max_length=128)
-    operation_id: str = Field(pattern=r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
-    provider_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
-    instance_id: str = Field(min_length=1, max_length=256)
-    instance_ref: str = Field(min_length=1, max_length=512)
-    instance_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_contract_version: str = Field(min_length=1, max_length=128)
-    provider_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    pinned_provider_version: str = Field(min_length=1, max_length=128)
-    input_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    output_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    config: dict[str, str | int | float | bool | None] = Field(default_factory=dict)
-    config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    config_ref: str | None = Field(default=None, min_length=1, max_length=512)
-    connection_ref: str = Field(min_length=1, max_length=512)
-    policy_ref: str = Field(min_length=1, max_length=512)
-    destination_pins: tuple[str, ...]
+    descriptor_ref: DescriptorReference
+    operation_ref: OperationReference
+    instance_ref: InstanceReference
+    configuration_ref: ConfigurationReference
+    connection_ref: ConnectionReference
+    policy_ref: PolicyReference
+    allowed_destinations: DestinationConstraints
     tenant_scope: str = Field(min_length=1, max_length=256)
     project_scope: str = Field(min_length=1, max_length=512)
 
-    @model_validator(mode="after")
-    def config_has_one_source(self) -> CapabilityBinding:
-        if self.config and self.config_ref is not None:
-            raise ValueError("capability binding config and config_ref are mutually exclusive")
-        return self
-
-    @property
-    def capability_id(self) -> str:
-        return self.descriptor_id
-
 
 def template_instance_fingerprint(binding: CapabilityBinding) -> str:
-    return _canonical_digest(
-        binding.model_dump(
-            mode="json",
-            exclude={"instance_fingerprint"},
-        )
-    )
-
-
-def resolved_instance_fingerprint(
-    binding: CapabilityBinding,
-    descriptor: CapabilityDescriptor,
-    *,
-    project_endpoint: str,
-    destination_endpoint: str | None,
-) -> str:
-    return _canonical_digest(
-        {
-            "binding": binding.model_dump(
-                mode="json",
-                exclude={"instance_fingerprint"},
-            ),
-            "descriptor": descriptor.model_dump(mode="json"),
-            "runtime_instance": {
-                "project_endpoint": project_endpoint.rstrip("/"),
-                "destination_endpoint": (
-                    destination_endpoint.rstrip("/")
-                    if destination_endpoint is not None
-                    else None
-                ),
-            },
-        }
-    )
+    payload = binding.model_dump(mode="json")
+    payload["instance_ref"].pop("fingerprint")
+    return _canonical_digest(payload)
 
 
 def _canonical_digest(payload: object) -> str:
@@ -183,35 +202,30 @@ class ToolRegistration:
     tool_name: str
     handler: CapabilityHandler
     current_instance_fingerprint: str
+    _attestation: object | None = field(default=None, repr=False, compare=False)
 
     def __post_init__(self) -> None:
-        if (
-            len(self.current_instance_fingerprint) != 64
-            or any(character not in "0123456789abcdef" for character in self.current_instance_fingerprint)
+        if len(self.current_instance_fingerprint) != 64 or any(
+            character not in "0123456789abcdef" for character in self.current_instance_fingerprint
         ):
             raise ValueError("Current capability instance fingerprint must be lowercase SHA-256")
+
+    @property
+    def runtime_attested(self) -> bool:
+        return self._attestation is _RUNTIME_ATTESTATION
 
 
 class ProviderInstanceAttestation(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    provider_id: str
     provider_contract_version: str
-    provider_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    descriptor_id: str
-    descriptor_version: str
-    operation_id: str
-    instance_id: str
-    instance_ref: str
-    instance_fingerprint: str = Field(pattern=r"^[0-9a-f]{64}$")
-    discovered_version: str
-    input_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    output_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    config_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    config_ref: str | None = None
-    connection_ref: str
-    policy_ref: str
-    destination_pins: tuple[str, ...]
+    descriptor_ref: DescriptorReference
+    operation_ref: OperationReference
+    instance_ref: InstanceReference
+    configuration_ref: ConfigurationReference
+    connection_ref: ConnectionReference
+    policy_ref: PolicyReference
+    allowed_destinations: DestinationConstraints
     tenant_id: str
     project_id: str
     readiness: str
@@ -223,7 +237,6 @@ class ProviderInstanceAttestation(BaseModel):
 
 class ProviderContractAdapter(Protocol):
     contract_version: str
-    contract_schema_digest: str
     trusted_legacy_derivation: bool
 
     def discover_instance(
@@ -247,58 +260,42 @@ def attach_provider_binding(
     tenant_id: str,
     project_id: str,
     now: datetime | None = None,
+    handler_resolver: CapabilityHandlerResolver | None = None,
 ) -> ToolRegistration:
     attestation = adapter.discover_instance(
-        binding.provider_id,
-        binding.instance_id,
+        binding.instance_ref.provider_id,
+        binding.instance_ref.instance_id,
     )
     expected = {
-        "provider_id": binding.provider_id,
         "provider_contract_version": binding.provider_contract_version,
-        "provider_contract_schema_digest": binding.provider_contract_schema_digest,
-        "descriptor_id": binding.descriptor_id,
-        "descriptor_version": binding.descriptor_version,
-        "operation_id": binding.operation_id,
-        "instance_id": binding.instance_id,
         "instance_ref": binding.instance_ref,
-        "instance_fingerprint": binding.instance_fingerprint,
-        "discovered_version": binding.pinned_provider_version,
-        "input_schema_digest": binding.input_schema_digest,
-        "output_schema_digest": binding.output_schema_digest,
-        "config_digest": binding.config_digest,
-        "config_ref": binding.config_ref,
+        "descriptor_ref": binding.descriptor_ref,
+        "operation_ref": binding.operation_ref,
+        "configuration_ref": binding.configuration_ref,
         "connection_ref": binding.connection_ref,
         "policy_ref": binding.policy_ref,
-        "destination_pins": binding.destination_pins,
+        "allowed_destinations": binding.allowed_destinations,
     }
-    actual = attestation.model_dump(
-        include=set(expected),
-    )
     mismatches = sorted(
-        field
-        for field, expected_value in expected.items()
-        if actual[field] != expected_value
+        field for field, expected_value in expected.items() if getattr(attestation, field) != expected_value
     )
-    if (
-        adapter.contract_version != binding.provider_contract_version
-        or adapter.contract_schema_digest != binding.provider_contract_schema_digest
-    ):
+    if adapter.contract_version != binding.provider_contract_version:
         mismatches.append("adapter_contract")
     if mismatches:
-        if "instance_fingerprint" in mismatches:
+        if "instance_ref" in mismatches:
             raise StaleCapabilityBindingError(
                 "Provider instance fingerprint changed and requires rebind",
                 context={
-                    "capability": binding.capability_id,
-                    "instance_ref": binding.instance_ref,
-                    "expected_fingerprint": binding.instance_fingerprint,
-                    "current_fingerprint": attestation.instance_fingerprint,
+                    "capability": binding.descriptor_ref.id,
+                    "instance_ref": binding.instance_ref.instance_id,
+                    "expected_fingerprint": binding.instance_ref.fingerprint,
+                    "current_fingerprint": attestation.instance_ref.fingerprint,
                 },
             )
         raise ConfigurationError(
             "Provider discovery does not match the pinned capability binding",
             context={
-                "capability": binding.capability_id,
+                "capability": binding.descriptor_ref.id,
                 "mismatches": ",".join(sorted(set(mismatches))),
             },
         )
@@ -308,17 +305,17 @@ def attach_provider_binding(
     ):
         raise ConfigurationError(
             "Legacy provider instances are not attachable without trusted pin attestation",
-            context={"capability": binding.capability_id},
+            context={"capability": binding.descriptor_ref.id},
         )
     for schema_digest in (
-        binding.input_schema_digest,
-        binding.output_schema_digest,
+        binding.operation_ref.input_schema_digest,
+        binding.operation_ref.output_schema_digest,
     ):
         if _canonical_digest(adapter.load_schema(schema_digest)) != schema_digest:
             raise ConfigurationError(
                 "Provider schema content does not match its pinned digest",
                 context={
-                    "capability": binding.capability_id,
+                    "capability": binding.descriptor_ref.id,
                     "schema_digest": schema_digest,
                 },
             )
@@ -330,18 +327,18 @@ def attach_provider_binding(
     ):
         raise AuthorizationError(
             "Provider instance is outside the authorized tenant or project",
-            context={"capability": binding.capability_id},
+            context={"capability": binding.descriptor_ref.id},
         )
     if not attestation.auth_ready:
         raise AuthorizationError(
             "Provider instance authentication is not ready",
-            context={"capability": binding.capability_id},
+            context={"capability": binding.descriptor_ref.id},
         )
     if attestation.readiness != "available":
         raise ConfigurationError(
             "Provider instance is not available",
             context={
-                "capability": binding.capability_id,
+                "capability": binding.descriptor_ref.id,
                 "readiness": attestation.readiness,
             },
         )
@@ -349,26 +346,65 @@ def attach_provider_binding(
         raise ConfigurationError(
             "Provider instance is not GA and active",
             context={
-                "capability": binding.capability_id,
+                "capability": binding.descriptor_ref.id,
                 "maturity": attestation.maturity,
                 "lifecycle": attestation.lifecycle,
             },
         )
     current_time = now or datetime.now(UTC)
-    if (
-        attestation.approval_expires_at is not None
-        and attestation.approval_expires_at <= current_time
-    ):
+    if attestation.approval_expires_at is not None and attestation.approval_expires_at <= current_time:
         raise ApprovalRequiredError(
             "Provider instance approval expired",
-            context={"capability": binding.capability_id},
+            context={"capability": binding.descriptor_ref.id},
         )
-    handler = adapter.resolve_handler(attestation)
+    handler = handler_resolver(attestation) if handler_resolver is not None else adapter.resolve_handler(attestation)
     return ToolRegistration(
         binding=binding,
-        tool_name=binding.operation_id.rsplit(".", 1)[-1],
+        tool_name=binding.operation_ref.id.rsplit(".", 1)[-1],
         handler=handler,
-        current_instance_fingerprint=attestation.instance_fingerprint,
+        current_instance_fingerprint=attestation.instance_ref.fingerprint,
+        _attestation=_PROVIDER_ATTESTATION,
+    )
+
+
+def runtime_attested_registration(
+    binding: CapabilityBinding,
+    adapter: ProviderContractAdapter,
+    *,
+    tenant_id: str,
+    project_id: str,
+    clock: Callable[[], datetime] = lambda: datetime.now(UTC),
+    handler_resolver: CapabilityHandlerResolver | None = None,
+) -> ToolRegistration:
+    initial = attach_provider_binding(
+        binding,
+        adapter,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        now=clock(),
+        handler_resolver=handler_resolver,
+    )
+
+    async def invoke(payload: dict[str, Any]) -> dict[str, Any]:
+        current = attach_provider_binding(
+            binding,
+            adapter,
+            tenant_id=tenant_id,
+            project_id=project_id,
+            now=clock(),
+            handler_resolver=handler_resolver,
+        )
+        outcome = current.handler(payload)
+        if inspect.isawaitable(outcome):
+            return await outcome
+        return outcome
+
+    return ToolRegistration(
+        binding=binding,
+        tool_name=initial.tool_name,
+        handler=invoke,
+        current_instance_fingerprint=initial.current_instance_fingerprint,
+        _attestation=_RUNTIME_ATTESTATION,
     )
 
 
@@ -444,7 +480,7 @@ class CapabilityRegistry:
         self._descriptors[descriptor.id] = descriptor
 
     def register_tool(self, registration: ToolRegistration) -> None:
-        capability_id = registration.binding.capability_id
+        capability_id = registration.binding.descriptor_ref.id
         if capability_id not in self._descriptors:
             raise CapabilityNotFoundError(
                 "Tool registration references an unknown capability",
@@ -481,13 +517,13 @@ class CapabilityRegistry:
         descriptor: CapabilityDescriptor,
         registration: ToolRegistration,
     ) -> None:
-        if registration.binding.instance_fingerprint != registration.current_instance_fingerprint:
+        if registration.binding.instance_ref.fingerprint != registration.current_instance_fingerprint:
             raise StaleCapabilityBindingError(
                 "Capability binding targets changed instance configuration",
                 context={
                     "capability": descriptor.id,
-                    "instance_ref": registration.binding.instance_ref,
-                    "expected_fingerprint": registration.binding.instance_fingerprint,
+                    "instance_ref": registration.binding.instance_ref.instance_id,
+                    "expected_fingerprint": registration.binding.instance_ref.fingerprint,
                     "current_fingerprint": registration.current_instance_fingerprint,
                 },
             )
@@ -501,7 +537,7 @@ class CapabilityRegistry:
     ) -> tuple[CapabilityDescriptor, ToolRegistration]:
         try:
             registration = self._tools[tool_name]
-            descriptor = self._descriptors[registration.binding.capability_id]
+            descriptor = self._descriptors[registration.binding.descriptor_ref.id]
         except KeyError as exc:
             raise CapabilityNotFoundError(
                 "Tool operation is not registered",

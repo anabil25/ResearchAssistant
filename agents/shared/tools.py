@@ -33,13 +33,10 @@ def tools_for_profile(
     if profile.id == "coordinator":
         return []
     toolbox_endpoint = (
-        str(settings.toolbox_endpoint)
-        if settings is not None and settings.toolbox_endpoint is not None
-        else None
+        str(settings.toolbox_endpoint) if settings is not None and settings.toolbox_endpoint is not None else None
     )
     requires_toolbox = any(
-        binding.operation_id.startswith("foundry.toolbox.")
-        for binding in profile.capability_bindings
+        binding.operation_ref.id.startswith("foundry.toolbox.") for binding in profile.capability_bindings
     )
     if requires_toolbox and not toolbox_endpoint:
         raise ConfigurationError(

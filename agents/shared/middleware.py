@@ -21,13 +21,11 @@ from agent_framework import (
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError
 
 from .capabilities import (
-    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityExecutor,
     CapabilityRegistry,
     InvocationContext,
     ToolRegistration,
-    resolved_instance_fingerprint,
 )
 from .contracts import (
     AgentManifest,
@@ -263,36 +261,32 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
     def __init__(
         self,
         capability: CapabilityDescriptor,
-        bindings: CapabilityBinding | tuple[CapabilityBinding, ...],
+        registrations: ToolRegistration | tuple[ToolRegistration, ...],
         *,
-        current_instance_fingerprints: str | tuple[str, ...],
         allowed_connector_sources: frozenset[str] = frozenset(),
     ) -> None:
         self._capability = capability
         self._allowed_connector_sources = allowed_connector_sources
-        normalized_bindings = (bindings,) if isinstance(bindings, CapabilityBinding) else bindings
-        normalized_fingerprints = (
-            (current_instance_fingerprints,)
-            if isinstance(current_instance_fingerprints, str)
-            else current_instance_fingerprints
-        )
-        if len(normalized_bindings) != len(normalized_fingerprints):
-            raise ValueError("Every capability binding requires a runtime fingerprint")
+        normalized_registrations = (registrations,) if isinstance(registrations, ToolRegistration) else registrations
+        if not normalized_registrations:
+            raise ValueError("Capability middleware requires an attached tool registration")
         registry = CapabilityRegistry()
         registry.add_descriptor(capability)
-        for binding, fingerprint in zip(
-            normalized_bindings,
-            normalized_fingerprints,
-            strict=True,
-        ):
-            registry.register_tool(
-                ToolRegistration(
-                    binding=binding,
-                    tool_name=binding.operation_id.rsplit(".", 1)[-1],
-                    handler=self._invoke_framework_function,
-                    current_instance_fingerprint=fingerprint,
+        for registration in normalized_registrations:
+            if registration.binding.descriptor_ref.id != capability.id:
+                raise ConfigurationError(
+                    "Tool registration does not match its capability descriptor",
+                    context={
+                        "capability": capability.id,
+                        "operation": registration.binding.operation_ref.id,
+                    },
                 )
-            )
+            if not registration.runtime_attested:
+                raise ConfigurationError(
+                    "Tool registration is not continuously provider-attested",
+                    context={"capability": capability.id},
+                )
+            registry.register_tool(registration)
         self._executor = CapabilityExecutor(registry)
 
     async def process(
@@ -370,11 +364,7 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
                 return (*annotated, *self._evidence_from_web_search(result.items))
             return annotated
         if isinstance(result, (list, tuple)):
-            return tuple(
-                evidence
-                for item in result
-                for evidence in self._evidence_from_web_search(item)
-            )
+            return tuple(evidence for item in result for evidence in self._evidence_from_web_search(item))
         return ()
 
     @staticmethod
@@ -412,24 +402,17 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
                 if payload.get("source") in self._allowed_connector_sources
             )
         except (StopIteration, ValidationError) as exc:
-            raise ContractError(
-                "Connector tool output does not match its governed response contract"
-            ) from exc
+            raise ContractError("Connector tool output does not match its governed response contract") from exc
         evidence: list[EvidenceRef] = []
         for record in connector_result.records:
             record_uri = record.get("url")
             source_uri = (
-                record_uri
-                if isinstance(record_uri, str) and record_uri
-                else str(connector_result.retrieved_from)
+                record_uri if isinstance(record_uri, str) and record_uri else str(connector_result.retrieved_from)
             )
             title = record.get("title")
             evidence.append(
                 EvidenceRef(
-                    evidence_id=(
-                        f"connector:{connector_result.source}:"
-                        f"{canonical_digest(record)}"
-                    ),
+                    evidence_id=(f"connector:{connector_result.source}:{canonical_digest(record)}"),
                     source_uri=source_uri,
                     title=title[:512] if isinstance(title, str) else None,
                 )
@@ -448,17 +431,9 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
                 nested.extend(result.items)
             elif result.text is not None:
                 nested.append(result.text)
-            return tuple(
-                payload
-                for item in nested
-                for payload in cls._dict_payloads(item)
-            )
+            return tuple(payload for item in nested for payload in cls._dict_payloads(item))
         if isinstance(result, (list, tuple)):
-            return tuple(
-                payload
-                for item in result
-                for payload in cls._dict_payloads(item)
-            )
+            return tuple(payload for item in result for payload in cls._dict_payloads(item))
         if isinstance(result, str):
             try:
                 return cls._dict_payloads(json.loads(result))
@@ -510,13 +485,17 @@ def middleware_for_manifest(
     manifest: AgentManifest,
     settings: HarnessSettings | None,
     capabilities: tuple[CapabilityDescriptor, ...],
+    registrations: tuple[ToolRegistration, ...],
 ) -> list[AgentMiddleware | FunctionMiddleware]:
     middleware: list[AgentMiddleware | FunctionMiddleware] = [ContractMiddleware(manifest, settings)]
-    bindings = {
+    if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
+        raise ConfigurationError(
+            "Runtime registrations do not exactly match manifest capability bindings",
+            context={"agent": manifest.id},
+        )
+    attached = {
         capability.id: tuple(
-            binding
-            for binding in manifest.capability_bindings
-            if binding.capability_id == capability.id
+            registration for registration in registrations if registration.binding.descriptor_ref.id == capability.id
         )
         for capability in capabilities
     }
@@ -529,21 +508,7 @@ def middleware_for_manifest(
         middleware.extend(
             GovernedFunctionMiddleware(
                 capability,
-                bindings[capability.id],
-                current_instance_fingerprints=tuple(
-                    resolved_instance_fingerprint(
-                        binding,
-                        capability,
-                        project_endpoint=str(settings.foundry_project_endpoint),
-                        destination_endpoint=(
-                            str(settings.toolbox_endpoint)
-                            if binding.operation_id.startswith("foundry.toolbox.")
-                            and settings.toolbox_endpoint is not None
-                            else None
-                        ),
-                    )
-                    for binding in bindings[capability.id]
-                ),
+                attached[capability.id],
                 allowed_connector_sources=frozenset(manifest.connector_sources),
             )
             for capability in capabilities

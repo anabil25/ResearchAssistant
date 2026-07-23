@@ -47,19 +47,16 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
         assert profile.artifact_policy.output_schema == profile.output_schema
         assert profile.artifact_policy.provenance_required is True
         for binding in profile.capability_bindings:
-            assert binding.operation_id
+            assert binding.operation_ref.id
             assert binding.instance_ref
-            assert len(binding.instance_fingerprint) == 64
-            assert binding.instance_fingerprint == binding.instance_fingerprint.lower()
-            assert binding.pinned_provider_version
-            assert binding.input_schema_digest
-            assert binding.output_schema_digest
-            assert binding.connection_ref
-            assert binding.policy_ref
-        if any(
-            binding.operation_id.startswith("foundry.toolbox.")
-            for binding in profile.capability_bindings
-        ):
+            assert len(binding.instance_ref.fingerprint) == 64
+            assert binding.instance_ref.fingerprint == binding.instance_ref.fingerprint.lower()
+            assert binding.instance_ref.discovered_version
+            assert binding.operation_ref.input_schema_digest
+            assert binding.operation_ref.output_schema_digest
+            assert binding.connection_ref.id
+            assert binding.policy_ref.id
+        if any(binding.operation_ref.id.startswith("foundry.toolbox.") for binding in profile.capability_bindings):
             with pytest.raises(ConfigurationError, match="Toolbox"):
                 tools_for_profile(profile)
         else:
@@ -78,8 +75,7 @@ def test_missing_toolbox_never_falls_back_to_web_search() -> None:
 
     for profile in list_profiles():
         requires_toolbox = any(
-            binding.operation_id.startswith("foundry.toolbox.")
-            for binding in profile.capability_bindings
+            binding.operation_ref.id.startswith("foundry.toolbox.") for binding in profile.capability_bindings
         )
         if requires_toolbox:
             with pytest.raises(ConfigurationError, match="Toolbox"):
@@ -97,10 +93,7 @@ def test_toolbox_bindings_match_deployed_operation_names() -> None:
     }
     for profile_id, tool_names in expected.items():
         manifest = get_profile(profile_id)
-        assert {
-            binding.operation_id.rsplit(".", 1)[-1]
-            for binding in manifest.capability_bindings
-        } == tool_names
+        assert {binding.operation_ref.id.rsplit(".", 1)[-1] for binding in manifest.capability_bindings} == tool_names
 
 
 def test_coordinator_routes_public_only_to_online_specialists() -> None:

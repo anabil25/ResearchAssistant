@@ -6,6 +6,7 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .capabilities import ToolRegistration
 from .contracts import (
     AgentContractBinding,
     AgentManifest,
@@ -39,13 +40,20 @@ class LocalResult(BaseModel):
 
 
 class LocalHarness:
-    def __init__(self, manifest: AgentManifest, runner: LocalRunner) -> None:
+    def __init__(
+        self,
+        manifest: AgentManifest,
+        runner: LocalRunner,
+        *,
+        registrations: tuple[ToolRegistration, ...] = (),
+    ) -> None:
         self.manifest = manifest
         self._contracts: AgentContractBinding = bind_contracts(manifest)
         self._runner = runner
         self.release = build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
+            registrations=registrations,
         )
 
     def readiness(self) -> dict[str, Any]:

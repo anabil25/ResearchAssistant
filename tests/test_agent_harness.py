@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import importlib
+import inspect
 import json
 import time
 from datetime import UTC, datetime
@@ -31,17 +32,27 @@ from shared.capabilities import (
     CapabilityExecutor,
     CapabilityPolicy,
     CapabilityRegistry,
+    ConfigurationReference,
+    ConnectionReference,
+    DescriptorReference,
+    DestinationConstraints,
     IdempotencyMode,
+    InstanceReference,
     InvocationContext,
     OperationClass,
+    OperationReference,
+    PolicyReference,
     ProviderInstanceAttestation,
     RetryPolicy,
     ToolRegistration,
     attach_provider_binding,
-    template_instance_fingerprint,
+    runtime_attested_registration,
 )
 from shared.catalog import capabilities_for_manifest
 from shared.contracts import (
+    AUXILIARY_CONTRACTS,
+    INPUT_CONTRACTS,
+    OUTPUT_CONTRACTS,
     SCHEMA_REFERENCES,
     AgentManifest,
     Claim,
@@ -118,6 +129,7 @@ from shared.workflows import (
     _specialist_manifest,
     _specialist_payload,
     build_coordinator_workflow,
+    specialist_handler_resolver,
 )
 
 
@@ -160,26 +172,137 @@ def _settings(**overrides: Any) -> HarnessSettings:
 
 
 def _binding(capability_id: str) -> CapabilityBinding:
+    destinations = ("app://tests/local",)
     return CapabilityBinding(
-        descriptor_id=capability_id,
-        descriptor_version="1.0.0",
-        operation_id=f"local.{capability_id}",
-        provider_id="test-provider",
-        instance_id=f"test:{capability_id}",
-        instance_ref="app://tests/local",
-        instance_fingerprint="1" * 64,
         provider_contract_version="test-provider.v2",
-        provider_contract_schema_digest="2" * 64,
-        pinned_provider_version="1.0.0",
-        input_schema_digest=SCHEMA_REFERENCES["LiteratureRequestV2"].sha256,
-        output_schema_digest=SCHEMA_REFERENCES["LiteratureSynthesisV2"].sha256,
-        config={"mode": "test"},
-        config_digest=canonical_digest({"mode": "test"}),
-        connection_ref="app://connections/tests",
-        policy_ref="app://policy/tests",
-        destination_pins=("app://tests/local",),
+        descriptor_ref=DescriptorReference(
+            id=capability_id,
+            version="1.0.0",
+            digest=canonical_digest({"id": capability_id, "version": "1.0.0"}),
+        ),
+        operation_ref=OperationReference(
+            id=f"local.{capability_id}",
+            version="1.0.0",
+            input_schema_digest=SCHEMA_REFERENCES["LiteratureRequestV2"].sha256,
+            output_schema_digest=SCHEMA_REFERENCES["LiteratureSynthesisV2"].sha256,
+        ),
+        instance_ref=InstanceReference(
+            provider_id="test-provider",
+            instance_id=f"test:{capability_id}",
+            discovered_version="1.0.0",
+            fingerprint="1" * 64,
+        ),
+        configuration_ref=ConfigurationReference(
+            id="app://config/tests",
+            digest=canonical_digest({"mode": "test"}),
+        ),
+        connection_ref=ConnectionReference(
+            id="app://connections/tests",
+            auth_mode="managed_identity",
+            authorization_digest="2" * 64,
+        ),
+        policy_ref=PolicyReference(
+            id="app://policy/tests",
+            version="1.0.0",
+            digest="3" * 64,
+        ),
+        allowed_destinations=DestinationConstraints(
+            constraints=destinations,
+            digest=canonical_digest(destinations),
+        ),
         tenant_scope="tenant-a",
         project_scope="project-a",
+    )
+
+
+class _ManifestProviderAdapter:
+    trusted_legacy_derivation = False
+
+    def __init__(self, bindings: tuple[CapabilityBinding, ...]) -> None:
+        versions = {binding.provider_contract_version for binding in bindings}
+        if len(versions) != 1:
+            raise ValueError("Test adapter requires one provider contract version")
+        self.contract_version = versions.pop()
+        self.attestations = {
+            (
+                binding.instance_ref.provider_id,
+                binding.instance_ref.instance_id,
+            ): ProviderInstanceAttestation(
+                provider_contract_version=binding.provider_contract_version,
+                descriptor_ref=binding.descriptor_ref,
+                operation_ref=binding.operation_ref,
+                instance_ref=binding.instance_ref,
+                configuration_ref=binding.configuration_ref,
+                connection_ref=binding.connection_ref,
+                policy_ref=binding.policy_ref,
+                allowed_destinations=binding.allowed_destinations,
+                tenant_id=binding.tenant_scope,
+                project_id=binding.project_scope,
+                readiness="available",
+                auth_ready=True,
+                maturity="GA",
+                lifecycle="ACTIVE",
+                approval_expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+            )
+            for binding in bindings
+        }
+        models = {
+            **INPUT_CONTRACTS,
+            **OUTPUT_CONTRACTS,
+            **AUXILIARY_CONTRACTS,
+        }
+        self.schemas = {
+            canonical_digest(model.model_json_schema()): model.model_json_schema() for model in models.values()
+        }
+        self.handler_resolutions = 0
+        self.handler_calls = 0
+
+    def discover_instance(
+        self,
+        provider_id: str,
+        instance_id: str,
+    ) -> ProviderInstanceAttestation:
+        return self.attestations[(provider_id, instance_id)]
+
+    def load_schema(self, schema_digest: str) -> dict[str, Any]:
+        return self.schemas[schema_digest]
+
+    def resolve_handler(self, _attestation: ProviderInstanceAttestation) -> Any:
+        self.handler_resolutions += 1
+
+        async def invoke(payload: dict[str, Any]) -> dict[str, Any]:
+            self.handler_calls += 1
+            return await GovernedFunctionMiddleware._invoke_framework_function(payload)
+
+        return invoke
+
+
+def _runtime_registration(
+    binding: CapabilityBinding,
+) -> tuple[ToolRegistration, _ManifestProviderAdapter]:
+    adapter = _ManifestProviderAdapter((binding,))
+    return (
+        runtime_attested_registration(
+            binding,
+            adapter,
+            tenant_id=binding.tenant_scope,
+            project_id=binding.project_scope,
+            clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
+        ),
+        adapter,
+    )
+
+
+def _coordinator_registration(invoker: Any) -> ToolRegistration:
+    manifest = get_manifest("coordinator")
+    return (
+        GovernedAgentFactory(manifest)
+        .prepare(
+            _settings(),
+            provider_adapter=_ManifestProviderAdapter(manifest.capability_bindings),
+            handler_resolver=specialist_handler_resolver(invoker),
+        )
+        .registrations[0]
     )
 
 
@@ -430,20 +553,17 @@ def test_public_and_specialist_contracts_are_strict() -> None:
         SpecialistRequest.parse_pinned_request_contract,
     )
     assert parse_specialist_request("invalid") == "invalid"
-    assert parse_specialist_request(
-        {"capability": "literature", "request": "invalid"}
-    ) == {"capability": "literature", "request": "invalid"}
+    assert parse_specialist_request({"capability": "literature", "request": "invalid"}) == {
+        "capability": "literature",
+        "request": "invalid",
+    }
     invalid_discriminator = {
         "capability": "unknown",
         "request": _request(),
     }
-    assert (
-        parse_specialist_request(invalid_discriminator) == invalid_discriminator
-    )
+    assert parse_specialist_request(invalid_discriminator) == invalid_discriminator
     missing_discriminator = {"request": _request()}
-    assert (
-        parse_specialist_request(missing_discriminator) == missing_discriminator
-    )
+    assert parse_specialist_request(missing_discriminator) == missing_discriminator
 
 
 def test_manifest_validation_and_contract_resolution() -> None:
@@ -661,20 +781,27 @@ def test_retry_and_write_capability_contract_validation() -> None:
             }
         )
     binding = _binding("read.action")
-    with pytest.raises(ValidationError, match="mutually exclusive"):
-        CapabilityBinding.model_validate(
-            {
-                **binding.model_dump(),
-                "config": {"limit": 1},
-                "config_ref": "app://config/read-action",
-            }
-        )
-    with pytest.raises(ValidationError, match="instance_fingerprint"):
-        CapabilityBinding.model_validate(
-            {
-                **binding.model_dump(),
-                "instance_fingerprint": "A" * 64,
-            }
+    legacy_fields: dict[str, Any] = {
+        "descriptor_id": "read.action",
+        "operation_id": "local.read.action",
+        "instance_fingerprint": "a" * 64,
+        "provider_version": "ambiguous",
+        "pinned_provider_version": "1.0.0",
+        "config": {"limit": 1},
+        "config_ref": "app://config/read-action",
+    }
+    for field, value in legacy_fields.items():
+        with pytest.raises(ValidationError, match="Extra inputs"):
+            CapabilityBinding.model_validate(
+                {
+                    **binding.model_dump(),
+                    field: value,
+                }
+            )
+    with pytest.raises(ValidationError, match="destination digest"):
+        DestinationConstraints(
+            constraints=("app://allowed",),
+            digest="0" * 64,
         )
 
 
@@ -763,10 +890,11 @@ def test_registry_is_explicit_and_duplicate_safe() -> None:
                 current_instance_fingerprint="1" * 64,
             )
         )
+    second_binding = _binding("read.action")
     registry.register_tool(
         ToolRegistration(
-            binding=_binding("read.action").model_copy(
-                update={"operation_id": "local.secondAction"}
+            binding=second_binding.model_copy(
+                update={"operation_ref": second_binding.operation_ref.model_copy(update={"id": "local.secondAction"})}
             ),
             tool_name="secondAction",
             handler=lambda payload: payload,
@@ -816,7 +944,7 @@ def test_registry_is_explicit_and_duplicate_safe() -> None:
     assert captured.value.retryable is False
     assert captured.value.context == {
         "capability": other.id,
-        "instance_ref": "app://tests/local",
+        "instance_ref": "test:read.other",
         "expected_fingerprint": "1" * 64,
         "current_fingerprint": "2" * 64,
     }
@@ -830,30 +958,22 @@ def test_registry_is_explicit_and_duplicate_safe() -> None:
 
 
 def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
-    binding = _binding("read.action").model_copy(
+    initial_binding = _binding("read.action")
+    binding = initial_binding.model_copy(
         update={
-            "operation_id": "provider.read",
-            "instance_fingerprint": "3" * 64,
-        }
+            "operation_ref": initial_binding.operation_ref.model_copy(update={"id": "provider.read"}),
+            "instance_ref": initial_binding.instance_ref.model_copy(update={"fingerprint": "3" * 64}),
+        },
     )
     valid = ProviderInstanceAttestation(
-        provider_id=binding.provider_id,
         provider_contract_version=binding.provider_contract_version,
-        provider_contract_schema_digest=binding.provider_contract_schema_digest,
-        descriptor_id=binding.descriptor_id,
-        descriptor_version=binding.descriptor_version,
-        operation_id=binding.operation_id,
-        instance_id=binding.instance_id,
+        descriptor_ref=binding.descriptor_ref,
+        operation_ref=binding.operation_ref,
         instance_ref=binding.instance_ref,
-        instance_fingerprint=binding.instance_fingerprint,
-        discovered_version=binding.pinned_provider_version,
-        input_schema_digest=binding.input_schema_digest,
-        output_schema_digest=binding.output_schema_digest,
-        config_digest=canonical_digest(binding.config),
-        config_ref=binding.config_ref,
+        configuration_ref=binding.configuration_ref,
         connection_ref=binding.connection_ref,
         policy_ref=binding.policy_ref,
-        destination_pins=binding.destination_pins,
+        allowed_destinations=binding.allowed_destinations,
         tenant_id="tenant-a",
         project_id="project-a",
         readiness="available",
@@ -865,7 +985,7 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
 
     class Adapter:
         contract_version = binding.provider_contract_version
-        contract_schema_digest = binding.provider_contract_schema_digest
+        contract_version = binding.provider_contract_version
         trusted_legacy_derivation = False
 
         def __init__(self, attestation: ProviderInstanceAttestation) -> None:
@@ -877,8 +997,8 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             provider_id: str,
             instance_id: str,
         ) -> ProviderInstanceAttestation:
-            assert provider_id == binding.provider_id
-            assert instance_id == binding.instance_id
+            assert provider_id == binding.instance_ref.provider_id
+            assert instance_id == binding.instance_ref.instance_id
             return self.attestation
 
         def resolve_handler(self, _attestation: ProviderInstanceAttestation) -> Any:
@@ -887,8 +1007,8 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
 
         def load_schema(self, schema_digest: str) -> dict[str, Any]:
             schemas = {
-                binding.input_schema_digest: LiteratureRequest.model_json_schema(),
-                binding.output_schema_digest: LiteratureResponse.model_json_schema(),
+                binding.operation_ref.input_schema_digest: LiteratureRequest.model_json_schema(),
+                binding.operation_ref.output_schema_digest: LiteratureResponse.model_json_schema(),
             }
             return schemas[schema_digest]
 
@@ -900,13 +1020,18 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         project_id="project-a",
         now=datetime(2026, 7, 23, tzinfo=UTC),
     )
-    assert registration.current_instance_fingerprint == binding.instance_fingerprint
+    assert registration.current_instance_fingerprint == binding.instance_ref.fingerprint
     assert adapter.handler_resolutions == 1
 
     failures = (
-        (valid.model_copy(update={"input_schema_digest": "4" * 64}), ConfigurationError),
         (
-            valid.model_copy(update={"instance_fingerprint": "5" * 64}),
+            valid.model_copy(
+                update={"operation_ref": valid.operation_ref.model_copy(update={"input_schema_digest": "4" * 64})}
+            ),
+            ConfigurationError,
+        ),
+        (
+            valid.model_copy(update={"instance_ref": valid.instance_ref.model_copy(update={"fingerprint": "5" * 64})}),
             StaleCapabilityBindingError,
         ),
         (valid.model_copy(update={"tenant_id": "other-tenant"}), AuthorizationError),
@@ -933,19 +1058,30 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             ApprovalRequiredError,
         ),
         (
-            valid.model_copy(update={"connection_ref": "app://connections/other"}),
+            valid.model_copy(
+                update={"connection_ref": valid.connection_ref.model_copy(update={"id": "app://connections/other"})}
+            ),
             ConfigurationError,
         ),
         (
-            valid.model_copy(update={"policy_ref": "app://policy/other"}),
+            valid.model_copy(update={"policy_ref": valid.policy_ref.model_copy(update={"id": "app://policy/other"})}),
             ConfigurationError,
         ),
         (
-            valid.model_copy(update={"config_digest": "7" * 64}),
+            valid.model_copy(
+                update={"configuration_ref": valid.configuration_ref.model_copy(update={"digest": "7" * 64})}
+            ),
             ConfigurationError,
         ),
         (
-            valid.model_copy(update={"destination_pins": ("app://other",)}),
+            valid.model_copy(
+                update={
+                    "allowed_destinations": DestinationConstraints(
+                        constraints=("app://other",),
+                        digest=canonical_digest(("app://other",)),
+                    )
+                }
+            ),
             ConfigurationError,
         ),
     )
@@ -962,7 +1098,7 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         assert failing.handler_resolutions == 0
 
     digest_mismatch = Adapter(valid)
-    digest_mismatch.contract_schema_digest = "6" * 64
+    digest_mismatch.contract_version = "provider.v999"
     with pytest.raises(ConfigurationError, match="pinned capability binding"):
         attach_provider_binding(
             binding,
@@ -986,14 +1122,8 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
         )
     assert schema_mismatch.handler_resolutions == 0
 
-    legacy_binding = binding.model_copy(
-        update={"provider_contract_version": "integration-provider.v1"}
-    )
-    legacy = Adapter(
-        valid.model_copy(
-            update={"provider_contract_version": "integration-provider.v1"}
-        )
-    )
+    legacy_binding = binding.model_copy(update={"provider_contract_version": "integration-provider.v1"})
+    legacy = Adapter(valid.model_copy(update={"provider_contract_version": "integration-provider.v1"}))
     legacy.contract_version = "integration-provider.v1"
     with pytest.raises(ConfigurationError, match="Legacy provider"):
         attach_provider_binding(
@@ -1003,6 +1133,73 @@ def test_provider_adapter_attests_every_pin_before_handler_resolution() -> None:
             project_id="project-a",
         )
     assert legacy.handler_resolutions == 0
+
+
+@pytest.mark.asyncio
+async def test_runtime_registration_reattests_before_every_handler_call() -> None:
+    binding = _binding("read.action")
+    adapter = _ManifestProviderAdapter((binding,))
+    registration = runtime_attested_registration(
+        binding,
+        adapter,
+        tenant_id=binding.tenant_scope,
+        project_id=binding.project_scope,
+        clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
+    )
+    context = FunctionInvocationContext(
+        cast(Any, SimpleNamespace(name=registration.tool_name)),
+        {},
+    )
+
+    async def call_next() -> None:
+        context.result = {"ok": True}
+
+    result = registration.handler(
+        {
+            "context": context,
+            "call_next": call_next,
+        }
+    )
+    assert inspect.isawaitable(result)
+    assert await result == {"value": {"ok": True}}
+    assert adapter.handler_resolutions == 2
+    assert adapter.handler_calls == 1
+
+    class SyncAdapter(_ManifestProviderAdapter):
+        def resolve_handler(
+            self,
+            _attestation: ProviderInstanceAttestation,
+        ) -> Any:
+            self.handler_resolutions += 1
+            return lambda payload: {"sync": payload["value"]}
+
+    sync_adapter = SyncAdapter((binding,))
+    sync_registration = runtime_attested_registration(
+        binding,
+        sync_adapter,
+        tenant_id=binding.tenant_scope,
+        project_id=binding.project_scope,
+        clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
+    )
+    sync_result = sync_registration.handler({"value": 1})
+    assert inspect.isawaitable(sync_result)
+    assert await sync_result == {"sync": 1}
+
+    key = (binding.instance_ref.provider_id, binding.instance_ref.instance_id)
+    adapter.attestations[key] = adapter.attestations[key].model_copy(
+        update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": "e" * 64})}
+    )
+    stale = registration.handler(
+        {
+            "context": context,
+            "call_next": call_next,
+        }
+    )
+    assert inspect.isawaitable(stale)
+    with pytest.raises(StaleCapabilityBindingError):
+        await stale
+    assert adapter.handler_resolutions == 2
+    assert adapter.handler_calls == 1
 
 
 @pytest.mark.asyncio
@@ -1284,6 +1481,15 @@ def test_release_metadata_is_immutable_and_deterministic(
 ) -> None:
     manifest = get_manifest("dataset")
     assert manifest_digest(manifest) == manifest_digest(manifest.model_copy())
+    provider_adapter = _ManifestProviderAdapter(manifest.capability_bindings)
+    registrations = (
+        GovernedAgentFactory(manifest)
+        .prepare(
+            _settings(),
+            provider_adapter=provider_adapter,
+        )
+        .registrations
+    )
     versions = {
         "agent-framework-core": "1.12.0",
         "agent-framework-foundry": "1.10.2",
@@ -1307,20 +1513,20 @@ def test_release_metadata_is_immutable_and_deterministic(
         source_bundle_hash="a" * 64,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=built_at,
+        registrations=registrations,
     )
     assert release.source_revision == "abc123"
     assert release.dependencies[-1] == ("pydantic", "not-installed")
     assert release.built_at == built_at
     assert release.release_id.startswith("sha256:")
     assert release.model_deployment == "gpt-5.4-mini"
-    assert release.capability_versions == (("dataset.compute", "mcp-v1"),)
-    assert release.toolbox_versions == (("foundry.toolbox.code_interpreter", "mcp-v1"),)
+    assert release.capability_versions == (("dataset.compute", "1.0.0"),)
+    assert release.toolbox_versions == (("foundry.toolbox.code_interpreter", "1.0.0"),)
     assert len(release.contract_schema_digest) == 64
     assert release.provider_contracts == (
         (
             "microsoft-foundry-toolbox",
             "foundry-toolbox.mcp-v1",
-            manifest.capability_bindings[0].provider_contract_schema_digest,
         ),
     )
     assert release.knowledge_versions == (("dataset.knowledge", "evidence-v2"),)
@@ -1334,6 +1540,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         source_revision="explicit",
         source_bundle_hash="a" * 64,
         built_at=built_at,
+        registrations=registrations,
     )
     assert explicit.source_revision == "explicit"
     same_content = build_release_metadata(
@@ -1342,10 +1549,31 @@ def test_release_metadata_is_immutable_and_deterministic(
         source_bundle_hash="a" * 64,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=datetime(2026, 7, 23, tzinfo=UTC),
+        registrations=registrations,
     )
     assert same_content.release_id == release.release_id
     with pytest.raises(ValueError, match="model policy"):
         build_release_metadata(manifest, model_deployment="unapproved-model")
+    with pytest.raises(ConfigurationError, match="attested provider registrations"):
+        build_release_metadata(
+            manifest,
+            model_deployment=manifest.model_policy.deployment_name,
+        )
+    unattested = tuple(
+        ToolRegistration(
+            binding=binding,
+            tool_name=binding.operation_ref.id.rsplit(".", 1)[-1],
+            handler=lambda payload: payload,
+            current_instance_fingerprint=binding.instance_ref.fingerprint,
+        )
+        for binding in manifest.capability_bindings
+    )
+    with pytest.raises(ConfigurationError, match="attested provider registrations"):
+        build_release_metadata(
+            manifest,
+            model_deployment=manifest.model_policy.deployment_name,
+            registrations=unattested,
+        )
 
     root = tmp_path / "bundle"
     root.mkdir()
@@ -1370,28 +1598,27 @@ def test_capability_catalog_has_deterministic_risk_boundaries() -> None:
     assert "literature-agent" in coordinator[0].allowed_destinations
 
 
-def test_runtime_capability_fingerprint_detects_provider_retargeting() -> None:
+def test_factory_requires_current_provider_attestation() -> None:
     factory = get_factory("dataset")
-    template = factory.manifest.capability_bindings[0]
-    assert template.instance_fingerprint == template_instance_fingerprint(template)
-    first_settings = _settings(
-        toolbox_endpoint="https://toolbox-a.example/toolboxes/dataset/mcp"
+    settings = _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp")
+    with pytest.raises(ConfigurationError, match="attested provider adapter"):
+        factory.resolved_manifest(settings)
+    assert factory.readiness(settings)["ready"] is False
+
+    adapter = _ManifestProviderAdapter(factory.manifest.capability_bindings)
+    prepared = factory.prepare(settings, provider_adapter=adapter)
+    assert prepared.manifest is factory.manifest
+    assert all(registration.runtime_attested for registration in prepared.registrations)
+    assert adapter.handler_resolutions == len(factory.manifest.capability_bindings)
+    assert factory.readiness(settings, provider_adapter=adapter)["ready"] is True
+
+    binding = factory.manifest.capability_bindings[0]
+    key = (binding.instance_ref.provider_id, binding.instance_ref.instance_id)
+    adapter.attestations[key] = adapter.attestations[key].model_copy(
+        update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": "f" * 64})}
     )
-    second_settings = _settings(
-        toolbox_endpoint="https://toolbox-b.example/toolboxes/dataset/mcp"
-    )
-    first = factory.resolved_manifest(first_settings)
-    second = factory.resolved_manifest(second_settings)
-    first_fingerprint = first.capability_bindings[0].instance_fingerprint
-    second_fingerprint = second.capability_bindings[0].instance_fingerprint
-    assert first_fingerprint != template.instance_fingerprint
-    assert second_fingerprint != first_fingerprint
-    stale_factory = GovernedAgentFactory(first)
-    with pytest.raises(StaleCapabilityBindingError) as captured:
-        stale_factory.resolved_manifest(second_settings)
-    assert captured.value.context["expected_fingerprint"] == first_fingerprint
-    assert captured.value.context["current_fingerprint"] == second_fingerprint
-    assert stale_factory.readiness(second_settings)["ready"] is False
+    with pytest.raises(StaleCapabilityBindingError):
+        factory.resolved_manifest(settings, provider_adapter=adapter)
 
 
 class _FakeChatClient:
@@ -1455,9 +1682,7 @@ def test_governed_factory_builds_typed_hosted_agent(
             return None
 
     monkeypatch.setattr("shared.factory.AIProjectClient", lambda **_kwargs: Project())
-    discovered = literature_settings.model_copy(
-        update={"model_deployment_version": None}
-    )
+    discovered = literature_settings.model_copy(update={"model_deployment_version": None})
     assert factory.resolved_manifest(discovered).id == "literature"
     Project.deployments.model_version = None
     with pytest.raises(ConfigurationError, match="versioned Foundry model"):
@@ -1523,7 +1748,11 @@ def test_runtime_adapter_builds_describes_and_runs_host(
     build_agent = cast(Any, runtime.build_agent)
     assert build_agent("literature", client="client") == (
         marker,
-        {"client": "client", "settings": None},
+        {
+            "client": "client",
+            "settings": None,
+            "provider_adapter": None,
+        },
     )
     assert runtime.describe_profile("grant").id == "grant"
 
@@ -1537,7 +1766,11 @@ def test_runtime_adapter_builds_describes_and_runs_host(
             calls.append("run")
 
     monkeypatch.setattr(runtime, "ResponsesHostServer", Host)
-    monkeypatch.setattr(runtime, "build_agent", lambda profile_id: f"agent:{profile_id}")
+    monkeypatch.setattr(
+        runtime,
+        "build_agent",
+        lambda profile_id, **_kwargs: f"agent:{profile_id}",
+    )
     runtime.run_profile("dataset")
     assert calls == ["agent:dataset", "run"]
 
@@ -1575,10 +1808,12 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
         is marker
     )
     dataset_factory = get_factory("dataset")
+    dataset_adapter = _ManifestProviderAdapter(dataset_factory.manifest.capability_bindings)
     assert dataset_factory.readiness(_settings())["ready"] is False
     assert (
         dataset_factory.readiness(
-            _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp")
+            _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
+            provider_adapter=dataset_adapter,
         )["ready"]
         is True
     )
@@ -1662,6 +1897,7 @@ def test_hosted_invoker_structured_failure_paths() -> None:
             assert not kwargs
             return _OpenAIClient(responses)
         return SimpleNamespace(**kwargs)
+
     invoker = RetryingResponsesInvoker(
         HostedInvocationPolicy(
             session_retry_delays=(),
@@ -1914,13 +2150,14 @@ async def test_contract_middleware_accepts_only_trusted_runtime_evidence() -> No
         id="literature.lookup",
         operation=OperationClass.READ,
     )
-    binding = _binding(capability.id).model_copy(
-        update={"operation_id": "local.searchLiteratureMetadata"}
+    base_binding = _binding(capability.id)
+    binding = base_binding.model_copy(
+        update={"operation_ref": base_binding.operation_ref.model_copy(update={"id": "local.searchLiteratureMetadata"})}
     )
+    registration, _ = _runtime_registration(binding)
     function_middleware = GovernedFunctionMiddleware(
         capability,
-        binding,
-        current_instance_fingerprints=binding.instance_fingerprint,
+        registration,
         allowed_connector_sources=frozenset({"pubmed"}),
     )
     request = LiteratureRequest.model_validate(_request())
@@ -2064,11 +2301,14 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         required_scopes=frozenset({"research.public.read"}),
         allowed_destinations=("toolbox.example",),
     )
-    binding = _binding(capability.id).model_copy(update={"operation_id": "local.lookup"})
+    base_binding = _binding(capability.id)
+    binding = base_binding.model_copy(
+        update={"operation_ref": base_binding.operation_ref.model_copy(update={"id": "local.lookup"})}
+    )
+    registration, _ = _runtime_registration(binding)
     middleware = GovernedFunctionMiddleware(
         capability,
-        binding,
-        current_instance_fingerprints=binding.instance_fingerprint,
+        registration,
     )
     governance = InvocationContext(
         tenant_id="tenant-a",
@@ -2120,17 +2360,29 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     with pytest.raises(CapabilityNotFoundError, match="operation"):
         await middleware.process(wrong_operation, call_next)
     online_manifest = get_manifest("literature_online")
-    online_capability = capabilities_for_manifest(online_manifest, _settings())[0]
+    online_adapter = _ManifestProviderAdapter(online_manifest.capability_bindings)
+    online_prepared = GovernedAgentFactory(online_manifest).prepare(
+        _settings(),
+        provider_adapter=online_adapter,
+    )
     assert (
         len(
             middleware_for_manifest(
                 online_manifest,
                 _settings(),
-                (online_capability,),
+                online_prepared.capabilities,
+                online_prepared.registrations,
             )
         )
         == 2
     )
+    with pytest.raises(ConfigurationError, match="exactly match"):
+        middleware_for_manifest(
+            online_manifest,
+            _settings(),
+            online_prepared.capabilities,
+            online_prepared.registrations[:-1],
+        )
 
     missing = FunctionInvocationContext(cast(Any, SimpleNamespace(name="lookup")), {})
     with pytest.raises(AuthorizationError, match="missing"):
@@ -2154,24 +2406,39 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         await middleware._invoke_framework_function({"context": object(), "call_next": call_next})
     with pytest.raises(ContractError, match="payload"):
         await middleware._invoke_framework_function({"context": context, "call_next": object()})
-    assert middleware._evidence_from_tool_result(
-        "lookup",
-        {"evidence": [{"evidence_id": "untrusted"}]},
-    ) == ()
-    with pytest.raises(ValueError, match="Every capability binding"):
+    assert (
+        middleware._evidence_from_tool_result(
+            "lookup",
+            {"evidence": [{"evidence_id": "untrusted"}]},
+        )
+        == ()
+    )
+    with pytest.raises(ValueError, match="attached tool registration"):
         GovernedFunctionMiddleware(
             capability,
-            (binding,),
-            current_instance_fingerprints=(),
+            (),
         )
+    with pytest.raises(ConfigurationError, match="continuously provider-attested"):
+        GovernedFunctionMiddleware(
+            capability,
+            ToolRegistration(
+                binding=binding,
+                tool_name="lookup",
+                handler=GovernedFunctionMiddleware._invoke_framework_function,
+                current_instance_fingerprint=binding.instance_ref.fingerprint,
+            ),
+        )
+    other_registration, _ = _runtime_registration(_binding("public.other"))
+    with pytest.raises(ConfigurationError, match="capability descriptor"):
+        GovernedFunctionMiddleware(capability, other_registration)
 
     connector_binding = binding.model_copy(
-        update={"operation_id": "local.searchLiteratureMetadata"}
+        update={"operation_ref": binding.operation_ref.model_copy(update={"id": "local.searchLiteratureMetadata"})}
     )
+    connector_registration, _ = _runtime_registration(connector_binding)
     connector_middleware = GovernedFunctionMiddleware(
         capability,
-        connector_binding,
-        current_instance_fingerprints=connector_binding.instance_fingerprint,
+        connector_registration,
         allowed_connector_sources=frozenset({"pubmed"}),
     )
     connector_result = {
@@ -2237,86 +2504,97 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
                     {"type": "other", "url": "https://example.test/ignored"},
                 ],
             ),
-        )
+        ),
     )
     assert len(web_evidence) == 1
     assert web_evidence[0].source_uri == "https://learn.microsoft.com/official"
-    assert middleware._evidence_from_tool_result(
-        "web_search",
-        [
-            Content.from_mcp_server_tool_result(
-                "call-1",
-                output=Content(
-                    "text",
-                    annotations=cast(
-                        Any,
-                        [
-                            {
-                                "type": "citation",
-                                "title": "Nested citation",
-                                "url": "https://example.test/nested",
-                            }
-                        ],
-                    ),
-                ),
-            )
-        ]
-    )[0].source_uri == "https://example.test/nested"
-    assert middleware._evidence_from_tool_result(
-        "web_search",
-        Content.from_function_result(
-            "call-2",
-            result=Content("text", items=[Content("text")]),
-        ),
-    ) == ()
-    assert middleware._evidence_from_tool_result(
-        "web_search",
-        Content(
-            "text",
-            items=[
-                Content(
-                    "text",
-                    annotations=cast(
-                        Any,
-                        [
-                            {
-                                "type": "citation",
-                                "url": "https://example.test/item",
-                            }
-                        ],
+    assert (
+        middleware._evidence_from_tool_result(
+            "web_search",
+            [
+                Content.from_mcp_server_tool_result(
+                    "call-1",
+                    output=Content(
+                        "text",
+                        annotations=cast(
+                            Any,
+                            [
+                                {
+                                    "type": "citation",
+                                    "title": "Nested citation",
+                                    "url": "https://example.test/nested",
+                                }
+                            ],
+                        ),
                     ),
                 )
             ],
-        ),
-    )[0].source_uri == "https://example.test/item"
+        )[0].source_uri
+        == "https://example.test/nested"
+    )
+    assert (
+        middleware._evidence_from_tool_result(
+            "web_search",
+            Content.from_function_result(
+                "call-2",
+                result=Content("text", items=[Content("text")]),
+            ),
+        )
+        == ()
+    )
+    assert (
+        middleware._evidence_from_tool_result(
+            "web_search",
+            Content(
+                "text",
+                items=[
+                    Content(
+                        "text",
+                        annotations=cast(
+                            Any,
+                            [
+                                {
+                                    "type": "citation",
+                                    "url": "https://example.test/item",
+                                }
+                            ],
+                        ),
+                    )
+                ],
+            ),
+        )[0].source_uri
+        == "https://example.test/item"
+    )
     assert middleware._evidence_from_tool_result("web_search", "untrusted") == ()
     connector_json = json.dumps(connector_result)
-    assert connector_middleware._evidence_from_tool_result(
-        "searchLiteratureMetadata",
-        Content.from_mcp_server_tool_result("call-3", output=connector_json),
-    ) == connector_evidence
-    assert connector_middleware._dict_payloads(
-        LiteratureResponse(summary="model")
-    ) == (LiteratureResponse(summary="model").model_dump(mode="json"),)
-    assert connector_middleware._dict_payloads(
-        Content.from_function_result("call-4", result=connector_result)
-    ) == (connector_result,)
-    assert connector_middleware._dict_payloads(
-        Content("text", items=[Content.from_text(text=connector_json)])
-    ) == (connector_result,)
-    assert connector_middleware._dict_payloads(
-        Content.from_text(text=connector_json)
-    ) == (connector_result,)
-    assert connector_middleware._dict_payloads(Content("text")) == ()
-    assert connector_middleware._dict_payloads([connector_result]) == (
+    assert (
+        connector_middleware._evidence_from_tool_result(
+            "searchLiteratureMetadata",
+            Content.from_mcp_server_tool_result("call-3", output=connector_json),
+        )
+        == connector_evidence
+    )
+    assert connector_middleware._dict_payloads(LiteratureResponse(summary="model")) == (
+        LiteratureResponse(summary="model").model_dump(mode="json"),
+    )
+    assert connector_middleware._dict_payloads(Content.from_function_result("call-4", result=connector_result)) == (
         connector_result,
     )
+    assert connector_middleware._dict_payloads(Content("text", items=[Content.from_text(text=connector_json)])) == (
+        connector_result,
+    )
+    assert connector_middleware._dict_payloads(Content.from_text(text=connector_json)) == (connector_result,)
+    assert connector_middleware._dict_payloads(Content("text")) == ()
+    assert connector_middleware._dict_payloads([connector_result]) == (connector_result,)
     assert connector_middleware._dict_payloads("not-json") == ()
     assert connector_middleware._dict_payloads(42) == ()
-    assert connector_middleware._evidence_from_tool_result(
-        "code_interpreter",
-        connector_result,
-    ) == ()
+    assert (
+        connector_middleware._evidence_from_tool_result(
+            "code_interpreter",
+            connector_result,
+        )
+        == ()
+    )
     exposed = connector_middleware._expose_authorized_evidence
     assert exposed([], connector_evidence)[-1].text is not None
     assert exposed((), connector_evidence)[-1].text is not None
@@ -2324,14 +2602,13 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     assert "authorized_evidence" in exposed("result", connector_evidence)
     assert exposed(42, connector_evidence)["authorized_evidence"]
     assert exposed(connector_result, ()) is connector_result
-    assert exposed(LiteratureResponse(summary="model"), connector_evidence)[
-        "authorized_evidence"
-    ]
+    assert exposed(LiteratureResponse(summary="model"), connector_evidence)["authorized_evidence"]
     with pytest.raises(ConfigurationError, match="resolved runtime settings"):
         middleware_for_manifest(
             online_manifest,
             None,
-            (online_capability,),
+            online_prepared.capabilities,
+            online_prepared.registrations,
         )
 
     write_capability = CapabilityDescriptor(
@@ -2343,11 +2620,8 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         approval=ApprovalMode.REQUIRED,
         idempotency=IdempotencyMode.REQUIRED,
     )
-    write_middleware = GovernedFunctionMiddleware(
-        write_capability,
-        _binding(write_capability.id),
-        current_instance_fingerprints="1" * 64,
-    )
+    write_registration, _ = _runtime_registration(_binding(write_capability.id))
+    write_middleware = GovernedFunctionMiddleware(write_capability, write_registration)
     write_governance = InvocationContext(
         tenant_id="tenant-a",
         principal_id="principal-a",
@@ -2479,7 +2753,22 @@ async def test_agent_framework_coordinator_workflow_preserves_typed_evidence() -
             response=_evidence_response(),
         )
 
-    workflow = build_coordinator_workflow(invoke)
+    coordinator_manifest = get_manifest("coordinator")
+    coordinator_binding = coordinator_manifest.capability_bindings[0]
+    with pytest.raises(ConfigurationError, match="runtime-attested"):
+        build_coordinator_workflow(
+            ToolRegistration(
+                binding=coordinator_binding,
+                tool_name="invoke",
+                handler=lambda payload: payload,
+                current_instance_fingerprint=(coordinator_binding.instance_ref.fingerprint),
+            )
+        )
+    mismatched_registration, _ = _runtime_registration(_binding("specialist.delegate"))
+    with pytest.raises(ConfigurationError, match="runtime-attested"):
+        build_coordinator_workflow(mismatched_registration)
+
+    workflow = build_coordinator_workflow(_coordinator_registration(invoke))
     request = CoordinatorRequest.model_validate(_request(requested_capabilities=["literature", "grant"]))
     events = await workflow.run(request)
     outputs = events.get_outputs()
@@ -2499,7 +2788,16 @@ async def test_coordinator_workflow_validates_hosted_message_envelope() -> None:
             error_code="not_configured",
         )
 
-    workflow = build_coordinator_workflow(invoke)
+    manifest = get_manifest("coordinator")
+    adapter = _ManifestProviderAdapter(manifest.capability_bindings)
+    attestation = next(iter(adapter.attestations.values()))
+    invalid_handler = specialist_handler_resolver(invoke)(attestation)
+    invalid_result = invalid_handler({})
+    assert inspect.isawaitable(invalid_result)
+    with pytest.raises(ContractError, match="payload"):
+        await invalid_result
+
+    workflow = build_coordinator_workflow(_coordinator_registration(invoke))
     with pytest.raises(ContractError, match="final user"):
         await workflow.run([])
     with pytest.raises(ContractError, match="final user"):
@@ -2725,6 +3023,11 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
                 model_deployment_version=module.MANIFEST.model_policy.pinned_model_version,
                 toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
             ),
+            provider_adapter=(
+                _ManifestProviderAdapter(module.MANIFEST.capability_bindings)
+                if module.MANIFEST.capability_bindings
+                else None
+            ),
         )
         server = ResponsesHostServer(agent)
         assert server is not None
@@ -2738,7 +3041,11 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
         )
 
     coordinator = importlib.import_module("coordinator.factory")
-    coordinator_agent = coordinator.build_agent(settings=_settings(), invoker=invoke)
+    coordinator_agent = coordinator.build_agent(
+        settings=_settings(),
+        invoker=invoke,
+        provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+    )
     assert ResponsesHostServer(coordinator_agent) is not None
 
 
@@ -2762,6 +3069,11 @@ def test_all_nine_agent_specific_factories_are_first_class(
         module = importlib.import_module(module_name)
         ids.append(module.MANIFEST.id)
         assert module.FACTORY.manifest is module.MANIFEST
+        provider_adapter = (
+            _ManifestProviderAdapter(module.MANIFEST.capability_bindings)
+            if module.MANIFEST.capability_bindings
+            else None
+        )
         assert (
             module.build_agent(
                 client=_FakeChatClient(),
@@ -2770,6 +3082,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
                     model_deployment_version=module.MANIFEST.model_policy.pinned_model_version,
                     toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
                 ),
+                provider_adapter=provider_adapter,
             ).name
             == module.MANIFEST.name
         )
@@ -2789,7 +3102,11 @@ def test_all_nine_agent_specific_factories_are_first_class(
             error_code="not_configured",
         )
 
-    coordinator_agent = coordinator.build_agent(settings=_settings(), invoker=invoke)
+    coordinator_agent = coordinator.build_agent(
+        settings=_settings(),
+        invoker=invoke,
+        provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
+    )
     assert isinstance(coordinator_agent, WorkflowAgent)
     assert coordinator_agent.name == coordinator.MANIFEST.name
     assert set(ids) == {manifest.id for manifest in list_manifests()}

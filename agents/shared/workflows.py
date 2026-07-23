@@ -9,7 +9,16 @@ from agent_framework import Workflow, WorkflowBuilder, WorkflowContext, executor
 from azure.ai.projects import AIProjectClient
 from pydantic import ValidationError
 
-from .capabilities import CapabilityPolicy, InvocationContext
+from .capabilities import (
+    CapabilityExecutor,
+    CapabilityHandler,
+    CapabilityHandlerResolver,
+    CapabilityPolicy,
+    CapabilityRegistry,
+    InvocationContext,
+    ProviderInstanceAttestation,
+    ToolRegistration,
+)
 from .catalog import capabilities_for_manifest
 from .contracts import (
     AgentManifest,
@@ -31,9 +40,16 @@ from .contracts import (
     SpecialistRequestPayload,
     SpecialistResult,
     bind_contracts,
+    canonical_digest,
 )
 from .credentials import get_credential
-from .errors import ContractError, HarnessError, InvocationError, error_from_exception
+from .errors import (
+    ConfigurationError,
+    ContractError,
+    HarnessError,
+    InvocationError,
+    error_from_exception,
+)
 from .invocation import RetryingResponsesInvoker
 from .profiles import get_manifest
 from .settings import HarnessSettings
@@ -127,15 +143,26 @@ class CoordinatorRouter:
 
 
 def build_coordinator_workflow(
-    invoker: SpecialistInvoker,
+    registration: ToolRegistration,
     *,
     router: CoordinatorRouter | None = None,
     specialist_policy: SpecialistPolicy | None = None,
 ) -> Workflow:
-    effective_policy = specialist_policy or get_manifest("coordinator").specialist_policy
+    coordinator = get_manifest("coordinator")
+    effective_policy = specialist_policy or coordinator.specialist_policy
     if effective_policy is None:
         raise ContractError("Coordinator manifest requires a specialist policy")
+    if not registration.runtime_attested or coordinator.capability_bindings != (registration.binding,):
+        raise ConfigurationError(
+            "Coordinator workflow requires its exact runtime-attested registration",
+            context={"agent": coordinator.id},
+        )
     effective_router = router or CoordinatorRouter(specialist_policy=effective_policy)
+    delegate = capabilities_for_manifest(coordinator)[0]
+    registry = CapabilityRegistry()
+    registry.add_descriptor(delegate)
+    registry.register_tool(registration)
+    capability_executor = CapabilityExecutor(registry)
 
     @executor(id="validate_request")
     async def validate_request(
@@ -169,7 +196,20 @@ def build_coordinator_workflow(
 
         async def invoke_one(request: SpecialistRequest) -> SpecialistResult:
             async with semaphore:
-                return await invoker(request)
+                result = await capability_executor.invoke_operation(
+                    registration.tool_name,
+                    {"request": request},
+                    InvocationContext(
+                        tenant_id=request.request.tenant_id,
+                        principal_id=request.request.principal_id,
+                        scopes=frozenset({"research.specialist.invoke"}),
+                        destination=request.target_agent,
+                        idempotency_key=request.request_id,
+                        operation_fingerprint=canonical_digest(request.model_dump(mode="json")),
+                        deadline_monotonic=(time.monotonic() + effective_policy.deadline_seconds),
+                    ),
+                )
+                return SpecialistResult.model_validate(result["value"])
 
         async with asyncio.timeout(effective_policy.deadline_seconds):
             results = tuple(await asyncio.gather(*(invoke_one(item) for item in requests)))
@@ -202,6 +242,23 @@ def build_coordinator_workflow(
         .add_edge(deterministic_route, invoke_specialists)
         .build()
     )
+
+
+def specialist_handler_resolver(
+    invoker: SpecialistInvoker,
+) -> CapabilityHandlerResolver:
+    def resolve(
+        _attestation: ProviderInstanceAttestation,
+    ) -> CapabilityHandler:
+        async def invoke(payload: dict[str, Any]) -> dict[str, Any]:
+            request = payload.get("request")
+            if not isinstance(request, SpecialistRequest):
+                raise ContractError("Specialist tool invocation payload is invalid")
+            return {"value": await invoker(request)}
+
+        return invoke
+
+    return resolve
 
 
 class FoundrySpecialistInvoker:

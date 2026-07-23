@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Any
 
 from agent_framework import Agent
@@ -9,18 +10,27 @@ from dotenv import load_dotenv
 
 from .capabilities import (
     CapabilityDescriptor,
-    resolved_instance_fingerprint,
-    template_instance_fingerprint,
+    CapabilityHandlerResolver,
+    ProviderContractAdapter,
+    ToolRegistration,
+    runtime_attested_registration,
 )
 from .catalog import capabilities_for_manifest
 from .contracts import AgentManifest, bind_contracts
 from .credentials import get_credential
-from .errors import ConfigurationError, HarnessError, StaleCapabilityBindingError
+from .errors import ConfigurationError, HarnessError
 from .middleware import middleware_for_manifest
 from .profiles import get_manifest
 from .release import ReleaseMetadata, build_release_metadata
 from .settings import HarnessSettings
 from .tools import tools_for_profile
+
+
+@dataclass(frozen=True, slots=True)
+class PreparedAgent:
+    manifest: AgentManifest
+    capabilities: tuple[CapabilityDescriptor, ...]
+    registrations: tuple[ToolRegistration, ...]
 
 
 class GovernedAgentFactory:
@@ -32,11 +42,10 @@ class GovernedAgentFactory:
         *,
         client: Any | None = None,
         settings: HarnessSettings | None = None,
+        provider_adapter: ProviderContractAdapter | None = None,
     ) -> Agent:
         load_dotenv(override=False)
-        effective_settings = settings or (
-            HarnessSettings.from_environment() if client is None else None
-        )
+        effective_settings = settings or (HarnessSettings.from_environment() if client is None else None)
         if effective_settings is None:
             raise ConfigurationError(
                 "Injected clients require explicit governed runtime settings",
@@ -52,25 +61,25 @@ class GovernedAgentFactory:
                 "Manifest requires a configured Foundry Toolbox endpoint",
                 context={"agent": self.manifest.id},
             )
-        capabilities = capabilities_for_manifest(self.manifest, effective_settings)
-        resolved_manifest = self._resolve_manifest(
+        prepared = self.prepare(
             effective_settings,
-            capabilities,
+            provider_adapter=provider_adapter,
         )
-        contracts = bind_contracts(resolved_manifest)
+        contracts = bind_contracts(prepared.manifest)
         return Agent(
             client=client,
-            name=resolved_manifest.name,
-            instructions=resolved_manifest.instructions,
-            tools=tools_for_profile(resolved_manifest, client, effective_settings),
+            name=prepared.manifest.name,
+            instructions=prepared.manifest.instructions,
+            tools=tools_for_profile(prepared.manifest, client, effective_settings),
             default_options={
                 "store": False,
                 "response_format": contracts.output_model,
             },
             middleware=middleware_for_manifest(
-                resolved_manifest,
+                prepared.manifest,
                 effective_settings,
-                capabilities,
+                prepared.capabilities,
+                prepared.registrations,
             ),
         )
 
@@ -80,25 +89,82 @@ class GovernedAgentFactory:
     ) -> tuple[Any, ...]:
         return capabilities_for_manifest(self.manifest, settings)
 
-    def release(self, settings: HarnessSettings) -> ReleaseMetadata:
-        manifest = self.resolved_manifest(settings)
+    def release(
+        self,
+        settings: HarnessSettings,
+        *,
+        provider_adapter: ProviderContractAdapter | None = None,
+    ) -> ReleaseMetadata:
+        prepared = self.prepare(
+            settings,
+            provider_adapter=provider_adapter,
+        )
         return build_release_metadata(
-            manifest,
+            prepared.manifest,
             model_deployment=settings.model_deployment_name,
+            registrations=prepared.registrations,
         )
 
-    def readiness(self, settings: HarnessSettings) -> dict[str, str | bool]:
+    def readiness(
+        self,
+        settings: HarnessSettings,
+        *,
+        provider_adapter: ProviderContractAdapter | None = None,
+    ) -> dict[str, str | bool]:
         readiness = settings.readiness(toolbox_required=_requires_toolbox(self.manifest))
         try:
-            self.resolved_manifest(settings)
+            self.resolved_manifest(
+                settings,
+                provider_adapter=provider_adapter,
+            )
         except HarnessError:
             readiness["ready"] = False
         return readiness
 
-    def resolved_manifest(self, settings: HarnessSettings) -> AgentManifest:
+    def resolved_manifest(
+        self,
+        settings: HarnessSettings,
+        *,
+        provider_adapter: ProviderContractAdapter | None = None,
+    ) -> AgentManifest:
+        return self.prepare(
+            settings,
+            provider_adapter=provider_adapter,
+        ).manifest
+
+    def prepare(
+        self,
+        settings: HarnessSettings,
+        *,
+        provider_adapter: ProviderContractAdapter | None = None,
+        handler_resolver: CapabilityHandlerResolver | None = None,
+    ) -> PreparedAgent:
         self._validate_model_policy(settings)
         capabilities = capabilities_for_manifest(self.manifest, settings)
-        return self._resolve_manifest(settings, capabilities)
+        if self.manifest.capability_bindings and provider_adapter is None:
+            raise ConfigurationError(
+                "Capability bindings require an attested provider adapter",
+                context={"agent": self.manifest.id},
+            )
+        registrations = (
+            tuple(
+                runtime_attested_registration(
+                    binding,
+                    provider_adapter,
+                    tenant_id=binding.tenant_scope,
+                    project_id=binding.project_scope,
+                    handler_resolver=handler_resolver,
+                )
+                for binding in self.manifest.capability_bindings
+            )
+            if provider_adapter is not None
+            else ()
+        )
+        return PreparedAgent(
+            manifest=self.manifest,
+            capabilities=capabilities,
+            registrations=registrations,
+        )
 
     def _validate_model_policy(self, settings: HarnessSettings) -> None:
         if settings.model_deployment_name != self.manifest.model_policy.deployment_name:
@@ -106,57 +172,12 @@ class GovernedAgentFactory:
                 "Configured model deployment does not match manifest model policy",
                 context={"agent": self.manifest.id},
             )
-        actual_version = settings.model_deployment_version or _resolve_model_deployment_version(
-            settings
-        )
+        actual_version = settings.model_deployment_version or _resolve_model_deployment_version(settings)
         if actual_version != self.manifest.model_policy.pinned_model_version:
             raise ConfigurationError(
                 "Configured model version does not match manifest model policy",
                 context={"agent": self.manifest.id},
             )
-
-    def _resolve_manifest(
-        self,
-        settings: HarnessSettings,
-        capabilities: tuple[CapabilityDescriptor, ...],
-    ) -> AgentManifest:
-        descriptors = {item.id: item for item in capabilities}
-        bindings = []
-        for binding in self.manifest.capability_bindings:
-            descriptor = descriptors[binding.capability_id]
-            current_fingerprint = resolved_instance_fingerprint(
-                binding,
-                descriptor,
-                project_endpoint=str(settings.foundry_project_endpoint),
-                destination_endpoint=(
-                    str(settings.toolbox_endpoint)
-                    if binding.operation_id.startswith("foundry.toolbox.")
-                    and settings.toolbox_endpoint is not None
-                    else None
-                ),
-            )
-            template_fingerprint = template_instance_fingerprint(binding)
-            if binding.instance_fingerprint not in {
-                template_fingerprint,
-                current_fingerprint,
-            }:
-                raise StaleCapabilityBindingError(
-                    "Capability binding targets changed instance configuration",
-                    context={
-                        "capability": binding.capability_id,
-                        "instance_ref": binding.instance_ref,
-                        "expected_fingerprint": binding.instance_fingerprint,
-                        "current_fingerprint": current_fingerprint,
-                    },
-                )
-            bindings.append(
-                binding.model_copy(
-                    update={"instance_fingerprint": current_fingerprint}
-                )
-            )
-        return self.manifest.model_copy(
-            update={"capability_bindings": tuple(bindings)}
-        )
 
 
 def get_factory(profile_id: str) -> GovernedAgentFactory:
@@ -187,7 +208,4 @@ def _resolve_model_deployment_version(settings: HarnessSettings) -> str:
 
 
 def _requires_toolbox(manifest: AgentManifest) -> bool:
-    return any(
-        binding.operation_id.startswith("foundry.toolbox.")
-        for binding in manifest.capability_bindings
-    )
+    return any(binding.operation_ref.id.startswith("foundry.toolbox.") for binding in manifest.capability_bindings)

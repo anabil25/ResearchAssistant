@@ -7,7 +7,9 @@ from pathlib import Path
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .capabilities import ToolRegistration
 from .contracts import AgentManifest, canonical_digest
+from .errors import ConfigurationError
 
 
 class ReleaseMetadata(BaseModel):
@@ -42,7 +44,7 @@ class ReleaseMetadata(BaseModel):
     protocol: str = "responses"
     protocol_version: str = "2.0.0"
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    provider_contracts: tuple[tuple[str, str, str], ...]
+    provider_contracts: tuple[tuple[str, str], ...]
 
 
 def manifest_digest(manifest: AgentManifest) -> str:
@@ -75,9 +77,17 @@ def build_release_metadata(
     source_bundle_hash: str | None = None,
     parent_release_id: str | None = None,
     built_at: datetime | None = None,
+    registrations: tuple[ToolRegistration, ...] = (),
 ) -> ReleaseMetadata:
     if model_deployment != manifest.model_policy.deployment_name:
         raise ValueError("resolved model deployment does not match manifest model policy")
+    if tuple(registration.binding for registration in registrations) != manifest.capability_bindings or any(
+        not registration.runtime_attested for registration in registrations
+    ):
+        raise ConfigurationError(
+            "Release requires continuously attested provider registrations",
+            context={"agent": manifest.id},
+        )
     packages = (
         "agent-framework-core",
         "agent-framework-foundry",
@@ -98,13 +108,13 @@ def build_release_metadata(
     contract_schema_hash = canonical_digest(AgentManifest.model_json_schema())
     bundle_hash = source_bundle_hash or source_bundle_digest()
     capability_versions = tuple(
-        sorted((binding.descriptor_id, binding.pinned_provider_version) for binding in manifest.capability_bindings)
+        sorted((binding.descriptor_ref.id, binding.descriptor_ref.version) for binding in manifest.capability_bindings)
     )
     toolbox_versions = tuple(
         sorted(
-            (binding.operation_id, binding.pinned_provider_version)
+            (binding.operation_ref.id, binding.operation_ref.version)
             for binding in manifest.capability_bindings
-            if binding.operation_id.startswith("foundry.toolbox.")
+            if binding.operation_ref.id.startswith("foundry.toolbox.")
         )
     )
     knowledge_versions = tuple(
@@ -114,9 +124,8 @@ def build_release_metadata(
         sorted(
             {
                 (
-                    binding.provider_id,
+                    binding.instance_ref.provider_id,
                     binding.provider_contract_version,
-                    binding.provider_contract_schema_digest,
                 )
                 for binding in manifest.capability_bindings
             }

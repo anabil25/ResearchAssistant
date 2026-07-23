@@ -2,7 +2,17 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .capabilities import CapabilityBinding
+from .capabilities import (
+    CapabilityBinding,
+    ConfigurationReference,
+    ConnectionReference,
+    DescriptorReference,
+    DestinationConstraints,
+    InstanceReference,
+    OperationReference,
+    PolicyReference,
+    template_instance_fingerprint,
+)
 from .contracts import (
     SCHEMA_REFERENCES,
     AgentManifest,
@@ -122,7 +132,7 @@ def _toolbox_binding(
         descriptor_id=capability_id,
         operation_id=f"foundry.toolbox.{tool_name}",
         instance_ref=f"foundry://project/toolboxes/{capability_id}",
-        pinned_provider_version="mcp-v1",
+        discovered_version="mcp-v1",
         input_contract=input_contract,
         output_contract=output_contract,
         config_ref=f"app://config/capabilities/{capability_id}",
@@ -136,7 +146,7 @@ def _capability_binding(
     descriptor_id: str,
     operation_id: str,
     instance_ref: str,
-    pinned_provider_version: str,
+    discovered_version: str,
     input_contract: str,
     output_contract: str,
     config_ref: str,
@@ -146,64 +156,63 @@ def _capability_binding(
     input_schema_digest = SCHEMA_REFERENCES[input_contract].sha256
     output_schema_digest = SCHEMA_REFERENCES[output_contract].sha256
     provider_id = (
-        "microsoft-foundry-toolbox"
-        if operation_id.startswith("foundry.toolbox.")
-        else "microsoft-foundry-hosted-agent"
+        "microsoft-foundry-toolbox" if operation_id.startswith("foundry.toolbox.") else "microsoft-foundry-hosted-agent"
     )
     provider_contract_version = (
         "foundry-toolbox.mcp-v1"
         if operation_id.startswith("foundry.toolbox.")
         else "foundry-hosted-agent.responses-2.0.0"
     )
-    provider_contract_schema_digest = canonical_digest(
-        {
-            "provider_id": provider_id,
-            "provider_contract_version": provider_contract_version,
-            "binding_schema": "research-assistant.capability-binding.v2",
-        }
+    descriptor_ref = DescriptorReference(
+        id=descriptor_id,
+        version="1.0.0",
+        digest=canonical_digest({"id": descriptor_id, "version": "1.0.0"}),
     )
-    instance_id = f"{descriptor_id}:{operation_id.rsplit('.', 1)[-1]}"
-    stable_instance_contract = {
-        "descriptor_id": descriptor_id,
-        "descriptor_version": "1.0.0",
-        "operation_id": operation_id,
-        "provider_id": provider_id,
-        "instance_id": instance_id,
-        "instance_ref": instance_ref,
-        "provider_contract_version": provider_contract_version,
-        "provider_contract_schema_digest": provider_contract_schema_digest,
-        "pinned_provider_version": pinned_provider_version,
-        "input_schema_digest": input_schema_digest,
-        "output_schema_digest": output_schema_digest,
-        "config": {},
-        "config_digest": canonical_digest({}),
-        "config_ref": config_ref,
-        "connection_ref": connection_ref,
-        "policy_ref": policy_ref,
-        "destination_pins": (instance_ref,),
-        "tenant_scope": "provider-discovery://tenant",
-        "project_scope": "provider-discovery://project",
-    }
-    return CapabilityBinding(
-        descriptor_id=descriptor_id,
-        descriptor_version="1.0.0",
-        operation_id=operation_id,
-        provider_id=provider_id,
-        instance_id=instance_id,
-        instance_ref=instance_ref,
-        instance_fingerprint=canonical_digest(stable_instance_contract),
-        provider_contract_version=provider_contract_version,
-        provider_contract_schema_digest=provider_contract_schema_digest,
-        pinned_provider_version=pinned_provider_version,
+    operation_ref = OperationReference(
+        id=operation_id,
+        version="1.0.0",
         input_schema_digest=input_schema_digest,
         output_schema_digest=output_schema_digest,
-        config_digest=canonical_digest({}),
-        config_ref=config_ref,
-        connection_ref=connection_ref,
-        policy_ref=policy_ref,
-        destination_pins=(instance_ref,),
+    )
+    instance_id = f"{descriptor_id}:{operation_id.rsplit('.', 1)[-1]}"
+    configuration_ref = ConfigurationReference(
+        id=config_ref,
+        digest=canonical_digest({}),
+    )
+    connection = ConnectionReference(
+        id=connection_ref,
+        auth_mode="managed_identity",
+        authorization_digest=canonical_digest({"id": connection_ref, "auth_mode": "managed_identity"}),
+    )
+    policy = PolicyReference(
+        id=policy_ref,
+        version="1.0.0",
+        digest=canonical_digest({"id": policy_ref, "version": "1.0.0"}),
+    )
+    destinations = DestinationConstraints(
+        constraints=(instance_ref,),
+        digest=canonical_digest((instance_ref,)),
+    )
+    binding = CapabilityBinding(
+        provider_contract_version=provider_contract_version,
+        descriptor_ref=descriptor_ref,
+        operation_ref=operation_ref,
+        instance_ref=InstanceReference(
+            provider_id=provider_id,
+            instance_id=instance_id,
+            discovered_version=discovered_version,
+            fingerprint="0" * 64,
+        ),
+        configuration_ref=configuration_ref,
+        connection_ref=connection,
+        policy_ref=policy,
+        allowed_destinations=destinations,
         tenant_scope="provider-discovery://tenant",
         project_scope="provider-discovery://project",
+    )
+    fingerprint = template_instance_fingerprint(binding)
+    return binding.model_copy(
+        update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": fingerprint})}
     )
 
 
@@ -310,7 +319,7 @@ _MANIFESTS: dict[str, AgentManifest] = {
                 descriptor_id="specialist.delegate",
                 operation_id="foundry.hosted_agent.responses.invoke",
                 instance_ref="foundry://project/agents/pinned-specialists",
-                pinned_provider_version="responses-2.0.0",
+                discovered_version="responses-2.0.0",
                 input_contract="SpecialistRequestV2",
                 output_contract="SpecialistResultV2",
                 config_ref="app://config/capabilities/specialist.delegate",

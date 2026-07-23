@@ -267,13 +267,9 @@ class SpecialistRequest(BaseModel):
             return value
         public = sensitivity == Sensitivity.PUBLIC
         contracts: dict[SpecialistCapability, type[ResearchRequest]] = {
-            SpecialistCapability.LITERATURE: (
-                PublicLiteratureRequest if public else LiteratureRequest
-            ),
+            SpecialistCapability.LITERATURE: (PublicLiteratureRequest if public else LiteratureRequest),
             SpecialistCapability.GRANT: PublicGrantRequest if public else GrantRequest,
-            SpecialistCapability.MATCHING: (
-                PublicMatchingRequest if public else MatchingRequest
-            ),
+            SpecialistCapability.MATCHING: (PublicMatchingRequest if public else MatchingRequest),
             SpecialistCapability.DATASET: DatasetRequest,
             SpecialistCapability.INSTITUTION: InstitutionRequest,
         }
@@ -353,13 +349,9 @@ class SpecialistResult(BaseModel):
             return value
         try:
             capability = SpecialistCapability(raw_capability)
-            response_contract = _SPECIALIST_RESPONSE_CONTRACTS[
-                (capability, agent_name)
-            ]
+            response_contract = _SPECIALIST_RESPONSE_CONTRACTS[(capability, agent_name)]
         except (KeyError, ValueError) as exc:
-            raise ValueError(
-                "specialist result does not match a pinned capability and agent identity"
-            ) from exc
+            raise ValueError("specialist result does not match a pinned capability and agent identity") from exc
         response = value.get("response")
         if isinstance(response, dict):
             return {
@@ -370,17 +362,11 @@ class SpecialistResult(BaseModel):
 
     @model_validator(mode="after")
     def exactly_one_result(self) -> SpecialistResult:
-        response_contract = _SPECIALIST_RESPONSE_CONTRACTS.get(
-            (self.capability, self.agent_name)
-        )
+        response_contract = _SPECIALIST_RESPONSE_CONTRACTS.get((self.capability, self.agent_name))
         if response_contract is None:
-            raise ValueError(
-                "specialist result does not match a pinned capability and agent identity"
-            )
+            raise ValueError("specialist result does not match a pinned capability and agent identity")
         if self.response is not None and type(self.response) is not response_contract:
-            raise ValueError(
-                "specialist response does not match its pinned output contract"
-            )
+            raise ValueError("specialist response does not match its pinned output contract")
         if (self.response is None) == (self.error_code is None):
             raise ValueError("specialist result requires exactly one of response or error_code")
         return self
@@ -410,10 +396,7 @@ def resolve_authorized_evidence(
             )
             if (
                 claim.support in {SupportStatus.SUPPORTED, SupportStatus.CONFLICTING}
-                and (
-                    not claim.evidence_ids
-                    or bool(set(claim.evidence_ids) - authorized_evidence_ids)
-                )
+                and (not claim.evidence_ids or bool(set(claim.evidence_ids) - authorized_evidence_ids))
             )
             else claim
         )
@@ -767,8 +750,7 @@ class AgentManifest(BaseModel):
     @model_validator(mode="after")
     def manifest_policy(self) -> AgentManifest:
         capability_operations = [
-            (binding.capability_id, binding.operation_id)
-            for binding in self.capability_bindings
+            (binding.descriptor_ref.id, binding.operation_ref.id) for binding in self.capability_bindings
         ]
         if len(capability_operations) != len(set(capability_operations)):
             raise ValueError("capability bindings must be unique")
@@ -797,7 +779,7 @@ class AgentManifest(BaseModel):
 
     @property
     def capability_ids(self) -> tuple[str, ...]:
-        return tuple(dict.fromkeys(binding.capability_id for binding in self.capability_bindings))
+        return tuple(dict.fromkeys(binding.descriptor_ref.id for binding in self.capability_bindings))
 
     @property
     def model_tier(self) -> Literal["fast", "primary"]:

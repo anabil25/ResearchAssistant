@@ -5,6 +5,7 @@ from typing import Any
 from agent_framework import Agent
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 
+from .capabilities import ProviderContractAdapter
 from .contracts import AgentManifest
 from .factory import get_factory
 from .profiles import get_manifest
@@ -16,12 +17,21 @@ def build_agent(
     *,
     client: Any | None = None,
     settings: HarnessSettings | None = None,
+    provider_adapter: ProviderContractAdapter | None = None,
 ) -> Agent:
-    return get_factory(profile_id).build(client=client, settings=settings)
+    return get_factory(profile_id).build(
+        client=client,
+        settings=settings,
+        provider_adapter=provider_adapter,
+    )
 
 
-def run_profile(profile_id: str) -> None:
-    ResponsesHostServer(build_agent(profile_id)).run()
+def run_profile(
+    profile_id: str,
+    *,
+    provider_adapter: ProviderContractAdapter | None = None,
+) -> None:
+    ResponsesHostServer(build_agent(profile_id, provider_adapter=provider_adapter)).run()
 
 
 def describe_profile(profile_id: str) -> AgentManifest:
