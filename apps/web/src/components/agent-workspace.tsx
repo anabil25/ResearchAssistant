@@ -1048,6 +1048,7 @@ export function AgentWorkspaceView({
                       const descriptor = capability.resolved_descriptor;
                       const instance = capability.resolved_instance;
                       const approval = capability.binding.approval;
+                      const lifecycle = instance?.lifecycle ?? null;
                       return (
                         <li
                           key={`${capability.binding.descriptor_id}-${capability.binding.instance_id}`}
@@ -1070,6 +1071,12 @@ export function AgentWorkspaceView({
                           >
                             {instance ? instance.maturity : "unknown"}
                           </span>
+                          <span
+                            className="status-chip"
+                            data-tone={lifecycle ?? "unknown"}
+                          >
+                            {lifecycle ?? "unknown"}
+                          </span>
                           <small>
                             {capability.binding.enabled ? "Enabled" : "Disabled"} ·{" "}
                             {approval.status.replace(/_/g, " ")}
@@ -1081,6 +1088,17 @@ export function AgentWorkspaceView({
                               ? ` · pinned to ${capability.binding.instance_version}`
                               : ""}
                           </small>
+                          {lifecycle && lifecycle !== "active" ? (
+                            <small
+                              className="agent-capability-lifecycle-warning"
+                              data-tone={lifecycle}
+                            >
+                              {lifecycle === "retired" ? "Retired" : "Deprecated"}
+                              {instance?.lifecycle_reason
+                                ? `: ${instance.lifecycle_reason}`
+                                : " — no reason provided."}
+                            </small>
+                          ) : null}
                           {capability.stale_reason ? (
                             <small className="agent-capability-stale" data-tone="stale">
                               Stale: {capability.stale_reason}

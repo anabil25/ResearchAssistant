@@ -1344,6 +1344,8 @@ describe("AgentWorkspaceView", () => {
               tenant_id: "tenant-demo",
               workspace_id: "workspace-demo",
               maturity: "ga",
+              lifecycle: "active",
+              lifecycle_reason: null,
               provider: "bing",
               destination: null,
               readiness: "ready",
@@ -1684,6 +1686,102 @@ describe("AgentWorkspaceView", () => {
               stale_reason:
                 "This binding's capability descriptor is no longer resolvable from the provider catalog.",
             },
+            {
+              binding: {
+                descriptor_id: "analysis-classify",
+                descriptor_version: "1.0.0",
+                operation: "classify",
+                instance_id: "analysis-classify-instance",
+                instance_version: null,
+                instance_fingerprint: "fp-classify-1",
+                input_schema_digest: null,
+                output_schema_digest: null,
+                config_ref: null,
+                connection_ref: null,
+                policy_ref: null,
+                enabled: true,
+                approval: {
+                  status: "not_required",
+                  record_id: null,
+                  scope_hash: null,
+                  actor: null,
+                  expires_at: null,
+                },
+              },
+              resolved_descriptor: {
+                id: "analysis-classify",
+                version: "1.0.0",
+                family: "analysis",
+                operation: "classify",
+                risk_class: "read",
+                description: "Classify retrieved evidence.",
+                digest: "sha256:desc3",
+              },
+              resolved_instance: {
+                id: "analysis-classify-instance",
+                descriptor_id: "analysis-classify",
+                descriptor_digest: "sha256:desc3",
+                version: "2.1.0",
+                fingerprint: "fp-classify-1",
+                tenant_id: "tenant-demo",
+                workspace_id: "workspace-demo",
+                maturity: "ga",
+                lifecycle: "deprecated",
+                lifecycle_reason: "Superseded by analysis-summarize v2; sunset 2026-12-01.",
+                provider: "internal",
+                destination: null,
+                readiness: "ready",
+              },
+              stale_reason: null,
+            },
+            {
+              binding: {
+                descriptor_id: "analysis-legacy-extract",
+                descriptor_version: "1.0.0",
+                operation: "extract",
+                instance_id: "analysis-legacy-extract-instance",
+                instance_version: null,
+                instance_fingerprint: "fp-legacy-extract-1",
+                input_schema_digest: null,
+                output_schema_digest: null,
+                config_ref: null,
+                connection_ref: null,
+                policy_ref: null,
+                enabled: false,
+                approval: {
+                  status: "not_required",
+                  record_id: null,
+                  scope_hash: null,
+                  actor: null,
+                  expires_at: null,
+                },
+              },
+              resolved_descriptor: {
+                id: "analysis-legacy-extract",
+                version: "1.0.0",
+                family: "analysis",
+                operation: "extract",
+                risk_class: "read",
+                description: "Legacy structured extraction.",
+                digest: "sha256:desc4",
+              },
+              resolved_instance: {
+                id: "analysis-legacy-extract-instance",
+                descriptor_id: "analysis-legacy-extract",
+                descriptor_digest: "sha256:desc4",
+                version: "1.0.0",
+                fingerprint: "fp-legacy-extract-1",
+                tenant_id: "tenant-demo",
+                workspace_id: "workspace-demo",
+                maturity: "preview",
+                lifecycle: "retired",
+                lifecycle_reason: null,
+                provider: "internal",
+                destination: null,
+                readiness: "unavailable",
+              },
+              stale_reason: null,
+            },
           ],
         },
       }),
@@ -1722,7 +1820,7 @@ describe("AgentWorkspaceView", () => {
     ).toBeInTheDocument();
     expect(within(contract).getByText(/Stats reviewer \(researcher\)/)).toBeInTheDocument();
     expect(within(contract).getByText(/— attached/)).toBeInTheDocument();
-    expect(within(contract).getAllByText("unknown").length).toBe(3);
+    expect(within(contract).getAllByText("unknown").length).toBe(5);
     expect(within(contract).getAllByText(/Disabled/).length).toBeGreaterThan(0);
     expect(within(contract).queryByText(/pinned to/)).not.toBeInTheDocument();
     // Descriptor unresolved: falls back to the pinned binding's raw descriptor_id/operation.
@@ -1738,6 +1836,20 @@ describe("AgentWorkspaceView", () => {
       within(contract).getByText(
         /Stale: This binding's capability descriptor is no longer resolvable/,
       ),
+    ).toBeInTheDocument();
+    // Maturity and lifecycle are independent: a GA instance can still be
+    // deprecated (with a surfaced reason), and a non-GA instance can be
+    // retired (with no reason provided, falling back to explicit copy).
+    expect(within(contract).getByText("ga")).toBeInTheDocument();
+    expect(within(contract).getByText("deprecated")).toBeInTheDocument();
+    expect(within(contract).getByText("retired")).toBeInTheDocument();
+    expect(
+      within(contract).getByText(
+        /Deprecated: Superseded by analysis-summarize v2; sunset 2026-12-01\./,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/Retired — no reason provided\./),
     ).toBeInTheDocument();
     expect(
       within(contract).getAllByText("Not available yet.").length,

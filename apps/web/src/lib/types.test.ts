@@ -40,6 +40,8 @@ function instance(overrides: Partial<CapabilityInstance> = {}): CapabilityInstan
     tenant_id: "tenant-demo",
     workspace_id: "workspace-demo",
     maturity: "ga",
+    lifecycle: "active",
+    lifecycle_reason: null,
     provider: "bing",
     destination: null,
     readiness: "ready",
@@ -95,15 +97,25 @@ describe("isCapabilityAttachable", () => {
     expect(isCapabilityAttachable(instance({ readiness: "unknown" }))).toBe(false);
   });
 
-  it("is false for a ready, non-GA (preview/retired) instance", () => {
+  it("is false for a ready, non-GA (preview) instance", () => {
     expect(isCapabilityAttachable(instance({ maturity: "preview" }))).toBe(false);
-    expect(isCapabilityAttachable(instance({ maturity: "retired" }))).toBe(false);
   });
 
-  it("is true only for a ready GA instance", () => {
-    expect(isCapabilityAttachable(instance({ maturity: "ga", readiness: "ready" }))).toBe(
-      true,
-    );
+  it("is false for a ready, GA instance whose lifecycle is not active (deprecated/retired) — maturity and lifecycle are independent", () => {
+    expect(
+      isCapabilityAttachable(instance({ maturity: "ga", lifecycle: "deprecated" })),
+    ).toBe(false);
+    expect(
+      isCapabilityAttachable(instance({ maturity: "ga", lifecycle: "retired" })),
+    ).toBe(false);
+  });
+
+  it("is true only for a ready, GA, active-lifecycle instance", () => {
+    expect(
+      isCapabilityAttachable(
+        instance({ maturity: "ga", readiness: "ready", lifecycle: "active" }),
+      ),
+    ).toBe(true);
   });
 });
 

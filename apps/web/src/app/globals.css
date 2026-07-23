@@ -752,6 +752,30 @@ button {
   border-color: #ebcbc7;
 }
 
+.status-chip[data-tone="deprecated"] {
+  color: #7b551d;
+  background: #f5e9d2;
+  border-color: #ead8b5;
+}
+
+.status-chip[data-tone="retired"] {
+  color: #88443e;
+  background: #f7dfdc;
+  border-color: #ebcbc7;
+}
+
+.agent-capability-lifecycle-warning[data-tone="deprecated"] {
+  display: block;
+  margin-top: 2px;
+  color: #7b551d;
+}
+
+.agent-capability-lifecycle-warning[data-tone="retired"] {
+  display: block;
+  margin-top: 2px;
+  color: #88443e;
+}
+
 .status-chip[data-tone="disabled"] {
   color: #606863;
   background: #e8ebe8;

@@ -122,10 +122,23 @@ export type AgentRegistryLifecycle =
   | "archived";
 
 /**
- * Capability maturity: exactly these four values, no `experimental` alias.
- * `unknown` is always non-attachable — see `isCapabilityAttachable`.
+ * Capability maturity: exactly these three values, no `experimental` alias.
+ * `unknown` is always non-attachable — see `isCapabilityAttachable`. Distinct
+ * from `CapabilityLifecycle`: maturity describes how proven an operation is
+ * (ga/preview), lifecycle describes whether it's still in active service
+ * (active/deprecated/retired). A `ga` instance can still be `deprecated` or
+ * `retired` — do not collapse the two into one enum.
  */
-export type CapabilityMaturity = "ga" | "preview" | "retired" | "unknown";
+export type CapabilityMaturity = "ga" | "preview" | "unknown";
+
+/**
+ * Capability lifecycle state, independent of maturity. `deprecated` and
+ * `retired` instances remain visible in the UI (with `lifecycle_reason`
+ * surfaced as an explicit warning) rather than being hidden — researchers
+ * need to see what an agent is still bound to even after it's sunset — but
+ * neither is attachable for new bindings; only `active` is.
+ */
+export type CapabilityLifecycle = "active" | "deprecated" | "retired";
 
 /**
  * Operation risk classification shared with the Workflow page redesign
@@ -217,6 +230,10 @@ export interface CapabilityInstance {
   tenant_id: string | null;
   workspace_id: string | null;
   maturity: CapabilityMaturity;
+  /** Independent of `maturity` — see `CapabilityLifecycle`. */
+  lifecycle: CapabilityLifecycle;
+  /** Human-readable reason surfaced when `lifecycle !== "active"` (e.g. sunset date, replacement pointer). `null` only when `lifecycle === "active"` or the provider gave no reason. */
+  lifecycle_reason: string | null;
   provider: string;
   destination: string | null;
   readiness: "ready" | "degraded" | "unavailable" | "unknown";
@@ -237,9 +254,12 @@ export interface CapabilityDiscovery {
 }
 
 /**
- * Only GA, `ready` instances attach. `unknown` maturity or any readiness
- * other than `ready` is always non-attachable — fail-closed rather than
- * assuming availability.
+ * Only GA, `active`-lifecycle, `ready` instances attach. `unknown` maturity,
+ * a non-`active` lifecycle (`deprecated`/`retired`), or any readiness other
+ * than `ready` is always non-attachable — fail-closed rather than assuming
+ * availability. Non-attachable instances (deprecated/retired especially)
+ * still surface via `CapabilityBindingView` for display — attachability
+ * only gates *new* bindings, it doesn't hide existing ones.
  */
 export function isCapabilityAttachable(
   instance: CapabilityInstance | null | undefined,
@@ -247,6 +267,7 @@ export function isCapabilityAttachable(
   if (!instance) return false;
   if (instance.maturity === "unknown") return false;
   if (instance.readiness !== "ready") return false;
+  if (instance.lifecycle !== "active") return false;
   return instance.maturity === "ga";
 }
 
