@@ -9,6 +9,7 @@ from agent_framework import Workflow, WorkflowBuilder, WorkflowContext, executor
 from azure.ai.projects import AIProjectClient
 from pydantic import ValidationError
 
+from .approvals import ApprovalConsumptionAdapter
 from .capabilities import (
     CapabilityExecutor,
     CapabilityHandler,
@@ -149,8 +150,10 @@ def build_coordinator_workflow(
     router: CoordinatorRouter | None = None,
     specialist_policy: SpecialistPolicy | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    approval_adapter: ApprovalConsumptionAdapter | None = None,
     release_id: str | None = None,
     allow_test_idempotency_store: bool = False,
+    allow_test_approval_adapter: bool = False,
 ) -> Workflow:
     coordinator = get_manifest("coordinator")
     effective_policy = specialist_policy or coordinator.specialist_policy
@@ -169,8 +172,10 @@ def build_coordinator_workflow(
     capability_executor = CapabilityExecutor(
         registry,
         idempotency_store=idempotency_store,
+        approval_adapter=approval_adapter,
         release_id=release_id,
         allow_test_idempotency_store=allow_test_idempotency_store,
+        allow_test_approval_adapter=allow_test_approval_adapter,
     )
 
     @executor(id="validate_request")

@@ -1,6 +1,7 @@
 from agent_framework import WorkflowAgent
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 from dotenv import load_dotenv
+from shared.approvals import ApprovalConsumptionAdapter
 from shared.capabilities import ProviderContractAdapter
 from shared.factory import GovernedAgentFactory
 from shared.idempotency import IdempotencyStore
@@ -25,7 +26,9 @@ def build_agent(
     invoker: SpecialistInvoker | None = None,
     provider_adapter: ProviderContractAdapter | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    approval_adapter: ApprovalConsumptionAdapter | None = None,
     allow_test_idempotency_store: bool = False,
+    allow_test_approval_adapter: bool = False,
 ) -> WorkflowAgent:
     load_dotenv(override=False)
     effective_settings = settings or HarnessSettings.from_environment()
@@ -44,8 +47,10 @@ def build_agent(
         build_coordinator_workflow(
             prepared.registrations[0],
             idempotency_store=idempotency_store,
+            approval_adapter=approval_adapter,
             release_id=release.release_id,
             allow_test_idempotency_store=allow_test_idempotency_store,
+            allow_test_approval_adapter=allow_test_approval_adapter,
         ),
         name=prepared.manifest.name,
         description=prepared.manifest.description,
@@ -55,8 +60,10 @@ def build_agent(
             prepared.capabilities,
             prepared.registrations,
             idempotency_store=idempotency_store,
+            approval_adapter=approval_adapter,
             release_id=release.release_id,
             allow_test_idempotency_store=allow_test_idempotency_store,
+            allow_test_approval_adapter=allow_test_approval_adapter,
         ),
     )
 

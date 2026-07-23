@@ -5,6 +5,7 @@ from typing import Any
 from agent_framework import Agent
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 
+from .approvals import ApprovalConsumptionAdapter
 from .capabilities import ProviderContractAdapter
 from .contracts import AgentManifest
 from .factory import get_factory
@@ -20,12 +21,14 @@ def build_agent(
     settings: HarnessSettings | None = None,
     provider_adapter: ProviderContractAdapter | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    approval_adapter: ApprovalConsumptionAdapter | None = None,
 ) -> Agent:
     return get_factory(profile_id).build(
         client=client,
         settings=settings,
         provider_adapter=provider_adapter,
         idempotency_store=idempotency_store,
+        approval_adapter=approval_adapter,
     )
 
 
@@ -34,12 +37,14 @@ def run_profile(
     *,
     provider_adapter: ProviderContractAdapter | None = None,
     idempotency_store: IdempotencyStore | None = None,
+    approval_adapter: ApprovalConsumptionAdapter | None = None,
 ) -> None:
     ResponsesHostServer(
         build_agent(
             profile_id,
             provider_adapter=provider_adapter,
             idempotency_store=idempotency_store,
+            approval_adapter=approval_adapter,
         )
     ).run()
 

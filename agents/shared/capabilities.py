@@ -13,10 +13,24 @@ from enum import StrEnum
 from typing import Any, Literal, Protocol, cast
 from weakref import WeakValueDictionary
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 
+from .approvals import (
+    ApprovalConsumptionAdapter,
+    ApprovalConsumptionDisposition,
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+    ApprovalReceipt,
+)
 from .errors import (
+    ApprovalAlreadyConsumedError,
+    ApprovalConsumptionUncertainError,
+    ApprovalDeniedError,
+    ApprovalExpiredError,
+    ApprovalMismatchError,
     ApprovalRequiredError,
+    ApprovalResultInvalidError,
+    ApprovalStoreUnavailableError,
     AuthorizationError,
     CapabilityNotFoundError,
     ConfigurationError,
@@ -35,6 +49,7 @@ from .errors import (
 from .idempotency import (
     ClaimDisposition,
     CompletedReplayMode,
+    IdempotencyApprovalProvenance,
     IdempotencyClaim,
     IdempotencyKey,
     IdempotencyPolicy,
@@ -439,7 +454,8 @@ class InvocationContext(BaseModel):
     principal_id: str = Field(min_length=1)
     scopes: frozenset[str] = frozenset()
     destination: str | None = None
-    approved_capabilities: frozenset[str] = frozenset()
+    approval_id: str | None = Field(default=None, min_length=1, max_length=512)
+    invocation_id: str | None = Field(default=None, min_length=1, max_length=512)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
     operation_fingerprint: str | None = Field(
         default=None,
@@ -478,9 +494,13 @@ class CapabilityPolicy:
             ApprovalMode.REQUIRED,
             ApprovalMode.ALWAYS,
         }
-        if approval_required and capability.id not in context.approved_capabilities:
+        if approval_required and (
+            context.approval_id is None
+            or context.invocation_id is None
+            or context.destination is None
+        ):
             raise ApprovalRequiredError(
-                "Capability requires an out-of-model approval",
+                "Capability requires an exact out-of-model approval reference",
                 context={"capability": capability.id},
             )
         if capability.idempotency == IdempotencyMode.REQUIRED and (
@@ -581,8 +601,10 @@ class CapabilityExecutor:
         monotonic: Callable[[], float] = time.monotonic,
         max_cached_results: int = 1024,
         idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
         release_id: str | None = None,
         allow_test_idempotency_store: bool = False,
+        allow_test_approval_adapter: bool = False,
         utcnow: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if max_cached_results < 1:
@@ -599,8 +621,10 @@ class CapabilityExecutor:
         self._monotonic = monotonic
         self._max_cached_results = max_cached_results
         self._idempotency_store = idempotency_store
+        self._approval_adapter = approval_adapter
         self._release_id = release_id
         self._allow_test_idempotency_store = allow_test_idempotency_store
+        self._allow_test_approval_adapter = allow_test_approval_adapter
         self._utcnow = utcnow
         self._results: OrderedDict[tuple[str, str, str, str, str], dict[str, Any]] = OrderedDict()
         self._locks: WeakValueDictionary[tuple[str, str, str, str, str], asyncio.Lock] = WeakValueDictionary()
@@ -641,7 +665,7 @@ class CapabilityExecutor:
         context: InvocationContext,
     ) -> dict[str, Any]:
         self._policy.authorize(capability, context)
-        if self._has_external_effect(capability):
+        if self._has_external_effect(capability) or capability.approval != ApprovalMode.NEVER:
             return await self._invoke_durable(
                 capability,
                 registration,
@@ -693,6 +717,15 @@ class CapabilityExecutor:
         ):
             raise IdempotencyStoreUnavailableError(
                 "Externally consequential capabilities require an app-owned durable idempotency store",
+                context={"capability": capability.id},
+            )
+        approval_adapter = self._approval_adapter
+        if approval_adapter is None or (
+            not getattr(approval_adapter, "is_durable", False)
+            and not self._allow_test_approval_adapter
+        ):
+            raise ApprovalStoreUnavailableError(
+                "Approval-gated capabilities require an app-owned durable approval adapter",
                 context={"capability": capability.id},
             )
         if self._release_id is None:
@@ -747,11 +780,34 @@ class CapabilityExecutor:
             return await self._replay_completed(capability, store, claim.record)
         claim_token = cast(str, claim.claim_token)
         try:
+            approval = await self._consume_approval(
+                approval_adapter,
+                capability,
+                registration,
+                context,
+                key,
+            )
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._fail_durable(
+                    store,
+                    claim.record,
+                    claim_token,
+                    "approval_consumption_cancelled",
+                    suppress_store_error=True,
+                )
+            )
+            raise
+        except HarnessError as exc:
+            await self._fail_durable(store, claim.record, claim_token, exc.code)
+            raise
+        try:
             started = await store.mark_in_progress(
                 key,
                 claim_token=claim_token,
                 expected_version=claim.record.version,
                 irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+                approval=approval,
             )
         except HarnessError:
             raise
@@ -766,6 +822,7 @@ class CapabilityExecutor:
             started,
             expected_state="in_progress",
             irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+            approval=approval,
         )
         try:
             timeout = self._remaining_timeout(capability, context)
@@ -917,6 +974,7 @@ class CapabilityExecutor:
         *,
         expected_state: str,
         irreversible: bool | None = None,
+        approval: IdempotencyApprovalProvenance | None = None,
     ) -> None:
         if not isinstance(previous, IdempotencyRecord) or not isinstance(
             current,
@@ -934,6 +992,10 @@ class CapabilityExecutor:
             or current.actor_id != previous.actor_id
             or current.release_id != previous.release_id
             or current.claimed_at != previous.claimed_at
+            or (
+                expected_state != "in_progress"
+                and current.approval != previous.approval
+            )
         ):
             raise IdempotencyReconciliationRequiredError(
                 "Durable idempotency transition failed provenance validation",
@@ -949,6 +1011,8 @@ class CapabilityExecutor:
             or current.result_hash is not None
             or current.result_ref is not None
             or current.failure_code is not None
+            or current.approval != approval
+            or previous.approval is not None
         ):
             raise IdempotencyReconciliationRequiredError(
                 "Durable start transition is not safe to execute",
@@ -989,6 +1053,7 @@ class CapabilityExecutor:
                 and record.result_ref is None
                 and record.failure_code is None
                 and not record.reconciliation_required
+                and record.approval is None
             )
         if record.state == IdempotencyState.IN_PROGRESS:
             return (
@@ -999,6 +1064,7 @@ class CapabilityExecutor:
                 and record.result_ref is None
                 and record.failure_code is None
                 and not record.reconciliation_required
+                and record.approval is not None
             )
         if record.state == IdempotencyState.COMPLETED:
             return (
@@ -1008,6 +1074,7 @@ class CapabilityExecutor:
                 and record.result_ref is not None
                 and record.failure_code is None
                 and not record.reconciliation_required
+                and record.approval is not None
             )
         return (
             record.state == IdempotencyState.FAILED
@@ -1017,6 +1084,123 @@ class CapabilityExecutor:
             and record.result_ref is None
             and record.reconciliation_required
         )
+
+    async def _consume_approval(
+        self,
+        adapter: ApprovalConsumptionAdapter,
+        capability: CapabilityDescriptor,
+        registration: ToolRegistration,
+        context: InvocationContext,
+        key: IdempotencyKey,
+    ) -> IdempotencyApprovalProvenance:
+        request = ApprovalConsumptionRequest(
+            approval_id=cast(str, context.approval_id),
+            tenant_id=context.tenant_id,
+            project_id=registration.binding.project_scope,
+            actor_id=context.principal_id,
+            scopes=tuple(sorted(context.scopes)),
+            binding_digest=key.binding_digest,
+            instance_fingerprint=registration.binding.instance_ref.fingerprint,
+            operation_id=registration.binding.operation_ref.id,
+            operation_version=registration.binding.operation_ref.version,
+            argument_hash=key.argument_hash,
+            destination=key.destination,
+            policy_id=registration.binding.policy_ref.id,
+            policy_version=registration.binding.policy_ref.version,
+            policy_digest=registration.binding.policy_ref.digest,
+            release_id=cast(str, self._release_id),
+            invocation_id=cast(str, context.invocation_id),
+            idempotency_key_digest=key.digest,
+        )
+        try:
+            timeout = self._remaining_timeout(capability, context)
+            async with asyncio.timeout(timeout):
+                result = await adapter.consume(request)
+        except TimeoutError as exc:
+            raise ApprovalConsumptionUncertainError(
+                "Approval consumption outcome is uncertain",
+                context={"capability": capability.id},
+            ) from exc
+        except asyncio.CancelledError:
+            raise
+        except HarnessError:
+            raise
+        except Exception as exc:
+            raise ApprovalStoreUnavailableError(
+                "Durable approval consumption failed closed",
+                context={"capability": capability.id},
+            ) from exc
+        receipt = self._validate_approval_result(capability, request, result)
+        return IdempotencyApprovalProvenance(
+            approval_id=receipt.approval_id,
+            request_digest=receipt.request_digest,
+            receipt_digest=receipt.digest,
+            approval_version=receipt.approval_version,
+            consumption_id=receipt.consumption_id,
+            consumption_version=receipt.consumption_version,
+            approver_id=receipt.approver_id,
+            consumed_at=receipt.consumed_at,
+        )
+
+    def _validate_approval_result(
+        self,
+        capability: CapabilityDescriptor,
+        request: ApprovalConsumptionRequest,
+        result: ApprovalConsumptionResult,
+    ) -> ApprovalReceipt:
+        if not isinstance(result, ApprovalConsumptionResult):
+            raise ApprovalResultInvalidError(
+                "Approval adapter returned an invalid result contract",
+                context={"capability": capability.id},
+            )
+        try:
+            validated = ApprovalConsumptionResult.model_validate(
+                result.model_dump(mode="json")
+            )
+        except (AttributeError, ValidationError) as exc:
+            raise ApprovalResultInvalidError(
+                "Approval adapter returned an invalid result contract",
+                context={"capability": capability.id},
+            ) from exc
+        result = validated
+        if (
+            result.approval_id != request.approval_id
+            or result.request_digest != request.digest
+        ):
+            raise ApprovalResultInvalidError(
+                "Approval adapter returned an invalid result contract",
+                context={"capability": capability.id},
+            )
+        if result.disposition != ApprovalConsumptionDisposition.CONSUMED:
+            errors: dict[ApprovalConsumptionDisposition, type[HarnessError]] = {
+                ApprovalConsumptionDisposition.DENIED: ApprovalDeniedError,
+                ApprovalConsumptionDisposition.EXPIRED: ApprovalExpiredError,
+                ApprovalConsumptionDisposition.NOT_FOUND: ApprovalRequiredError,
+                ApprovalConsumptionDisposition.MISMATCH: ApprovalMismatchError,
+                ApprovalConsumptionDisposition.ALREADY_CONSUMED: ApprovalAlreadyConsumedError,
+            }
+            raise errors[result.disposition](
+                "Approval was not consumable for the exact capability invocation",
+                context={
+                    "capability": capability.id,
+                    "reason": cast(str, result.reason_code),
+                },
+            )
+        receipt = result.receipt
+        if (
+            not isinstance(receipt, ApprovalReceipt)
+            or receipt.approval_id != request.approval_id
+            or receipt.request_digest != request.digest
+            or receipt.approval_version != result.approval_version
+            or not receipt.one_time
+            or receipt.consumed_at > self._utcnow()
+            or receipt.expires_at <= self._utcnow()
+        ):
+            raise ApprovalResultInvalidError(
+                "Approval receipt failed exact-binding validation",
+                context={"capability": capability.id},
+            )
+        return receipt
 
     async def _replay_completed(
         self,
@@ -1094,6 +1278,7 @@ class CapabilityExecutor:
                 or failed.result_ref is not None
                 or failed.failure_code != failure_code
                 or not failed.reconciliation_required
+                or failed.approval != started.approval
             ):
                 raise IdempotencyReconciliationRequiredError(
                     "Durable failure transition failed provenance validation"

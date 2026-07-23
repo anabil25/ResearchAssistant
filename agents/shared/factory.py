@@ -8,7 +8,9 @@ from agent_framework.foundry import FoundryChatClient
 from azure.ai.projects import AIProjectClient
 from dotenv import load_dotenv
 
+from .approvals import ApprovalConsumptionAdapter
 from .capabilities import (
+    ApprovalMode,
     CapabilityDescriptor,
     CapabilityHandlerResolver,
     OperationClass,
@@ -46,7 +48,9 @@ class GovernedAgentFactory:
         settings: HarnessSettings | None = None,
         provider_adapter: ProviderContractAdapter | None = None,
         idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
         allow_test_idempotency_store: bool = False,
+        allow_test_approval_adapter: bool = False,
     ) -> Agent:
         load_dotenv(override=False)
         effective_settings = settings or (HarnessSettings.from_environment() if client is None else None)
@@ -80,6 +84,17 @@ class GovernedAgentFactory:
                 "Write-capable Hosted Agents require an app-owned durable idempotency store",
                 context={"agent": self.manifest.id},
             )
+        if _requires_durable_approval(prepared.capabilities) and (
+            approval_adapter is None
+            or (
+                not getattr(approval_adapter, "is_durable", False)
+                and not allow_test_approval_adapter
+            )
+        ):
+            raise ConfigurationError(
+                "Approval-gated Hosted Agents require an app-owned durable approval adapter",
+                context={"agent": self.manifest.id},
+            )
         release = build_release_metadata(
             prepared.manifest,
             model_deployment=effective_settings.model_deployment_name,
@@ -101,8 +116,10 @@ class GovernedAgentFactory:
                 prepared.capabilities,
                 prepared.registrations,
                 idempotency_store=idempotency_store,
+                approval_adapter=approval_adapter,
                 release_id=release.release_id,
                 allow_test_idempotency_store=allow_test_idempotency_store,
+                allow_test_approval_adapter=allow_test_approval_adapter,
             ),
         )
 
@@ -134,6 +151,7 @@ class GovernedAgentFactory:
         *,
         provider_adapter: ProviderContractAdapter | None = None,
         idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
     ) -> dict[str, str | bool]:
         readiness = settings.readiness(toolbox_required=_requires_toolbox(self.manifest))
         try:
@@ -153,6 +171,16 @@ class GovernedAgentFactory:
             )
             readiness["durable_idempotency"] = durable
             if not durable:
+                readiness["ready"] = False
+        requires_durable_approval = _requires_durable_approval(prepared.capabilities)
+        if requires_durable_approval:
+            durable_approval = approval_adapter is not None and getattr(
+                approval_adapter,
+                "is_durable",
+                False,
+            )
+            readiness["durable_approval"] = durable_approval
+            if not durable_approval:
                 readiness["ready"] = False
         return readiness
 
@@ -258,3 +286,9 @@ def _requires_durable_idempotency(
         }
         for capability in capabilities
     )
+
+
+def _requires_durable_approval(
+    capabilities: tuple[CapabilityDescriptor, ...],
+) -> bool:
+    return any(capability.approval != ApprovalMode.NEVER for capability in capabilities)

@@ -176,13 +176,22 @@ class DatasetRequest(ResearchRequest):
         Sensitivity.RESTRICTED,
     ]
     dataset_id: str = Field(min_length=1, max_length=256)
-    approved_compute: bool = False
+    approved_compute: Literal[False] = False
+    approval_id: str | None = Field(default=None, min_length=1, max_length=512)
+    invocation_id: str | None = Field(default=None, min_length=1, max_length=512)
     idempotency_key: str | None = Field(default=None, min_length=1, max_length=256)
 
     @model_validator(mode="after")
-    def approved_compute_has_stable_key(self) -> DatasetRequest:
-        if self.approved_compute and self.idempotency_key is None:
-            raise ValueError("approved compute requires a stable idempotency key")
+    def approval_context_is_complete(self) -> DatasetRequest:
+        supplied = (
+            self.approval_id is not None,
+            self.invocation_id is not None,
+            self.idempotency_key is not None,
+        )
+        if any(supplied) and not all(supplied):
+            raise ValueError(
+                "approval, invocation, and idempotency references must be supplied together"
+            )
         return self
 
 

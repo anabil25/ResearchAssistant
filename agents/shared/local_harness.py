@@ -6,7 +6,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
+from .approvals import ApprovalConsumptionAdapter
 from .capabilities import (
+    ApprovalMode,
     CapabilityExecutor,
     CapabilityRegistry,
     OperationClass,
@@ -54,11 +56,13 @@ class LocalHarness:
         *,
         registrations: tuple[ToolRegistration, ...] = (),
         idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
     ) -> None:
         self.manifest = manifest
         self._contracts: AgentContractBinding = bind_contracts(manifest)
         self._runner = runner
         self._idempotency_store = idempotency_store
+        self._approval_adapter = approval_adapter
         self._requires_idempotency_store = any(
             capability.operation
             in {
@@ -66,6 +70,10 @@ class LocalHarness:
                 OperationClass.WRITE_IRREVERSIBLE,
                 OperationClass.PRIVILEGED,
             }
+            for capability in capabilities_for_manifest(manifest)
+        )
+        self._requires_approval_adapter = any(
+            capability.approval != ApprovalMode.NEVER
             for capability in capabilities_for_manifest(manifest)
         )
         self.release = build_release_metadata(
@@ -78,8 +86,10 @@ class LocalHarness:
         return CapabilityExecutor(
             registry,
             idempotency_store=self._idempotency_store,
+            approval_adapter=self._approval_adapter,
             release_id=self.release.release_id,
             allow_test_idempotency_store=True,
+            allow_test_approval_adapter=True,
         )
 
     def readiness(self) -> dict[str, Any]:
@@ -87,14 +97,19 @@ class LocalHarness:
             not self._requires_idempotency_store
             or self._idempotency_store is not None
         )
+        approval_ready = (
+            not self._requires_approval_adapter
+            or self._approval_adapter is not None
+        )
         return {
-            "ready": idempotency_ready,
+            "ready": idempotency_ready and approval_ready,
             "agent": self.manifest.name,
             "manifest_digest": self.release.manifest_digest,
             "release_id": self.release.release_id,
             "input_contract": self.manifest.input_contract,
             "output_contract": self.manifest.output_contract,
             "idempotency_store_configured": idempotency_ready,
+            "approval_adapter_configured": approval_ready,
         }
 
     async def invoke(self, invocation: LocalInvocation) -> LocalResult:

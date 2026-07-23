@@ -69,6 +69,19 @@ class IdempotencyKey(BaseModel):
         return canonical_idempotency_digest(self.model_dump(mode="json"))
 
 
+class IdempotencyApprovalProvenance(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    approval_id: str = Field(min_length=1, max_length=512)
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    receipt_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_version: str = Field(min_length=1, max_length=128)
+    consumption_id: str = Field(min_length=1, max_length=512)
+    consumption_version: str = Field(min_length=1, max_length=128)
+    approver_id: str = Field(min_length=1, max_length=512)
+    consumed_at: datetime
+
+
 class IdempotencyRecord(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -87,6 +100,7 @@ class IdempotencyRecord(BaseModel):
     result_ref: str | None = Field(default=None, min_length=1, max_length=2048)
     failure_code: str | None = Field(default=None, min_length=1, max_length=128)
     reconciliation_required: bool = False
+    approval: IdempotencyApprovalProvenance | None = None
 
     @model_validator(mode="after")
     def state_fields_are_consistent(self) -> IdempotencyRecord:
@@ -139,6 +153,7 @@ class IdempotencyStore(Protocol):
         claim_token: str,
         expected_version: str,
         irreversible: bool,
+        approval: IdempotencyApprovalProvenance | None = None,
     ) -> IdempotencyRecord: ...
 
     async def complete(
@@ -233,6 +248,7 @@ class InMemoryIdempotencyStore:
         claim_token: str,
         expected_version: str,
         irreversible: bool,
+        approval: IdempotencyApprovalProvenance | None = None,
     ) -> IdempotencyRecord:
         async with self._backend.lock:
             current = self._owned_record(key, claim_token, expected_version)
@@ -244,6 +260,7 @@ class InMemoryIdempotencyStore:
                     "version": self._next_version(current.version),
                     "started_at": self._clock(),
                     "irreversible_started": irreversible,
+                    "approval": approval,
                 }
             )
             self._backend.records[key.digest] = updated
@@ -342,5 +359,6 @@ def idempotency_contract_schema_digest() -> str:
             "key": IdempotencyKey.model_json_schema(),
             "record": IdempotencyRecord.model_json_schema(),
             "claim": IdempotencyClaim.model_json_schema(),
+            "approval_provenance": IdempotencyApprovalProvenance.model_json_schema(),
         }
     )

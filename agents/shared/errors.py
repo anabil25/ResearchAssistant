@@ -47,6 +47,34 @@ class ApprovalRequiredError(HarnessError):
     code = "approval_required"
 
 
+class ApprovalStoreUnavailableError(HarnessError):
+    code = "approval_store_unavailable"
+
+
+class ApprovalDeniedError(HarnessError):
+    code = "approval_denied"
+
+
+class ApprovalExpiredError(HarnessError):
+    code = "approval_expired"
+
+
+class ApprovalMismatchError(HarnessError):
+    code = "approval_binding_mismatch"
+
+
+class ApprovalAlreadyConsumedError(HarnessError):
+    code = "approval_already_consumed"
+
+
+class ApprovalConsumptionUncertainError(HarnessError):
+    code = "approval_consumption_uncertain"
+
+
+class ApprovalResultInvalidError(HarnessError):
+    code = "approval_result_invalid"
+
+
 class CapabilityNotFoundError(HarnessError):
     code = "capability_not_found"
 

@@ -25,6 +25,17 @@ from agent_framework import (
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 from openai import APIStatusError
 from pydantic import ValidationError
+from shared.approvals import (
+    ApprovalConsumptionDisposition,
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+    ApprovalGrant,
+    ApprovalGrantState,
+    ApprovalReceipt,
+    InMemoryApprovalBackend,
+    InMemoryApprovalConsumptionAdapter,
+    approval_contract_schema_digest,
+)
 from shared.capabilities import (
     ApprovalMode,
     CapabilityBinding,
@@ -82,7 +93,14 @@ from shared.contracts import (
     resolve_authorized_evidence,
 )
 from shared.errors import (
+    ApprovalAlreadyConsumedError,
+    ApprovalConsumptionUncertainError,
+    ApprovalDeniedError,
+    ApprovalExpiredError,
+    ApprovalMismatchError,
     ApprovalRequiredError,
+    ApprovalResultInvalidError,
+    ApprovalStoreUnavailableError,
     AuthorizationError,
     CapabilityNotFoundError,
     ConfigurationError,
@@ -108,6 +126,7 @@ from shared.factory import GovernedAgentFactory, get_factory
 from shared.idempotency import (
     ClaimDisposition,
     CompletedReplayMode,
+    IdempotencyApprovalProvenance,
     IdempotencyClaim,
     IdempotencyKey,
     IdempotencyPolicy,
@@ -526,7 +545,9 @@ def test_public_and_specialist_contracts_are_strict() -> None:
     dataset_request = DatasetRequest.model_validate(
         _request(
             dataset_id="dataset.csv",
-            approved_compute=True,
+            approved_compute=False,
+            approval_id="approval-a",
+            invocation_id="invocation-a",
             idempotency_key="stable-key",
         )
     )
@@ -544,8 +565,10 @@ def test_public_and_specialist_contracts_are_strict() -> None:
             request=dataset_request,
             target_agent="grant-agent",
         )
-    with pytest.raises(ValidationError, match="stable idempotency"):
+    with pytest.raises(ValidationError, match="Input should be False"):
         DatasetRequest.model_validate(_request(dataset_id="dataset.csv", approved_compute=True))
+    with pytest.raises(ValidationError, match="supplied together"):
+        DatasetRequest.model_validate(_request(dataset_id="dataset.csv", approval_id="approval-a"))
     with pytest.raises(ValidationError, match="caller-supplied evidence"):
         SpecialistRequest.model_validate(
             {
@@ -840,7 +863,8 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
         "principal_id": "principal",
         "scopes": frozenset({"write"}),
         "destination": "approved.example",
-        "approved_capabilities": frozenset({"write.action"}),
+        "approval_id": "approval-a",
+        "invocation_id": "invocation-a",
         "idempotency_key": "key",
         "operation_fingerprint": "a" * 64,
     }
@@ -858,7 +882,7 @@ def test_policy_enforces_scope_destination_approval_and_idempotency() -> None:
     with pytest.raises(ApprovalRequiredError):
         policy.authorize(
             capability,
-            InvocationContext.model_validate({**base, "approved_capabilities": frozenset()}),
+            InvocationContext.model_validate({**base, "approval_id": None}),
         )
     with pytest.raises(IdempotencyRequiredError):
         policy.authorize(
@@ -1473,7 +1497,8 @@ def _external_context(**updates: Any) -> InvocationContext:
         "principal_id": "actor-a",
         "scopes": frozenset({"write"}),
         "destination": "destination-a",
-        "approved_capabilities": frozenset({"write.external"}),
+        "approval_id": "approval-a",
+        "invocation_id": "invocation-a",
         "idempotency_key": "caller-key",
         "operation_fingerprint": "a" * 64,
     }
@@ -1497,6 +1522,632 @@ def _durable_key(
         caller_key=context.idempotency_key,
         argument_hash=context.operation_fingerprint,
     )
+
+
+def _approval_request(
+    binding: CapabilityBinding,
+    context: InvocationContext,
+    release_id: str,
+) -> ApprovalConsumptionRequest:
+    key = _durable_key(binding, context)
+    assert context.approval_id is not None
+    assert context.invocation_id is not None
+    return ApprovalConsumptionRequest(
+        approval_id=context.approval_id,
+        tenant_id=context.tenant_id,
+        project_id=binding.project_scope,
+        actor_id=context.principal_id,
+        scopes=tuple(sorted(context.scopes)),
+        binding_digest=key.binding_digest,
+        instance_fingerprint=binding.instance_ref.fingerprint,
+        operation_id=binding.operation_ref.id,
+        operation_version=binding.operation_ref.version,
+        argument_hash=key.argument_hash,
+        destination=key.destination,
+        policy_id=binding.policy_ref.id,
+        policy_version=binding.policy_ref.version,
+        policy_digest=binding.policy_ref.digest,
+        release_id=release_id,
+        invocation_id=context.invocation_id,
+        idempotency_key_digest=key.digest,
+    )
+
+
+def _approval_adapter(
+    binding: CapabilityBinding,
+    context: InvocationContext,
+    release_id: str,
+    *,
+    backend: InMemoryApprovalBackend | None = None,
+) -> InMemoryApprovalConsumptionAdapter:
+    effective_backend = backend or InMemoryApprovalBackend()
+    request = _approval_request(binding, context, release_id)
+    now = datetime(2000, 1, 1, tzinfo=UTC)
+    effective_backend.grants[request.approval_id] = ApprovalGrant(
+        request=request,
+        request_digest=request.digest,
+        version="1",
+        approver_id="approver-a",
+        approved_at=now - timedelta(minutes=1),
+        expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+    )
+    return InMemoryApprovalConsumptionAdapter(effective_backend)
+
+
+def _approval_provenance() -> IdempotencyApprovalProvenance:
+    now = datetime.now(UTC)
+    return IdempotencyApprovalProvenance(
+        approval_id="approval-a",
+        request_digest="a" * 64,
+        receipt_digest="b" * 64,
+        approval_version="1",
+        consumption_id="consumption-a",
+        consumption_version="2",
+        approver_id="approver-a",
+        consumed_at=now,
+    )
+
+
+class _AutoApprovalAdapter:
+    is_durable = True
+
+    def __init__(self) -> None:
+        self.requests: dict[str, str] = {}
+        self.calls = 0
+
+    async def consume(
+        self,
+        request: ApprovalConsumptionRequest,
+    ) -> ApprovalConsumptionResult:
+        self.calls += 1
+        prior = self.requests.get(request.approval_id)
+        if prior is not None:
+            disposition = (
+                ApprovalConsumptionDisposition.ALREADY_CONSUMED
+                if prior == request.digest
+                else ApprovalConsumptionDisposition.MISMATCH
+            )
+            return ApprovalConsumptionResult(
+                disposition=disposition,
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                reason_code=disposition.value,
+            )
+        self.requests[request.approval_id] = request.digest
+        now = datetime(2000, 1, 1, tzinfo=UTC)
+        receipt = ApprovalReceipt(
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+            approval_version="1",
+            consumption_id=f"consumption-{self.calls}",
+            consumption_version="2",
+            approver_id="approver-a",
+            consumed_at=now,
+            expires_at=datetime(2099, 1, 1, tzinfo=UTC),
+        )
+        return ApprovalConsumptionResult(
+            disposition=ApprovalConsumptionDisposition.CONSUMED,
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+            approval_version="1",
+            receipt=receipt,
+        )
+
+
+def _approval_grant(
+    request: ApprovalConsumptionRequest,
+    *,
+    state: ApprovalGrantState = ApprovalGrantState.APPROVED,
+    expires_at: datetime | None = None,
+    denial_reason: str | None = None,
+) -> ApprovalGrant:
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    return ApprovalGrant(
+        request=request,
+        request_digest=request.digest,
+        version="1",
+        state=state,
+        approver_id="approver-a",
+        approved_at=now - timedelta(minutes=1),
+        expires_at=expires_at or now + timedelta(minutes=5),
+        denial_reason=denial_reason,
+    )
+
+
+def test_approval_contracts_are_canonical_and_strict() -> None:
+    capability = _external_capability()
+    _, binding = _external_registry(capability, lambda payload: payload)
+    request = _approval_request(
+        binding,
+        _external_context(),
+        f"sha256:{'a' * 64}",
+    )
+    assert request.digest == canonical_idempotency_digest(request.model_dump(mode="json"))
+    assert len(approval_contract_schema_digest()) == 64
+    with pytest.raises(ValidationError, match="sorted and unique"):
+        ApprovalConsumptionRequest.model_validate(
+            {**request.model_dump(), "scopes": ("write", "alpha")}
+        )
+    with pytest.raises(ValidationError, match="empty"):
+        ApprovalConsumptionRequest.model_validate(
+            {**request.model_dump(), "scopes": ("",)}
+        )
+
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    receipt = ApprovalReceipt(
+        approval_id=request.approval_id,
+        request_digest=request.digest,
+        approval_version="1",
+        consumption_id="consumption-a",
+        consumption_version="2",
+        approver_id="approver-a",
+        consumed_at=now,
+        expires_at=now + timedelta(minutes=1),
+    )
+    assert len(receipt.digest) == 64
+    with pytest.raises(ValidationError, match="one-time"):
+        ApprovalReceipt.model_validate({**receipt.model_dump(), "one_time": False})
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        ApprovalReceipt.model_validate(
+            {**receipt.model_dump(), "consumed_at": now.replace(tzinfo=None)}
+        )
+    with pytest.raises(ValidationError, match="after expiry"):
+        ApprovalReceipt.model_validate(
+            {
+                **receipt.model_dump(),
+                "consumed_at": now + timedelta(minutes=2),
+            }
+        )
+    with pytest.raises(ValidationError, match="only consumed"):
+        ApprovalConsumptionResult(
+            disposition=ApprovalConsumptionDisposition.DENIED,
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+            receipt=receipt,
+            reason_code="denied",
+        )
+    with pytest.raises(ValidationError, match="carry a receipt"):
+        ApprovalConsumptionResult(
+            disposition=ApprovalConsumptionDisposition.CONSUMED,
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+        )
+    with pytest.raises(ValidationError, match="require a reason code"):
+        ApprovalConsumptionResult(
+            disposition=ApprovalConsumptionDisposition.DENIED,
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+        )
+    with pytest.raises(ValidationError, match="denial reason"):
+        ApprovalConsumptionResult(
+            disposition=ApprovalConsumptionDisposition.CONSUMED,
+            approval_id=request.approval_id,
+            request_digest=request.digest,
+            receipt=receipt,
+            reason_code="invalid",
+        )
+    with pytest.raises(ValidationError, match="request digest"):
+        ApprovalGrant.model_validate(
+            {**_approval_grant(request).model_dump(), "request_digest": "0" * 64}
+        )
+    with pytest.raises(ValidationError, match="timezone-aware"):
+        ApprovalGrant.model_validate(
+            {
+                **_approval_grant(request).model_dump(),
+                "approved_at": now.replace(tzinfo=None),
+            }
+        )
+    with pytest.raises(ValidationError, match="expires before"):
+        ApprovalGrant.model_validate(
+            {
+                **_approval_grant(request).model_dump(),
+                "approved_at": now,
+                "expires_at": now - timedelta(seconds=1),
+            }
+        )
+    with pytest.raises(ValidationError, match="denial reason"):
+        ApprovalGrant.model_validate(
+            {**_approval_grant(request).model_dump(), "state": "denied"}
+        )
+    with pytest.raises(ValidationError, match="carry a receipt"):
+        ApprovalGrant.model_validate(
+            {**_approval_grant(request).model_dump(), "state": "consumed"}
+        )
+
+
+@pytest.mark.asyncio
+async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
+    capability = _external_capability()
+    _, binding = _external_registry(capability, lambda payload: payload)
+    request = _approval_request(
+        binding,
+        _external_context(),
+        f"sha256:{'b' * 64}",
+    )
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    backend = InMemoryApprovalBackend()
+    first = InMemoryApprovalConsumptionAdapter(backend, clock=lambda: now)
+    second = InMemoryApprovalConsumptionAdapter(backend, clock=lambda: now)
+    await first.issue(_approval_grant(request))
+    with pytest.raises(ValueError, match="already exists"):
+        await second.issue(_approval_grant(request))
+    results = await asyncio.gather(first.consume(request), second.consume(request))
+    assert {result.disposition for result in results} == {
+        ApprovalConsumptionDisposition.CONSUMED,
+        ApprovalConsumptionDisposition.ALREADY_CONSUMED,
+    }
+    consumed = next(
+        result
+        for result in results
+        if result.disposition == ApprovalConsumptionDisposition.CONSUMED
+    )
+    assert consumed.receipt is not None
+    assert consumed.receipt.request_digest == request.digest
+
+    missing = request.model_copy(update={"approval_id": "missing"})
+    assert (await first.consume(missing)).disposition == ApprovalConsumptionDisposition.NOT_FOUND
+    mismatched = request.model_copy(update={"actor_id": "other-actor"})
+    assert (await first.consume(mismatched)).disposition == ApprovalConsumptionDisposition.MISMATCH
+
+    denied = request.model_copy(update={"approval_id": "denied"})
+    await first.issue(
+        _approval_grant(
+            denied,
+            state=ApprovalGrantState.DENIED,
+            denial_reason="policy_denied",
+        )
+    )
+    denial = await first.consume(denied)
+    assert denial.disposition == ApprovalConsumptionDisposition.DENIED
+    assert denial.reason_code == "policy_denied"
+
+    expired = request.model_copy(update={"approval_id": "expired"})
+    await first.issue(
+        _approval_grant(
+            expired,
+            expires_at=now - timedelta(seconds=1),
+        )
+    )
+    assert (await first.consume(expired)).disposition == ApprovalConsumptionDisposition.EXPIRED
+    assert (await first.consume(expired)).disposition == ApprovalConsumptionDisposition.EXPIRED
+
+
+@pytest.mark.asyncio
+async def test_executor_consumes_exact_approval_and_persists_receipt() -> None:
+    release_id = f"sha256:{'c' * 64}"
+    context = _external_context()
+    capability = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
+    registry, binding = _external_registry(capability, lambda payload: payload)
+    backend = InMemoryApprovalBackend()
+    approval = _approval_adapter(binding, context, release_id, backend=backend)
+    idempotency = InMemoryIdempotencyStore()
+    executor = CapabilityExecutor(
+        registry,
+        idempotency_store=idempotency,
+        approval_adapter=approval,
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+        allow_test_approval_adapter=True,
+    )
+    assert await executor.invoke(capability.id, {"value": 1}, context) == {"value": 1}
+    record = idempotency.record_for(_durable_key(binding, context))
+    assert record is not None and record.approval is not None
+    grant = backend.grants[cast(str, context.approval_id)]
+    assert grant.receipt is not None
+    assert record.approval.request_digest == grant.receipt.request_digest
+    assert record.approval.receipt_digest == grant.receipt.digest
+    assert await executor.invoke(capability.id, {"value": 999}, context) == {"value": 1}
+    assert grant == backend.grants[cast(str, context.approval_id)]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("disposition", "error_type"),
+    (
+        (ApprovalConsumptionDisposition.DENIED, ApprovalDeniedError),
+        (ApprovalConsumptionDisposition.EXPIRED, ApprovalExpiredError),
+        (ApprovalConsumptionDisposition.NOT_FOUND, ApprovalRequiredError),
+        (ApprovalConsumptionDisposition.MISMATCH, ApprovalMismatchError),
+        (ApprovalConsumptionDisposition.ALREADY_CONSUMED, ApprovalAlreadyConsumedError),
+    ),
+)
+async def test_executor_maps_terminal_approval_results_without_calling_handler(
+    disposition: ApprovalConsumptionDisposition,
+    error_type: type[HarnessError],
+) -> None:
+    calls = 0
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return payload
+
+    class TerminalAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            return ApprovalConsumptionResult(
+                disposition=disposition,
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                reason_code=disposition.value,
+            )
+
+    capability = _external_capability()
+    registry, _ = _external_registry(capability, handler)
+    with pytest.raises(error_type):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=TerminalAdapter(),
+            release_id=f"sha256:{'d' * 64}",
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, _external_context())
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_executor_fails_closed_for_missing_unavailable_or_invalid_approval() -> None:
+    calls = 0
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return payload
+
+    capability = _external_capability()
+    registry, _ = _external_registry(capability, handler)
+    release_id = f"sha256:{'e' * 64}"
+    context = _external_context()
+    store = InMemoryIdempotencyStore()
+    with pytest.raises(ApprovalStoreUnavailableError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=store,
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+    with pytest.raises(ApprovalStoreUnavailableError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=InMemoryApprovalConsumptionAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class UnavailableAdapter:
+        is_durable = True
+
+        async def consume(self, request: ApprovalConsumptionRequest) -> ApprovalConsumptionResult:
+            raise RuntimeError(request.approval_id)
+
+    with pytest.raises(ApprovalStoreUnavailableError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=UnavailableAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class InvalidAdapter:
+        is_durable = True
+
+        async def consume(self, _request: ApprovalConsumptionRequest) -> ApprovalConsumptionResult:
+            return cast(ApprovalConsumptionResult, {})
+
+    with pytest.raises(ApprovalResultInvalidError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=InvalidAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class WrongIdentityAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            return ApprovalConsumptionResult(
+                disposition=ApprovalConsumptionDisposition.DENIED,
+                approval_id="other-approval",
+                request_digest=request.digest,
+                approval_version="1",
+                reason_code="denied",
+            )
+
+    with pytest.raises(ApprovalResultInvalidError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=WrongIdentityAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class InvalidContractAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            receipt = ApprovalReceipt.model_construct(
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                consumption_id="consumption-invalid-contract",
+                consumption_version="2",
+                approver_id="approver-a",
+                consumed_at=datetime.now(UTC),
+                expires_at=datetime.now(UTC) + timedelta(minutes=2),
+                one_time=False,
+            )
+            return ApprovalConsumptionResult.model_construct(
+                disposition=ApprovalConsumptionDisposition.CONSUMED,
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                receipt=receipt,
+                reason_code=None,
+            )
+
+    with pytest.raises(ApprovalResultInvalidError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=InvalidContractAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class InvalidReceiptAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            now = datetime.now(UTC)
+            receipt = ApprovalReceipt.model_construct(
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                consumption_id="consumption-invalid",
+                consumption_version="2",
+                approver_id="approver-a",
+                consumed_at=now + timedelta(minutes=1),
+                expires_at=now + timedelta(minutes=2),
+                one_time=True,
+            )
+            return ApprovalConsumptionResult.model_construct(
+                disposition=ApprovalConsumptionDisposition.CONSUMED,
+                approval_id=request.approval_id,
+                request_digest=request.digest,
+                approval_version="1",
+                receipt=receipt,
+                reason_code=None,
+            )
+
+    with pytest.raises(ApprovalResultInvalidError, match="receipt"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=InvalidReceiptAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class StructuredFailureAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            _request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            raise ApprovalDeniedError("provider denied")
+
+    with pytest.raises(ApprovalDeniedError, match="provider denied"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=StructuredFailureAdapter(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_uncertain_approval_consumption_blocks_fresh_approval_and_handler() -> None:
+    calls = 0
+    adapter_calls = 0
+    entered = asyncio.Event()
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return payload
+
+    class BlockingAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            nonlocal adapter_calls
+            adapter_calls += 1
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError(request.approval_id)
+
+    capability = _external_capability(timeout_seconds=0.01)
+    registry, _ = _external_registry(capability, handler)
+    store = InMemoryIdempotencyStore()
+    executor = CapabilityExecutor(
+        registry,
+        idempotency_store=store,
+        approval_adapter=BlockingAdapter(),
+        release_id=f"sha256:{'f' * 64}",
+        allow_test_idempotency_store=True,
+    )
+    with pytest.raises(ApprovalConsumptionUncertainError):
+        await executor.invoke(capability.id, {}, _external_context())
+    assert entered.is_set()
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await executor.invoke(capability.id, {}, _external_context())
+    assert adapter_calls == 1
+    assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_cancelled_approval_consumption_is_terminal_for_idempotency() -> None:
+    adapter_calls = 0
+    entered = asyncio.Event()
+
+    class BlockingAdapter:
+        is_durable = True
+
+        async def consume(
+            self,
+            request: ApprovalConsumptionRequest,
+        ) -> ApprovalConsumptionResult:
+            nonlocal adapter_calls
+            adapter_calls += 1
+            entered.set()
+            await asyncio.Event().wait()
+            raise AssertionError(request.approval_id)
+
+    capability = _external_capability()
+    registry, _ = _external_registry(capability, lambda payload: payload)
+    store = InMemoryIdempotencyStore()
+    executor = CapabilityExecutor(
+        registry,
+        idempotency_store=store,
+        approval_adapter=BlockingAdapter(),
+        release_id=f"sha256:{'1' * 64}",
+        allow_test_idempotency_store=True,
+    )
+    context = _external_context()
+    task = asyncio.create_task(executor.invoke(capability.id, {}, context))
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await executor.invoke(capability.id, {}, context)
+    assert adapter_calls == 1
 
 
 def test_idempotency_contracts_are_canonical_and_fail_closed() -> None:
@@ -1692,15 +2343,18 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
     capability = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
     registry, _ = _external_registry(capability, handler)
     backend = InMemoryIdempotencyBackend()
+    approvals = _AutoApprovalAdapter()
     first = CapabilityExecutor(
         registry,
         idempotency_store=InMemoryIdempotencyStore(backend),
+        approval_adapter=approvals,
         release_id=f"sha256:{'1' * 64}",
         allow_test_idempotency_store=True,
     )
     second = CapabilityExecutor(
         registry,
         idempotency_store=InMemoryIdempotencyStore(backend),
+        approval_adapter=approvals,
         release_id=f"sha256:{'1' * 64}",
         allow_test_idempotency_store=True,
     )
@@ -1715,16 +2369,35 @@ async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
     assert await second.invoke(capability.id, {"value": 999}, context) == {"value": 1}
     assert len(calls) == 1
 
-    other_tenant = context.model_copy(update={"tenant_id": "tenant-b"})
+    other_tenant = context.model_copy(
+        update={
+            "tenant_id": "tenant-b",
+            "approval_id": "approval-tenant-b",
+            "invocation_id": "invocation-tenant-b",
+        }
+    )
     assert await second.invoke(capability.id, {"value": 2}, other_tenant) == {"value": 2}
-    other_argument = context.model_copy(update={"operation_fingerprint": "b" * 64})
+    other_argument = context.model_copy(
+        update={
+            "operation_fingerprint": "b" * 64,
+            "approval_id": "approval-argument-b",
+            "invocation_id": "invocation-argument-b",
+        }
+    )
     assert await second.invoke(capability.id, {"value": 3}, other_argument) == {"value": 3}
-    other_destination = context.model_copy(update={"destination": "destination-b"})
+    other_destination = context.model_copy(
+        update={
+            "destination": "destination-b",
+            "approval_id": "approval-destination-b",
+            "invocation_id": "invocation-destination-b",
+        }
+    )
     assert await second.invoke(capability.id, {"value": 4}, other_destination) == {"value": 4}
     project_registry, _ = _external_registry(capability, handler, project_id="project-b")
     project_executor = CapabilityExecutor(
         project_registry,
         idempotency_store=InMemoryIdempotencyStore(backend),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=f"sha256:{'1' * 64}",
         allow_test_idempotency_store=True,
     )
@@ -1748,6 +2421,7 @@ async def test_durable_executor_replay_policies_and_result_integrity() -> None:
     denied_executor = CapabilityExecutor(
         denied_registry,
         idempotency_store=InMemoryIdempotencyStore(),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -1762,6 +2436,7 @@ async def test_durable_executor_replay_policies_and_result_integrity() -> None:
     referenced_executor = CapabilityExecutor(
         referenced_registry,
         idempotency_store=InMemoryIdempotencyStore(),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -1777,6 +2452,7 @@ async def test_durable_executor_replay_policies_and_result_integrity() -> None:
     replay_executor = CapabilityExecutor(
         replayed_registry,
         idempotency_store=replay_store,
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -1809,12 +2485,14 @@ async def test_external_execution_requires_durable_available_store_and_release()
         await CapabilityExecutor(
             registry,
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=f"sha256:{'3' * 64}",
         ).invoke(capability.id, {}, context)
     with pytest.raises(IdempotencyStoreUnavailableError, match="release provenance"):
         await CapabilityExecutor(
             registry,
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             allow_test_idempotency_store=True,
         ).invoke(capability.id, {}, context)
 
@@ -1828,6 +2506,7 @@ async def test_external_execution_requires_durable_available_store_and_release()
         await CapabilityExecutor(
             registry,
             idempotency_store=UnavailableStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=f"sha256:{'3' * 64}",
         ).invoke(capability.id, {}, context)
 
@@ -1841,6 +2520,7 @@ async def test_external_execution_requires_durable_available_store_and_release()
         await CapabilityExecutor(
             registry,
             idempotency_store=StartUnavailableStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=f"sha256:{'3' * 64}",
         ).invoke(capability.id, {}, context)
     assert handler_calls == 0
@@ -1863,6 +2543,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             registry,
             idempotency_store=ClaimConflictStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -1881,6 +2562,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             registry,
             idempotency_store=MissingTokenStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -1894,6 +2576,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             registry,
             idempotency_store=StartConflictStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -1908,6 +2591,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             timeout_registry,
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             allow_test_idempotency_store=True,
         ).invoke(timeout_capability.id, {}, context)
@@ -1920,6 +2604,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             generic_registry,
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             allow_test_idempotency_store=True,
         ).invoke(capability.id, {}, context)
@@ -1939,6 +2624,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             failure_registry,
             idempotency_store=FailureCommitStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -1953,6 +2639,7 @@ async def test_durable_provider_failures_are_structured_before_or_after_effect()
         await CapabilityExecutor(
             registry,
             idempotency_store=WrongCompletionStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -1975,6 +2662,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
         await CapabilityExecutor(
             registry,
             idempotency_store=NonClaimStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             utcnow=lambda: now,
         ).invoke(capability.id, {}, context)
@@ -1990,6 +2678,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
         await CapabilityExecutor(
             registry,
             idempotency_store=InvalidRecordStore(clock=lambda: now),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             utcnow=lambda: now,
         ).invoke(capability.id, {}, context)
@@ -2047,6 +2736,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             await CapabilityExecutor(
                 registry,
                 idempotency_store=store,
+                approval_adapter=_AutoApprovalAdapter(),
                 release_id=release_id,
                 utcnow=lambda: now,
             ).invoke(capability.id, {}, context)
@@ -2073,6 +2763,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
         await CapabilityExecutor(
             registry,
             idempotency_store=InvalidStartStore(clock=lambda: now),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             utcnow=lambda: now,
         ).invoke(capability.id, {}, context)
@@ -2086,6 +2777,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             await CapabilityExecutor(
                 registry,
                 idempotency_store=StartMutationStore(start_updates),
+                approval_adapter=_AutoApprovalAdapter(),
                 release_id=release_id,
                 utcnow=lambda: now,
             ).invoke(capability.id, {}, context)
@@ -2110,6 +2802,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             await CapabilityExecutor(
                 registry,
                 idempotency_store=CompletionMutationStore(completion_updates),
+                approval_adapter=_AutoApprovalAdapter(),
                 release_id=release_id,
                 utcnow=lambda: now,
             ).invoke(capability.id, {}, context)
@@ -2140,6 +2833,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
         await CapabilityExecutor(
             failure_registry,
             idempotency_store=InvalidFailureStore(clock=lambda: now),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             utcnow=lambda: now,
         ).invoke(capability.id, {}, context)
@@ -2153,6 +2847,7 @@ async def test_executor_revalidates_every_durable_store_response() -> None:
             await CapabilityExecutor(
                 failure_registry,
                 idempotency_store=FailureMutationStore(failure_updates),
+                approval_adapter=_AutoApprovalAdapter(),
                 release_id=release_id,
                 utcnow=lambda: now,
             ).invoke(capability.id, {}, context)
@@ -2198,6 +2893,7 @@ async def test_durable_replay_rejects_corrupt_or_unavailable_results() -> None:
         await CapabilityExecutor(
             registry,
             idempotency_store=MalformedCompletedStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke(capability.id, {}, context)
 
@@ -2214,6 +2910,7 @@ async def test_durable_replay_rejects_corrupt_or_unavailable_results() -> None:
         claim_token=irreversible_claim.claim_token,
         expected_version=irreversible_claim.record.version,
         irreversible=True,
+        approval=_approval_provenance(),
     )
     irreversible_result = {"value": "must-not-replay"}
     await irreversible_store.complete(
@@ -2227,6 +2924,7 @@ async def test_durable_replay_rejects_corrupt_or_unavailable_results() -> None:
         await CapabilityExecutor(
             registry,
             idempotency_store=irreversible_store,
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
             allow_test_idempotency_store=True,
         ).invoke(capability.id, {}, context)
@@ -2251,6 +2949,7 @@ async def test_durable_replay_rejects_corrupt_or_unavailable_results() -> None:
         executor = CapabilityExecutor(
             registry,
             idempotency_store=store,
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         )
         assert await executor.invoke(capability.id, {"value": 1}, context) == {"value": 1}
@@ -2349,6 +3048,7 @@ async def test_external_failure_cancellation_and_uncertain_commit_never_replay()
     retry_executor = CapabilityExecutor(
         retry_registry,
         idempotency_store=retry_store,
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -2371,6 +3071,7 @@ async def test_external_failure_cancellation_and_uncertain_commit_never_replay()
     cancelled_executor = CapabilityExecutor(
         cancelled_registry,
         idempotency_store=cancelled_store,
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -2400,6 +3101,7 @@ async def test_external_failure_cancellation_and_uncertain_commit_never_replay()
     cancellation_failure_executor = CapabilityExecutor(
         cancelled_registry,
         idempotency_store=CancellationFailureStore(),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
     )
     failed_cancellation = asyncio.create_task(
@@ -2425,6 +3127,7 @@ async def test_external_failure_cancellation_and_uncertain_commit_never_replay()
         await CapabilityExecutor(
             complete_registry,
             idempotency_store=CompleteUnavailableStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             release_id=release_id,
         ).invoke("write.external", {}, context.model_copy(update={"idempotency_key": "commit"}))
 
@@ -2458,11 +3161,13 @@ async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit
         claim_token=claim.claim_token,
         expected_version=claim.record.version,
         irreversible=True,
+        approval=_approval_provenance(),
     )
     assert started.irreversible_started is True
     executor = CapabilityExecutor(
         registry,
         idempotency_store=InMemoryIdempotencyStore(backend, clock=lambda: now[0]),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
     )
@@ -2601,6 +3306,7 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert release.toolbox_versions == (("foundry.toolbox.code_interpreter", "1.0.0"),)
     assert len(release.contract_schema_digest) == 64
     assert release.idempotency_contract_schema_digest == idempotency_contract_schema_digest()
+    assert release.approval_contract_schema_digest == approval_contract_schema_digest()
     assert release.dependency_risks[0].package == "agent-framework-foundry-hosting"
     assert release.dependency_risks[0].maturity == "beta"
     assert release.dependency_risks[0].version == "1.0.0b260721"
@@ -2709,6 +3415,7 @@ def test_factory_requires_current_provider_attestation() -> None:
             settings,
             provider_adapter=adapter,
             idempotency_store=DurableStore(),
+            approval_adapter=_AutoApprovalAdapter(),
         )["ready"]
         is True
     )
@@ -2717,6 +3424,13 @@ def test_factory_requires_current_provider_attestation() -> None:
             client=_FakeChatClient(),
             settings=settings,
             provider_adapter=adapter,
+        )
+    with pytest.raises(ConfigurationError, match="app-owned durable approval adapter"):
+        factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            provider_adapter=adapter,
+            idempotency_store=DurableStore(),
         )
 
     binding = factory.manifest.capability_bindings[0]
@@ -2861,6 +3575,7 @@ def test_runtime_adapter_builds_describes_and_runs_host(
             "settings": None,
             "provider_adapter": None,
             "idempotency_store": None,
+            "approval_adapter": None,
         },
     )
     assert runtime.describe_profile("grant").id == "grant"
@@ -2928,6 +3643,7 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
                 (InMemoryIdempotencyStore,),
                 {"is_durable": True},
             )(),
+            approval_adapter=_AutoApprovalAdapter(),
         )["ready"]
         is True
     )
@@ -3109,7 +3825,8 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
     dataset = DatasetRequest.model_validate(
         _request(
             dataset_id="dataset.csv",
-            approved_compute=True,
+            approval_id="approval-a",
+            invocation_id="invocation-a",
             idempotency_key="dataset-operation-1",
         )
     )
@@ -3118,15 +3835,18 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
         None,
         monotonic=lambda: 5,
     )._invocation_context(dataset)
-    assert dataset_context.approved_capabilities == frozenset()
+    assert dataset_context.approval_id == "approval-a"
+    assert dataset_context.invocation_id == "invocation-a"
     assert dataset_context.scopes == frozenset()
     assert dataset_context.idempotency_key == "dataset-operation-1"
     assert dataset_context.deadline_monotonic == 65
-    unapproved = dataset.model_copy(update={"approved_compute": False})
-    assert (
-        ContractMiddleware(get_manifest("dataset"), None)._invocation_context(unapproved).approved_capabilities
-        == frozenset()
-    )
+    unapproved = DatasetRequest.model_validate(_request(dataset_id="dataset.csv"))
+    unapproved_context = ContractMiddleware(
+        get_manifest("dataset"),
+        None,
+    )._invocation_context(unapproved)
+    assert unapproved_context.approval_id is None
+    assert unapproved_context.invocation_id is None
 
 
 @pytest.mark.asyncio
@@ -3742,15 +4462,18 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         write_capability,
         write_registration,
         idempotency_store=InMemoryIdempotencyStore(),
+        approval_adapter=_AutoApprovalAdapter(),
         release_id=f"sha256:{'a' * 64}",
         allow_test_idempotency_store=True,
+        allow_test_approval_adapter=True,
     )
     write_governance = InvocationContext(
         tenant_id="tenant-a",
         principal_id="principal-a",
         scopes=frozenset({"research.dataset.compute"}),
         destination="toolbox.example",
-        approved_capabilities=frozenset({"dataset.compute"}),
+        approval_id="approval-1",
+        invocation_id="invocation-1",
         idempotency_key="session-a",
     )
     executions: list[int] = []
@@ -3760,7 +4483,12 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
             cast(Any, SimpleNamespace(name="compute")),
             {"value": value},
             kwargs={
-                "governance_context": write_governance.model_dump(mode="json"),
+                "governance_context": write_governance.model_copy(
+                    update={
+                        "approval_id": f"approval-{value}",
+                        "invocation_id": f"invocation-{value}",
+                    }
+                ).model_dump(mode="json"),
                 "authorized_tool_evidence": [],
             },
         )
@@ -3832,6 +4560,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
             lambda _request: ResearchResponse(summary="not executed"),
             registrations=dataset_registrations,
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
         ).readiness()["ready"]
         is True
     )
@@ -4178,7 +4907,9 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
                 else None
             ),
             idempotency_store=InMemoryIdempotencyStore(),
+            approval_adapter=_AutoApprovalAdapter(),
             allow_test_idempotency_store=True,
+            allow_test_approval_adapter=True,
         )
         server = ResponsesHostServer(agent)
         assert server is not None
@@ -4235,7 +4966,9 @@ def test_all_nine_agent_specific_factories_are_first_class(
                 ),
                 provider_adapter=provider_adapter,
                 idempotency_store=InMemoryIdempotencyStore(),
+                approval_adapter=_AutoApprovalAdapter(),
                 allow_test_idempotency_store=True,
+                allow_test_approval_adapter=True,
             ).name
             == module.MANIFEST.name
         )

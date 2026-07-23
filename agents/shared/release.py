@@ -8,6 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from .approvals import approval_contract_schema_digest
 from .capabilities import ToolRegistration
 from .contracts import AgentManifest, canonical_digest
 from .errors import ConfigurationError
@@ -58,6 +59,7 @@ class ReleaseMetadata(BaseModel):
     protocol_version: str = "2.0.0"
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_contracts: tuple[tuple[str, str], ...]
 
 
@@ -141,6 +143,7 @@ def build_release_metadata(
     manifest_hash = manifest_digest(manifest)
     contract_schema_hash = canonical_digest(AgentManifest.model_json_schema())
     idempotency_schema_hash = idempotency_contract_schema_digest()
+    approval_schema_hash = approval_contract_schema_digest()
     bundle_hash = source_bundle_hash or source_bundle_digest()
     capability_versions = tuple(
         sorted((binding.descriptor_ref.id, binding.descriptor_ref.version) for binding in manifest.capability_bindings)
@@ -189,6 +192,7 @@ def build_release_metadata(
         "protocol_version": "2.0.0",
         "contract_schema_digest": contract_schema_hash,
         "idempotency_contract_schema_digest": idempotency_schema_hash,
+        "approval_contract_schema_digest": approval_schema_hash,
         "provider_contracts": provider_contracts,
     }
     return ReleaseMetadata(
@@ -215,5 +219,6 @@ def build_release_metadata(
         knowledge_versions=knowledge_versions,
         contract_schema_digest=contract_schema_hash,
         idempotency_contract_schema_digest=idempotency_schema_hash,
+        approval_contract_schema_digest=approval_schema_hash,
         provider_contracts=provider_contracts,
     )

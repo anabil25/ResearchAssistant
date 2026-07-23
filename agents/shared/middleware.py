@@ -20,6 +20,7 @@ from agent_framework import (
 )
 from pydantic import BaseModel, ConfigDict, HttpUrl, ValidationError
 
+from .approvals import ApprovalConsumptionAdapter
 from .capabilities import (
     CapabilityDescriptor,
     CapabilityExecutor,
@@ -127,6 +128,8 @@ class ContractMiddleware(AgentMiddleware):
             "principal_id",
             "session_id",
             "approved_compute",
+            "approval_id",
+            "invocation_id",
             "idempotency_key",
         }
         return request.model_dump_json(exclude=excluded)
@@ -238,10 +241,14 @@ class ContractMiddleware(AgentMiddleware):
 
     def _invocation_context(self, request: ResearchRequest) -> InvocationContext:
         scopes: set[str] = set()
+        approval_id: str | None = None
+        invocation_id: str | None = None
         idempotency_key: str | None = None
         if self._manifest.online:
             scopes.add("research.public.read")
         if isinstance(request, DatasetRequest):
+            approval_id = request.approval_id
+            invocation_id = request.invocation_id
             idempotency_key = request.idempotency_key
         destination = None
         if self._settings is not None and self._settings.toolbox_endpoint is not None:
@@ -252,7 +259,8 @@ class ContractMiddleware(AgentMiddleware):
             principal_id=request.principal_id,
             scopes=frozenset(scopes),
             destination=destination,
-            approved_capabilities=frozenset(),
+            approval_id=approval_id,
+            invocation_id=invocation_id,
             idempotency_key=idempotency_key,
             deadline_monotonic=self._monotonic() + timeout_seconds,
         )
@@ -266,8 +274,10 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         *,
         allowed_connector_sources: frozenset[str] = frozenset(),
         idempotency_store: IdempotencyStore | None = None,
+        approval_adapter: ApprovalConsumptionAdapter | None = None,
         release_id: str | None = None,
         allow_test_idempotency_store: bool = False,
+        allow_test_approval_adapter: bool = False,
     ) -> None:
         self._capability = capability
         self._allowed_connector_sources = allowed_connector_sources
@@ -294,8 +304,10 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         self._executor = CapabilityExecutor(
             registry,
             idempotency_store=idempotency_store,
+            approval_adapter=approval_adapter,
             release_id=release_id,
             allow_test_idempotency_store=allow_test_idempotency_store,
+            allow_test_approval_adapter=allow_test_approval_adapter,
         )
 
     async def process(
@@ -497,8 +509,10 @@ def middleware_for_manifest(
     registrations: tuple[ToolRegistration, ...],
     *,
     idempotency_store: IdempotencyStore | None = None,
+    approval_adapter: ApprovalConsumptionAdapter | None = None,
     release_id: str | None = None,
     allow_test_idempotency_store: bool = False,
+    allow_test_approval_adapter: bool = False,
 ) -> list[AgentMiddleware | FunctionMiddleware]:
     middleware: list[AgentMiddleware | FunctionMiddleware] = [ContractMiddleware(manifest, settings)]
     if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
@@ -524,8 +538,10 @@ def middleware_for_manifest(
                 attached[capability.id],
                 allowed_connector_sources=frozenset(manifest.connector_sources),
                 idempotency_store=idempotency_store,
+                approval_adapter=approval_adapter,
                 release_id=release_id,
                 allow_test_idempotency_store=allow_test_idempotency_store,
+                allow_test_approval_adapter=allow_test_approval_adapter,
             )
             for capability in capabilities
         )
