@@ -56,6 +56,14 @@ class Settings(BaseSettings):
         default="sources",
         validation_alias="AZURE_STORAGE_SOURCE_CONTAINER",
     )
+    agent_studio_bundle_container: str = Field(
+        default="agent-studio-bundles",
+        validation_alias="AZURE_STORAGE_AGENT_STUDIO_BUNDLE_CONTAINER",
+    )
+    agent_studio_cosmos_database: str = Field(
+        default="agent-studio",
+        validation_alias="AZURE_COSMOS_AGENT_STUDIO_DATABASE",
+    )
     search_endpoint: str | None = Field(
         default=None,
         validation_alias="AZURE_SEARCH_ENDPOINT",

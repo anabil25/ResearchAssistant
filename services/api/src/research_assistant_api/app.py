@@ -30,6 +30,18 @@ from research_assistant_core.studio_models import (
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
+from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.memory_service import (
+    MemoryService,
+    MemoryStoreUnavailableError,
+    build_memory_store,
+)
+from research_assistant_api.agent_studio.model_discovery import build_model_discovery
+from research_assistant_api.agent_studio.release_service import ReleaseService
+from research_assistant_api.agent_studio.router import router as agent_studio_router
+from research_assistant_api.agent_studio.store import AgentStudioStoreError
 from research_assistant_api.blob_sources import (
     SourceBlobStore,
     build_source_blob_store,
@@ -101,6 +113,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
+    _init_agent_studio(application, settings)
     _reconcile_pending_runs(
         application.state.workspace,
         application.state.scheduler,
@@ -110,6 +123,41 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         cast(RunScheduler, application.state.scheduler).close()
         await cast(ConnectorGateway, application.state.connector_gateway).close()
+
+
+def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
+    """Construct Agent Studio's stores/services for the app state.
+
+    Metadata and memory persistence are Cosmos-backed in production and
+    intentionally *raise* (rather than silently fall back to in-memory) when
+    no Cosmos endpoint is configured — see ``cosmos_store.build_agent_studio_store``
+    and ``memory_service.build_memory_store``. That explicit-unavailability is
+    caught here so a missing Cosmos configuration degrades only the Agent
+    Studio surface (its routes return 503) instead of preventing the entire
+    API process from starting, which would break unrelated features (and
+    local/dev environments that don't configure Cosmos) in one stroke.
+    """
+    registry = default_registry()
+    application.state.agent_studio_registry = registry
+    application.state.agent_studio_model_discovery = build_model_discovery(settings)
+    try:
+        store = build_agent_studio_store(settings)
+    except AgentStudioStoreError as exc:
+        logger.warning("Agent Studio metadata store unavailable: %s", exc)
+        application.state.agent_studio_store = None
+        application.state.agent_studio_release_service = None
+        application.state.agent_studio_deployment_service = None
+    else:
+        application.state.agent_studio_store = store
+        application.state.agent_studio_release_service = ReleaseService(store, registry)
+        application.state.agent_studio_deployment_service = DeploymentService(store)
+    try:
+        memory_store = build_memory_store(settings)
+    except MemoryStoreUnavailableError as exc:
+        logger.warning("Agent Studio memory store unavailable: %s", exc)
+        application.state.agent_studio_memory_service = None
+    else:
+        application.state.agent_studio_memory_service = MemoryService(memory_store)
 
 
 app = FastAPI(
@@ -126,6 +174,8 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT"],
     allow_headers=["Content-Type", "X-Request-ID", "X-MS-CLIENT-PRINCIPAL"],
 )
+
+app.include_router(agent_studio_router)
 
 CAPABILITY_AGENTS = {
     Capability.LITERATURE: "literature-agent",

@@ -1,0 +1,83 @@
+"""Deterministic runtime auto-selection between Managed Foundry and Custom Hosted.
+
+This is a pure function of the agent manifest and the capability catalog. It
+never asks the model, never trusts a user-supplied "target" field, and always
+defaults to the safer ``CUSTOM_HOSTED`` target unless every fact required for
+Managed Foundry is proven true. All disqualifying reasons are collected (not
+just the first) so the decision is fully auditable.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping
+
+from research_assistant_api.agent_studio.models import (
+    AgentManifest,
+    CapabilityDescriptor,
+    OperationMaturity,
+    RuntimeSelection,
+    RuntimeTarget,
+)
+
+
+def select_runtime(
+    manifest: AgentManifest,
+    capability_catalog: Mapping[str, CapabilityDescriptor],
+) -> RuntimeSelection:
+    """Select the runtime target for ``manifest``.
+
+    Managed Foundry is only selected when *all* of the following hold:
+
+    * the manifest does not declare a need for custom code, a custom
+      ``agent_framework`` orchestration workflow, or a non-GA tool;
+    * the manifest only uses project-deployed models;
+    * every attached capability resolves to a catalog descriptor that is
+      marked ``managed_foundry_native`` *and* whose specific attached
+      operation has ``OperationMaturity.GA``.
+
+    Any violation of the above appends a disqualifying reason and forces
+    ``RuntimeTarget.CUSTOM_HOSTED``.
+    """
+    disqualifiers: list[str] = []
+
+    requirements = manifest.runtime_requirements
+    if requirements.requires_custom_code:
+        disqualifiers.append("Manifest declares requires_custom_code=true.")
+    if requirements.requires_custom_orchestration_workflow:
+        disqualifiers.append("Manifest declares requires_custom_orchestration_workflow=true.")
+    if requirements.requires_non_ga_tool:
+        disqualifiers.append("Manifest declares requires_non_ga_tool=true.")
+    if not requirements.uses_project_deployed_model_only:
+        disqualifiers.append("Manifest declares a model source other than project-deployed models.")
+
+    for instance in manifest.capabilities:
+        descriptor = capability_catalog.get(instance.descriptor_id)
+        if descriptor is None:
+            disqualifiers.append(f"Capability '{instance.descriptor_id}' is not present in the capability catalog.")
+            continue
+        if not descriptor.managed_foundry_native:
+            disqualifiers.append(f"Capability '{instance.descriptor_id}' has no Managed Foundry native implementation.")
+            continue
+        operation = descriptor.operation(instance.operation)
+        if operation is None:
+            disqualifiers.append(
+                f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is not declared."
+            )
+            continue
+        if operation.maturity != OperationMaturity.GA:
+            disqualifiers.append(
+                f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is "
+                f"{operation.maturity.value}, not GA."
+            )
+
+    if disqualifiers:
+        return RuntimeSelection(target=RuntimeTarget.CUSTOM_HOSTED, reasons=tuple(disqualifiers))
+
+    return RuntimeSelection(
+        target=RuntimeTarget.MANAGED_FOUNDRY,
+        reasons=(
+            "No custom code, custom workflow, or non-GA tool is required.",
+            "All attached capabilities are GA Managed Foundry-native operations.",
+            "The manifest only uses project-deployed models.",
+        ),
+    )
