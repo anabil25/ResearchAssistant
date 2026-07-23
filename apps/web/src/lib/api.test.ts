@@ -22,7 +22,9 @@ import {
   getAgentReleases,
   getAgentStudioCatalog,
   getAgentTraces,
-  getCapabilityCatalog,
+  getCapabilityDescriptors,
+  getCapabilityDiscovery,
+  getCapabilityInstances,
   getProjectModels,
   getWorkspaceData,
   ingestLibraryItem,
@@ -313,10 +315,26 @@ describe("agent studio endpoints (/v1/agent-studio/...)", () => {
     );
   });
 
-  it("gets the capability descriptor/instance catalog", async () => {
-    await getCapabilityCatalog();
+  it("gets the capability descriptor catalog", async () => {
+    await getCapabilityDescriptors();
     expect(fetchMock).toHaveBeenCalledWith(
-      "/api/backend/api/v1/agent-studio/capabilities",
+      "/api/backend/api/v1/agent-studio/capabilities/descriptors",
+      expect.anything(),
+    );
+  });
+
+  it("gets the discovered capability instance catalog", async () => {
+    await getCapabilityInstances();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/backend/api/v1/agent-studio/capabilities/instances",
+      expect.anything(),
+    );
+  });
+
+  it("gets the combined capability discovery aggregate", async () => {
+    await getCapabilityDiscovery();
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/backend/api/v1/agent-studio/capabilities/discovery",
       expect.anything(),
     );
   });

@@ -11,6 +11,7 @@ import type {
   AgentTraceSummary,
   ApprovalRecord,
   CapabilityDescriptor,
+  CapabilityDiscovery,
   CapabilityId,
   CapabilityInstance,
   ConnectionView,
@@ -222,6 +223,18 @@ export async function uploadLibraryItem(
 //     replaced the flat public boundary flag with a structured summary;
 //     replaced free-form manifest-change proposals with a concurrency-safe
 //     (etag) builder-message -> proposal -> apply flow.
+//   Round 3 — split the single `/capabilities` read into three canonical
+//     resource shapes: `/capabilities/descriptors` (immutable operation
+//     semantics/governance), `/capabilities/instances` (tenant/workspace-
+//     scoped discovered readiness/health), and `/capabilities/discovery`
+//     (an optional combined `{descriptors,instances,warnings,refreshed_at}`
+//     aggregate for one UI load). Replaced the old `CapabilityBinding`
+//     (enabled + approval_state + version_pin) with a richer persisted
+//     `CapabilityBinding` (pinned descriptor/instance ids+versions,
+//     instance_fingerprint, schema digests, config/connection/policy refs,
+//     a full `CapabilityApprovalSummary`) plus a derived
+//     `CapabilityBindingView {binding,resolved_descriptor,resolved_instance,
+//     stale_reason}` for rendering — the view is never the persisted shape.
 //
 // `agentStudioFetch` targets the backend's own `/v1/agent-studio/...` path
 // (relative to its API root) through the same `/api/backend` proxy used
@@ -265,15 +278,27 @@ export async function getAgentDraft(agentId: string): Promise<AgentDraftView> {
   return agentStudioFetch<AgentDraftView>(`/agents/${agentId}/draft`);
 }
 
-/** Provider-driven capability descriptors and discovered instances. */
-export async function getCapabilityCatalog(): Promise<{
-  descriptors: CapabilityDescriptor[];
-  instances: CapabilityInstance[];
-}> {
-  return agentStudioFetch<{
-    descriptors: CapabilityDescriptor[];
-    instances: CapabilityInstance[];
-  }>("/capabilities");
+/**
+ * Provider-driven capability descriptors — immutable operation
+ * semantics/governance, independent of any tenant/workspace discovery state.
+ */
+export async function getCapabilityDescriptors(): Promise<CapabilityDescriptor[]> {
+  return agentStudioFetch<CapabilityDescriptor[]>("/capabilities/descriptors");
+}
+
+/** Tenant/workspace-scoped discovered capability instances (readiness/health, never secrets). */
+export async function getCapabilityInstances(): Promise<CapabilityInstance[]> {
+  return agentStudioFetch<CapabilityInstance[]>("/capabilities/instances");
+}
+
+/**
+ * Convenience aggregate for one UI load — combines the descriptor and
+ * instance catalogs plus discovery warnings/freshness. A derived/expanded
+ * read, not a distinct persisted resource; `getCapabilityDescriptors`/
+ * `getCapabilityInstances` remain the canonical per-resource reads.
+ */
+export async function getCapabilityDiscovery(): Promise<CapabilityDiscovery> {
+  return agentStudioFetch<CapabilityDiscovery>("/capabilities/discovery");
 }
 
 /** Discovered project model deployments — the only source for model selection. */

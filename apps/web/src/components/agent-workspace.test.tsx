@@ -1305,27 +1305,50 @@ describe("AgentWorkspaceView", () => {
         ],
         capabilities: [
           {
-            descriptor: {
+            binding: {
+              descriptor_id: "web-search",
+              descriptor_version: "1.0.0",
+              operation: "search",
+              instance_id: "web-search-instance-1",
+              instance_version: "3.2.0",
+              instance_fingerprint: "fp-web-search-1",
+              input_schema_digest: "sha256:in1",
+              output_schema_digest: "sha256:out1",
+              config_ref: null,
+              connection_ref: "conn-bing",
+              policy_ref: null,
+              enabled: true,
+              approval: {
+                status: "not_required",
+                record_id: null,
+                scope_hash: null,
+                actor: null,
+                expires_at: null,
+              },
+            },
+            resolved_descriptor: {
               id: "web-search",
+              version: "1.0.0",
               family: "web",
               operation: "search",
               risk_class: "read",
               description: "Search the public web.",
+              digest: "sha256:desc1",
             },
-            instance: {
+            resolved_instance: {
               id: "web-search-instance-1",
               descriptor_id: "web-search",
+              descriptor_digest: "sha256:desc1",
+              version: "3.2.0",
+              fingerprint: "fp-web-search-1",
+              tenant_id: "tenant-demo",
+              workspace_id: "workspace-demo",
               maturity: "ga",
               provider: "bing",
               destination: null,
-              available: true,
+              readiness: "ready",
             },
-            binding: {
-              instance_id: "web-search-instance-1",
-              enabled: true,
-              approval_state: "not_required",
-              version_pin: "3.2.0",
-            },
+            stale_reason: null,
           },
         ],
         public_boundary: {
@@ -1600,20 +1623,66 @@ describe("AgentWorkspaceView", () => {
           ],
           capabilities: [
             {
-              descriptor: {
+              binding: {
+                descriptor_id: "analysis-summarize",
+                descriptor_version: "1.0.0",
+                operation: "summarize",
+                instance_id: "analysis-summarize-instance",
+                instance_version: null,
+                instance_fingerprint: "fp-analysis-1",
+                input_schema_digest: null,
+                output_schema_digest: null,
+                config_ref: null,
+                connection_ref: null,
+                policy_ref: null,
+                enabled: false,
+                approval: {
+                  status: "not_required",
+                  record_id: null,
+                  scope_hash: null,
+                  actor: null,
+                  expires_at: null,
+                },
+              },
+              resolved_descriptor: {
                 id: "analysis-summarize",
+                version: "1.0.0",
                 family: "analysis",
                 operation: "summarize",
                 risk_class: "read",
                 description: "Summarize retrieved evidence.",
+                digest: "sha256:desc2",
               },
-              instance: null,
+              resolved_instance: null,
+              stale_reason:
+                "This binding's discovered instance is no longer resolvable — it may have been removed or is unavailable.",
+            },
+            {
               binding: {
-                instance_id: "analysis-summarize-instance",
-                enabled: false,
-                approval_state: "not_required",
-                version_pin: null,
+                descriptor_id: "unresolved-descriptor-op",
+                descriptor_version: "1.0.0",
+                operation: "unresolved-operation",
+                instance_id: "unresolved-instance",
+                instance_version: null,
+                instance_fingerprint: "fp-unresolved",
+                input_schema_digest: null,
+                output_schema_digest: null,
+                config_ref: null,
+                connection_ref: null,
+                policy_ref: null,
+                enabled: true,
+                approval: {
+                  status: "pending",
+                  record_id: "approval-42",
+                  scope_hash: "sha256:scope1",
+                  actor: "reviewer@example.com",
+                  expires_at: null,
+                },
               },
+              resolved_descriptor: null,
+              resolved_instance: null,
+              stale_reason:
+                "This binding's capability descriptor is no longer resolvable from the provider catalog.",
             },
           ],
         },
@@ -1653,9 +1722,23 @@ describe("AgentWorkspaceView", () => {
     ).toBeInTheDocument();
     expect(within(contract).getByText(/Stats reviewer \(researcher\)/)).toBeInTheDocument();
     expect(within(contract).getByText(/— attached/)).toBeInTheDocument();
-    expect(within(contract).getByText("unknown")).toBeInTheDocument();
-    expect(within(contract).getByText(/Disabled/)).toBeInTheDocument();
+    expect(within(contract).getAllByText("unknown").length).toBe(3);
+    expect(within(contract).getAllByText(/Disabled/).length).toBeGreaterThan(0);
     expect(within(contract).queryByText(/pinned to/)).not.toBeInTheDocument();
+    // Descriptor unresolved: falls back to the pinned binding's raw descriptor_id/operation.
+    expect(within(contract).getByText("unresolved-descriptor-op")).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/unresolved-operation/),
+    ).toBeInTheDocument();
+    // Pending approval that isn't currently active gets the explicit qualifier.
+    expect(
+      within(contract).getByText(/pending \(not currently active\)/),
+    ).toBeInTheDocument();
+    expect(
+      within(contract).getByText(
+        /Stale: This binding's capability descriptor is no longer resolvable/,
+      ),
+    ).toBeInTheDocument();
     expect(
       within(contract).getAllByText("Not available yet.").length,
     ).toBeGreaterThan(0);

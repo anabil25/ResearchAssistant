@@ -38,6 +38,7 @@ import {
   type WorkspaceData,
 } from "@/lib/api";
 import {
+  isCapabilityApprovalActive,
   isCapabilityAttachable,
   defaultMemoryView,
   type AgentBuilderProposal,
@@ -1043,38 +1044,51 @@ export function AgentWorkspaceView({
               <dd>
                 {contract.capabilities && contract.capabilities.length > 0 ? (
                   <ul className="agent-capabilities-list">
-                    {contract.capabilities.map((capability) => (
-                      <li
-                        key={capability.descriptor.id}
-                        data-attachable={isCapabilityAttachable(capability.instance)}
-                      >
-                        <strong>{capability.descriptor.family}</strong> ·{" "}
-                        {capability.descriptor.operation}
-                        <span
-                          className="status-chip"
-                          data-tone={capability.descriptor.risk_class}
+                    {contract.capabilities.map((capability) => {
+                      const descriptor = capability.resolved_descriptor;
+                      const instance = capability.resolved_instance;
+                      const approval = capability.binding.approval;
+                      return (
+                        <li
+                          key={`${capability.binding.descriptor_id}-${capability.binding.instance_id}`}
+                          data-attachable={isCapabilityAttachable(instance)}
+                          data-stale={Boolean(capability.stale_reason)}
                         >
-                          {capability.descriptor.risk_class.replace(/_/g, " ")}
-                        </span>
-                        <span
-                          className="status-chip"
-                          data-tone={capability.instance?.maturity ?? "unknown"}
-                        >
-                          {capability.instance ? capability.instance.maturity : "unknown"}
-                        </span>
-                        {capability.binding ? (
+                          <strong>
+                            {descriptor?.family ?? capability.binding.descriptor_id}
+                          </strong>{" "}
+                          · {descriptor?.operation ?? capability.binding.operation}
+                          <span
+                            className="status-chip"
+                            data-tone={descriptor?.risk_class ?? "unknown"}
+                          >
+                            {(descriptor?.risk_class ?? "unknown").replace(/_/g, " ")}
+                          </span>
+                          <span
+                            className="status-chip"
+                            data-tone={instance?.maturity ?? "unknown"}
+                          >
+                            {instance ? instance.maturity : "unknown"}
+                          </span>
                           <small>
                             {capability.binding.enabled ? "Enabled" : "Disabled"} ·{" "}
-                            {capability.binding.approval_state.replace(/_/g, " ")}
-                            {capability.binding.version_pin
-                              ? ` · pinned to ${capability.binding.version_pin}`
+                            {approval.status.replace(/_/g, " ")}
+                            {approval.status !== "not_required" &&
+                            !isCapabilityApprovalActive(approval)
+                              ? " (not currently active)"
+                              : ""}
+                            {capability.binding.instance_version
+                              ? ` · pinned to ${capability.binding.instance_version}`
                               : ""}
                           </small>
-                        ) : (
-                          <small>Not bound to this agent.</small>
-                        )}
-                      </li>
-                    ))}
+                          {capability.stale_reason ? (
+                            <small className="agent-capability-stale" data-tone="stale">
+                              Stale: {capability.stale_reason}
+                            </small>
+                          ) : null}
+                        </li>
+                      );
+                    })}
                   </ul>
                 ) : (
                   "Not available yet."
