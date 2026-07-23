@@ -31,6 +31,7 @@ from research_assistant_api.agent_studio.approvals import (
     compute_approval_effective_state,
     revoke_approval,
 )
+from research_assistant_api.agent_studio.audit_service import AuditService
 from research_assistant_api.agent_studio.authz import (
     ClaimsGroupMembershipResolver,
     MembershipCheckRequest,
@@ -75,6 +76,7 @@ from research_assistant_api.agent_studio.models import (
     AgentWorkspaceView,
     ApprovalKind,
     ApprovalRecordView,
+    AuditEventKind,
     BuilderProposal,
     CapabilityBinding,
     CapabilityBindingView,
@@ -272,6 +274,58 @@ def _release_attestation_port(request: Request) -> ReleaseAttestationPort:
     if port is None:
         raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
     return cast(ReleaseAttestationPort, port)
+
+
+def _audit_service(request: Request) -> AuditService:
+    """Resolve the app-composed ``AuditService``.
+
+    Every consequential platform mutation route (draft/version/release/
+    deploy/health/rollback/approval/revocation/ownership/capability/tool
+    registration/artifact/builder-apply) resolves this *before* invoking
+    its domain service, so a missing audit store fails the whole request
+    closed (503) rather than mutating durable state with no audit trail.
+    Memory mutations are audited separately via ``MemoryAuditAction`` (see
+    ``audit_service`` module docstring), not through this service.
+    """
+    service = getattr(request.app.state, "agent_studio_audit_service", None)
+    if service is None:
+        raise _unavailable("Agent Studio audit persistence is unavailable (no Cosmos DB configured).")
+    return cast(AuditService, service)
+
+
+def _audit(
+    request: Request,
+    *,
+    scope: ScopeContext,
+    kind: AuditEventKind,
+    actor_id: str,
+    subject_id: str,
+    logical_agent_id: str | None = None,
+    detail: dict[str, object] | None = None,
+) -> None:
+    """Record one append-only ``AuditEvent`` for a completed mutation.
+
+    Called only after the underlying mutation has already durably
+    succeeded. If the write itself raises (e.g. a transient Cosmos error),
+    that exception propagates as an unhandled 500 -- the mutation is not
+    rolled back (there is no distributed transaction across the metadata
+    and audit containers), but the caller sees a failure rather than a
+    silently-unaudited success. This is the documented fail-closed policy
+    for this package: an audit failure surfaces as a request failure.
+
+    ``detail`` values are coerced to ``str`` (``AuditEvent.detail`` is a
+    ``dict[str, str]``): callers may pass ints/bools/enums directly for a
+    concise call site without needing to stringify every field themselves.
+    """
+    _audit_service(request).record(
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        kind=kind,
+        actor_id=actor_id,
+        subject_id=subject_id,
+        logical_agent_id=logical_agent_id,
+        detail={key: str(value) for key, value in detail.items()} if detail else None,
+    )
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
@@ -478,8 +532,9 @@ def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
         identity,
         PLATFORM_PROJECT_ID if payload.owner_kind is AgentOwnerKind.SYSTEM else payload.project_id,
     )
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).create_agent(
+        draft = _release_service(request).create_agent(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=payload.logical_agent_id,
@@ -495,6 +550,25 @@ def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DRAFT_CREATED,
+        actor_id=identity.user_id,
+        subject_id=draft.logical_agent_id,
+        logical_agent_id=draft.logical_agent_id,
+        detail={"owner_kind": payload.owner_kind.value, "owner_id": draft.manifest.owner_id},
+    )
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.OWNERSHIP_GRANTED,
+        actor_id=identity.user_id,
+        subject_id=draft.manifest.owner_id,
+        logical_agent_id=draft.logical_agent_id,
+        detail={"role": AgentRole.OWNER.value},
+    )
+    return draft
 
 
 @router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraftView)
@@ -524,8 +598,9 @@ def update_draft(
     identity = _identity(request)
     scope = _scope(request, identity, payload.manifest.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).update_draft(
+        draft = _release_service(request).update_draft(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -540,14 +615,25 @@ def update_draft(
         raise HTTPException(status_code=status.HTTP_412_PRECONDITION_FAILED, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DRAFT_UPDATED,
+        actor_id=identity.user_id,
+        subject_id=logical_agent_id,
+        logical_agent_id=logical_agent_id,
+        detail={"etag": draft.etag},
+    )
+    return draft
 
 
 @router.post("/agents/{logical_agent_id}/fork", response_model=AgentDraft, status_code=status.HTTP_201_CREATED)
 def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) -> AgentDraft:
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).fork(
+        draft = _release_service(request).fork(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             source_logical_agent_id=logical_agent_id,
@@ -557,6 +643,25 @@ def fork_agent(request: Request, logical_agent_id: str, payload: ForkRequest) ->
         )
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DRAFT_FORKED,
+        actor_id=identity.user_id,
+        subject_id=payload.new_logical_agent_id,
+        logical_agent_id=payload.new_logical_agent_id,
+        detail={"source_logical_agent_id": logical_agent_id, "source_version_id": payload.source_version_id},
+    )
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.OWNERSHIP_GRANTED,
+        actor_id=identity.user_id,
+        subject_id=draft.manifest.owner_id,
+        logical_agent_id=payload.new_logical_agent_id,
+        detail={"role": AgentRole.OWNER.value},
+    )
+    return draft
 
 
 @router.post(
@@ -578,8 +683,9 @@ def register_tool(
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).register_tool(
+        spec = _release_service(request).register_tool(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -594,6 +700,16 @@ def register_tool(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except CapabilityAttachmentError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.TOOL_REGISTERED,
+        actor_id=identity.user_id,
+        subject_id=spec.id,
+        logical_agent_id=logical_agent_id,
+        detail={"descriptor_id": payload.descriptor_id, "operation": payload.operation, "kind": payload.kind.value},
+    )
+    return spec
 
 
 @router.get("/agents/{logical_agent_id}/tool-registrations", response_model=list[ToolRegistrationSpec])
@@ -612,8 +728,9 @@ def cut_version(request: Request, logical_agent_id: str, project_id: str) -> Age
     identity = _identity(request)
     scope = _scope(request, identity, project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).cut_version(
+        version = _release_service(request).cut_version(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -624,6 +741,16 @@ def cut_version(request: Request, logical_agent_id: str, project_id: str) -> Age
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.RELEASE_CUT,
+        actor_id=identity.user_id,
+        subject_id=version.id,
+        logical_agent_id=logical_agent_id,
+        detail={"sequence": version.sequence, "manifest_hash": version.manifest_hash},
+    )
+    return version
 
 
 @router.get("/agents/{logical_agent_id}/versions", response_model=list[AgentVersion])
@@ -700,8 +827,9 @@ def run_gates(request: Request, version_id: str, payload: RunGatesRequest) -> Re
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
     role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).run_release_gates(
+        report = _release_service(request).run_release_gates(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             version_id=version_id,
@@ -713,6 +841,19 @@ def run_gates(request: Request, version_id: str, payload: RunGatesRequest) -> Re
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.GATE_PASSED if report.passed else AuditEventKind.POLICY_GATE_FAILED,
+        actor_id=identity.user_id,
+        subject_id=report.id,
+        logical_agent_id=version.logical_agent_id,
+        detail={
+            "version_id": version_id,
+            "blocking_gates": [result.name.value for result in report.blocking_gates()],
+        },
+    )
+    return report
 
 
 @router.post("/versions/{version_id}/promote")
@@ -727,8 +868,9 @@ def request_promotion(
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
     role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).request_promotion(
+        result = _release_service(request).request_promotion(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             version_id=version_id,
@@ -742,6 +884,16 @@ def request_promotion(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.RELEASE_PROMOTION_REQUESTED,
+        actor_id=identity.user_id,
+        subject_id=result.id,
+        logical_agent_id=version.logical_agent_id,
+        detail={"version_id": version_id, "destination": payload.destination, "result_type": type(result).__name__},
+    )
+    return result
 
 
 @router.post("/versions/{version_id}/activate", response_model=AgentRelease)
@@ -764,8 +916,9 @@ def activate_release_route(
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
     role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).activate_release(
+        release = _release_service(request).activate_release(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             version_id=version_id,
@@ -777,6 +930,16 @@ def activate_release_route(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.RELEASE_ACTIVATED,
+        actor_id=identity.user_id,
+        subject_id=release.id,
+        logical_agent_id=version.logical_agent_id,
+        detail={"version_id": version_id, "environment": payload.environment.value},
+    )
+    return release
 
 
 @router.post("/versions/{version_id}/capability-approvals")
@@ -790,8 +953,9 @@ def request_capability_approval(
     version = _store(request).get_version(scope, version_id)
     if version is None:
         raise _not_found(f"Version '{version_id}' was not found.")
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _release_service(request).request_capability_approval(
+        record = _release_service(request).request_capability_approval(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             version_id=version_id,
@@ -806,6 +970,16 @@ def request_capability_approval(
         )
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.APPROVAL_REQUESTED,
+        actor_id=identity.user_id,
+        subject_id=record.id,
+        logical_agent_id=version.logical_agent_id,
+        detail={"kind": record.kind.value, "descriptor_id": payload.descriptor_id, "operation": payload.operation},
+    )
+    return record
 
 
 @router.post("/approvals/{approval_id}/decision", response_model=StudioApprovalRecord)
@@ -832,9 +1006,10 @@ def decide_approval_route(
         if _is_platform_owner(identity)
         else _actor_role(request, identity, logical_agent_id, scope.project_id)
     )
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
         if record.kind is ApprovalKind.ADMIN_ESCALATION:
-            return service.decide_role_escalation(
+            decided = service.decide_role_escalation(
                 tenant_id=scope.tenant_id,
                 project_id=scope.project_id,
                 approval_id=approval_id,
@@ -843,8 +1018,8 @@ def decide_approval_route(
                 approve=payload.approve,
                 rationale=payload.rationale,
             )
-        if record.kind is ApprovalKind.CAPABILITY_OPERATION:
-            return service.decide_capability_approval(
+        elif record.kind is ApprovalKind.CAPABILITY_OPERATION:
+            decided = service.decide_capability_approval(
                 tenant_id=scope.tenant_id,
                 project_id=scope.project_id,
                 approval_id=approval_id,
@@ -853,17 +1028,42 @@ def decide_approval_route(
                 approve=payload.approve,
                 rationale=payload.rationale,
             )
-        return service.decide_promotion(
-            tenant_id=scope.tenant_id,
-            project_id=scope.project_id,
-            approval_id=approval_id,
-            approver_id=identity.user_id,
-            approver_role=approver_role,
-            approve=payload.approve,
-            rationale=payload.rationale,
-        )
+        else:
+            decided = service.decide_promotion(
+                tenant_id=scope.tenant_id,
+                project_id=scope.project_id,
+                approval_id=approval_id,
+                approver_id=identity.user_id,
+                approver_role=approver_role,
+                approve=payload.approve,
+                rationale=payload.rationale,
+            )
     except (ReleaseServiceError, ApprovalError) as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.APPROVAL_DECIDED,
+        actor_id=identity.user_id,
+        subject_id=decided.id,
+        logical_agent_id=logical_agent_id,
+        detail={"kind": decided.kind.value, "approved": payload.approve, "state": decided.state.value},
+    )
+    if (
+        decided.kind is ApprovalKind.ADMIN_ESCALATION
+        and payload.approve
+        and decided.requested_role is not None
+    ):
+        _audit(
+            request,
+            scope=scope,
+            kind=AuditEventKind.OWNERSHIP_GRANTED,
+            actor_id=identity.user_id,
+            subject_id=decided.requested_by,
+            logical_agent_id=logical_agent_id,
+            detail={"role": decided.requested_role.value, "via_approval_id": decided.id},
+        )
+    return decided
 
 
 @router.get("/approvals/{approval_id}", response_model=ApprovalRecordView)
@@ -904,6 +1104,7 @@ def revoke_approval_route(
         if _is_platform_owner(identity)
         else _actor_role(request, identity, logical_agent_id, scope.project_id)
     )
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
         revocation = revoke_approval(
             record,
@@ -918,6 +1119,15 @@ def revoke_approval_route(
     store.create_revocation(scope, revocation)
     revocations = store.list_revocations(scope, approval_id)
     effective_state = compute_approval_effective_state(record, revoked=bool(revocations))
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.APPROVAL_REVOKED,
+        actor_id=identity.user_id,
+        subject_id=approval_id,
+        logical_agent_id=logical_agent_id,
+        detail={"reason": payload.reason},
+    )
     return ApprovalRecordView(record=record, effective_state=effective_state, revocations=revocations)
 
 
@@ -956,8 +1166,9 @@ async def consume_approval_route(
     # belongs to this scope's agent graph before any consumption is
     # attempted -- the same boundary ``get_approval_route`` enforces for
     # reads.
-    _resolve_approval_logical_agent_id(store, scope, record)
+    logical_agent_id = _resolve_approval_logical_agent_id(store, scope, record)
     port = _approval_consumption_port(request)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     consumption_request = ApprovalConsumptionRequest(
         scope=scope,
         approval_id=approval_id,
@@ -973,7 +1184,22 @@ async def consume_approval_route(
         invocation_id=payload.invocation_id,
         idempotency_key=payload.idempotency_key,
     )
-    return await port.consume_approval(consumption_request)
+    result = await port.consume_approval(consumption_request)
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.APPROVAL_CONSUMED,
+        actor_id=identity.user_id,
+        subject_id=approval_id,
+        logical_agent_id=logical_agent_id,
+        detail={
+            "outcome": result.outcome.value,
+            "operation_id": payload.operation_id,
+            "binding_id": payload.binding_id,
+            "invocation_id": payload.invocation_id,
+        },
+    )
+    return result
 
 
 @router.post("/approvals/context", response_model=ApprovalContextResult)
@@ -1041,7 +1267,8 @@ def request_escalation(
 ) -> StudioApprovalRecord:
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
-    return _release_service(request).request_role_escalation(
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
+    record = _release_service(request).request_role_escalation(
         tenant_id=scope.tenant_id,
         project_id=scope.project_id,
         logical_agent_id=logical_agent_id,
@@ -1050,6 +1277,16 @@ def request_escalation(
         evidence_summary=payload.evidence_summary,
         risk=payload.risk,
     )
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.APPROVAL_REQUESTED,
+        actor_id=identity.user_id,
+        subject_id=record.id,
+        logical_agent_id=logical_agent_id,
+        detail={"kind": record.kind.value, "requested_role": payload.requested_role.value},
+    )
+    return record
 
 
 @router.post(
@@ -1061,8 +1298,9 @@ def deploy(request: Request, logical_agent_id: str, payload: DeployRequest) -> D
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _deployment_service(request).deploy(
+        record = _deployment_service(request).deploy(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -1073,6 +1311,16 @@ def deploy(request: Request, logical_agent_id: str, payload: DeployRequest) -> D
         )
     except DeploymentServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DEPLOYMENT_CREATED,
+        actor_id=identity.user_id,
+        subject_id=record.id,
+        logical_agent_id=logical_agent_id,
+        detail={"version_id": payload.version_id, "environment": record.environment.value},
+    )
+    return record
 
 
 @router.get("/agents/{logical_agent_id}/deployments", response_model=list[DeploymentRecord])
@@ -1085,8 +1333,9 @@ def list_deployments(request: Request, logical_agent_id: str, project_id: str) -
 def record_health(request: Request, deployment_id: str, payload: HealthUpdateRequest) -> DeploymentRecord:
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _deployment_service(request).record_health(
+        record = _deployment_service(request).record_health(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             deployment_id=deployment_id,
@@ -1096,6 +1345,16 @@ def record_health(request: Request, deployment_id: str, payload: HealthUpdateReq
         )
     except DeploymentServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DEPLOYMENT_HEALTH_RECORDED,
+        actor_id=identity.user_id,
+        subject_id=deployment_id,
+        logical_agent_id=record.logical_agent_id,
+        detail={"status": payload.status.value},
+    )
+    return record
 
 
 @router.post(
@@ -1107,8 +1366,9 @@ def rollback(request: Request, logical_agent_id: str, payload: RollbackRequest) 
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _deployment_service(request).rollback(
+        record = _deployment_service(request).rollback(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -1119,6 +1379,16 @@ def rollback(request: Request, logical_agent_id: str, payload: RollbackRequest) 
         )
     except DeploymentServiceError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.DEPLOYMENT_ROLLED_BACK,
+        actor_id=identity.user_id,
+        subject_id=record.id,
+        logical_agent_id=logical_agent_id,
+        detail={"from_deployment_id": payload.deployment_id, "target_version_id": payload.target_version_id},
+    )
+    return record
 
 
 @router.get("/agents/{logical_agent_id}/resolve", response_model=ResolvedAgentContract)
@@ -1514,8 +1784,9 @@ def apply_builder_proposal(
     identity = _identity(request)
     scope = _scope(request, identity, payload.project_id)
     role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    _audit_service(request)  # fail closed before mutating if audit is unavailable
     try:
-        return _builder_service(request).apply(
+        draft = _builder_service(request).apply(
             tenant_id=scope.tenant_id,
             project_id=scope.project_id,
             logical_agent_id=logical_agent_id,
@@ -1528,6 +1799,16 @@ def apply_builder_proposal(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except BuilderServiceError as exc:
         raise _builder_error_response(exc) from exc
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.BUILDER_PROPOSAL_APPLIED,
+        actor_id=identity.user_id,
+        subject_id=proposal_id,
+        logical_agent_id=logical_agent_id,
+        detail={"draft_etag": draft.etag},
+    )
+    return draft
 
 
 @router.post("/agents/{logical_agent_id}/proposals/{proposal_id}/reject", response_model=BuilderProposal)

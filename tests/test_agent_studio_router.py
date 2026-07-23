@@ -14,6 +14,7 @@ from fastapi.testclient import TestClient
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
+from research_assistant_api.agent_studio.audit_service import AuditService, InMemoryAuditStore
 from research_assistant_api.agent_studio.authz import (
     MembershipCheckRequest,
     MembershipDecision,
@@ -44,6 +45,7 @@ from research_assistant_api.agent_studio.models import (
     AgentOwnerKind,
     AgentRole,
     ApprovalKind,
+    AuditEventKind,
     CapabilityInstance,
     DeploymentEnvironment,
     HealthStatus,
@@ -181,6 +183,7 @@ def _build_app(
     deployment_service: DeploymentService | None,
     memory_service: MemoryService | None,
     builder_service: BuilderService | None,
+    audit_service: AuditService | None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -192,6 +195,7 @@ def _build_app(
     app.state.agent_studio_deployment_service = deployment_service
     app.state.agent_studio_memory_service = memory_service
     app.state.agent_studio_builder_service = builder_service
+    app.state.agent_studio_audit_service = audit_service
     # Mirrors app.py's composition root: the durable approval-consumption
     # port is only available when backed by real persistence.
     app.state.agent_studio_approval_consumption_port = (
@@ -269,6 +273,11 @@ def builder_service(store: AgentStudioStore, release_service: ReleaseService) ->
 
 
 @pytest.fixture
+def audit_service() -> AuditService:
+    return AuditService(InMemoryAuditStore())
+
+
+@pytest.fixture
 def model_discovery() -> InMemoryModelDiscovery:
     return InMemoryModelDiscovery(
         (
@@ -292,6 +301,7 @@ def client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -302,6 +312,7 @@ def client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -318,6 +329,7 @@ def unavailable_client(settings: Settings, registry: CapabilityRegistry) -> Iter
         deployment_service=None,
         memory_service=None,
         builder_service=None,
+        audit_service=None,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -332,6 +344,7 @@ def memory_unavailable_client(
     release_service: ReleaseService,
     deployment_service: DeploymentService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -342,6 +355,7 @@ def memory_unavailable_client(
         deployment_service=deployment_service,
         memory_service=None,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -357,6 +371,7 @@ def approval_consumption_unavailable_client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -367,6 +382,7 @@ def approval_consumption_unavailable_client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     # Simulates a composition root where Cosmos-backed persistence exists
     # but the approval-consumption adapter itself was not wired -- distinct
@@ -388,6 +404,7 @@ def idempotency_unavailable_client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -398,6 +415,7 @@ def idempotency_unavailable_client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     # Simulates a composition root where Cosmos-backed persistence exists
     # but the idempotency adapter itself was not wired -- distinct from
@@ -419,6 +437,7 @@ def approval_context_unavailable_client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -429,6 +448,7 @@ def approval_context_unavailable_client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     # Simulates a composition root where Cosmos-backed persistence exists
     # but the approval-context resolver itself was not wired -- distinct
@@ -449,6 +469,7 @@ def release_attestation_unavailable_client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         settings,
@@ -459,12 +480,45 @@ def release_attestation_unavailable_client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     # Simulates a composition root where Cosmos-backed persistence exists
     # but the release-attestation port itself was not wired -- distinct
     # from ``unavailable_client``, since ``_store`` succeeds here and the
     # 503 must come specifically from ``_release_attestation_port``.
     app.state.agent_studio_release_attestation_port = None
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def audit_unavailable_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> Iterator[TestClient]:
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=None,
+    )
+    # Simulates a composition root where Cosmos-backed persistence exists
+    # but the audit store itself was not wired -- distinct from
+    # ``unavailable_client``, since ``_store`` succeeds here and the 503
+    # must come specifically from ``_audit_service``. Exercises the
+    # fail-closed policy: every consequential mutation route must refuse
+    # to proceed (503) rather than mutate state with no audit trail.
     with TestClient(app) as test_client:
         yield test_client
 
@@ -479,6 +533,7 @@ def unauthenticated_client(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> Iterator[TestClient]:
     app = _build_app(
         locked_settings,
@@ -489,6 +544,7 @@ def unauthenticated_client(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -1015,6 +1071,7 @@ def test_create_agent_maps_release_service_authorization_errors(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> None:
     class RejectingReleaseService:
         def create_agent(self, **_: Any) -> Any:
@@ -1029,6 +1086,7 @@ def test_create_agent_maps_release_service_authorization_errors(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(app) as test_client:
         response = test_client.post(
@@ -1273,6 +1331,22 @@ def test_tool_registration_routes_cover_success_role_and_maturity(client: TestCl
     assert empty_list_response.json() == []
 
 
+def test_list_tool_registrations_route_fails_closed_when_release_service_unavailable(
+    unavailable_client: TestClient,
+) -> None:
+    """``list_tool_registrations`` resolves ``_release_service`` directly
+    (it has no draft/version precondition to check via ``_store`` first), so
+    it must independently fail closed with 503 when persistence is
+    unavailable, exercising that branch of ``_release_service`` on its own.
+    """
+    response = unavailable_client.get(
+        "/v1/agent-studio/agents/agent-tools/tool-registrations",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
 def test_version_and_gate_routes_cover_success_and_error_branches(client: TestClient) -> None:
     _create_agent(client, logical_agent_id="agent-versioned", headers=USER_HEADERS)
 
@@ -1341,6 +1415,7 @@ def test_run_gates_maps_service_release_error_to_404(
     deployment_service: DeploymentService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> None:
     """The route's own existence check makes the service's identical
     ``ReleaseServiceError`` (raised inside ``run_release_gates`` when the
@@ -1358,6 +1433,7 @@ def test_run_gates_maps_service_release_error_to_404(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(setup_app) as setup_client:
         _create_agent(setup_client, logical_agent_id="agent-gate-race", headers=USER_HEADERS)
@@ -1385,6 +1461,7 @@ def test_run_gates_maps_service_release_error_to_404(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(racing_app) as racing_client:
         response = racing_client.post(
@@ -2824,6 +2901,7 @@ def test_resolve_and_contract_routes_fail_closed_on_stale_capability_binding(
     release_service: ReleaseService,
     memory_service: MemoryService,
     builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> None:
     """Resolve/invoke must fail closed (409), never silently return a
     contract, when the capability binding backing the active release has
@@ -2837,6 +2915,7 @@ def test_resolve_and_contract_routes_fail_closed_on_stale_capability_binding(
         deployment_service=DeploymentService(store, capability_registry=registry),
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(live_app) as live_client:
         _create_agent(live_client, logical_agent_id="agent-stale-resolve", headers=USER_HEADERS)
@@ -2870,6 +2949,7 @@ def test_resolve_and_contract_routes_fail_closed_on_stale_capability_binding(
         deployment_service=DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=())),
         memory_service=memory_service,
         builder_service=builder_service,
+        audit_service=audit_service,
     )
     with TestClient(stale_app) as stale_client:
         resolve_response = stale_client.get(
@@ -3502,6 +3582,7 @@ def test_builder_propose_returns_503_when_generator_unavailable(
     release_service: ReleaseService,
     deployment_service: DeploymentService,
     memory_service: MemoryService,
+    audit_service: AuditService,
 ) -> None:
     unavailable_generator_service = BuilderService(
         store,
@@ -3518,6 +3599,7 @@ def test_builder_propose_returns_503_when_generator_unavailable(
         deployment_service=deployment_service,
         memory_service=memory_service,
         builder_service=unavailable_generator_service,
+        audit_service=audit_service,
     )
     with TestClient(app) as no_generator_client:
         _create_agent(no_generator_client, logical_agent_id="agent-builder-no-generator", headers=USER_HEADERS)
@@ -4584,3 +4666,540 @@ def test_revoke_approval_route_is_not_found_for_missing_or_cross_scope_approval(
         headers=USER_HEADERS,
     )
     assert missing.status_code == 404
+
+
+def test_audit_events_recorded_for_agent_lifecycle_routes(
+    client: TestClient,
+    audit_service: AuditService,
+) -> None:
+    """Every wired mutation route in the create->update->register->cut->
+    gate->fork->promote->deploy->health->activate->rollback lifecycle
+    appends exactly the expected ``AuditEvent`` kind(s), with the correct
+    actor/subject/logical_agent_id/detail -- proving the ``_audit`` call
+    sites are reachable and semantically correct, not merely present in the
+    source.
+    """
+    scope = _scope()
+
+    _create_agent(client, logical_agent_id="agent-audit-lifecycle", headers=USER_HEADERS)
+    created_events = audit_service.list_events(scope=scope, logical_agent_id="agent-audit-lifecycle")
+    assert [e.kind for e in created_events] == [
+        AuditEventKind.DRAFT_CREATED,
+        AuditEventKind.OWNERSHIP_GRANTED,
+    ]
+    assert created_events[0].actor_id == "user-1"
+    assert created_events[0].subject_id == "agent-audit-lifecycle"
+    assert created_events[1].subject_id == "user-1"
+    assert created_events[1].detail["role"] == AgentRole.OWNER.value
+
+    draft = _get_draft(client, "agent-audit-lifecycle", headers=USER_HEADERS)
+    draft["manifest"]["description"] = "updated via audit test"
+    updated = _update_manifest(client, "agent-audit-lifecycle", draft["manifest"], headers=USER_HEADERS)
+    update_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.DRAFT_UPDATED
+    )
+    assert len(update_events) == 1
+    assert update_events[0].subject_id == "agent-audit-lifecycle"
+    assert update_events[0].detail["etag"] == updated["etag"]
+
+    register_response = client.post(
+        "/v1/agent-studio/agents/agent-audit-lifecycle/tool-registrations",
+        json=_body(
+            descriptor_id="foundry.web_search",
+            operation="search",
+            kind="managed_foundry_native",
+            handler_ref="builtin://web-search",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert register_response.status_code == 201, register_response.text
+    spec = register_response.json()
+    tool_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.TOOL_REGISTERED
+    )
+    assert len(tool_events) == 1
+    assert tool_events[0].subject_id == spec["id"]
+
+    version = _cut_version(client, "agent-audit-lifecycle", headers=USER_HEADERS)
+    cut_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.RELEASE_CUT
+    )
+    assert len(cut_events) == 1
+    assert cut_events[0].subject_id == version["id"]
+    assert cut_events[0].detail["sequence"] == str(version["sequence"])
+
+    report = _run_gates(client, version["id"], headers=USER_HEADERS, evidence=GATED_EVIDENCE)
+    assert all(r["status"] in {"passed", "not_applicable"} for r in report["results"])
+    gate_pass_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.GATE_PASSED
+    )
+    assert len(gate_pass_events) == 1
+    assert gate_pass_events[0].subject_id == report["id"]
+    assert audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.POLICY_GATE_FAILED
+    ) == ()
+
+    fork_response = client.post(
+        "/v1/agent-studio/agents/agent-audit-lifecycle/fork",
+        json=_body(source_version_id=version["id"], new_logical_agent_id="agent-audit-lifecycle-fork"),
+        headers=USER_HEADERS,
+    )
+    assert fork_response.status_code == 201, fork_response.text
+    fork_events = audit_service.list_events(scope=scope, logical_agent_id="agent-audit-lifecycle-fork")
+    assert [e.kind for e in fork_events] == [
+        AuditEventKind.DRAFT_FORKED,
+        AuditEventKind.OWNERSHIP_GRANTED,
+    ]
+    assert fork_events[0].subject_id == "agent-audit-lifecycle-fork"
+    assert fork_events[0].detail["source_logical_agent_id"] == "agent-audit-lifecycle"
+    assert fork_events[1].subject_id == "user-1"
+
+    promote_response = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/promote",
+        json=_body(destination="dev", evidence_summary="ship it"),
+        headers=USER_HEADERS,
+    )
+    assert promote_response.status_code == 200, promote_response.text
+    promotion_events = audit_service.list_events(
+        scope=scope,
+        logical_agent_id="agent-audit-lifecycle",
+        kind=AuditEventKind.RELEASE_PROMOTION_REQUESTED,
+    )
+    assert len(promotion_events) == 1
+    assert promotion_events[0].detail["destination"] == "dev"
+    assert promotion_events[0].detail["version_id"] == version["id"]
+
+    deployment = _deploy_version(
+        client,
+        logical_agent_id="agent-audit-lifecycle",
+        version_id=version["id"],
+        headers=USER_HEADERS,
+    )
+    deploy_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.DEPLOYMENT_CREATED
+    )
+    assert len(deploy_events) == 1
+    assert deploy_events[0].subject_id == deployment["id"]
+
+    health_response = client.post(
+        f"/v1/agent-studio/deployments/{deployment['id']}/health",
+        json=_body(status="healthy", detail="smoke ok"),
+        headers=USER_HEADERS,
+    )
+    assert health_response.status_code == 200, health_response.text
+    health_events = audit_service.list_events(
+        scope=scope,
+        logical_agent_id="agent-audit-lifecycle",
+        kind=AuditEventKind.DEPLOYMENT_HEALTH_RECORDED,
+    )
+    assert len(health_events) == 1
+    assert health_events[0].subject_id == deployment["id"]
+    assert health_events[0].detail["status"] == HealthStatus.HEALTHY.value
+
+    activate_response = client.post(
+        f"/v1/agent-studio/versions/{version['id']}/activate",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert activate_response.status_code == 200, activate_response.text
+    release = activate_response.json()
+    activate_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-lifecycle", kind=AuditEventKind.RELEASE_ACTIVATED
+    )
+    assert len(activate_events) == 1
+    assert activate_events[0].subject_id == release["id"]
+
+    draft2 = _get_draft(client, "agent-audit-lifecycle", headers=USER_HEADERS)
+    draft2["manifest"]["description"] = "second version for rollback"
+    _update_manifest(client, "agent-audit-lifecycle", draft2["manifest"], headers=USER_HEADERS)
+    second_version = _cut_gated_version(client, "agent-audit-lifecycle", headers=USER_HEADERS)
+    second_deployment = _deploy_version(
+        client,
+        logical_agent_id="agent-audit-lifecycle",
+        version_id=second_version["id"],
+        headers=USER_HEADERS,
+    )
+    rollback_response = client.post(
+        "/v1/agent-studio/agents/agent-audit-lifecycle/rollback",
+        json=_body(deployment_id=second_deployment["id"], target_version_id=version["id"]),
+        headers=USER_HEADERS,
+    )
+    assert rollback_response.status_code == 201, rollback_response.text
+    rollback_record = rollback_response.json()
+    rollback_events = audit_service.list_events(
+        scope=scope,
+        logical_agent_id="agent-audit-lifecycle",
+        kind=AuditEventKind.DEPLOYMENT_ROLLED_BACK,
+    )
+    assert len(rollback_events) == 1
+    assert rollback_events[0].subject_id == rollback_record["id"]
+    assert rollback_events[0].detail["target_version_id"] == version["id"]
+    assert rollback_events[0].detail["from_deployment_id"] == second_deployment["id"]
+
+
+def test_audit_events_recorded_for_gate_failure_and_capability_approval_lifecycle(
+    client: TestClient,
+    audit_service: AuditService,
+    store: AgentStudioStore,
+) -> None:
+    """``run_gates`` failure emits ``POLICY_GATE_FAILED`` (not ``GATE_PASSED``),
+    and the full capability-approval lifecycle (request/decide/revoke/
+    consume) each append their own distinct ``AuditEvent``.
+    """
+    scope = _scope()
+
+    _create_agent(client, logical_agent_id="agent-audit-gates", headers=USER_HEADERS)
+    ungated_version = _cut_version(client, "agent-audit-gates", headers=USER_HEADERS)
+    failing_report = _run_gates(
+        client,
+        ungated_version["id"],
+        headers=USER_HEADERS,
+        evidence={"evidence": {"tests_passed": False, "test_detail": "unit tests failed"}},
+    )
+    assert any(r["status"] == "failed" for r in failing_report["results"])
+    failed_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-gates", kind=AuditEventKind.POLICY_GATE_FAILED
+    )
+    assert len(failed_events) == 1
+    assert failed_events[0].subject_id == failing_report["id"]
+    assert audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-gates", kind=AuditEventKind.GATE_PASSED
+    ) == ()
+
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-audit-approval"
+    )
+    request_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-approval", kind=AuditEventKind.APPROVAL_REQUESTED
+    )
+    assert len(request_events) == 1
+    assert request_events[0].subject_id == approval["id"]
+    assert request_events[0].detail["descriptor_id"] == "foundry.azure_functions"
+
+    decided_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-approval", kind=AuditEventKind.APPROVAL_DECIDED
+    )
+    assert len(decided_events) == 1
+    assert decided_events[0].subject_id == approval["id"]
+    assert decided_events[0].detail["approved"] == "True"
+    assert decided_events[0].detail["state"] == "approved"
+
+    consume_response = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert consume_response.status_code == 200, consume_response.text
+    consumed_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-approval", kind=AuditEventKind.APPROVAL_CONSUMED
+    )
+    assert len(consumed_events) == 1
+    assert consumed_events[0].subject_id == approval["id"]
+    assert consumed_events[0].detail["outcome"] == "consumed"
+    assert consumed_events[0].detail["binding_id"] == binding["binding_id"]
+
+    revoke_response = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/revoke",
+        json=_body(reason="no longer needed"),
+        headers=USER_HEADERS,
+    )
+    assert revoke_response.status_code == 200, revoke_response.text
+    revoked_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-approval", kind=AuditEventKind.APPROVAL_REVOKED
+    )
+    assert len(revoked_events) == 1
+    assert revoked_events[0].subject_id == approval["id"]
+    assert revoked_events[0].detail["reason"] == "no longer needed"
+
+
+def test_audit_events_recorded_for_escalation_and_builder_apply_routes(
+    client: TestClient,
+    audit_service: AuditService,
+    store: AgentStudioStore,
+) -> None:
+    """``request_escalation`` -> ``APPROVAL_REQUESTED``; approving an
+    ``ADMIN_ESCALATION`` decision also appends a follow-on
+    ``OWNERSHIP_GRANTED`` for the grantee; applying a builder proposal
+    appends ``BUILDER_PROPOSAL_APPLIED``.
+    """
+    scope = _scope()
+
+    _create_agent(client, logical_agent_id="agent-audit-escalation", headers=USER_HEADERS)
+    request_response = client.post(
+        "/v1/agent-studio/agents/agent-audit-escalation/escalations",
+        json=_body(requested_role="maintainer", evidence_summary="need write access"),
+        headers=VIEWER_HEADERS,
+    )
+    assert request_response.status_code == 201, request_response.text
+    approval = request_response.json()
+    escalation_request_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-escalation", kind=AuditEventKind.APPROVAL_REQUESTED
+    )
+    assert len(escalation_request_events) == 1
+    assert escalation_request_events[0].subject_id == approval["id"]
+    assert escalation_request_events[0].actor_id == "viewer-1"
+    assert escalation_request_events[0].detail["requested_role"] == AgentRole.MAINTAINER.value
+
+    decide_response = client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json=_body(approve=True, rationale="approved"),
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert decide_response.status_code == 200, decide_response.text
+    decided_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-escalation", kind=AuditEventKind.APPROVAL_DECIDED
+    )
+    assert len(decided_events) == 1
+    assert decided_events[0].subject_id == approval["id"]
+    assert decided_events[0].actor_id == "platform-owner"
+
+    escalation_grant_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-escalation", kind=AuditEventKind.OWNERSHIP_GRANTED
+    )
+    # One from ``create_agent`` (owner) plus one from this escalation grant.
+    assert len(escalation_grant_events) == 2
+    escalation_grant = next(e for e in escalation_grant_events if e.subject_id == "viewer-1")
+    assert escalation_grant.detail["role"] == AgentRole.MAINTAINER.value
+    assert escalation_grant.detail["via_approval_id"] == approval["id"]
+
+    _create_agent(client, logical_agent_id="agent-audit-builder", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-audit-builder", headers=USER_HEADERS)
+    propose = client.post(
+        "/v1/agent-studio/agents/agent-audit-builder/builder/messages",
+        json=_body(message="Add a helpful description.", base_etag=draft["etag"]),
+        headers=USER_HEADERS,
+    )
+    assert propose.status_code == 201, propose.text
+    proposal = propose.json()
+    apply_response = client.post(
+        f"/v1/agent-studio/agents/agent-audit-builder/proposals/{proposal['id']}/apply",
+        json=_body(base_etag=draft["etag"]),
+        headers=USER_HEADERS,
+    )
+    assert apply_response.status_code == 200, apply_response.text
+    updated_draft = apply_response.json()
+    applied_events = audit_service.list_events(
+        scope=scope, logical_agent_id="agent-audit-builder", kind=AuditEventKind.BUILDER_PROPOSAL_APPLIED
+    )
+    assert len(applied_events) == 1
+    assert applied_events[0].subject_id == proposal["id"]
+    assert applied_events[0].detail["draft_etag"] == updated_draft["etag"]
+
+
+def test_audit_unavailable_client_fails_closed_before_every_wired_mutation(
+    client: TestClient,
+    audit_unavailable_client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    """Every wired mutation route refuses with 503 -- and performs no
+    domain mutation at all -- when the composed ``AuditService`` is
+    unavailable, proving ``_audit_service(request)`` is resolved (and
+    fails closed) *before* any of these routes call into the domain
+    service. Prerequisite state (agents/versions/deployments/approvals/
+    proposals) is built with the normal ``client`` fixture, which shares
+    the same underlying ``store``/services with ``audit_unavailable_client``.
+    """
+    # create_agent: no precondition; refuses before any draft is persisted.
+    create_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents",
+        json={
+            "logical_agent_id": "agent-audit-unavailable",
+            "project_id": DEFAULT_PROJECT_ID,
+            "display_name": "Should not be created",
+            "description": "",
+            "owner_kind": "user",
+        },
+        headers=USER_HEADERS,
+    )
+    assert create_response.status_code == 503
+    assert store.get_draft(_scope(), "agent-audit-unavailable") is None
+
+    # Build prerequisite state with the normal (audit-available) client.
+    _create_agent(client, logical_agent_id="agent-audit-503", headers=USER_HEADERS)
+    draft = _get_draft(client, "agent-audit-503", headers=USER_HEADERS)
+
+    update_response = audit_unavailable_client.put(
+        "/v1/agent-studio/agents/agent-audit-503/draft",
+        json={"manifest": draft["manifest"]},
+        headers={**USER_HEADERS, "If-Match": draft["etag"]},
+    )
+    assert update_response.status_code == 503
+    assert _get_draft(client, "agent-audit-503", headers=USER_HEADERS)["etag"] == draft["etag"]
+
+    register_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/tool-registrations",
+        json=_body(
+            descriptor_id="foundry.web_search",
+            operation="search",
+            kind="managed_foundry_native",
+            handler_ref="builtin://web-search",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert register_response.status_code == 503
+    assert (
+        client.get(
+            "/v1/agent-studio/agents/agent-audit-503/tool-registrations",
+            params=_params(),
+            headers=USER_HEADERS,
+        ).json()
+        == []
+    )
+
+    cut_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/versions",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert cut_response.status_code == 503
+    assert (
+        client.get(
+            "/v1/agent-studio/agents/agent-audit-503/versions",
+            params=_params(),
+            headers=USER_HEADERS,
+        ).json()
+        == []
+    )
+
+    # Cut a real version via the available client for the remaining routes.
+    version = _cut_version(client, "agent-audit-503", headers=USER_HEADERS)
+
+    gates_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/versions/{version['id']}/gates",
+        json={"project_id": DEFAULT_PROJECT_ID, **GATED_EVIDENCE},
+        headers=USER_HEADERS,
+    )
+    assert gates_response.status_code == 503
+    assert store.get_version(_scope(), version["id"]) is not None
+
+    fork_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/fork",
+        json=_body(source_version_id=version["id"], new_logical_agent_id="agent-audit-503-fork"),
+        headers=USER_HEADERS,
+    )
+    assert fork_response.status_code == 503
+    assert store.get_draft(_scope(), "agent-audit-503-fork") is None
+
+    # Gate the version via the available client so promote/deploy/activate work.
+    gated_report = _run_gates(client, version["id"], headers=USER_HEADERS, evidence=GATED_EVIDENCE)
+    assert all(r["status"] in {"passed", "not_applicable"} for r in gated_report["results"])
+
+    promote_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/versions/{version['id']}/promote",
+        json=_body(destination="dev", evidence_summary="should not promote"),
+        headers=USER_HEADERS,
+    )
+    assert promote_response.status_code == 503
+    # ``gated_report`` above (via the available client) already created a
+    # GATED ``AgentRelease``; the refused promote must not have advanced it.
+    unpromoted_release = store.latest_release_for_version(_scope(), version["id"])
+    assert unpromoted_release is not None
+    assert unpromoted_release.status is ReleaseStatus.GATED
+
+    escalation_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/escalations",
+        json=_body(requested_role="maintainer", evidence_summary="need write access"),
+        headers=VIEWER_HEADERS,
+    )
+    assert escalation_response.status_code == 503
+
+    capability_approval_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/versions/{version['id']}/capability-approvals",
+        json=_body(
+            descriptor_id="foundry.web_search",
+            operation="search",
+            evidence_summary="should not be recorded",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert capability_approval_response.status_code == 503
+
+    deploy_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/deployments",
+        json=_body(version_id=version["id"]),
+        headers=USER_HEADERS,
+    )
+    assert deploy_response.status_code == 503
+    assert (
+        client.get(
+            "/v1/agent-studio/agents/agent-audit-503/deployments",
+            params=_params(),
+            headers=USER_HEADERS,
+        ).json()
+        == []
+    )
+
+    # Deploy for real via the available client so health/rollback/activate can be exercised.
+    deployment = _deploy_version(
+        client, logical_agent_id="agent-audit-503", version_id=version["id"], headers=USER_HEADERS
+    )
+
+    health_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/deployments/{deployment['id']}/health",
+        json=_body(status="healthy"),
+        headers=USER_HEADERS,
+    )
+    assert health_response.status_code == 503
+
+    activate_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/versions/{version['id']}/activate",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert activate_response.status_code == 503
+    release_after_activate_attempt = store.latest_release_for_version(_scope(), version["id"])
+    assert release_after_activate_attempt is not None
+    assert release_after_activate_attempt.status is not ReleaseStatus.ACTIVE
+
+    rollback_response = audit_unavailable_client.post(
+        "/v1/agent-studio/agents/agent-audit-503/rollback",
+        json=_body(deployment_id=deployment["id"], target_version_id=version["id"]),
+        headers=USER_HEADERS,
+    )
+    assert rollback_response.status_code == 503
+
+    # Real approval + real proposal via the available client, then verify the
+    # unavailable client refuses to decide/revoke/consume/apply them.
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-audit-503-approval"
+    )
+
+    decide_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/decision",
+        json=_body(approve=False),
+        headers=USER_HEADERS,
+    )
+    assert decide_response.status_code == 503
+    approval_after_decide_attempt = store.get_approval(_scope(), approval["id"])
+    assert approval_after_decide_attempt is not None
+    assert approval_after_decide_attempt.state.value == "approved"
+
+    revoke_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/revoke",
+        json=_body(reason="should not be recorded"),
+        headers=USER_HEADERS,
+    )
+    assert revoke_response.status_code == 503
+    assert store.list_revocations(_scope(), approval["id"]) == ()
+
+    consume_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert consume_response.status_code == 503
+
+    _create_agent(client, logical_agent_id="agent-audit-503-builder", headers=USER_HEADERS)
+    builder_draft = _get_draft(client, "agent-audit-503-builder", headers=USER_HEADERS)
+    builder_proposal = client.post(
+        "/v1/agent-studio/agents/agent-audit-503-builder/builder/messages",
+        json=_body(message="Add a helpful description.", base_etag=builder_draft["etag"]),
+        headers=USER_HEADERS,
+    ).json()
+    apply_response = audit_unavailable_client.post(
+        f"/v1/agent-studio/agents/agent-audit-503-builder/proposals/{builder_proposal['id']}/apply",
+        json=_body(base_etag=builder_draft["etag"]),
+        headers=USER_HEADERS,
+    )
+    assert apply_response.status_code == 503
+    assert _get_draft(client, "agent-audit-503-builder", headers=USER_HEADERS)["etag"] == builder_draft["etag"]

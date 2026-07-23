@@ -33,6 +33,11 @@ from starlette.middleware.base import RequestResponseEndpoint
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
+from research_assistant_api.agent_studio.audit_service import (
+    AuditService,
+    AuditStoreUnavailableError,
+    build_audit_store,
+)
 from research_assistant_api.agent_studio.authz import ClaimsGroupMembershipResolver
 from research_assistant_api.agent_studio.builder_service import (
     BuilderService,
@@ -222,6 +227,19 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_memory_service = None
     else:
         application.state.agent_studio_memory_service = MemoryService(memory_store)
+    try:
+        audit_store = build_audit_store(settings)
+    except AuditStoreUnavailableError as exc:
+        logger.warning("Agent Studio audit store unavailable: %s", exc)
+        application.state.agent_studio_audit_service = None
+    else:
+        # Wired into every consequential platform mutation route (draft,
+        # version, release, deploy, health, rollback, approval, revocation,
+        # ownership, capability, tool registration, artifact, builder-apply)
+        # -- see ``router._audit_service``. Memory mutations are audited
+        # separately via ``MemoryAuditAction`` (see ``audit_service`` module
+        # docstring), not through this service.
+        application.state.agent_studio_audit_service = AuditService(audit_store)
 
 
 app = FastAPI(
