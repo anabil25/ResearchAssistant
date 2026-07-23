@@ -472,7 +472,7 @@ test.describe("Library and Settings interactions", () => {
   }) => {
     await waitForWorkspace(page);
     await page.getByLabel("Open project settings").click();
-    await page.getByRole("button", { name: /Connectors \d+/i }).click();
+    await page.getByRole("button", { name: /Connections \d+/i }).click();
 
     await expect(page.getByText("Gateway & tool versions")).toBeVisible();
     const apimCard = page

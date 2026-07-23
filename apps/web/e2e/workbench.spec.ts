@@ -233,7 +233,9 @@ test("Library, Runs, and connector settings contain operational data", async ({
   ).toBeVisible();
 
   await page.getByLabel("Open project settings").click();
-  await page.getByRole("button", { name: /Connectors 12/i }).click();
+  await page
+    .getByRole("button", { name: /Connections \d+/i })
+    .click();
   await expect(page.locator(".connector-card")).toHaveCount(12);
   await expect(page.getByText("Foundry Web Search")).toBeVisible();
   await expect(page.getByText("Assigned specialists").first()).toBeVisible();
@@ -469,7 +471,7 @@ test("capture the V3 UI foundation at desktop and mobile", async ({ page }) => {
   await expect(page.getByText("Exact gated action")).toBeVisible();
   await capture("10-runs-approvals-v3-m1.png");
   await page.getByLabel("Open project settings").click();
-  await page.getByRole("button", { name: /Connectors 12/i }).click();
+  await page.getByRole("button", { name: /Connections \d+/i }).click();
   await capture("11-connectors-settings-v3-m1.png");
 
   await page.setViewportSize({ width: 390, height: 844 });
