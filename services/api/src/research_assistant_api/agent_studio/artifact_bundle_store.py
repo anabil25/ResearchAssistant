@@ -34,10 +34,9 @@ only ever be used by tests.
 
 from __future__ import annotations
 
-import contextlib
 from dataclasses import dataclass
 from hashlib import sha256
-from typing import Protocol
+from typing import TYPE_CHECKING, Protocol
 
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
@@ -46,6 +45,9 @@ from azure.storage.blob import BlobServiceClient, ContentSettings
 
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
+
+if TYPE_CHECKING:
+    from azure.storage.blob import BlobClient
 
 
 class ArtifactBundleStoreError(RuntimeError):
@@ -194,12 +196,14 @@ class AzureArtifactBundleStore:
         # can both observe "absent" and both attempt
         # ``upload_blob(overwrite=False)``; the loser must not surface that
         # as a failure. Instead, attempt the conditional create directly
-        # (atomic server-side) and treat ``ResourceExistsError`` as success:
-        # the blob name is content-addressed (``.../{checksum}``), so a
-        # blob already present at this exact path is guaranteed
-        # byte-identical to ``content`` -- there is no real conflict to
-        # surface, only a redundant, idempotent write that lost the race.
-        with contextlib.suppress(ResourceExistsError):
+        # (atomic server-side) and, on ``ResourceExistsError``, verify the
+        # blob that is already there is actually byte-identical before
+        # treating this as a successful idempotent no-op: the blob name is
+        # content-addressed (``.../{checksum}``), so a genuine mismatch
+        # should be unreachable, but it is not provably impossible (e.g.
+        # storage corruption, a hash-stripping proxy, or a bug elsewhere),
+        # so identity is verified rather than assumed from the path alone.
+        try:
             blob.upload_blob(
                 content,
                 overwrite=False,
@@ -212,7 +216,40 @@ class AzureArtifactBundleStore:
                 },
                 content_settings=ContentSettings(content_type=content_type),
             )
+        except ResourceExistsError:
+            self._verify_existing_blob_matches(blob, checksum=checksum, expected_size=len(content))
         return StoredBundle(uri=blob.url, checksum=f"sha256:{checksum}", size_bytes=len(content))
+
+    @staticmethod
+    def _verify_existing_blob_matches(blob: BlobClient, *, checksum: str, expected_size: int) -> None:
+        """After losing a content-addressed create race, confirm the blob
+        already present at this exact path really is the content this call
+        intended to write before reporting success.
+
+        A content-addressed path collision without matching content should
+        be unreachable in correct operation, so this is defense in depth,
+        not the primary correctness mechanism -- but it means a genuine
+        mismatch (or an inability to verify at all, e.g. the blob vanishing
+        between the failed create and this read) fails closed with an
+        explicit error rather than silently reporting an unverified write
+        as a successful idempotent duplicate.
+        """
+        try:
+            properties = blob.get_blob_properties()
+        except ResourceNotFoundError as exc:
+            raise ArtifactBundleStoreError(
+                "Content-addressed create was rejected as already-existing, but the blob could "
+                "not be re-read to verify its identity; refusing to report this as a successful "
+                "idempotent duplicate."
+            ) from exc
+        existing_checksum = (properties.metadata or {}).get("sha256")
+        if existing_checksum != checksum or properties.size != expected_size:
+            raise ArtifactBundleStoreError(
+                f"Blob at content-addressed path already exists but does not match the expected "
+                f"content (expected sha256={checksum} size={expected_size} bytes; found "
+                f"sha256={existing_checksum} size={properties.size} bytes); refusing to treat this "
+                "create conflict as an idempotent duplicate."
+            )
 
     def get(
         self,

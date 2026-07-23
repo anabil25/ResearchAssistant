@@ -186,7 +186,7 @@ def test_unavailable_store_raises_on_put_and_get() -> None:
 
 
 class FakeBlobClient:
-    def __init__(self, registry: dict[str, bytes], name: str) -> None:
+    def __init__(self, registry: dict[str, dict[str, Any]], name: str) -> None:
         self._registry = registry
         self._name = name
         self.url = f"https://fake.blob.core.windows.net/container/{name}"
@@ -199,12 +199,12 @@ class FakeBlobClient:
         # overwritten (or silently skipped) here.
         if self._name in self._registry:
             raise ResourceExistsError("blob already exists")
-        self._registry[self._name] = content
+        self._registry[self._name] = {"content": content, "metadata": metadata}
 
     def download_blob(self) -> Any:
         if self._name not in self._registry:
             raise ResourceNotFoundError("blob not found")
-        content = self._registry[self._name]
+        content = self._registry[self._name]["content"]
 
         class _Downloaded:
             def readall(self) -> bytes:
@@ -212,10 +212,21 @@ class FakeBlobClient:
 
         return _Downloaded()
 
+    def get_blob_properties(self) -> Any:
+        if self._name not in self._registry:
+            raise ResourceNotFoundError("blob not found")
+        entry = self._registry[self._name]
+
+        class _Properties:
+            metadata = entry["metadata"]
+            size = len(entry["content"])
+
+        return _Properties()
+
 
 class FakeContainerClient:
     def __init__(self) -> None:
-        self.registry: dict[str, bytes] = {}
+        self.registry: dict[str, dict[str, Any]] = {}
 
     def get_blob_client(self, blob_name: str) -> FakeBlobClient:
         return FakeBlobClient(self.registry, blob_name)
@@ -285,11 +296,12 @@ def test_azure_store_put_treats_concurrent_duplicate_upload_as_success(
     )
     fake_container = cast(FakeContainerClient, store._container)
     # Simulate a concurrent winner: pre-populate the registry with the
-    # exact content this call is about to upload, at the exact path this
-    # call will compute, *before* this call ever checks anything.
+    # exact content (and matching sha256 metadata) this call is about to
+    # upload, at the exact path this call will compute, *before* this call
+    # ever checks anything.
     checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
     blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
-    fake_container.registry[blob_name] = b"racy-payload"
+    fake_container.registry[blob_name] = {"content": b"racy-payload", "metadata": {"sha256": checksum}}
 
     bundle = store.put(
         tenant_id="demo",
@@ -300,7 +312,72 @@ def test_azure_store_put_treats_concurrent_duplicate_upload_as_success(
     )
 
     assert bundle.checksum == f"sha256:{checksum}"
-    assert fake_container.registry[blob_name] == b"racy-payload"
+    assert fake_container.registry[blob_name]["content"] == b"racy-payload"
+
+
+def test_azure_store_put_fails_closed_when_existing_blob_content_mismatches(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A content-addressed path collision without matching content should
+    be unreachable in correct operation, but the store must not blindly
+    trust the path and silently report success: if the blob already
+    present at this exact checksum-addressed path carries different
+    metadata (corruption, a hash-stripping proxy, or a bug elsewhere), the
+    conflict must fail closed instead of being treated as an idempotent
+    duplicate."""
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+    fake_container = cast(FakeContainerClient, store._container)
+    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
+    # Pre-populate a blob at the exact content-addressed path, but with
+    # metadata that does not match the checksum this call will compute
+    # (simulating corrupted/mismatched existing content).
+    fake_container.registry[blob_name] = {"content": b"different-bytes!", "metadata": {"sha256": "0" * 64}}
+
+    with pytest.raises(ArtifactBundleStoreError, match="does not match"):
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"racy-payload",
+            version_label="version-race",
+        )
+
+
+def test_azure_store_put_fails_closed_when_existing_blob_vanishes_before_verification(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """If the blob that caused ``ResourceExistsError`` cannot be re-read at
+    all (e.g. deleted between the failed create and the verification read),
+    the create conflict must fail closed rather than silently succeeding
+    without ever having verified identity."""
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+
+    class _VanishingBlobClient:
+        url = "https://fake.blob.core.windows.net/container/vanished"
+
+        def upload_blob(self, *args: Any, **kwargs: Any) -> None:
+            raise ResourceExistsError("blob already exists")
+
+        def get_blob_properties(self) -> Any:
+            raise ResourceNotFoundError("blob not found")
+
+    monkeypatch.setattr(store._container, "get_blob_client", lambda _name: _VanishingBlobClient())
+
+    with pytest.raises(ArtifactBundleStoreError, match="could not be re-read"):
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"racy-payload",
+            version_label="version-race",
+        )
 
 
 def test_azure_store_put_accepts_explicit_version_label(monkeypatch: pytest.MonkeyPatch) -> None:
