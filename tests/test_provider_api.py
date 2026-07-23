@@ -126,18 +126,22 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
         },
     )
 
-    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v5"
+    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v6"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
     assert instance["bindability"] == [{"operation_id": "publish", "bindable": True, "reason_codes": []}]
     assert instance["config_fingerprint"]
-    assert instance["tenant_id"] == "tenant"
-    assert instance["project_id"] == "project"
+    assert instance["scope"] == {"tenant_id": "tenant", "project_id": "project"}
     assert instance["provider_resource_id"] == "https://hooks.test"
     assert instance["auth_mode"] == "none"
     assert instance["connection_scopes"] == []
-    assert instance["descriptor_digest"] == descriptor["descriptor_digest"]
+    assert instance["descriptor_ref"] == {
+        "descriptor_id": descriptor["descriptor_id"],
+        "descriptor_version": descriptor["descriptor_version"],
+        "descriptor_digest": descriptor["descriptor_digest"],
+    }
     assert len(instance["instance_fingerprint"]) == 64
     assert descriptor["operations"][0]["maturity"] == "ga"
+    assert descriptor["operations"][0]["lifecycle"] == "active"
     assert descriptor["operations"][0]["version"] == "1.0.0"
     assert descriptor["operations"][0]["provider_version"] == "1.0.0"
     assert len(descriptor["operations"][0]["input_schema_digest"]) == 64

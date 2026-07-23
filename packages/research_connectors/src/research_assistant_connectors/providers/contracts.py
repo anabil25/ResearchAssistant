@@ -22,6 +22,11 @@ class Maturity(StrEnum):
     UNKNOWN = "unknown"
     GA = "ga"
     PREVIEW = "preview"
+
+
+class Lifecycle(StrEnum):
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
     RETIRED = "retired"
 
 
@@ -46,6 +51,12 @@ class ApprovalPolicy(StrEnum):
     NEVER = "never"
     POLICY_EVALUATED = "policy_evaluated"
     REQUIRED = "required"
+
+
+class ApprovalDecisionStatus(StrEnum):
+    APPROVED = "approved"
+    DENIED = "denied"
+    REVOKED = "revoked"
 
 
 class Idempotency(StrEnum):
@@ -222,6 +233,7 @@ class OperationDescriptor:
     output_schema: JsonSchema
     operation_class: OperationClass
     approval_policy: ApprovalPolicy
+    lifecycle: Lifecycle = Lifecycle.ACTIVE
     external_side_effect: bool = False
     side_effect_destinations: tuple[str, ...] = ()
     timeout_seconds: float = 20.0
@@ -355,6 +367,7 @@ def _operation_governance_payload(operation: OperationDescriptor) -> dict[str, A
         "operation_id": operation.operation_id,
         "operation_version": operation.version,
         "maturity": operation.maturity.value,
+        "lifecycle": operation.lifecycle.value,
         "input_schema_digest": operation.input_schema_digest,
         "output_schema_digest": operation.output_schema_digest,
         "operation_class": operation.operation_class.value,
@@ -468,10 +481,28 @@ class CapabilityRecord:
 
 
 @dataclass(frozen=True, slots=True)
+class DiscoveryWarning:
+    reason_code: str
+    message: str
+    provider_id: str
+    instance_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if (
+            not self.reason_code
+            or not self.provider_id
+            or not self.message
+            or len(self.message) > 512
+            or any(character in self.message for character in "\r\n")
+        ):
+            raise ValueError("Discovery warnings require a code, provider, and sanitized single-line message")
+
+
+@dataclass(frozen=True, slots=True)
 class DiscoveryResult:
     descriptors: tuple[CapabilityDescriptor, ...]
     instances: tuple[CapabilityInstance, ...]
-    warnings: tuple[str, ...]
+    warnings: tuple[DiscoveryWarning, ...]
     refreshed_at: str
 
     def __post_init__(self) -> None:
@@ -493,8 +524,6 @@ class DiscoveryResult:
             for instance in self.instances
         ):
             raise ValueError("Every discovered instance must reference a returned descriptor")
-        if any(not warning for warning in self.warnings):
-            raise ValueError("Discovery warnings cannot be empty")
 
     def __iter__(self) -> Iterator[CapabilityInstance]:
         return iter(self.instances)
@@ -524,7 +553,7 @@ class DiscoveryResult:
 def discovery_result(
     records: Sequence[CapabilityRecord],
     *,
-    warnings: tuple[str, ...] = (),
+    warnings: tuple[DiscoveryWarning, ...] = (),
     refreshed_at: str | None = None,
     tenant_id: str | None = None,
     project_id: str | None = None,
@@ -886,9 +915,9 @@ class RequestSigningCredential(Protocol):
 @dataclass(frozen=True, slots=True)
 class ApprovalDecision:
     decision_id: str
-    approved: bool
+    status: ApprovalDecisionStatus
     tenant_id: str
-    principal_id: str
+    actor_id: str
     instance_id: str
     project_id: str
     provider_resource_id: str
@@ -898,6 +927,7 @@ class ApprovalDecision:
     operation_version: str
     arguments_hash: str
     destination_hash: str
+    issued_at: str
     expires_at: str
     policy_release: str
     binding_id: str | None = None
@@ -907,7 +937,7 @@ class ApprovalDecision:
             (
                 self.decision_id,
                 self.tenant_id,
-                self.principal_id,
+                self.actor_id,
                 self.instance_id,
                 self.project_id,
                 self.provider_resource_id,
@@ -926,6 +956,11 @@ class ApprovalDecision:
             if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
                 raise ValueError(f"Approval decision {field_name} must be lowercase SHA-256")
         _validate_utc_timestamp(self.expires_at, path="approval.expires_at")
+        _validate_utc_timestamp(self.issued_at, path="approval.issued_at")
+        if datetime.fromisoformat(self.issued_at.replace("Z", "+00:00")) >= datetime.fromisoformat(
+            self.expires_at.replace("Z", "+00:00")
+        ):
+            raise ValueError("Approval decision expiry must be after issuance")
 
 
 @dataclass(frozen=True, slots=True)
@@ -960,6 +995,13 @@ class InvocationContext:
             )
         if self.deadline_at is not None:
             _validate_utc_timestamp(self.deadline_at, path="invocation.deadline_at")
+        now = datetime.now(UTC)
+        if any(
+            decision.status is not ApprovalDecisionStatus.APPROVED
+            or datetime.fromisoformat(decision.expires_at.replace("Z", "+00:00")) <= now
+            for decision in self.approval_decisions
+        ):
+            raise ValueError("Executable invocation contexts may contain only active approved decisions")
 
     def raise_if_cancelled_or_expired(self, *, provider_id: str, instance_id: str | None = None) -> None:
         if self.is_cancelled():
@@ -1032,7 +1074,9 @@ class HealthReport:
     evidence: tuple[str, ...]
 
 
-class Provider(Protocol):
+class PlatformProvider(Protocol):
+    """Synchronous management/test adapter; agent runtime uses bound ToolRegistration."""
+
     @property
     def descriptor(self) -> ProviderDescriptor: ...
 
@@ -1051,6 +1095,29 @@ class Provider(Protocol):
     ) -> HealthReport: ...
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult: ...
+
+
+class Provider(Protocol):
+    """Canonical cancellation/deadline-aware runtime provider protocol."""
+
+    @property
+    def descriptor(self) -> ProviderDescriptor: ...
+
+    async def discover(self, context: InvocationContext) -> DiscoveryResult: ...
+
+    async def validate(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> ValidationReport: ...
+
+    async def health(
+        self,
+        target: CapabilityInstance | CapabilityBinding,
+        context: InvocationContext,
+    ) -> HealthReport: ...
+
+    async def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult: ...
 
 
 class ProviderError(Exception):
@@ -1142,6 +1209,7 @@ class StaleBindingError(PolicyError):
 
 class BindabilityReason(StrEnum):
     MATURITY_NOT_GA = "maturity_not_ga"
+    LIFECYCLE_NOT_ACTIVE = "lifecycle_not_active"
     INSTANCE_NOT_READY = "instance_not_ready"
     HEALTH_NOT_READY = "health_not_ready"
     TENANT_MISMATCH = "tenant_mismatch"
@@ -1220,6 +1288,8 @@ def bindability_decisions(
         reasons: list[BindabilityReason] = []
         if operation.maturity is not Maturity.GA:
             reasons.append(BindabilityReason.MATURITY_NOT_GA)
+        if operation.lifecycle is not Lifecycle.ACTIVE:
+            reasons.append(BindabilityReason.LIFECYCLE_NOT_ACTIVE)
         if instance.readiness is not Readiness.READY:
             reasons.append(BindabilityReason.INSTANCE_NOT_READY)
         if instance.health is not Readiness.READY:
@@ -1367,6 +1437,8 @@ def validate_binding(
         raise ValueError("Capability binding output schema digest does not match")
     if operation.maturity is not Maturity.GA:
         raise ValueError("Only GA operations can be bound")
+    if operation.lifecycle is not Lifecycle.ACTIVE:
+        raise ValueError("Only active operations can be bound")
     allowed = set(operation.side_effect_destinations)
     if allowed and not binding.allowed_destination_constraints:
         raise ValueError("Binding destination constraints cannot be empty for a destination-bound operation")
@@ -1530,7 +1602,7 @@ def approval_decision(
     arguments: Mapping[str, Any],
     decision_id: str,
     expires_at: str,
-    approved: bool = True,
+    status: ApprovalDecisionStatus = ApprovalDecisionStatus.APPROVED,
 ) -> ApprovalDecision:
     if context.tenant_id != instance.tenant_id or context.project_id != instance.project_id:
         raise PolicyError(
@@ -1548,9 +1620,9 @@ def approval_decision(
     )
     return ApprovalDecision(
         decision_id=decision_id,
-        approved=approved,
+        status=status,
         tenant_id=context.tenant_id,
-        principal_id=context.principal_id,
+        actor_id=context.principal_id,
         instance_id=instance.instance_id,
         project_id=instance.project_id,
         provider_resource_id=instance.provider_resource_id,
@@ -1564,6 +1636,7 @@ def approval_decision(
         operation_version=operation.version,
         arguments_hash=canonical_json_hash(arguments),
         destination_hash=canonical_json_hash(destinations),
+        issued_at=utc_now(),
         expires_at=expires_at,
         policy_release=context.policy_release,
         binding_id=target.binding_id if isinstance(target, CapabilityBinding) else None,
@@ -1617,9 +1690,9 @@ def _approval_matches(
 ) -> bool:
     expires_at = datetime.fromisoformat(decision.expires_at.replace("Z", "+00:00"))
     return (
-        decision.approved
+        decision.status is ApprovalDecisionStatus.APPROVED
         and decision.tenant_id == context.tenant_id
-        and decision.principal_id == context.principal_id
+        and decision.actor_id == context.principal_id
         and decision.instance_id == instance.instance_id
         and decision.project_id == instance.project_id
         and decision.provider_resource_id == instance.provider_resource_id
@@ -1711,6 +1784,12 @@ def find_operation(
     if operation.maturity is not Maturity.GA:
         raise UnavailableError(
             "Only GA operations can be invoked",
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
+    if operation.lifecycle is not Lifecycle.ACTIVE:
+        raise UnavailableError(
+            "Only active operations can be invoked",
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )

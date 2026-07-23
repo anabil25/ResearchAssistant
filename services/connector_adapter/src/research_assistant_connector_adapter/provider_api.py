@@ -49,6 +49,7 @@ def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
         "version": operation.version,
         "provider_version": operation.provider_version,
         "maturity": operation.maturity.value,
+        "lifecycle": operation.lifecycle.value,
         "input_schema": plain_json(operation.input_schema),
         "input_schema_digest": operation.input_schema_digest,
         "output_schema": plain_json(operation.output_schema),
@@ -109,9 +110,11 @@ def _instance_json(
     return {
         "provider_id": instance.provider_id,
         "instance_id": instance.instance_id,
-        "descriptor_id": instance.descriptor_id,
-        "descriptor_version": instance.descriptor_version,
-        "descriptor_digest": instance.descriptor_digest,
+        "descriptor_ref": {
+            "descriptor_id": instance.descriptor_id,
+            "descriptor_version": instance.descriptor_version,
+            "descriptor_digest": instance.descriptor_digest,
+        },
         "instance_fingerprint": capability_instance_fingerprint(
             instance,
             descriptor,
@@ -129,8 +132,10 @@ def _instance_json(
             }
             for decision in bindability
         ],
-        "tenant_id": instance.tenant_id,
-        "project_id": instance.project_id,
+        "scope": {
+            "tenant_id": instance.tenant_id,
+            "project_id": instance.project_id,
+        },
         "provider_resource_id": instance.provider_resource_id,
         "connection_ref": instance.connection_ref,
         "auth_mode": instance.auth_mode.value,
@@ -199,7 +204,7 @@ class ProviderService:
 
     def catalog(self) -> dict[str, Any]:
         return {
-            "schema_version": "research-assistant.integration-provider.v5",
+            "schema_version": "research-assistant.integration-provider.v6",
             "providers": [_provider_json(provider.descriptor) for provider in self._registry.providers.values()],
         }
 
@@ -226,7 +231,15 @@ class ProviderService:
             "provider_id": provider_id,
             "descriptors": [_capability_json(descriptor) for descriptor in result.descriptors],
             "instances": [_instance_json(instance, discovery=result, context=context) for instance in result.instances],
-            "warnings": list(result.warnings),
+            "warnings": [
+                {
+                    "reason_code": warning.reason_code,
+                    "message": warning.message,
+                    "provider_id": warning.provider_id,
+                    "instance_id": warning.instance_id,
+                }
+                for warning in result.warnings
+            ],
             "refreshed_at": result.refreshed_at,
         }
 

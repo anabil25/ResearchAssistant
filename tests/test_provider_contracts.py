@@ -12,6 +12,7 @@ import httpx
 import pytest
 from research_assistant_connectors.providers import (
     AccessToken,
+    ApprovalDecisionStatus,
     ApprovalPolicy,
     AuthConfig,
     AuthMode,
@@ -23,6 +24,7 @@ from research_assistant_connectors.providers import (
     CapabilityInstance,
     CapabilityRecord,
     DiscoveryResult,
+    DiscoveryWarning,
     FoundryConfig,
     FunctionPolicy,
     FunctionsConfig,
@@ -32,6 +34,7 @@ from research_assistant_connectors.providers import (
     InvocationContext,
     InvocationRequest,
     InvocationResult,
+    Lifecycle,
     Maturity,
     MCPConfig,
     NeedsConsentError,
@@ -140,6 +143,7 @@ def operation(
     *,
     operation_id: str = "operation",
     maturity: Maturity = Maturity.GA,
+    lifecycle: Lifecycle = Lifecycle.ACTIVE,
     approval: ApprovalPolicy = ApprovalPolicy.NEVER,
     idempotency: Idempotency = Idempotency.PROVIDER_NATIVE,
 ) -> OperationDescriptor:
@@ -156,6 +160,7 @@ def operation(
         {"type": "object"},
         OperationClass.READ,
         approval,
+        lifecycle,
         idempotency=idempotency,
     )
 
@@ -602,7 +607,13 @@ def test_discovery_provenance_and_instance_state_invariants() -> None:
     descriptor = descriptor_of(instance)
     result = discovery_result(
         (CapabilityRecord(descriptor, instance),),
-        warnings=("One malformed upstream resource was ignored.",),
+        warnings=(
+            DiscoveryWarning(
+                "malformed_resource",
+                "One malformed upstream resource was ignored.",
+                "provider",
+            ),
+        ),
         refreshed_at="2026-07-23T08:37:02Z",
     )
     assert result.descriptors == (descriptor,)
@@ -653,12 +664,7 @@ def test_discovery_provenance_and_instance_state_invariants() -> None:
             "2026-07-23T08:37:02Z",
         )
     with pytest.raises(ValueError, match="warnings"):
-        DiscoveryResult(
-            (descriptor,),
-            (instance,),
-            ("",),
-            "2026-07-23T08:37:02Z",
-        )
+        DiscoveryWarning("", "message", "provider")
 
 
 def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
@@ -724,6 +730,15 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
     )
     with pytest.raises(ValueError, match="Only GA"):
         validate_binding(preview, preview_descriptor, preview_binding)
+    deprecated = capability(op=operation(lifecycle=Lifecycle.DEPRECATED))
+    with pytest.raises(ValueError, match="Only active"):
+        capability_binding(
+            binding_id="deprecated-binding",
+            instance=deprecated,
+            descriptor=descriptor_of(deprecated),
+            operation=descriptor_of(deprecated).operations[0],
+            policy_ref=binding.policy_ref,
+        )
     with pytest.raises(ValueError, match="identifiers"):
         replace(binding, binding_id="")
     with pytest.raises(ValueError, match="lowercase SHA-256"):
@@ -850,7 +865,13 @@ def test_migration_lock_policy_scope_cancellation_and_bindability_edges() -> Non
 
     with pytest.raises(ValueError, match="consistent reasons"):
         BindabilityDecision("operation", True, (BindabilityReason.TENANT_MISMATCH,))
-    preview = capability(readiness=Readiness.UNAUTHORIZED, op=operation(maturity=Maturity.PREVIEW))
+    preview = capability(
+        readiness=Readiness.UNAUTHORIZED,
+        op=operation(
+            maturity=Maturity.PREVIEW,
+            lifecycle=Lifecycle.DEPRECATED,
+        ),
+    )
     preview = replace(
         preview,
         tenant_id="other",
@@ -858,7 +879,6 @@ def test_migration_lock_policy_scope_cancellation_and_bindability_edges() -> Non
         health=Readiness.DEGRADED,
         config_validated=False,
     )
-    _DESCRIPTORS[preview.descriptor_digest] = descriptor_of(capability(op=operation(maturity=Maturity.PREVIEW)))
     preview_discovery = discovery(preview)
     reasons = bindability_decisions(
         preview_discovery,
@@ -1069,6 +1089,15 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
             provider_id="provider",
             tenant_id=None,
         )
+    deprecated = capability(op=operation(lifecycle=Lifecycle.RETIRED))
+    with pytest.raises(UnavailableError, match="Only active"):
+        find_operation(
+            discovery(deprecated),
+            replace(request, target=deprecated),
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
+        )
     approval_cap = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
     approval_request = replace(request, target=approval_cap)
     with pytest.raises(PolicyError, match="approval"):
@@ -1209,10 +1238,21 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
             tenant_id="tenant",
         )
 
+    for rejected_status in (
+        ApprovalDecisionStatus.DENIED,
+        ApprovalDecisionStatus.REVOKED,
+    ):
+        with pytest.raises(ValueError, match="active approved"):
+            replace(
+                ctx,
+                approval_decisions=(replace(decision, status=rejected_status),),
+            )
+    with pytest.raises(ValueError, match="expiry"):
+        replace(decision, expires_at="2000-01-01T00:00:00Z")
+
     for tampered in (
-        replace(decision, approved=False),
         replace(decision, tenant_id="other"),
-        replace(decision, principal_id="other"),
+        replace(decision, actor_id="other"),
         replace(decision, instance_id="other"),
         replace(decision, project_id="other"),
         replace(decision, provider_resource_id="other"),
@@ -1224,7 +1264,6 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
         replace(decision, destination_hash="0" * 64),
         replace(decision, policy_release="other"),
         replace(decision, binding_id="other"),
-        replace(decision, expires_at="2000-01-01T00:00:00Z"),
     ):
         with pytest.raises(PolicyError, match="approval decision"):
             find_operation(

@@ -30,7 +30,7 @@ from research_assistant_connectors.providers import (
     WebhookConfig,
     WebhookProvider,
 )
-from research_assistant_connectors.providers.contracts import Provider
+from research_assistant_connectors.providers.contracts import PlatformProvider
 
 
 class LiveCredential:
@@ -70,7 +70,7 @@ def auth_config() -> AuthConfig:
     raise AssertionError(f"Unsupported live integration auth mode: {mode.value}")
 
 
-def live_provider(kind: str, endpoint: str, tenant_id: str, auth: AuthConfig) -> Provider:
+def live_provider(kind: str, endpoint: str, tenant_id: str, auth: AuthConfig) -> PlatformProvider:
     if kind == "mcp":
         return MCPStreamableHTTPProvider(MCPConfig(endpoint, tenant_id, auth))
     if kind == "openapi":
