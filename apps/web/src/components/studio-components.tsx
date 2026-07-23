@@ -41,6 +41,13 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
+import {
+  assessDatasetFile,
+  buildDatasetRunInputs,
+  datasetRunDisabled,
+  type DatasetAssetMode,
+  type DatasetFileKind,
+} from "@/components/dataset-execution";
 import type {
   AutomationStep,
   AutomationStudioResult,
@@ -862,6 +869,11 @@ interface DraftConnectorRequest {
   category: string;
   baseUrl: string;
   justification: string;
+  documentationUrl: string;
+  termsUrl: string;
+  allowlist: string;
+  authentication: string;
+  sample: string;
   requestedAt: string;
 }
 
@@ -1124,6 +1136,9 @@ export function GrantStudio({
                 {draftRequests.map((request) => (
                   <div className="draft-request-row" key={request.id}>
                     <strong>{request.name}</strong>
+                    <span>
+                      {request.category} · {request.authentication}
+                    </span>
                     <span className="subtle-chip">Draft — needs review</span>
                   </div>
                 ))}
@@ -1336,9 +1351,11 @@ export function GrantStudio({
               </button>
             </div>
             <p>
-              This records a draft request only. An administrator must
-              review, verify terms of use, and provision the connector
-              before it can run in any studio.
+              This records a draft request only. The app stores no GitHub or
+              Copilot token. After administrator review, submit it through the
+              repository connector-request issue form; GitHub authenticates its
+              scoped coding agent and opens a reviewable draft PR. This is not a
+              Copilot SDK container.
             </p>
             <form
               onSubmit={(event) => {
@@ -1349,7 +1366,26 @@ export function GrantStudio({
                 const justification = String(
                   form.get("justification") ?? "",
                 ).trim();
-                if (!name || !baseUrl || !justification) return;
+                const documentationUrl = String(
+                  form.get("documentationUrl") ?? "",
+                ).trim();
+                const termsUrl = String(form.get("termsUrl") ?? "").trim();
+                const allowlist = String(form.get("allowlist") ?? "").trim();
+                const authentication = String(
+                  form.get("authentication") ?? "",
+                ).trim();
+                const sample = String(form.get("sample") ?? "").trim();
+                if (
+                  !name ||
+                  !baseUrl ||
+                  !justification ||
+                  !documentationUrl ||
+                  !termsUrl ||
+                  !allowlist ||
+                  !authentication ||
+                  !sample
+                )
+                  return;
                 setDraftRequests((current) => [
                   ...current,
                   {
@@ -1358,6 +1394,11 @@ export function GrantStudio({
                     category: String(form.get("category") ?? "Funding"),
                     baseUrl,
                     justification,
+                    documentationUrl,
+                    termsUrl,
+                    allowlist,
+                    authentication,
+                    sample,
                     requestedAt: new Date().toISOString(),
                   },
                 ]);
@@ -1382,8 +1423,55 @@ export function GrantStudio({
                 <input name="baseUrl" type="url" required />
               </label>
               <label className="field">
+                <span>Authoritative API documentation</span>
+                <input name="documentationUrl" type="url" required />
+              </label>
+              <label className="field">
+                <span>Terms, license, and robots policy</span>
+                <input name="termsUrl" type="url" required />
+              </label>
+              <label className="field">
+                <span>Allowed hosts and path prefixes</span>
+                <textarea
+                  name="allowlist"
+                  required
+                  rows={3}
+                  placeholder="api.example.org/v1/"
+                />
+              </label>
+              <label className="field">
+                <span>Authentication</span>
+                <select name="authentication" required defaultValue="">
+                  <option value="" disabled>
+                    Select an authentication mode
+                  </option>
+                  <option>None</option>
+                  <option>API key through approved secret connection</option>
+                  <option>OAuth user delegation</option>
+                  <option>Managed identity</option>
+                </select>
+              </label>
+              <label className="field">
+                <span>Sample query and normalized fields</span>
+                <textarea name="sample" required rows={3} />
+              </label>
+              <label className="field">
                 <span>Justification</span>
                 <textarea name="justification" required rows={3} />
+              </label>
+              <label className="check-row">
+                <input name="termsConfirmed" type="checkbox" required />
+                <span>
+                  I confirmed this use is permitted by the provider terms and
+                  license.
+                </span>
+              </label>
+              <label className="check-row">
+                <input name="reviewConfirmed" type="checkbox" required />
+                <span>
+                  I understand generated code requires tests, human review,
+                  staging evaluation, and separate promotion approval.
+                </span>
               </label>
               <div className="modal-actions">
                 <button
@@ -1846,10 +1934,6 @@ export function MatchingStudio({
   );
 }
 
-const MAX_INLINE_DATASET_BYTES = 5_000_000;
-
-type DatasetAssetMode = "sample" | "large" | "upload";
-
 export function DatasetStudio({
   result,
   running,
@@ -1864,7 +1948,7 @@ export function DatasetStudio({
   const [assetMode, setAssetMode] = useState<DatasetAssetMode>("sample");
   const [uploadedFile, setUploadedFile] = useState<File | null>(null);
   const [csvText, setCsvText] = useState<string | null>(null);
-  const [fileKind, setFileKind] = useState<"csv" | "json" | null>(null);
+  const [fileKind, setFileKind] = useState<DatasetFileKind | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
   const [planApproved, setPlanApproved] = useState(false);
   const [libraryUploadStatus, setLibraryUploadStatus] = useState<
@@ -1881,31 +1965,32 @@ export function DatasetStudio({
     const file = event.target.files?.[0] ?? null;
     event.target.value = "";
     if (!file) return;
-    const extension = file.name.split(".").pop()?.toLowerCase();
-    const isCsv = extension === "csv" || file.type === "text/csv";
-    const isJson = extension === "json" || file.type === "application/json";
-    if (!isCsv && !isJson) {
-      setFileError("Only .csv or .json files are supported here.");
-      return;
-    }
-    if (file.size > MAX_INLINE_DATASET_BYTES) {
-      setFileError(
-        `Files must be ${MAX_INLINE_DATASET_BYTES / 1_000_000} MB or smaller in this workspace. Larger assets need the estimate-and-approve path.`,
-      );
+    const assessment = assessDatasetFile(file);
+    if (assessment.error) {
+      setFileError(assessment.error);
       return;
     }
     setFileError(null);
     setUploadedFile(file);
-    setFileKind(isCsv ? "csv" : "json");
+    setFileKind(assessment.kind);
     setAssetMode("upload");
     setLibraryUploadStatus("idle");
     setLibraryUploadError(null);
     setPlanApproved(false);
     setCsvText(null);
-    if (isCsv) {
+    if (assessment.kind === "csv") {
       const reader = new FileReader();
       reader.onload = () => {
-        setCsvText(typeof reader.result === "string" ? reader.result : null);
+        if (typeof reader.result === "string" && reader.result.trim()) {
+          setCsvText(reader.result);
+          return;
+        }
+        setFileError("The selected CSV is empty or could not be read as text.");
+        setCsvText(null);
+      };
+      reader.onerror = () => {
+        setFileError("The selected CSV could not be read. Choose the file again.");
+        setCsvText(null);
       };
       reader.readAsText(file);
     }
@@ -1940,8 +2025,14 @@ export function DatasetStudio({
       });
   };
 
-  const runDisabled =
-    running || !planApproved || (assetMode === "upload" && !uploadedFile);
+  const runDisabled = datasetRunDisabled({
+    running,
+    planApproved,
+    assetMode,
+    uploadedFile,
+    fileKind,
+    csvText,
+  });
 
   return (
     <div className="studio-page dataset-studio">
@@ -1958,28 +2049,13 @@ export function DatasetStudio({
         onSubmit={(event) => {
           event.preventDefault();
           if (runDisabled) return;
-          const inputs =
-            assetMode === "upload" && uploadedFile
-              ? {
-                  filename: uploadedFile.name,
-                  estimated_bytes: uploadedFile.size,
-                  compute_adapter_configured: true,
-                  analysis_approved: planApproved,
-                  ...(csvText ? { csv_text: csvText } : {}),
-                }
-              : assetMode === "large"
-                ? {
-                    filename: "clinical-events-archive.parquet",
-                    estimated_bytes: 1_200_000_000_000,
-                    compute_adapter_configured: true,
-                    analysis_approved: planApproved,
-                  }
-                : {
-                    filename: "pilot-outcomes.csv",
-                    estimated_bytes: 4_000_000,
-                    compute_adapter_configured: true,
-                    analysis_approved: planApproved,
-                  };
+          const inputs = buildDatasetRunInputs({
+            assetMode,
+            uploadedFile,
+            fileKind,
+            csvText,
+            planApproved,
+          });
           void onRun("dataset", objective, { inputs });
         }}
       >
@@ -2030,7 +2106,7 @@ export function DatasetStudio({
               <small>
                 {uploadedFile
                   ? `${(uploadedFile.size / 1_000_000).toFixed(2)} MB · ${fileKind?.toUpperCase()}`
-                  : "CSV or JSON · up to 5 MB"}
+                  : "CSV or JSON · up to 100 KB"}
               </small>
             </span>
             <input
@@ -2090,6 +2166,10 @@ export function DatasetStudio({
             <input
               type="checkbox"
               checked={planApproved}
+              disabled={
+                assetMode === "upload" &&
+                (fileKind !== "csv" || !csvText?.trim())
+              }
               onChange={(event) => setPlanApproved(event.target.checked)}
             />
             <span>
@@ -2118,17 +2198,17 @@ export function DatasetStudio({
             {dataset?.profile_status === "computed" ? (
               <div className="schema-table" role="table">
                 <div className="schema-row schema-head" role="row">
-                  <span>Field</span>
-                  <span>Type</span>
-                  <span>Missing</span>
-                  <span>Range / values</span>
+                  <span role="columnheader">Field</span>
+                  <span role="columnheader">Type</span>
+                  <span role="columnheader">Missing</span>
+                  <span role="columnheader">Range / values</span>
                 </div>
                 {dataset.fields.map((field) => (
                   <div className="schema-row" role="row" key={field.name}>
-                    <strong>{field.name}</strong>
-                    <span>{field.data_type}</span>
-                    <span>{field.missing}</span>
-                    <span>{field.range_or_values}</span>
+                    <strong role="rowheader">{field.name}</strong>
+                    <span role="cell">{field.data_type}</span>
+                    <span role="cell">{field.missing}</span>
+                    <span role="cell">{field.range_or_values}</span>
                   </div>
                 ))}
               </div>

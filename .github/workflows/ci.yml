@@ -31,6 +31,13 @@ jobs:
           uv run ruff check packages services agents scripts tests
           uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
           uv run pytest -q
+          uv run pytest -q tests/test_dataset_execution.py tests/test_foundry_gateway.py tests/test_connector_adapter_auth.py tests/test_agents.py \
+            --cov=research_assistant_api.dataset_execution \
+            --cov=research_assistant_api.foundry \
+            --cov=research_assistant_connector_adapter.auth \
+            --cov=shared.tools \
+            --cov-branch \
+            --cov-fail-under=100
           uv run pip-audit
 
       - name: Export OpenAPI contract

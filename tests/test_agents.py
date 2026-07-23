@@ -10,7 +10,12 @@ import pytest
 import yaml
 from openai import APIStatusError
 from shared.profiles import get_profile, list_profiles
-from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
+from shared.tools import (
+    _invoke_specialist,
+    build_delegate_tool,
+    delegated_agent_name,
+    tools_for_profile,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -59,6 +64,7 @@ def test_coordinator_routes_public_only_to_online_specialists() -> None:
     assert delegated_agent_name("literature", "internal") == "literature-agent"
     assert delegated_agent_name("grant", "confidential") == "grant-agent"
     assert delegated_agent_name("institutional_qa", "restricted") == "institution-agent"
+    assert delegated_agent_name("unsupported", "public") is None
 
 
 def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
@@ -201,6 +207,95 @@ def test_coordinator_specialist_invocation_retries_transient_shapes(
     assert output == "Bounded specialist analysis"
     assert attempts == 3
     assert sleeps == [15, 2]
+
+
+def test_specialist_invocation_exhausts_transient_and_empty_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NotReadyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            raise APIStatusError(
+                "session not ready",
+                response=httpx.Response(
+                    424,
+                    request=httpx.Request(
+                        "POST",
+                        "https://foundry.example.test/responses",
+                    ),
+                ),
+                body={"error": {"code": "session_not_ready"}},
+            )
+
+    monkeypatch.setattr("shared.tools.time.sleep", lambda _delay: None)
+    with pytest.raises(APIStatusError):
+        _invoke_specialist(
+            SimpleNamespace(responses=NotReadyResponses()),
+            "Analyze.",
+            "dataset-agent",
+        )
+
+    class EmptyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(output_text=" ")
+
+    with pytest.raises(RuntimeError, match="returned no output"):
+        _invoke_specialist(
+            SimpleNamespace(responses=EmptyResponses()),
+            "Analyze.",
+            "dataset-agent",
+        )
+
+
+def test_delegate_tool_rejects_invalid_routes_and_invokes_valid_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = build_delegate_tool()
+    unsupported = json.loads(
+        tool.func(
+            capability="unsupported",
+            request="Analyze.",
+            sensitivity="public",
+        )
+    )
+    assert unsupported["error"] == "unsupported_capability"
+
+    invalid = json.loads(
+        tool.func(
+            capability="literature",
+            request="Analyze.",
+            sensitivity="invalid",
+        )
+    )
+    assert invalid["error"] == "invalid_sensitivity"
+
+    class Responses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(output_text="Verified delegation")
+
+    class Project:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["endpoint"] == "https://foundry.example.test"
+            assert kwargs["allow_preview"] is True
+
+        def get_openai_client(self, *, agent_name: str) -> SimpleNamespace:
+            assert agent_name == "literature-online-agent"
+            return SimpleNamespace(responses=Responses())
+
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://foundry.example.test",
+    )
+    monkeypatch.setattr("shared.tools.get_credential", lambda: object())
+    monkeypatch.setattr("shared.tools.AIProjectClient", Project)
+
+    assert (
+        tool.func(
+            capability="literature",
+            request="Analyze.",
+            sensitivity="public",
+        )
+        == "Verified delegation"
+    )
 
 
 def test_coordinator_and_specialist_names_are_stable() -> None:

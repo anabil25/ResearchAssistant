@@ -392,7 +392,17 @@ def test_each_studio_returns_its_own_typed_contract(
 ) -> None:
     response = client.post(
         f"/api/studios/{capability}/run",
-        json={"objective": "Build an evidence-governed research artifact"},
+        json={
+            "objective": "Build an evidence-governed research artifact",
+            "inputs": (
+                {
+                    "analysis_approved": True,
+                    "data_classification": "public_or_synthetic",
+                }
+                if capability == "dataset"
+                else {}
+            ),
+        },
     )
 
     assert response.status_code == 200
@@ -410,6 +420,8 @@ def test_large_unresolved_dataset_returns_estimate_without_fixture_profile(
             "inputs": {
                 "filename": "clinical-events-archive.parquet",
                 "estimated_bytes": 1_200_000_000_000,
+                "analysis_approved": True,
+                "data_classification": "public_or_synthetic",
             },
         },
     )
@@ -435,6 +447,7 @@ def test_inline_computed_dataset_does_not_default_to_scale_out(
                 "filename": "inline.csv",
                 "csv_text": "group,score\ncontrol,10\nintervention,12\n",
                 "analysis_approved": True,
+                "data_classification": "public_or_synthetic",
             },
         },
     )
@@ -458,12 +471,46 @@ def test_inline_dataset_analysis_requires_explicit_approval(
             "inputs": {
                 "filename": "inline.csv",
                 "csv_text": "group,score\ncontrol,10\n",
+                "data_classification": "public_or_synthetic",
             },
         },
     )
 
     assert response.status_code == 422
     assert "approval" in response.json()["detail"].lower()
+
+
+def test_hosted_dataset_rejects_before_agent_invocation(
+    client: TestClient,
+) -> None:
+    original_settings = app.state.settings
+    original_hosted = app.state.hosted
+    invocations: list[str] = []
+
+    class FailIfInvoked:
+        def invoke(self, message: str, **_kwargs: object) -> None:
+            invocations.append(message)
+
+    app.state.settings = Settings(execution_mode="hosted")
+    app.state.hosted = FailIfInvoked()
+    try:
+        response = client.post(
+            "/api/studios/dataset/run",
+            json={
+                "objective": "Analyze the supplied dataset.",
+                "inputs": {
+                    "filename": "inline.csv",
+                    "csv_text": "group,score\ncontrol,10\n",
+                    "data_classification": "public_or_synthetic",
+                },
+            },
+        )
+    finally:
+        app.state.settings = original_settings
+        app.state.hosted = original_hosted
+
+    assert response.status_code == 422
+    assert invocations == []
 
 
 def test_automation_graph_is_hashed_and_invalid_cycles_are_blocked(

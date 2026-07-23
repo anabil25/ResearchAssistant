@@ -42,6 +42,10 @@ from research_assistant_api.connector_gateway import (
     build_connector_gateway,
 )
 from research_assistant_api.cosmos_workspace import build_workspace_store
+from research_assistant_api.dataset_execution import (
+    build_dataset_agent_message,
+    validate_dataset_execution,
+)
 from research_assistant_api.foundry import (
     HostedAgentConfigurationError,
     HostedAgentGateway,
@@ -725,25 +729,11 @@ def _agent_message(
         for citation in generic.citations
     ]
     if capability == Capability.DATASET:
-        dataset_text = str(payload.inputs.get("csv_text", ""))[:100_000]
-        dataset_material = (
-            dataset_text
-            if dataset_text
-            else json.dumps(generic.metadata.get("profile"), ensure_ascii=True)[
-                :100_000
-            ]
-        )
-        return (
-            f"Workflow: {blueprint.title}\n"
-            f"Stages: {', '.join(stage.label for stage in blueprint.stages)}\n"
-            "Policy: Use the Foundry Code Interpreter only for the bounded CSV "
-            "provided below. Network access, package installation, repository "
-            "access, external writes, and arbitrary destinations are forbidden. "
-            "Return executed code, outputs, and limitations. The product owns "
-            "approval and provenance.\n"
-            f"Objective: {payload.objective}\n"
-            f"Dataset filename: {payload.inputs.get('filename', 'dataset.csv')}\n"
-            f"Bounded dataset material:\n{dataset_material}"
+        return build_dataset_agent_message(
+            payload,
+            generic,
+            workflow_title=blueprint.title,
+            stage_labels=[stage.label for stage in blueprint.stages],
         )
     return (
         f"Workflow: {blueprint.title}\n"
@@ -869,6 +859,11 @@ async def run_studio(
     current = cast(Settings, request.app.state.settings)
     store, identity = _workspace_access(request)
     _online_policy(capability, payload)
+    if capability == Capability.DATASET:
+        try:
+            validate_dataset_execution(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     research = cast(ResearchService, request.app.state.research)
     try:

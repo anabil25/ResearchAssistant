@@ -5047,6 +5047,19 @@ button {
     padding-inline: 22px;
   }
 
+  .settings-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .settings-nav {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .settings-nav button {
+    flex: 0 0 auto;
+  }
+
   .grant-workspace,
   .matching-layout,
   .institutional-grid {

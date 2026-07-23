@@ -28,6 +28,8 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "context.Response.Body" not in module
     assert "Microsoft.Insights/diagnosticSettings@2021-05-01-preview" in module
     assert "categoryGroup: 'allLogs'" in module
+    assert "path: 'research-connectors'" in module
+    assert "research-connectors/v1'" not in module
 
 
 def test_apim_has_a_dedicated_delegated_network_boundary() -> None:
@@ -43,7 +45,7 @@ def test_apim_has_a_dedicated_delegated_network_boundary() -> None:
     assert "AzureKeyVault" in network
 
 
-def test_connector_adapter_is_internal_and_wired_through_apim() -> None:
+def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> None:
     container_apps = (
         ROOT / "infra" / "modules" / "container-apps.bicep"
     ).read_text(encoding="utf-8")
@@ -53,7 +55,12 @@ def test_connector_adapter_is_internal_and_wired_through_apim() -> None:
     azure_yaml = (ROOT / "azure.yaml").read_text(encoding="utf-8")
 
     assert "'azd-service-name': 'connector-adapter'" in container_apps
-    assert "external: false" in container_apps
+    connector_resource = container_apps.split(
+        "resource connectorAdapter ",
+        maxsplit=1,
+    )[1].split("resource api ", maxsplit=1)[0]
+    assert "external: true" in connector_resource
+    assert "RESEARCH_WORKSPACE_TENANT_ID" in connector_resource
     assert "RESEARCH_CONNECTOR_GATEWAY_URL" in container_apps
     assert "RESEARCH_CONNECTOR_GATEWAY_TOKEN_SCOPE" in container_apps
     assert "apiManagement!.outputs.connectorMcpUrl" in resources

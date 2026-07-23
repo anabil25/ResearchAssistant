@@ -153,8 +153,23 @@ test.describe("Grant Studio interactions", () => {
     await dialog.getByLabel("Connector name").fill("NSF Awards");
     await dialog.getByLabel("Base URL").fill("https://api.nsf.gov");
     await dialog
+      .getByLabel("Authoritative API documentation")
+      .fill("https://api.nsf.gov/docs");
+    await dialog
+      .getByLabel("Terms, license, and robots policy")
+      .fill("https://api.nsf.gov/terms");
+    await dialog
+      .getByLabel("Allowed hosts and path prefixes")
+      .fill("api.nsf.gov/v1/");
+    await dialog.getByLabel("Authentication").selectOption("None");
+    await dialog
+      .getByLabel("Sample query and normalized fields")
+      .fill("award search -> id,title,url");
+    await dialog
       .getByLabel("Justification")
       .fill("Needed for federal award discovery.");
+    await dialog.getByLabel(/confirmed this use is permitted/i).check();
+    await dialog.getByLabel(/generated code requires tests/i).check();
     await dialog.getByRole("button", { name: "Save draft request" }).click();
     await expect(page.getByText("Draft — needs review")).toBeVisible();
   });

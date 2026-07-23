@@ -35,6 +35,14 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
+import {
+  CONNECTOR_SPECIALISTS,
+  connectorResultTone,
+  connectorStatusInfo,
+  connectorVersionStatusLabel,
+  filterConnectors,
+  updateConnectorAssignment,
+} from "@/components/connector-management";
 import type {
   ApprovalRecord,
   CapabilityId,
@@ -68,6 +76,10 @@ interface OverviewProps {
   onNavigate: (view: WorkspaceViewId) => void;
 }
 
+function statusLabel(value: string): string {
+  return value.replaceAll("_", " ");
+}
+
 function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en", {
@@ -76,72 +88,6 @@ function formatTime(value: string | null | undefined): string {
     hour: "numeric",
     minute: "2-digit",
   }).format(new Date(value));
-}
-
-function statusLabel(value: string): string {
-  if (value === "configuration_required") return "setup required";
-  if (value === "ready_with_key") return "ready, key recommended";
-  return value.replaceAll("_", " ");
-}
-
-const CONNECTOR_SPECIALISTS = [
-  "literature",
-  "grant",
-  "matching",
-  "dataset",
-  "institution",
-] as const;
-
-function connectorStatusInfo(connector: ConnectorSetting): {
-  label: string;
-  detail: string;
-  tone: string;
-} {
-  if (!connector.enabled) {
-    return {
-      label: "Disabled",
-      detail:
-        "This connector is intentionally disabled and will not be used by research runs.",
-      tone: "disabled",
-    };
-  }
-  if (connector.test_status === "configuration_required") {
-    return {
-      label: "Setup required",
-      detail:
-        "The provider is not down. An administrator must configure the connector gateway URL and managed identity before tests can reach it.",
-      tone: "configuration-required",
-    };
-  }
-  if (connector.test_status === "unavailable") {
-    return {
-      label: "Connection failed",
-      detail:
-        "The gateway is configured, but the latest bounded provider probe failed. Retry the test or inspect gateway logs before using this source.",
-      tone: "unavailable",
-    };
-  }
-  if (connector.test_status === "ready_with_key") {
-    return {
-      label: "Ready, key recommended",
-      detail:
-        "The connector is reachable with limited anonymous quota. Add the optional deployment-managed key for more reliable capacity.",
-      tone: "warning",
-    };
-  }
-  if (connector.test_status === "ready") {
-    return {
-      label: "Ready",
-      detail:
-        "The latest bounded probe succeeded and this connector can serve its assigned specialists.",
-      tone: "ready",
-    };
-  }
-  return {
-    label: "Not tested",
-    detail: "Run a bounded connection test before relying on this source.",
-    tone: "untested",
-  };
 }
 
 export function Overview({
@@ -1085,13 +1031,10 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
     "All",
     ...new Set((data?.connectors ?? []).map((item) => item.category)),
   ];
-  const visibleConnectors = (data?.connectors ?? []).filter(
-    (connector) =>
-      (connectorCategory === "All" ||
-        connector.category === connectorCategory) &&
-      `${connector.name} ${connector.description}`
-        .toLowerCase()
-        .includes(connectorQuery.toLowerCase()),
+  const visibleConnectors = filterConnectors(
+    data?.connectors ?? [],
+    connectorCategory,
+    connectorQuery,
   );
   const gatewayVersionCards = GATEWAY_VERSION_TARGETS.map((target) => ({
     ...target,
@@ -1143,14 +1086,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
         const updatedStatus = connectorStatusInfo(updated);
         setStatus({
           message: `${updated.name}: ${updatedStatus.label}. ${updatedStatus.detail}`,
-          tone:
-            updatedStatus.tone === "unavailable"
-              ? "error"
-              : ["configuration-required", "warning", "untested"].includes(
-                    updatedStatus.tone,
-                  )
-                ? "warning"
-                : "success",
+          tone: connectorResultTone(updatedStatus.tone),
         });
       })
       .catch((error: unknown) =>
@@ -1211,7 +1147,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
           ))}
         </nav>
 
-        <main className="settings-content">
+        <div className="settings-content">
           {status ? (
             <div className={`save-status ${status.tone}`} role="status">
               {status.tone === "success" ? (
@@ -1602,11 +1538,11 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                               checked={connectorDraft.assigned_agents.includes(agent)}
                               disabled={busyConnector === managedConnector.id}
                               onChange={(event) => {
-                                const assigned = event.target.checked
-                                  ? [...connectorDraft.assigned_agents, agent]
-                                  : connectorDraft.assigned_agents.filter(
-                                      (item) => item !== agent,
-                                    );
+                                const assigned = updateConnectorAssignment(
+                                  connectorDraft.assigned_agents,
+                                  agent,
+                                  event.target.checked,
+                                );
                                 setConnectorDrafts((current) => ({
                                   ...current,
                                   [managedConnector.id]: {
@@ -1699,7 +1635,9 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                       <strong>{target.label}</strong>
                       <span className="subtle-chip">
                         {target.connector
-                          ? statusLabel(target.connector.test_status)
+                          ? connectorVersionStatusLabel(
+                              target.connector.test_status,
+                            )
                           : "Not configured"}
                       </span>
                     </div>
@@ -1838,9 +1776,11 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                     </span>
                   </div>
                   <p>
-                    Approved connector-request issues can invoke the scoped
-                    Copilot cloud agent to create a draft PR. It cannot merge,
-                    deploy, or promote APIM and Toolbox versions.
+                    This uses GitHub Copilot coding agent, not an SDK container.
+                    GitHub supplies its repository-scoped token in an ephemeral
+                    environment; the app stores no GitHub or Copilot credential.
+                    Approved issues can create draft PRs, but the agent cannot
+                    merge, deploy, or promote APIM and Toolbox versions.
                   </p>
                 </article>
                 <article className="panel readiness-status-card">
@@ -1858,7 +1798,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
               </div>
             </section>
           ) : null}
-        </main>
+        </div>
       </div>
     </div>
   );

@@ -19,6 +19,9 @@ def test_copilot_cloud_agent_has_connector_only_boundary() -> None:
     assert "Do not edit APIM policy" in agent
     assert "Do not approve, merge, deploy" in agent
     assert "SSRF" in agent
+    assert "GitHub-managed cloud-agent identity" in agent
+    assert "setup blocker" in agent
+    assert "Copilot SDK token" in agent
 
 
 def test_copilot_setup_steps_use_the_required_job_and_least_privilege() -> None:
@@ -37,6 +40,11 @@ def test_copilot_setup_steps_use_the_required_job_and_least_privilege() -> None:
     assert "uv sync --all-packages --frozen" in commands
     assert "npm ci" in commands
     assert "az login" not in commands
+    workflow_text = (
+        ROOT / ".github" / "workflows" / "copilot-setup-steps.yml"
+    ).read_text(encoding="utf-8")
+    assert "COPILOT_GITHUB_TOKEN" not in workflow_text
+    assert "GH_TOKEN" not in workflow_text
 
 
 def test_connector_request_requires_policy_and_validation_inputs() -> None:
