@@ -48,6 +48,10 @@ from research_assistant_api.agent_studio.deployment_service import (
     DeploymentService,
     DeploymentServiceError,
 )
+from research_assistant_api.agent_studio.idempotency import (
+    IdempotencyPort,
+    IdempotencyResultMismatchError,
+)
 from research_assistant_api.agent_studio.memory_service import (
     MemoryAccessError,
     MemoryPolicyError,
@@ -73,6 +77,9 @@ from research_assistant_api.agent_studio.models import (
     CapabilityInstance,
     DeploymentEnvironment,
     DeploymentRecord,
+    IdempotencyClaim,
+    IdempotencyKey,
+    IdempotencyRecord,
     MemoryAuditRecord,
     MemoryEntry,
     MemoryScopeKind,
@@ -98,14 +105,19 @@ from research_assistant_api.agent_studio.schemas import (
     BuilderRejectRequest,
     CapabilityApprovalRequest,
     CapabilityDiscoverySnapshot,
+    ClaimIdempotencyRequest,
+    CompleteIdempotencyRequest,
     ConsumeCapabilityApprovalRequest,
     CorrectMemoryRequest,
     CreateAgentRequest,
     DeployRequest,
     EscalationRequest,
+    FailIdempotencyRequest,
     ForgetMemoryRequest,
     ForkRequest,
     HealthUpdateRequest,
+    IdempotencyKeyFields,
+    MarkIdempotencyInProgressRequest,
     PromotionRequest,
     RegisterToolRequest,
     RememberRequest,
@@ -115,7 +127,11 @@ from research_assistant_api.agent_studio.schemas import (
     UpdateDraftRequest,
 )
 from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore
+from research_assistant_api.agent_studio.store import (
+    AgentStudioStore,
+    IdempotencyConcurrencyError,
+    IdempotencyNotFoundError,
+)
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
     DEMO_SANDBOX_SOURCE,
@@ -200,6 +216,21 @@ def _approval_consumption_port(request: Request) -> ApprovalConsumptionPort:
     if port is None:
         raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
     return cast(ApprovalConsumptionPort, port)
+
+
+def _idempotency_port(request: Request) -> IdempotencyPort:
+    """Resolve the app-composed durable idempotency adapter.
+
+    Defaults to ``StoreBackedIdempotencyPort`` (backed by this package's
+    own ``AgentStudioStore``) wired at composition root -- there is no
+    external provider dependency for a backend-owned idempotency ledger,
+    so a missing port here means the same "metadata persistence
+    unavailable" 503 as ``_store``/``_approval_consumption_port``.
+    """
+    port = getattr(request.app.state, "agent_studio_idempotency_port", None)
+    if port is None:
+        raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
+    return cast(IdempotencyPort, port)
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
@@ -1429,3 +1460,151 @@ def reject_builder_proposal(
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     except BuilderServiceError as exc:
         raise _builder_error_response(exc) from exc
+
+
+# --------------------------------------------------------------------------
+# Durable idempotency (runtime double-execution / retry protection)
+# --------------------------------------------------------------------------
+# Every route below constructs ``IdempotencyKey`` server-side from the
+# authenticated, membership-checked ``ScopeContext`` -- the client body never
+# supplies ``tenant_id`` directly (see ``IdempotencyKeyFields``), exactly
+# like every other scoped mutation in this router. ``actor_id`` is always
+# ``identity.user_id``, never a client-supplied field.
+
+
+def _idempotency_key(scope: ScopeContext, payload: IdempotencyKeyFields) -> IdempotencyKey:
+    return IdempotencyKey(
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        binding_digest=payload.binding_digest,
+        operation_id=payload.operation_id,
+        destination=payload.destination,
+        caller_key=payload.caller_key,
+        argument_hash=payload.argument_hash,
+    )
+
+
+@router.post("/idempotency/claim", response_model=IdempotencyClaim)
+async def claim_idempotency_route(request: Request, payload: ClaimIdempotencyRequest) -> IdempotencyClaim:
+    """Atomically claim (or observe the existing disposition of) a durable
+    idempotency key before a runtime handler executes a possibly
+    side-effecting operation.
+
+    Never raises on an already-claimed/completed key -- the returned
+    ``disposition`` (``ACQUIRED``/``IN_PROGRESS``/``COMPLETED``/
+    ``RECONCILIATION_REQUIRED``) tells the caller exactly how to proceed;
+    only a malformed ``lease_seconds`` value is rejected as a client error.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    key = _idempotency_key(scope, payload)
+    try:
+        return await _idempotency_port(request).claim(
+            scope,
+            key,
+            actor_id=identity.user_id,
+            release_id=payload.release_id,
+            lease_seconds=payload.lease_seconds,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.post("/idempotency/mark-in-progress", response_model=IdempotencyRecord)
+async def mark_idempotency_in_progress_route(
+    request: Request, payload: MarkIdempotencyInProgressRequest
+) -> IdempotencyRecord:
+    """Transition a durably ``ACQUIRED`` claim to ``IN_PROGRESS`` immediately
+    before the handler performs its (possibly irreversible) side effect.
+
+    Requires the exact ``claim_token``/``expected_version`` pair returned by
+    ``claim`` -- a stale or wrong pair is rejected as a 409 concurrency
+    conflict rather than silently reapplied, since another instance may
+    already have taken over this key.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    key = _idempotency_key(scope, payload)
+    try:
+        return await _idempotency_port(request).mark_in_progress(
+            scope,
+            key,
+            claim_token=payload.claim_token,
+            expected_version=payload.expected_version,
+            irreversible=payload.irreversible,
+        )
+    except IdempotencyNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except IdempotencyConcurrencyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/idempotency/complete", response_model=IdempotencyRecord)
+async def complete_idempotency_route(request: Request, payload: CompleteIdempotencyRequest) -> IdempotencyRecord:
+    """Durably record a successful completion and its result.
+
+    The durably stored ``result_hash`` is always independently recomputed
+    from ``result`` by the port itself; ``expected_result_hash`` (if
+    supplied) is only checked as a caller-side sanity assertion and never
+    trusted as the value to persist.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    key = _idempotency_key(scope, payload)
+    try:
+        return await _idempotency_port(request).complete(
+            scope,
+            key,
+            claim_token=payload.claim_token,
+            expected_version=payload.expected_version,
+            result=payload.result,
+            expected_result_hash=payload.expected_result_hash,
+        )
+    except IdempotencyResultMismatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IdempotencyNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except IdempotencyConcurrencyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.post("/idempotency/fail", response_model=IdempotencyRecord)
+async def fail_idempotency_route(request: Request, payload: FailIdempotencyRequest) -> IdempotencyRecord:
+    """Durably record that this attempt failed and requires reconciliation
+    (the true side-effect outcome of the attempt is unknown and must never
+    be silently retried as if it were fresh)."""
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    key = _idempotency_key(scope, payload)
+    try:
+        return await _idempotency_port(request).fail(
+            scope,
+            key,
+            claim_token=payload.claim_token,
+            expected_version=payload.expected_version,
+            failure_code=payload.failure_code,
+        )
+    except IdempotencyNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except IdempotencyConcurrencyError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+
+@router.get("/idempotency/results/{result_ref}")
+async def load_idempotency_result_route(
+    request: Request, result_ref: str, project_id: str
+) -> dict[str, object] | None:
+    """Replay a previously completed result.
+
+    Always partitioned by the caller's *own authorized* scope -- never by
+    anything decoded from ``result_ref`` -- so a caller cannot enumerate
+    another tenant/project's results even by guessing a valid ``result_ref``
+    string; an unauthorized/foreign scope simply misses (``None``/404),
+    identical to a genuinely unknown ``result_ref``.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    result = await _idempotency_port(request).load_result(scope, result_ref)
+    if result is None:
+        raise _not_found(f"Idempotency result '{result_ref}' was not found.")
+    return result

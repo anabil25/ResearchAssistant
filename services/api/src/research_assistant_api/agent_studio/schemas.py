@@ -10,6 +10,7 @@ from the authenticated identity, never from client input).
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -298,3 +299,74 @@ class CapabilityDiscoverySnapshot(BaseModel):
     refreshed_at: datetime
     available: bool = True
     unavailable_reason: str | None = None
+
+
+class IdempotencyKeyFields(BaseModel):
+    """Shared, non-optional identity fields for a single idempotent runtime
+    invocation, common to every ``/idempotency/*`` request.
+
+    ``tenant_id`` is deliberately absent -- it always comes from the
+    authenticated identity via the resolved ``ScopeContext``, never from a
+    client-supplied field, mirroring every other scoped request body in
+    this module.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=512)
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operation_id: str = Field(min_length=1, max_length=256)
+    destination: str = Field(min_length=1, max_length=1024)
+    caller_key: str = Field(min_length=1, max_length=256)
+    argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class ClaimIdempotencyRequest(IdempotencyKeyFields):
+    """Request body to atomically claim a fresh durable idempotency lease.
+
+    ``actor_id`` is never accepted here -- the acting actor is always the
+    authenticated caller's own identity, exactly like every other mutating
+    Agent Studio route.
+    """
+
+    release_id: str = Field(min_length=1, max_length=256)
+    lease_seconds: float = Field(default=300.0, gt=0, le=3600)
+
+
+class MarkIdempotencyInProgressRequest(IdempotencyKeyFields):
+    """Request body to transition a durably claimed key to ``IN_PROGRESS``.
+
+    ``claim_token``/``expected_version`` are the one-time proof of ownership
+    returned by ``claim`` -- without the exact current pair, the transition
+    is rejected as a concurrency conflict rather than silently reapplied.
+    """
+
+    claim_token: str = Field(min_length=32, max_length=256)
+    expected_version: str = Field(min_length=1, max_length=32)
+    irreversible: bool = False
+
+
+class CompleteIdempotencyRequest(IdempotencyKeyFields):
+    """Request body to durably record a successful completion.
+
+    ``result`` is the raw, JSON-able outcome payload; its digest is always
+    independently recomputed server-side (never trusted from
+    ``expected_result_hash``, which is only an optional caller-side sanity
+    assertion checked against that recomputed digest).
+    """
+
+    claim_token: str = Field(min_length=32, max_length=256)
+    expected_version: str = Field(min_length=1, max_length=32)
+    result: dict[str, Any] = Field(default_factory=dict)
+    expected_result_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+
+
+class FailIdempotencyRequest(IdempotencyKeyFields):
+    """Request body to durably record a failed outcome requiring
+    reconciliation (the true side-effect outcome of the original attempt is
+    unknown and must never be silently retried as if it were fresh)."""
+
+    claim_token: str = Field(min_length=32, max_length=256)
+    expected_version: str = Field(min_length=1, max_length=32)
+    failure_code: str = Field(min_length=1, max_length=128)
+

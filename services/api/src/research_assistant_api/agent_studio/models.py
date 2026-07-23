@@ -12,12 +12,14 @@ that are contractually immutable once created (``AgentVersion``,
 
 from __future__ import annotations
 
+import hashlib
+import json
 from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 
 def utc_now() -> datetime:
@@ -1500,6 +1502,189 @@ class ApprovalConsumptionRecord(BaseModel):
     invocation_id: str = Field(min_length=1, max_length=200)
     idempotency_key: str
     consumed_at: datetime = Field(default_factory=utc_now)
+
+
+# --------------------------------------------------------------------------
+# Durable, cross-instance-safe idempotency (see ``agent_studio.idempotency``)
+# --------------------------------------------------------------------------
+# These types are this backend's own, independent domain model for a durable
+# idempotency claim/lease/completion contract. They are structurally
+# aligned -- in field shape and state-machine semantics, never in code -- with
+# the harness's own ``agents.shared.idempotency.IdempotencyStore`` contract
+# (committed at ``cef9975`` on their branch, inspected read-only for shape
+# alignment only); this module is never imported by, and never imports, that
+# harness-owned module. See ``idempotency.py`` for the digest function, the
+# async port, and the default store-backed adapter.
+
+
+#: Versioned prefix for ``idempotency_key_digest`` output, mirroring
+#: ``scope.compute_scope_key``'s ``scope:v1:sha256:`` convention. Bumping
+#: this to a new version is the only sanctioned way to change the encoding
+#: below -- never reuse ``v1`` for a different scheme.
+_IDEMPOTENCY_KEY_DIGEST_PREFIX = "idem:v1:sha256:"
+
+
+class IdempotencyState(StrEnum):
+    """Lifecycle state of a durable idempotency claim."""
+
+    CLAIMED = "claimed"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    FAILED = "failed"
+
+
+class IdempotencyClaimDisposition(StrEnum):
+    """Result of a single ``claim`` call against a durable idempotency key.
+
+    ``ACQUIRED``: this call is the sole, durable winner of a fresh claim.
+    ``IN_PROGRESS``: another still-leased claim already owns this key; this
+    call must not proceed.
+    ``COMPLETED``: the key already reached a durable, successful outcome;
+    the existing record/result should be replayed rather than re-executed.
+    ``RECONCILIATION_REQUIRED``: the existing record is either durably
+    ``FAILED`` or its lease has expired without being renewed/completed --
+    the true outcome of the original attempt is *unknown* (it may have
+    partially executed an irreversible side effect), so the caller must
+    reconcile out-of-band rather than blindly retrying or trusting success.
+    """
+
+    ACQUIRED = "acquired"
+    IN_PROGRESS = "in_progress"
+    COMPLETED = "completed"
+    RECONCILIATION_REQUIRED = "reconciliation_required"
+
+
+class IdempotencyKey(BaseModel):
+    """Non-optional identity of a single idempotent runtime invocation.
+
+    Every field is required so a durable store can partition
+    (``tenant_id``/``project_id``), attribute (``binding_digest``/
+    ``operation_id``), and deduplicate (``destination``/``caller_key``/
+    ``argument_hash``) a claim without guessing. ``tenant_id``/``project_id``
+    are never trusted from a raw client field alone -- callers (see
+    ``router.py``) always construct this from the authenticated, membership-
+    checked ``ScopeContext``, never from an independent request field.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tenant_id: str = Field(min_length=1, max_length=256)
+    project_id: str = Field(min_length=1, max_length=512)
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    operation_id: str = Field(min_length=1, max_length=256)
+    destination: str = Field(min_length=1, max_length=1024)
+    caller_key: str = Field(min_length=1, max_length=256)
+    argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+    @property
+    def digest(self) -> str:
+        return idempotency_key_digest(self)
+
+
+def idempotency_key_digest(key: IdempotencyKey) -> str:
+    """Canonical, collision-safe digest for a single ``IdempotencyKey``.
+
+    Encodes the seven fields as a canonical, finite JSON array (never a
+    separator-joined string, and never the harness's own
+    ``model_dump``/dict-key-sort based digest) in a fixed field order, then
+    SHA-256 hashes it -- the same construction ``scope.compute_scope_key``
+    uses for ``ScopeContext``, for the same collision-safety reason (a JSON
+    array's string→array mapping is unambiguous by construction, unlike a
+    separator-joined string). Prefixed with a version tag so the encoding
+    can never silently change meaning. Used as both the in-memory dict key
+    and the deterministic Cosmos document id for the corresponding
+    ``IdempotencyRecord`` -- never the raw field values themselves.
+    """
+
+    canonical = json.dumps(
+        [
+            key.tenant_id,
+            key.project_id,
+            key.binding_digest,
+            key.operation_id,
+            key.destination,
+            key.caller_key,
+            key.argument_hash,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{_IDEMPOTENCY_KEY_DIGEST_PREFIX}{digest}"
+
+
+class IdempotencyRecord(BaseModel):
+    """Durable state of a single idempotency claim.
+
+    State-consistency is enforced structurally, not just by convention:
+    ``CLAIMED`` must not yet have started; ``IN_PROGRESS`` must have
+    ``started_at``; ``COMPLETED`` must carry its result identity
+    (``completed_at``/``result_hash``/``result_ref``); anything else
+    (``FAILED``) must carry a ``failure_code`` and be marked
+    ``reconciliation_required``. The actual claim token is never persisted
+    here -- only its SHA-256 hash (``claim_token_hash``) -- so a leaked
+    record can never be replayed as a live claim token.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    key: IdempotencyKey
+    state: IdempotencyState
+    version: str = Field(min_length=1, max_length=32)
+    claim_token_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    lease_expires_at: datetime
+    actor_id: str = Field(min_length=1, max_length=512)
+    release_id: str = Field(min_length=1, max_length=256)
+    claimed_at: datetime = Field(default_factory=utc_now)
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+    irreversible_started: bool = False
+    result_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    result_ref: str | None = Field(default=None, min_length=1, max_length=2048)
+    failure_code: str | None = Field(default=None, min_length=1, max_length=128)
+    reconciliation_required: bool = False
+
+    @model_validator(mode="after")
+    def _state_fields_are_consistent(self) -> IdempotencyRecord:
+        if self.state is IdempotencyState.CLAIMED and self.started_at is not None:
+            raise ValueError("A CLAIMED idempotency record must not have started_at set.")
+        if self.state is IdempotencyState.IN_PROGRESS and self.started_at is None:
+            raise ValueError("An IN_PROGRESS idempotency record must have started_at set.")
+        if self.state is IdempotencyState.COMPLETED and (
+            self.completed_at is None or self.result_hash is None or self.result_ref is None
+        ):
+            raise ValueError(
+                "A COMPLETED idempotency record must have completed_at, result_hash, and result_ref set."
+            )
+        if self.state is IdempotencyState.FAILED and (
+            self.failure_code is None or not self.reconciliation_required
+        ):
+            raise ValueError(
+                "A FAILED idempotency record must have failure_code set and reconciliation_required True."
+            )
+        if self.irreversible_started and self.started_at is None:
+            raise ValueError("irreversible_started requires started_at to be set.")
+        return self
+
+
+class IdempotencyClaim(BaseModel):
+    """Result of a single ``claim`` call: the disposition plus the current
+    record, and -- only when this call is the durable ``ACQUIRED`` winner --
+    the raw, one-time claim token (never persisted; only its hash is)."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    disposition: IdempotencyClaimDisposition
+    record: IdempotencyRecord
+    claim_token: str | None = Field(default=None, min_length=32, max_length=256)
+
+    @model_validator(mode="after")
+    def _claim_token_matches_disposition(self) -> IdempotencyClaim:
+        has_token = self.claim_token is not None
+        is_acquired = self.disposition is IdempotencyClaimDisposition.ACQUIRED
+        if has_token != is_acquired:
+            raise ValueError("claim_token must be set if and only if disposition is ACQUIRED.")
+        return self
 
 
 # --------------------------------------------------------------------------

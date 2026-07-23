@@ -7,6 +7,7 @@ from __future__ import annotations
 import importlib
 import threading
 from copy import deepcopy
+from datetime import timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -32,6 +33,9 @@ from research_assistant_api.agent_studio.models import (
     GateName,
     GateResult,
     GateStatus,
+    IdempotencyClaimDisposition,
+    IdempotencyKey,
+    IdempotencyState,
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
@@ -41,12 +45,15 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
     ToolRegistrationKind,
     ToolRegistrationSpec,
+    utc_now,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import (
     AgentStudioStore,
     AgentStudioStoreError,
     DraftConflictError,
+    IdempotencyConcurrencyError,
+    IdempotencyNotFoundError,
 )
 from research_assistant_api.config import Settings
 
@@ -275,6 +282,27 @@ def _deployment(
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
         deployed_by=USER_ID,
         trace_ref=trace_ref,
+    )
+
+
+def _idempotency_key(
+    *,
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    binding_digest: str = "a" * 64,
+    operation_id: str = "search",
+    destination: str = "descriptor-1.search",
+    caller_key: str = "caller-1",
+    argument_hash: str = "b" * 64,
+) -> IdempotencyKey:
+    return IdempotencyKey(
+        tenant_id=tenant_id,
+        project_id=project_id,
+        binding_digest=binding_digest,
+        operation_id=operation_id,
+        destination=destination,
+        caller_key=caller_key,
+        argument_hash=argument_hash,
     )
 
 
@@ -1559,6 +1587,379 @@ def test_create_approval_consumption_is_race_free_across_concurrent_store_instan
     retried = _consumption(consumption_id="consumption-race-retry", idempotency_key="race-key-retry")
     reopened_store = _new_store(fake_client_factory)
     assert reopened_store.create_approval_consumption(SCOPE, retried) == results[0]
+
+
+def test_idempotency_claim_lifecycle_round_trips_across_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Full claim -> mark_in_progress -> complete -> load_result round trip,
+    each step performed from a *fresh* store instance (no shared in-process
+    cache) to prove every step genuinely reads/writes through Cosmos rather
+    than relying on the claiming instance's own local cache."""
+    key = _idempotency_key()
+
+    claimer = _new_store(fake_client_factory)
+    claim = claimer.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.disposition is IdempotencyClaimDisposition.ACQUIRED
+    assert claim.claim_token is not None
+
+    progresser = _new_store(fake_client_factory)
+    in_progress = progresser.mark_idempotency_in_progress(
+        SCOPE, key, claim_token=claim.claim_token, expected_version=claim.record.version, irreversible=True
+    )
+    assert in_progress.state is IdempotencyState.IN_PROGRESS
+    assert in_progress.version == "2"
+
+    completer = _new_store(fake_client_factory)
+    completed = completer.complete_idempotency(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=in_progress.version,
+        result={"status": "ok", "value": 42},
+        result_hash="e" * 64,
+    )
+    assert completed.state is IdempotencyState.COMPLETED
+    assert completed.result_ref is not None
+
+    loader = _new_store(fake_client_factory)
+    assert loader.load_idempotency_result(SCOPE, completed.result_ref) == {"status": "ok", "value": 42}
+    # Repeated read hits the now-populated local cache rather than Cosmos again.
+    assert loader.load_idempotency_result(SCOPE, completed.result_ref) == {"status": "ok", "value": 42}
+
+    getter = _new_store(fake_client_factory)
+    assert getter.get_idempotency_record(SCOPE, key) == completed
+    assert getter.get_idempotency_record(SCOPE, key) == completed
+
+    # Cross-project/cross-tenant isolation, even though the key digest and
+    # result_ref strings themselves are identical apart from scope.
+    # ``get_idempotency_record`` takes the full key (not just an opaque
+    # ref), so a scope/key mismatch is a hard application-level error --
+    # never a silent None -- exactly like ``claim_idempotency``'s own guard.
+    with pytest.raises(AgentStudioStoreError):
+        getter.get_idempotency_record(SAME_TENANT_OTHER_PROJECT_SCOPE, key)
+    assert loader.load_idempotency_result(SAME_TENANT_OTHER_PROJECT_SCOPE, completed.result_ref) is None
+    with pytest.raises(AgentStudioStoreError):
+        getter.get_idempotency_record(OTHER_TENANT_SAME_PROJECT_SCOPE, key)
+    assert loader.load_idempotency_result(OTHER_TENANT_SAME_PROJECT_SCOPE, completed.result_ref) is None
+
+
+def test_idempotency_get_record_and_load_result_return_none_when_never_claimed(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    store = _new_store(fake_client_factory)
+    assert store.get_idempotency_record(SCOPE, _idempotency_key()) is None
+    assert store.load_idempotency_result(SCOPE, "idempotency-result::" + "e" * 64) is None
+
+
+def test_claim_idempotency_rejects_out_of_bounds_lease_and_scope_mismatch(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    store = _new_store(fake_client_factory)
+    with pytest.raises(ValueError, match="lease_seconds"):
+        store.claim_idempotency(SCOPE, _idempotency_key(), actor_id=USER_ID, release_id="release-1", lease_seconds=0)
+
+    mismatched_key = _idempotency_key(project_id=OTHER_PROJECT)
+    with pytest.raises(AgentStudioStoreError, match="does not"):
+        store.claim_idempotency(
+            SCOPE, mismatched_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300
+        )
+
+
+def test_claim_idempotency_on_conflict_translates_existing_state_to_disposition(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A second ``claim_idempotency`` against an already-claimed key must
+    read back the winning Cosmos document (never raise) and translate its
+    current state into the correct non-``ACQUIRED`` disposition -- covering
+    all three non-acquiring branches: in-progress/claimed-and-fresh,
+    lease-expired, and terminally failed."""
+    key = _idempotency_key(caller_key="conflict-fresh")
+    store = _new_store(fake_client_factory)
+    first = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert first.claim_token is not None
+
+    second_store = _new_store(fake_client_factory)
+    second = second_store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert second.disposition is IdempotencyClaimDisposition.IN_PROGRESS
+    assert second.claim_token is None
+    assert second.record == first.record
+
+    # Lease-expired branch.
+    expired_key = _idempotency_key(caller_key="conflict-expired")
+    now = utc_now()
+    expiring_store = _new_store(fake_client_factory)
+    expiring_store.claim_idempotency(
+        SCOPE, expired_key, actor_id=USER_ID, release_id="release-1", lease_seconds=1, now=now - timedelta(seconds=10)
+    )
+    reclaim_store = _new_store(fake_client_factory)
+    reclaim = reclaim_store.claim_idempotency(
+        SCOPE, expired_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300, now=now
+    )
+    assert reclaim.disposition is IdempotencyClaimDisposition.RECONCILIATION_REQUIRED
+
+    # Terminally-failed branch.
+    failed_key = _idempotency_key(caller_key="conflict-failed")
+    failing_store = _new_store(fake_client_factory)
+    failed_claim = failing_store.claim_idempotency(
+        SCOPE, failed_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300
+    )
+    assert failed_claim.claim_token is not None
+    failing_store.fail_idempotency(
+        SCOPE, failed_key, claim_token=failed_claim.claim_token, expected_version="1", failure_code="boom"
+    )
+    reclaim_failed_store = _new_store(fake_client_factory)
+    reclaim_failed = reclaim_failed_store.claim_idempotency(
+        SCOPE, failed_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300
+    )
+    assert reclaim_failed.disposition is IdempotencyClaimDisposition.RECONCILIATION_REQUIRED
+    assert reclaim_failed.record.state is IdempotencyState.FAILED
+
+    # Completed branch.
+    completed_key = _idempotency_key(caller_key="conflict-completed")
+    completing_store = _new_store(fake_client_factory)
+    completed_claim = completing_store.claim_idempotency(
+        SCOPE, completed_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300
+    )
+    assert completed_claim.claim_token is not None
+    completing_store.complete_idempotency(
+        SCOPE,
+        completed_key,
+        claim_token=completed_claim.claim_token,
+        expected_version="1",
+        result={"status": "ok"},
+        result_hash="e" * 64,
+    )
+    reclaim_completed_store = _new_store(fake_client_factory)
+    reclaim_completed = reclaim_completed_store.claim_idempotency(
+        SCOPE, completed_key, actor_id=USER_ID, release_id="release-1", lease_seconds=300
+    )
+    assert reclaim_completed.disposition is IdempotencyClaimDisposition.COMPLETED
+    assert reclaim_completed.claim_token is None
+
+
+def test_claim_idempotency_raises_when_conflict_document_vanishes(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Mirrors the identical defensive branch on approval-consumption/
+    revocation creation: a 409 on the claim guard whose winning document can
+    no longer be read back must fail loudly rather than fabricate a claim."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_conflict(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "idempotency_record":
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409, message="conflict: document already exists"
+            )
+        return original_create_item(body)
+
+    container.create_item = _always_conflict  # type: ignore[method-assign]
+
+    with pytest.raises(AgentStudioStoreError, match="could not be read back"):
+        store.claim_idempotency(SCOPE, _idempotency_key(), actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+
+
+def test_claim_idempotency_propagates_non_conflict_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A non-409 failure creating the claim guard document must propagate
+    unchanged, exactly like the equivalent approval-consumption/revocation
+    guard branches."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_fail(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "idempotency_record":
+            raise CosmosHttpResponseError(status_code=500, message="simulated service error")  # type: ignore[no-untyped-call]
+        return original_create_item(body)
+
+    container.create_item = _always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.claim_idempotency(SCOPE, _idempotency_key(), actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+
+
+def test_claim_idempotency_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances racing to claim the exact same
+    idempotency key. Exactly one distinct claim_token/``ACQUIRED`` winner
+    must result; every other concurrent attempt must observe the same
+    resulting record via a non-``ACQUIRED`` disposition, never raise, and
+    never itself receive a second independent claim_token."""
+    key = _idempotency_key(caller_key="race-key")
+    thread_count = 12
+    claims: list[IdempotencyClaimDisposition] = []
+    records_by_worker: dict[int, Any] = {}
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _attempt(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        barrier.wait()
+        try:
+            claim = store.claim_idempotency(
+                SCOPE, key, actor_id=f"user-{worker_index}", release_id="release-1", lease_seconds=300
+            )
+        except BaseException as exc:  # capture every failure mode for the assertion below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            claims.append(claim.disposition)
+            records_by_worker[worker_index] = (claim.record, claim.claim_token)
+
+    threads = [threading.Thread(target=_attempt, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(claims) == thread_count
+    acquired = [disposition for disposition in claims if disposition is IdempotencyClaimDisposition.ACQUIRED]
+    assert len(acquired) == 1
+    distinct_records = {record.key.digest for record, _ in records_by_worker.values()}
+    assert distinct_records == {key.digest}
+    # Exactly one worker received a real claim_token.
+    tokens = [token for _, token in records_by_worker.values() if token is not None]
+    assert len(tokens) == 1
+
+    final_store = _new_store(fake_client_factory)
+    final_record = final_store.get_idempotency_record(SCOPE, key)
+    assert final_record is not None
+    assert final_record.state is IdempotencyState.CLAIMED
+
+
+def test_transition_idempotency_record_handles_missing_key_and_concurrency_conflicts(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Covers the application-level ``claim_token``/``expected_version``
+    ownership check (never touching Cosmos at all for a truly-unclaimed
+    key), the Cosmos-native ETag-guarded ``replace_item`` 412 branch, and
+    non-conflict error propagation -- mirroring
+    ``test_update_deployment_handles_missing_and_conflicts`` exactly."""
+    key = _idempotency_key(caller_key="transition-conflict")
+
+    missing_store = _new_store(fake_client_factory)
+    with pytest.raises(IdempotencyNotFoundError):
+        missing_store.mark_idempotency_in_progress(
+            SCOPE, key, claim_token="token", expected_version="1", irreversible=False
+        )
+
+    store = _new_store(fake_client_factory)
+    claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    # Wrong claim_token / wrong expected_version -- an application-level
+    # ownership mismatch caught *before* any Cosmos replace_item call, so
+    # this must raise even with no injected Cosmos failure at all.
+    with pytest.raises(IdempotencyConcurrencyError):
+        store.mark_idempotency_in_progress(
+            SCOPE, key, claim_token="wrong-token", expected_version="1", irreversible=False
+        )
+    with pytest.raises(IdempotencyConcurrencyError):
+        store.mark_idempotency_in_progress(
+            SCOPE, key, claim_token=claim.claim_token, expected_version="99", irreversible=False
+        )
+
+    container = _metadata_container(fake_client_factory)
+    container.fail_replace_status = 412
+    with pytest.raises(IdempotencyConcurrencyError, match="modified concurrently"):
+        store.mark_idempotency_in_progress(
+            SCOPE, key, claim_token=claim.claim_token, expected_version="1", irreversible=False
+        )
+
+    container.fail_replace_status = 500
+    with pytest.raises(CosmosHttpResponseError):
+        store.mark_idempotency_in_progress(
+            SCOPE, key, claim_token=claim.claim_token, expected_version="1", irreversible=False
+        )
+    container.fail_replace_status = None
+
+    # The successful path still works after the injected failures are cleared.
+    updated = store.mark_idempotency_in_progress(
+        SCOPE, key, claim_token=claim.claim_token, expected_version="1", irreversible=True
+    )
+    assert updated.state is IdempotencyState.IN_PROGRESS
+    assert updated.version == "2"
+
+
+def test_complete_idempotency_writes_separate_result_document_and_load_result_round_trips(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """``complete_idempotency`` writes two distinct Cosmos documents -- the
+    transitioned record (ETag-guarded ``replace_item``) and a separate
+    ``idempotency_result`` document (plain ``upsert_item``, keyed by
+    ``result_hash``, never the key digest) -- and both are independently
+    readable afterward."""
+    key = _idempotency_key(caller_key="complete-result")
+    store = _new_store(fake_client_factory)
+    claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    completed = store.complete_idempotency(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version="1",
+        result={"status": "ok", "items": [1, 2, 3]},
+        result_hash="f" * 64,
+    )
+    assert completed.result_ref == "idempotency-result::" + "f" * 64
+
+    container = _metadata_container(fake_client_factory)
+    result_documents = [
+        document
+        for document in container.documents.values()
+        if document["scope_key"] == SCOPE.scope_key and document["documentType"] == "idempotency_result"
+    ]
+    assert len(result_documents) == 1
+    assert result_documents[0]["id"] == "idempotency-result::" + "f" * 64
+    assert result_documents[0]["payload"] == {"status": "ok", "items": [1, 2, 3]}
+
+    fresh_reader = _new_store(fake_client_factory)
+    assert fresh_reader.load_idempotency_result(SCOPE, completed.result_ref) == {
+        "status": "ok",
+        "items": [1, 2, 3],
+    }
+
+    # Completing again with the same claim_token/expected_version is a
+    # concurrency conflict, not a silent no-op -- the record already moved
+    # past version "1".
+    with pytest.raises(IdempotencyConcurrencyError):
+        store.complete_idempotency(
+            SCOPE,
+            key,
+            claim_token=claim.claim_token,
+            expected_version="1",
+            result={"status": "different"},
+            result_hash="0" * 64,
+        )
+
+
+def test_fail_idempotency_marks_reconciliation_required_and_persists(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    key = _idempotency_key(caller_key="fail-persist")
+    store = _new_store(fake_client_factory)
+    claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    failed = store.fail_idempotency(
+        SCOPE, key, claim_token=claim.claim_token, expected_version="1", failure_code="downstream-timeout"
+    )
+    assert failed.state is IdempotencyState.FAILED
+    assert failed.failure_code == "downstream-timeout"
+    assert failed.reconciliation_required is True
+
+    reloaded = _new_store(fake_client_factory)
+    persisted = reloaded.get_idempotency_record(SCOPE, key)
+    assert persisted == failed
 
 
 def test_deployments_create_list_get_update_and_scope_guards(

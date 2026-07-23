@@ -40,6 +40,7 @@ from research_assistant_api.agent_studio.builder_service import (
 from research_assistant_api.agent_studio.capability_registry import default_registry
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import (
     MemoryService,
     MemoryStoreUnavailableError,
@@ -168,6 +169,7 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_deployment_service = None
         application.state.agent_studio_builder_service = None
         application.state.agent_studio_approval_consumption_port = None
+        application.state.agent_studio_idempotency_port = None
     else:
         application.state.agent_studio_store = store
         release_service = ReleaseService(store, registry, model_discovery=model_discovery)
@@ -187,6 +189,12 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         # confirm the actual tool execution succeeded before durably
         # recording consumption) without any router/service change.
         application.state.agent_studio_approval_consumption_port = StoreBackedApprovalConsumptionPort(store)
+        # Default durable idempotency adapter (see ``agent_studio.idempotency``
+        # module docstring for the independent-design rationale relative to
+        # the harness's own ``IdempotencyStore`` contract) -- backed directly
+        # by this same store, with no external provider dependency, so it is
+        # production-safe as-is.
+        application.state.agent_studio_idempotency_port = StoreBackedIdempotencyPort(store)
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:

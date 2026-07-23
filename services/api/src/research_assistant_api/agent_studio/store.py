@@ -20,8 +20,11 @@ whether operations succeed.
 from __future__ import annotations
 
 import hashlib
+import secrets
 import threading
 from collections.abc import Callable
+from datetime import datetime, timedelta
+from typing import Any
 
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
@@ -36,6 +39,11 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
+    IdempotencyClaim,
+    IdempotencyClaimDisposition,
+    IdempotencyKey,
+    IdempotencyRecord,
+    IdempotencyState,
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
@@ -43,6 +51,7 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
     ToolRegistrationSpec,
     role_at_least,
+    utc_now,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 
@@ -66,6 +75,34 @@ class DraftConflictError(AgentStudioStoreError):
     latest draft and retry rather than silently clobbering the concurrent
     edit.
     """
+
+
+class IdempotencyNotFoundError(AgentStudioStoreError):
+    """Raised by an idempotency transition (``mark_in_progress``/
+    ``complete``/``fail``) against a key that has never been claimed."""
+
+
+class IdempotencyConcurrencyError(AgentStudioStoreError):
+    """Raised when an idempotency transition's ``expected_version``/
+    ``claim_token`` no longer matches the stored record -- a concurrent
+    writer already transitioned it, or the caller never actually won the
+    claim. Callers must re-fetch and retry, never blindly re-apply."""
+
+
+def hash_idempotency_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
+
+
+def is_idempotency_lease_expired(record: IdempotencyRecord, *, now: datetime) -> bool:
+    return (
+        record.state in (IdempotencyState.CLAIMED, IdempotencyState.IN_PROGRESS)
+        and record.lease_expires_at <= now
+    )
+
+
+def validate_idempotency_lease_seconds(lease_seconds: float) -> None:
+    if not (0 < lease_seconds <= 3600):
+        raise ValueError("lease_seconds must be within (0, 3600].")
 
 
 class AgentStudioStore:
@@ -100,6 +137,9 @@ class AgentStudioStore:
         self._tool_registrations_by_agent: dict[tuple[str, str], list[str]] = {}
         self._builder_proposals: dict[str, BuilderProposal] = {}
         self._builder_proposals_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._idempotency_records: dict[tuple[str, str], IdempotencyRecord] = {}
+        self._idempotency_results: dict[tuple[str, str], dict[str, Any]] = {}
+        self._idempotency_lock = threading.Lock()
 
     @staticmethod
     def _require_scope_match(scope: ScopeContext, tenant_id: str, project_id: str) -> None:
@@ -558,9 +598,211 @@ class AgentStudioStore:
         self._builder_proposals[proposal.id] = proposal
         return proposal
 
+    # -- Durable idempotency (cross-instance-safe claim/lease/complete) ----
+    #
+    # This is this backend's own durable idempotency primitive: a claim/lease
+    # state machine keyed by a canonical ``IdempotencyKey`` digest, safe
+    # across concurrent callers and across process/store instances (the
+    # Cosmos-backed subclass overrides these methods with atomic
+    # create-if-absent + ETag-gated transitions; this in-memory base class
+    # uses a single process-wide lock as its equivalent atomicity boundary).
+    # It is structurally aligned with the harness's own
+    # ``agents.shared.idempotency.IdempotencyStore`` contract in field shape
+    # and state-machine semantics only -- never imported from, or into, that
+    # module.
+
+    @staticmethod
+    def _require_idempotency_key_scope(scope: ScopeContext, key: IdempotencyKey) -> None:
+        if key.tenant_id != scope.tenant_id or key.project_id != scope.project_id:
+            raise AgentStudioStoreError(
+                f"Idempotency key scope (tenant={key.tenant_id!r}, project={key.project_id!r}) does not "
+                f"match requested scope (tenant={scope.tenant_id!r}, project={scope.project_id!r})."
+            )
+
+    def claim_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        actor_id: str,
+        release_id: str,
+        lease_seconds: float,
+        now: datetime | None = None,
+    ) -> IdempotencyClaim:
+        """Attempt to durably, atomically win a fresh claim for ``key``.
+
+        Exactly one caller across all concurrent attempts (and, for the
+        Cosmos-backed subclass, across all process instances) receives
+        ``ACQUIRED`` with a fresh one-time ``claim_token``; every other
+        concurrent caller observes the *same* resulting record and an
+        appropriate non-acquiring disposition (``IN_PROGRESS``/
+        ``COMPLETED``/``RECONCILIATION_REQUIRED``) -- never a second,
+        independent ``ACQUIRED`` for the same key.
+        """
+
+        validate_idempotency_lease_seconds(lease_seconds)
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        dedup_key = (scope.scope_key, key.digest)
+        with self._idempotency_lock:
+            existing = self._idempotency_records.get(dedup_key)
+            if existing is not None:
+                if existing.state is IdempotencyState.COMPLETED:
+                    return IdempotencyClaim(disposition=IdempotencyClaimDisposition.COMPLETED, record=existing)
+                if existing.state is IdempotencyState.FAILED or is_idempotency_lease_expired(
+                    existing, now=current_time
+                ):
+                    return IdempotencyClaim(
+                        disposition=IdempotencyClaimDisposition.RECONCILIATION_REQUIRED, record=existing
+                    )
+                return IdempotencyClaim(disposition=IdempotencyClaimDisposition.IN_PROGRESS, record=existing)
+            claim_token = secrets.token_hex(32)
+            record = IdempotencyRecord(
+                key=key,
+                state=IdempotencyState.CLAIMED,
+                version="1",
+                claim_token_hash=hash_idempotency_token(claim_token),
+                lease_expires_at=current_time + timedelta(seconds=lease_seconds),
+                actor_id=actor_id,
+                release_id=release_id,
+                claimed_at=current_time,
+            )
+            self._idempotency_records[dedup_key] = record
+            return IdempotencyClaim(
+                disposition=IdempotencyClaimDisposition.ACQUIRED, record=record, claim_token=claim_token
+            )
+
+    def _owned_idempotency_record(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+    ) -> IdempotencyRecord:
+        dedup_key = (scope.scope_key, key.digest)
+        current = self._idempotency_records.get(dedup_key)
+        if current is None:
+            raise IdempotencyNotFoundError(f"Idempotency key digest '{key.digest}' has not been claimed.")
+        if current.version != expected_version or current.claim_token_hash != hash_idempotency_token(claim_token):
+            raise IdempotencyConcurrencyError(
+                f"Idempotency key digest '{key.digest}' was modified concurrently, or claim_token/"
+                "expected_version no longer matches the current claim. Re-fetch and retry."
+            )
+        return current
+
+    def mark_idempotency_in_progress(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        irreversible: bool,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        dedup_key = (scope.scope_key, key.digest)
+        with self._idempotency_lock:
+            current = self._owned_idempotency_record(
+                scope, key, claim_token=claim_token, expected_version=expected_version
+            )
+            updated = current.model_copy(
+                update={
+                    "state": IdempotencyState.IN_PROGRESS,
+                    "started_at": current.started_at or current_time,
+                    "irreversible_started": current.irreversible_started or irreversible,
+                    "version": str(int(current.version) + 1),
+                }
+            )
+            self._idempotency_records[dedup_key] = updated
+            return updated
+
+    def complete_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        result: dict[str, Any],
+        result_hash: str,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        dedup_key = (scope.scope_key, key.digest)
+        result_ref = f"idempotency-result::{result_hash}"
+        with self._idempotency_lock:
+            current = self._owned_idempotency_record(
+                scope, key, claim_token=claim_token, expected_version=expected_version
+            )
+            updated = current.model_copy(
+                update={
+                    "state": IdempotencyState.COMPLETED,
+                    "completed_at": current_time,
+                    "result_hash": result_hash,
+                    "result_ref": result_ref,
+                    "version": str(int(current.version) + 1),
+                }
+            )
+            self._idempotency_records[dedup_key] = updated
+            self._idempotency_results[(scope.scope_key, result_ref)] = result
+            return updated
+
+    def fail_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        failure_code: str,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        dedup_key = (scope.scope_key, key.digest)
+        with self._idempotency_lock:
+            current = self._owned_idempotency_record(
+                scope, key, claim_token=claim_token, expected_version=expected_version
+            )
+            updated = current.model_copy(
+                update={
+                    "state": IdempotencyState.FAILED,
+                    "failure_code": failure_code,
+                    "reconciliation_required": True,
+                    "version": str(int(current.version) + 1),
+                }
+            )
+            self._idempotency_records[dedup_key] = updated
+            return updated
+
+    def load_idempotency_result(self, scope: ScopeContext, result_ref: str) -> dict[str, Any] | None:
+        """Point-read a completed idempotency result by its opaque
+        ``result_ref``.
+
+        Always partitioned by the *caller's own* authorized
+        ``scope.scope_key`` -- never by anything decoded from ``result_ref``
+        itself -- so cross-tenant/cross-project enumeration is impossible
+        even if a caller somehow guesses another scope's ``result_ref``
+        string: the lookup simply misses in this scope's partition.
+        """
+        return self._idempotency_results.get((scope.scope_key, result_ref))
+
+    def get_idempotency_record(self, scope: ScopeContext, key: IdempotencyKey) -> IdempotencyRecord | None:
+        self._require_idempotency_key_scope(scope, key)
+        return self._idempotency_records.get((scope.scope_key, key.digest))
+
 
 __all__ = [
     "AgentStudioStore",
     "AgentStudioStoreError",
+    "DraftConflictError",
+    "IdempotencyConcurrencyError",
+    "IdempotencyNotFoundError",
+    "hash_idempotency_token",
+    "is_idempotency_lease_expired",
     "role_at_least",
+    "validate_idempotency_lease_seconds",
 ]

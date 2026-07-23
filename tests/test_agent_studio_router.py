@@ -9,7 +9,7 @@ from collections.abc import Iterator
 from typing import Any, cast
 
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
@@ -30,6 +30,7 @@ from research_assistant_api.agent_studio.capability_registry import (
     seeded_test_registry,
 )
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import InMemoryMemoryStore, MemoryService
 from research_assistant_api.agent_studio.model_discovery import (
     InMemoryModelDiscovery,
@@ -60,7 +61,9 @@ from research_assistant_api.agent_studio.release_service import (
     ReleaseService,
     ReleaseServiceError,
 )
+from research_assistant_api.agent_studio.router import claim_idempotency_route
 from research_assistant_api.agent_studio.router import router as agent_studio_router
+from research_assistant_api.agent_studio.schemas import ClaimIdempotencyRequest
 from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.config import Settings
@@ -192,6 +195,9 @@ def _build_app(
     app.state.agent_studio_approval_consumption_port = (
         StoreBackedApprovalConsumptionPort(store) if store is not None else None
     )
+    # Mirrors app.py's composition root: the durable idempotency port is
+    # only available when backed by real persistence.
+    app.state.agent_studio_idempotency_port = StoreBackedIdempotencyPort(store) if store is not None else None
     return app
 
 
@@ -357,6 +363,37 @@ def approval_consumption_unavailable_client(
     # succeeds here and the 503 must come specifically from
     # ``_approval_consumption_port``.
     app.state.agent_studio_approval_consumption_port = None
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def idempotency_unavailable_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> Iterator[TestClient]:
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    # Simulates a composition root where Cosmos-backed persistence exists
+    # but the idempotency adapter itself was not wired -- distinct from
+    # ``unavailable_client`` (no persistence at all), since ``_store``
+    # succeeds here and the 503 must come specifically from
+    # ``_idempotency_port``.
+    app.state.agent_studio_idempotency_port = None
     with TestClient(app) as test_client:
         yield test_client
 
@@ -1817,6 +1854,368 @@ def test_consume_approval_route_returns_503_when_consumption_port_unavailable(
     response = approval_consumption_unavailable_client.post(
         f"/v1/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+# --- durable idempotency routes --------------------------------------------
+
+
+def _idempotency_body(
+    project_id: str = DEFAULT_PROJECT_ID,
+    /,
+    *,
+    binding_digest: str = "a" * 64,
+    operation_id: str = "search",
+    destination: str = "descriptor-1.search",
+    caller_key: str = "caller-1",
+    argument_hash: str = "b" * 64,
+    **kwargs: Any,
+) -> dict[str, Any]:
+    return {
+        "project_id": project_id,
+        "binding_digest": binding_digest,
+        "operation_id": operation_id,
+        "destination": destination,
+        "caller_key": caller_key,
+        "argument_hash": argument_hash,
+        **kwargs,
+    }
+
+
+def test_idempotency_full_http_lifecycle_claim_progress_complete_and_load(
+    client: TestClient,
+) -> None:
+    claim_response = client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(release_id="release-1", lease_seconds=300),
+        headers=USER_HEADERS,
+    )
+    assert claim_response.status_code == 200, claim_response.text
+    claim = claim_response.json()
+    assert claim["disposition"] == "acquired"
+    assert claim["claim_token"] is not None
+    assert claim["record"]["actor_id"] == "user-1"
+
+    progress_response = client.post(
+        "/v1/agent-studio/idempotency/mark-in-progress",
+        json=_idempotency_body(
+            claim_token=claim["claim_token"], expected_version=claim["record"]["version"], irreversible=True
+        ),
+        headers=USER_HEADERS,
+    )
+    assert progress_response.status_code == 200, progress_response.text
+    in_progress = progress_response.json()
+    assert in_progress["state"] == "in_progress"
+    assert in_progress["irreversible_started"] is True
+
+    complete_response = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            claim_token=claim["claim_token"],
+            expected_version=in_progress["version"],
+            result={"status": "ok", "value": 42},
+        ),
+        headers=USER_HEADERS,
+    )
+    assert complete_response.status_code == 200, complete_response.text
+    completed = complete_response.json()
+    assert completed["state"] == "completed"
+    result_ref = completed["result_ref"]
+    assert result_ref is not None
+
+    load_response = client.get(
+        f"/v1/agent-studio/idempotency/results/{result_ref}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert load_response.status_code == 200, load_response.text
+    assert load_response.json() == {"status": "ok", "value": 42}
+
+
+def test_idempotency_second_claim_against_same_key_reports_in_progress_without_new_token(
+    client: TestClient,
+) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-dup")
+    first = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS)
+    assert first.status_code == 200, first.text
+    assert first.json()["disposition"] == "acquired"
+
+    second = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS)
+    assert second.status_code == 200, second.text
+    second_body = second.json()
+    assert second_body["disposition"] == "in_progress"
+    assert second_body["claim_token"] is None
+
+
+def test_idempotency_claim_route_rejects_out_of_bounds_lease_seconds(client: TestClient) -> None:
+    response = client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(release_id="release-1", lease_seconds=0),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 422
+
+
+def test_idempotency_mark_in_progress_route_returns_404_for_never_claimed_key(client: TestClient) -> None:
+    response = client.post(
+        "/v1/agent-studio/idempotency/mark-in-progress",
+        json=_idempotency_body(caller_key="never-claimed", claim_token="x" * 32, expected_version="1"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_idempotency_mark_in_progress_route_returns_409_for_wrong_token_or_version(
+    client: TestClient,
+) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-conflict")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+
+    wrong_token = client.post(
+        "/v1/agent-studio/idempotency/mark-in-progress",
+        json=_idempotency_body(
+            caller_key="caller-conflict", claim_token="x" * 32, expected_version=claim["record"]["version"]
+        ),
+        headers=USER_HEADERS,
+    )
+    assert wrong_token.status_code == 409
+
+    wrong_version = client.post(
+        "/v1/agent-studio/idempotency/mark-in-progress",
+        json=_idempotency_body(
+            caller_key="caller-conflict", claim_token=claim["claim_token"], expected_version="99"
+        ),
+        headers=USER_HEADERS,
+    )
+    assert wrong_version.status_code == 409
+
+
+def test_idempotency_complete_route_returns_409_when_result_mismatch(client: TestClient) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-mismatch")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+
+    response = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-mismatch",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+            expected_result_hash="0" * 64,
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 409
+
+
+def test_idempotency_complete_route_returns_409_for_unclaimed_and_stale_transition(
+    client: TestClient,
+) -> None:
+    unclaimed = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="never-claimed-complete", claim_token="x" * 32, expected_version="1", result={}
+        ),
+        headers=USER_HEADERS,
+    )
+    assert unclaimed.status_code == 404
+
+    body = _idempotency_body(release_id="release-1", caller_key="caller-stale-complete")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    first_complete = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-stale-complete",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+        ),
+        headers=USER_HEADERS,
+    )
+    assert first_complete.status_code == 200, first_complete.text
+
+    stale_retry = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-stale-complete",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+        ),
+        headers=USER_HEADERS,
+    )
+    assert stale_retry.status_code == 409
+
+
+def test_idempotency_fail_route_marks_reconciliation_required(client: TestClient) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-fail")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+
+    response = client.post(
+        "/v1/agent-studio/idempotency/fail",
+        json=_idempotency_body(
+            caller_key="caller-fail",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            failure_code="downstream-timeout",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    failed = response.json()
+    assert failed["state"] == "failed"
+    assert failed["failure_code"] == "downstream-timeout"
+    assert failed["reconciliation_required"] is True
+
+
+def test_idempotency_fail_route_returns_404_for_never_claimed_key(client: TestClient) -> None:
+    response = client.post(
+        "/v1/agent-studio/idempotency/fail",
+        json=_idempotency_body(
+            caller_key="never-claimed-fail", claim_token="x" * 32, expected_version="1", failure_code="boom"
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_idempotency_fail_route_returns_409_for_wrong_token_or_version(client: TestClient) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-fail-conflict")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+
+    response = client.post(
+        "/v1/agent-studio/idempotency/fail",
+        json=_idempotency_body(
+            caller_key="caller-fail-conflict",
+            claim_token=claim["claim_token"],
+            expected_version="stale-version",
+            failure_code="boom",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 409
+
+
+@pytest.mark.asyncio
+async def test_idempotency_claim_route_wraps_port_value_error_as_422(client: TestClient) -> None:
+    """A malformed ``lease_seconds`` rejected by the port itself (not just the
+    request schema's own field bounds) must still surface as a 422 -- this
+    exercises the route's own ``except ValueError`` translation directly,
+    since the schema's ``Field(gt=0, le=3600)`` already matches the port's
+    bounds and would otherwise make this branch unreachable over HTTP."""
+
+    class _FakeRequest:
+        def __init__(self, app: FastAPI, headers: dict[str, str]) -> None:
+            self.app = app
+            self.headers = headers
+
+    payload = ClaimIdempotencyRequest.model_construct(
+        project_id=DEFAULT_PROJECT_ID,
+        binding_digest="a" * 64,
+        operation_id="search",
+        destination="descriptor-1.search",
+        caller_key="caller-direct-value-error",
+        argument_hash="b" * 64,
+        release_id="release-1",
+        lease_seconds=0.0,
+    )
+    request = cast(Request, _FakeRequest(cast(FastAPI, client.app), USER_HEADERS))
+    with pytest.raises(HTTPException) as exc_info:
+        await claim_idempotency_route(request, payload)
+    assert exc_info.value.status_code == 422
+
+
+def test_idempotency_load_result_route_returns_404_for_unknown_ref(client: TestClient) -> None:
+    response = client.get(
+        "/v1/agent-studio/idempotency/results/idempotency-result::unknown",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_idempotency_routes_never_leak_across_project_or_tenant_scope(
+    client: TestClient,
+) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-scope")
+    claim = client.post("/v1/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    complete = client.post(
+        "/v1/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-scope",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+        ),
+        headers=USER_HEADERS,
+    ).json()
+    result_ref = complete["result_ref"]
+
+    # A different project the caller *is* a member of, under the same
+    # tenant, must see neither the claim state nor the completed result --
+    # the exact same key fields and result_ref string resolve to a
+    # completely different, empty durable partition.
+    cross_project_claim = client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(OTHER_PROJECT_ID, release_id="release-1", caller_key="caller-scope"),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project_claim.status_code == 200, cross_project_claim.text
+    assert cross_project_claim.json()["disposition"] == "acquired"
+
+    cross_project_load = client.get(
+        f"/v1/agent-studio/idempotency/results/{result_ref}",
+        params=_params(OTHER_PROJECT_ID),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project_load.status_code == 404
+
+    # A caller who is not a member of the target project at all is denied
+    # before ever reaching the idempotency store.
+    non_member_response = client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(OTHER_PROJECT_ID, release_id="release-1", caller_key="caller-scope-2"),
+        headers=USER_HEADERS,
+    )
+    assert non_member_response.status_code == 403
+
+    # Cross-tenant (same project group name, different authenticated
+    # tenant): the scope resolves but the underlying tenant partition is
+    # different, so the result must not be found.
+    cross_tenant_load = client.get(
+        f"/v1/agent-studio/idempotency/results/{result_ref}",
+        params=_params(),
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert cross_tenant_load.status_code == 404
+
+
+def test_idempotency_routes_return_503_when_persistence_unavailable(
+    unavailable_client: TestClient,
+) -> None:
+    claim_response = unavailable_client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(release_id="release-1"),
+        headers=USER_HEADERS,
+    )
+    assert claim_response.status_code == 503
+
+    load_response = unavailable_client.get(
+        "/v1/agent-studio/idempotency/results/idempotency-result::unknown",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert load_response.status_code == 503
+
+
+def test_idempotency_routes_return_503_when_idempotency_port_unavailable(
+    idempotency_unavailable_client: TestClient,
+) -> None:
+    response = idempotency_unavailable_client.post(
+        "/v1/agent-studio/idempotency/claim",
+        json=_idempotency_body(release_id="release-1"),
         headers=USER_HEADERS,
     )
     assert response.status_code == 503

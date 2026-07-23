@@ -30,7 +30,9 @@ proposal decisions).
 from __future__ import annotations
 
 import contextlib
+import secrets
 from collections.abc import Callable
+from datetime import datetime, timedelta
 from typing import Any
 
 from azure.core import MatchConditions
@@ -50,15 +52,30 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
+    IdempotencyClaim,
+    IdempotencyClaimDisposition,
+    IdempotencyKey,
+    IdempotencyRecord,
+    IdempotencyState,
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
     ReleaseGateReport,
     StudioApprovalRecord,
     ToolRegistrationSpec,
+    utc_now,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore, AgentStudioStoreError, DraftConflictError
+from research_assistant_api.agent_studio.store import (
+    AgentStudioStore,
+    AgentStudioStoreError,
+    DraftConflictError,
+    IdempotencyConcurrencyError,
+    IdempotencyNotFoundError,
+    hash_idempotency_token,
+    is_idempotency_lease_expired,
+    validate_idempotency_lease_seconds,
+)
 from research_assistant_api.config import Settings
 
 
@@ -714,6 +731,234 @@ class CosmosAgentStudioStore(AgentStudioStore):
         dedup_key = self._consumption_dedup_key(scope, record.approval_id)
         self._approval_consumptions[record.id] = record
         self._approval_consumption_dedup[dedup_key] = record
+        return record
+
+    # -- Durable idempotency (cross-instance-safe claim/lease/complete) ----
+
+    @staticmethod
+    def _idempotency_id(key: IdempotencyKey) -> str:
+        """Deterministic Cosmos document id for an idempotency claim --
+        keyed by the key's own canonical digest (never a random record id),
+        so ``create_item`` itself is the atomic create-if-absent primitive
+        for ``claim_idempotency``, identical in spirit to
+        ``_consumption_id``."""
+        return key.digest
+
+    @staticmethod
+    def _idempotency_result_id(result_hash: str) -> str:
+        return f"idempotency-result::{result_hash}"
+
+    def claim_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        actor_id: str,
+        release_id: str,
+        lease_seconds: float,
+        now: datetime | None = None,
+    ) -> IdempotencyClaim:
+        """Atomic, cross-instance-safe claim via a Cosmos-native
+        create-if-absent guard document -- identical in spirit to
+        ``create_approval_consumption``, except keyed by ``key.digest``
+        and returning a non-``ACQUIRED`` disposition (never raising) when
+        another claim already durably exists for this key."""
+        validate_idempotency_lease_seconds(lease_seconds)
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        document_id = self._idempotency_id(key)
+        claim_token = secrets.token_hex(32)
+        record = IdempotencyRecord(
+            key=key,
+            state=IdempotencyState.CLAIMED,
+            version="1",
+            claim_token_hash=hash_idempotency_token(claim_token),
+            lease_expires_at=current_time + timedelta(seconds=lease_seconds),
+            actor_id=actor_id,
+            release_id=release_id,
+            claimed_at=current_time,
+        )
+        try:
+            self._container.create_item(
+                {
+                    "id": document_id,
+                    "documentType": "idempotency_record",
+                    "scope_key": scope.scope_key,
+                    "payload": record.model_dump(mode="json"),
+                }
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            document = self._read(scope.scope_key, document_id)
+            if document is None:
+                raise AgentStudioStoreError(
+                    f"Idempotency claim for key digest '{key.digest}' conflicted but the current record "
+                    "could not be read back."
+                ) from exc
+            existing = IdempotencyRecord.model_validate(document["payload"])
+            self._idempotency_records[(scope.scope_key, key.digest)] = existing
+            if existing.state is IdempotencyState.COMPLETED:
+                return IdempotencyClaim(disposition=IdempotencyClaimDisposition.COMPLETED, record=existing)
+            if existing.state is IdempotencyState.FAILED or is_idempotency_lease_expired(
+                existing, now=current_time
+            ):
+                return IdempotencyClaim(
+                    disposition=IdempotencyClaimDisposition.RECONCILIATION_REQUIRED, record=existing
+                )
+            return IdempotencyClaim(disposition=IdempotencyClaimDisposition.IN_PROGRESS, record=existing)
+        self._idempotency_records[(scope.scope_key, key.digest)] = record
+        return IdempotencyClaim(
+            disposition=IdempotencyClaimDisposition.ACQUIRED, record=record, claim_token=claim_token
+        )
+
+    def _transition_idempotency_record(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        build_updates: Callable[[IdempotencyRecord], dict[str, Any]],
+    ) -> IdempotencyRecord:
+        """Read-then-ETag-guarded-replace transition, mirroring
+        ``update_deployment``'s idiom, plus an application-level
+        ``version``/``claim_token`` ownership check (mirroring
+        ``save_draft``'s ``expected_etag`` check) performed against the
+        document *just read* -- never the in-memory cache -- so a stale
+        in-process cache can never mask a concurrent transition that a
+        different process instance already durably applied."""
+        document_id = self._idempotency_id(key)
+        document = self._read(scope.scope_key, document_id)
+        if document is None:
+            raise IdempotencyNotFoundError(f"Idempotency key digest '{key.digest}' has not been claimed.")
+        current = IdempotencyRecord.model_validate(document["payload"])
+        if current.version != expected_version or current.claim_token_hash != hash_idempotency_token(claim_token):
+            raise IdempotencyConcurrencyError(
+                f"Idempotency key digest '{key.digest}' was modified concurrently, or claim_token/"
+                "expected_version no longer matches the current claim. Re-fetch and retry."
+            )
+        updated = current.model_copy(update={**build_updates(current), "version": str(int(current.version) + 1)})
+        body = {
+            "id": document_id,
+            "documentType": "idempotency_record",
+            "scope_key": scope.scope_key,
+            "payload": updated.model_dump(mode="json"),
+        }
+        try:
+            self._container.replace_item(
+                item=document_id,
+                body=body,
+                etag=document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 412:
+                raise
+            raise IdempotencyConcurrencyError(
+                f"Idempotency key digest '{key.digest}' was modified concurrently; re-fetch and retry."
+            ) from exc
+        self._idempotency_records[(scope.scope_key, key.digest)] = updated
+        return updated
+
+    def mark_idempotency_in_progress(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        irreversible: bool,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        return self._transition_idempotency_record(
+            scope,
+            key,
+            claim_token=claim_token,
+            expected_version=expected_version,
+            build_updates=lambda current: {
+                "state": IdempotencyState.IN_PROGRESS,
+                "started_at": current.started_at or current_time,
+                "irreversible_started": current.irreversible_started or irreversible,
+            },
+        )
+
+    def complete_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        result: dict[str, Any],
+        result_hash: str,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        current_time = now if now is not None else utc_now()
+        result_ref = self._idempotency_result_id(result_hash)
+        updated = self._transition_idempotency_record(
+            scope,
+            key,
+            claim_token=claim_token,
+            expected_version=expected_version,
+            build_updates=lambda current: {
+                "state": IdempotencyState.COMPLETED,
+                "completed_at": current_time,
+                "result_hash": result_hash,
+                "result_ref": result_ref,
+            },
+        )
+        self._upsert(scope.scope_key, result_ref, "idempotency_result", result)
+        self._idempotency_results[(scope.scope_key, result_ref)] = result
+        return updated
+
+    def fail_idempotency(
+        self,
+        scope: ScopeContext,
+        key: IdempotencyKey,
+        *,
+        claim_token: str,
+        expected_version: str,
+        failure_code: str,
+        now: datetime | None = None,
+    ) -> IdempotencyRecord:
+        self._require_idempotency_key_scope(scope, key)
+        return self._transition_idempotency_record(
+            scope,
+            key,
+            claim_token=claim_token,
+            expected_version=expected_version,
+            build_updates=lambda current: {
+                "state": IdempotencyState.FAILED,
+                "failure_code": failure_code,
+                "reconciliation_required": True,
+            },
+        )
+
+    def load_idempotency_result(self, scope: ScopeContext, result_ref: str) -> dict[str, Any] | None:
+        cached = super().load_idempotency_result(scope, result_ref)
+        if cached is not None:
+            return cached
+        document = self._read(scope.scope_key, result_ref)
+        if document is None:
+            return None
+        result: dict[str, Any] = document["payload"]
+        self._idempotency_results[(scope.scope_key, result_ref)] = result
+        return result
+
+    def get_idempotency_record(self, scope: ScopeContext, key: IdempotencyKey) -> IdempotencyRecord | None:
+        self._require_idempotency_key_scope(scope, key)
+        cached = self._idempotency_records.get((scope.scope_key, key.digest))
+        if cached is not None:
+            return cached
+        document = self._read(scope.scope_key, self._idempotency_id(key))
+        if document is None:
+            return None
+        record = IdempotencyRecord.model_validate(document["payload"])
+        self._idempotency_records[(scope.scope_key, key.digest)] = record
         return record
 
     # -- Deployments ------------------------------------------------------
