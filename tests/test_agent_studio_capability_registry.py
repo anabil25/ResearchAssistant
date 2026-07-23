@@ -702,6 +702,33 @@ def test_check_binding_freshness_detects_descriptor_digest_drift() -> None:
     assert "descriptor_ref.digest mismatch" in reason
 
 
+def test_check_binding_freshness_never_mutates_or_auto_heals_a_stale_binding() -> None:
+    """'Rebind' must be an explicit, reviewed draft change -- never an
+    auto-heal. ``check_binding_freshness`` is a pure read-only check: it must
+    never silently repair a drifted binding (e.g. re-stamp a fresh digest or
+    fingerprint), and calling it repeatedly against the same stale binding
+    must keep reporting the same staleness rather than the binding "healing
+    itself" after being observed once. The only way to clear staleness is an
+    explicit, reviewed ``update_draft`` with a freshly re-attached binding --
+    never a side effect of the freshness check itself."""
+    registry = seeded_test_registry()
+    binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
+    drifted = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
+    snapshot_before = drifted.model_copy(deep=True)
+
+    first_reason = registry.check_binding_freshness(drifted)
+    second_reason = registry.check_binding_freshness(drifted)
+
+    assert first_reason is not None
+    assert first_reason == second_reason
+    # The binding object itself was never mutated by the check -- no silent
+    # re-stamping of the digest/fingerprint occurred.
+    assert drifted == snapshot_before
+    assert drifted.descriptor_ref.digest == "sha256:tampered"
+
+
 def test_check_binding_freshness_detects_missing_instance() -> None:
     registry = seeded_test_registry()
     instance = registry.register_instance(

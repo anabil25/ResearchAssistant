@@ -741,15 +741,23 @@ def resolve_logical_agent(
     versions. A published workflow must pin this response's ``version_id``/
     ``release_id``/``manifest_hash`` at compose time; execution must never
     silently re-resolve to "whatever is latest" later.
+
+    Fails closed: if the pinned release's capability bindings have gone
+    stale since cut (descriptor/instance/schema/destination drift), this
+    raises 409 rather than returning a contract that would no longer pass
+    gate-time validation.
     """
     identity = _identity(request)
     scope = _scope(identity, project_id)
-    contract = _deployment_service(request).resolve(
-        tenant_id=scope.tenant_id,
-        project_id=scope.project_id,
-        logical_agent_id=logical_agent_id,
-        environment=environment,
-    )
+    try:
+        contract = _deployment_service(request).resolve(
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            logical_agent_id=logical_agent_id,
+            environment=environment,
+        )
+    except DeploymentServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if contract is None:
         raise _not_found(
             f"Agent '{logical_agent_id}' has no resolved, released contract for environment "
@@ -771,15 +779,20 @@ def get_exact_version_contract(
     a logical agent), this looks up one already-known ``version_id``
     directly - for re-validating a previously composed/pinned workflow node
     without depending on whatever is currently bound to an environment.
+
+    Fails closed on stale capability bindings, same as ``/resolve``.
     """
     identity = _identity(request)
     scope = _scope(identity, project_id)
-    contract = _deployment_service(request).contract_for_version(
-        tenant_id=scope.tenant_id,
-        project_id=scope.project_id,
-        version_id=version_id,
-        environment=environment,
-    )
+    try:
+        contract = _deployment_service(request).contract_for_version(
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            version_id=version_id,
+            environment=environment,
+        )
+    except DeploymentServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     if contract is None:
         raise _not_found(f"Version '{version_id}' has no released contract.")
     return contract

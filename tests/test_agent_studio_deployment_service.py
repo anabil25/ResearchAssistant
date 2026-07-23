@@ -1227,6 +1227,123 @@ def test_catalog_is_cross_project_isolated(
     assert deployment_service.catalog(tenant_id=TENANT, project_id=OTHER_PROJECT_ID) == ()
 
 
+#
+# Resolve/contract_for_version/catalog must fail closed on capability-binding
+# staleness too, not only ``deploy``: a binding that was fresh at cut/deploy
+# can still drift (descriptor/instance changed, provider went non-GA) before
+# a workflow later resolves/invokes it. These mirror the deploy-time staleness
+# tests above but exercise ``_build_contract`` (the shared helper behind
+# ``resolve``/``contract_for_version``/``catalog``).
+#
+
+
+def _deployed_stale_prone_version(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+    *,
+    logical_agent_id: str,
+) -> AgentVersion:
+    """Attach a real registry-backed binding, cut/gate/deploy it against a
+    registry that still recognizes it, then return the version so the caller
+    can resolve/contract-for-version against a *different* (stale) registry —
+    simulating drift discovered after deploy, at resolve/invoke time."""
+    _create_agent(release_service, logical_agent_id=logical_agent_id)
+    binding = release_service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+    )
+    draft = store.get_draft(_scope(), logical_agent_id)
+    assert draft is not None
+    release_service.update_draft(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id=logical_agent_id,
+        manifest=draft.manifest.model_copy(update={"capabilities": (binding,)}),
+        updated_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    version = release_service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id=logical_agent_id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    _append_release(store, version, ReleaseStatus.GATED, created_by="user-1")
+    fresh_registry_deployment_service = DeploymentService(store, capability_registry=release_service._registry)
+    fresh_registry_deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id=logical_agent_id,
+        version_id=version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    return version
+
+
+def test_resolve_fails_closed_when_capability_binding_goes_stale_after_deploy(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    _deployed_stale_prone_version(release_service, store, logical_agent_id="agent-resolve-stale-binding")
+    # Simulate the descriptor going stale between deploy and resolve/invoke by
+    # pointing a fresh ``DeploymentService`` at a registry that no longer
+    # recognizes the attached descriptor.
+    stale_deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
+
+    with pytest.raises(DeploymentServiceError, match="stale"):
+        stale_deployment_service.resolve(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-resolve-stale-binding"
+        )
+
+
+def test_contract_for_version_fails_closed_when_capability_binding_is_stale(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    version = _deployed_stale_prone_version(
+        release_service, store, logical_agent_id="agent-contract-stale-binding"
+    )
+    stale_deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
+
+    with pytest.raises(DeploymentServiceError, match="stale"):
+        stale_deployment_service.contract_for_version(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, version_id=version.id
+        )
+
+
+def test_catalog_omits_stale_bound_agent_instead_of_raising(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    _deployed_stale_prone_version(release_service, store, logical_agent_id="agent-catalog-stale-binding")
+    healthy_version, _ = _version_with_latest_release(
+        release_service,
+        store,
+        latest_status=ReleaseStatus.GATED,
+        logical_agent_id="agent-catalog-healthy",
+    )
+    healthy_deployment_service = DeploymentService(store)
+    healthy_deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-catalog-healthy",
+        version_id=healthy_version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    # A registry that no longer recognizes the descriptor attached above makes
+    # the first agent's binding stale; the catalog listing must still return
+    # the unaffected, healthy agent rather than raising for the whole tenant.
+    stale_deployment_service = DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=()))
+
+    contracts = stale_deployment_service.catalog(tenant_id="demo", project_id=TEST_PROJECT_ID)
+
+    assert [contract.logical_agent_id for contract in contracts] == ["agent-catalog-healthy"]
+
+
 def test_runtime_target_migration_requires_cutting_a_new_version(
     release_service: ReleaseServiceHarness,
     store: AgentStudioStore,

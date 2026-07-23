@@ -41,6 +41,7 @@ from research_assistant_api.agent_studio.models import (
     ManifestFieldChangeKind,
     ProposalRiskCategory,
     ProposalRiskEscalation,
+    SanitizedCapabilityBinding,
     role_at_least,
     utc_now,
 )
@@ -219,8 +220,8 @@ def diff_capability_bindings(
                 descriptor_id=reference.descriptor_ref.id,
                 operation=reference.operation_ref.id,
                 kind=kind,
-                before=before_binding,
-                after=after_binding,
+                before=SanitizedCapabilityBinding.from_binding(before_binding) if before_binding is not None else None,
+                after=SanitizedCapabilityBinding.from_binding(after_binding) if after_binding is not None else None,
             )
         )
     return tuple(changes)

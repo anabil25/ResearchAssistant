@@ -326,6 +326,11 @@ export interface paths {
          *     versions. A published workflow must pin this response's ``version_id``/
          *     ``release_id``/``manifest_hash`` at compose time; execution must never
          *     silently re-resolve to "whatever is latest" later.
+         *
+         *     Fails closed: if the pinned release's capability bindings have gone
+         *     stale since cut (descriptor/instance/schema/destination drift), this
+         *     raises 409 rather than returning a contract that would no longer pass
+         *     gate-time validation.
          */
         get: operations["resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get"];
         put?: never;
@@ -655,6 +660,8 @@ export interface paths {
          *     a logical agent), this looks up one already-known ``version_id``
          *     directly - for re-validating a previously composed/pinned workflow node
          *     without depending on whatever is currently bound to an environment.
+         *
+         *     Fails closed on stale capability bindings, same as ``/resolve``.
          */
         get: operations["get_exact_version_contract_api_agent_studio_versions__version_id__contract_get"];
         put?: never;
@@ -1754,10 +1761,15 @@ export interface components {
          *     reported (derived from whichever side is present, preferring ``after``)
          *     for readability, but ``binding_id`` is the authoritative key a caller
          *     must use to distinguish changes.
+         *
+         *     ``before``/``after`` are ``SanitizedCapabilityBinding``, not the raw
+         *     ``CapabilityBinding`` -- changed-category output must never reveal raw
+         *     connector ``config`` values to a reviewer; ``configuration_ref.digest``
+         *     still proves whether config drifted without exposing its contents.
          */
         CapabilityChangeSummary: {
-            after?: components["schemas"]["CapabilityBinding"] | null;
-            before?: components["schemas"]["CapabilityBinding"] | null;
+            after?: components["schemas"]["SanitizedCapabilityBinding"] | null;
+            before?: components["schemas"]["SanitizedCapabilityBinding"] | null;
             /** Binding Id */
             binding_id: string;
             /** Descriptor Id */
@@ -3625,6 +3637,45 @@ export interface components {
          * @enum {string}
          */
         RuntimeTarget: "managed_foundry" | "custom_hosted";
+        /**
+         * SanitizedCapabilityBinding
+         * @description A ``CapabilityBinding`` view safe to return in changed-category output.
+         *
+         *     Identical to ``CapabilityBinding`` except it omits the raw ``config``
+         *     dict, which may carry non-secret-by-contract but still sensitive
+         *     connector configuration (endpoints, resource identifiers, filters,
+         *     etc.). Builder proposal "changed category" output (``CapabilityChangeSummary``)
+         *     must never reveal raw config/auth details to a reviewer who only has
+         *     permission to see *that something changed*, not full connector detail --
+         *     ``configuration_ref.digest`` (still present here) is sufficient to prove
+         *     config drift without exposing values. Every other field, including
+         *     ``connection_ref``/``policy_ref``/``destination_constraints``, is
+         *     preserved verbatim since those are already reference/digest pins, not
+         *     raw secrets, and are required for a reviewer to assess risk escalation.
+         */
+        SanitizedCapabilityBinding: {
+            /**
+             * Attached At
+             * Format: date-time
+             */
+            attached_at: string;
+            /** Attached By */
+            attached_by: string;
+            /** Binding Id */
+            binding_id: string;
+            configuration_ref: components["schemas"]["CapabilityConfigurationRef"];
+            connection_ref?: components["schemas"]["CapabilityConnectionRef"] | null;
+            descriptor_ref: components["schemas"]["CapabilityDescriptorRef"];
+            /** Destination Constraints */
+            destination_constraints?: string[];
+            /** Destination Constraints Digest */
+            destination_constraints_digest?: string | null;
+            instance_ref?: components["schemas"]["CapabilityInstanceRef"] | null;
+            operation_ref: components["schemas"]["CapabilityOperationRef"];
+            policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
+            /** Provider Contract Version */
+            provider_contract_version: string;
+        };
         /**
          * SchemaRef
          * @description A reference to a JSON Schema plus its content digest.

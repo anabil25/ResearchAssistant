@@ -291,6 +291,11 @@ class DeploymentService:
         returned ``version_id``/``release_id``/``manifest_hash`` at compose
         time and execution must read them back verbatim, never silently
         re-resolving to "whatever is latest now".
+
+        Fails closed: raises ``DeploymentServiceError`` if any capability
+        binding on the resolved version has gone stale since cut (see
+        ``_build_contract``); never returns a contract pinned to a binding
+        that would no longer pass gate-time validation.
         """
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         binding = self._store.get_binding(scope, logical_agent_id, environment)
@@ -315,6 +320,8 @@ class DeploymentService:
         version/release (e.g. re-validating a previously composed workflow
         node) without depending on "whatever is currently bound" for an
         environment.
+
+        Fails closed on stale capability bindings, same as ``resolve``.
         """
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         version = self._store.get_version(scope, version_id)
@@ -333,17 +340,25 @@ class DeploymentService:
 
         Lists the exact, pinned contract currently bound to ``environment``
         for every logical agent this tenant has a draft/manifest for.
-        Agents with no environment binding yet are omitted (nothing to pin).
+        Agents with no environment binding yet are omitted (nothing to
+        pin); agents whose bound release has since gone stale (capability
+        binding drift) are also omitted from this bulk listing rather than
+        failing the whole catalog response — the specific `resolve`/
+        `contract_for_version` calls for that agent still fail closed with
+        ``DeploymentServiceError`` for anyone attempting to actually use it.
         """
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         contracts: list[ResolvedAgentContract] = []
         for draft in self._store.list_drafts(scope):
-            contract = self.resolve(
-                tenant_id=tenant_id,
-                project_id=project_id,
-                logical_agent_id=draft.logical_agent_id,
-                environment=environment,
-            )
+            try:
+                contract = self.resolve(
+                    tenant_id=tenant_id,
+                    project_id=project_id,
+                    logical_agent_id=draft.logical_agent_id,
+                    environment=environment,
+                )
+            except DeploymentServiceError:
+                continue
             if contract is not None:
                 contracts.append(contract)
         return tuple(contracts)
@@ -354,11 +369,23 @@ class DeploymentService:
         version: AgentVersion,
         environment: DeploymentEnvironment,
     ) -> ResolvedAgentContract | None:
+        """Build the pinned contract, failing closed on stale bindings.
+
+        Resolve/invoke must never hand back a contract whose capability
+        bindings have drifted since cut (descriptor/operation/instance
+        digest, fingerprint, version, or destination-constraint mismatch,
+        or a provider that has gone non-GA/non-ready). This re-runs the
+        same freshness check used at deploy time; a stale binding raises
+        ``DeploymentServiceError`` here too, so a live resolve/invoke call
+        always fails closed instead of silently serving a contract pinned
+        to bindings that are no longer valid.
+        """
         if version.runtime_target is None:
             return None
         release = self._store.latest_release_for_version(scope, version.id)
         if release is None:
             return None
+        self._revalidate_capability_bindings(version)
         return ResolvedAgentContract(
             logical_agent_id=version.logical_agent_id,
             tenant_id=scope.tenant_id,

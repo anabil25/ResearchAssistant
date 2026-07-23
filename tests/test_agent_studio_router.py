@@ -1773,6 +1773,89 @@ def test_resolve_contract_and_catalog_routes_cover_full_happy_path(
     ) is not None
 
 
+def test_resolve_and_contract_routes_fail_closed_on_stale_capability_binding(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> None:
+    """Resolve/invoke must fail closed (409), never silently return a
+    contract, when the capability binding backing the active release has
+    gone stale since deploy (e.g. the provider descriptor was removed)."""
+    live_app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=DeploymentService(store, capability_registry=registry),
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    with TestClient(live_app) as live_client:
+        _create_agent(live_client, logical_agent_id="agent-stale-resolve", headers=USER_HEADERS)
+        draft = _get_draft(live_client, "agent-stale-resolve", headers=USER_HEADERS)
+        draft["manifest"]["capabilities"] = [
+            live_client.post(
+                "/api/agent-studio/capabilities/attach",
+                json={"descriptor_id": "foundry.web_search", "operation": "search"},
+                headers=USER_HEADERS,
+            ).json()
+        ]
+        _update_manifest(live_client, "agent-stale-resolve", draft["manifest"], headers=USER_HEADERS)
+        version = _cut_gated_version(live_client, "agent-stale-resolve", headers=USER_HEADERS)
+        deployment = _deploy_version(
+            live_client,
+            logical_agent_id="agent-stale-resolve",
+            version_id=version["id"],
+            headers=USER_HEADERS,
+        )
+        assert deployment["version_id"] == version["id"]
+
+    # A second app instance, sharing the same store, whose registry no longer
+    # recognizes the attached descriptor -- simulating drift discovered after
+    # deploy, at resolve/invoke time.
+    stale_app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=DeploymentService(store, capability_registry=CapabilityRegistry(descriptors=())),
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    with TestClient(stale_app) as stale_client:
+        resolve_response = stale_client.get(
+            "/api/agent-studio/agents/agent-stale-resolve/resolve",
+            params=_params(environment="development"),
+            headers=USER_HEADERS,
+        )
+        assert resolve_response.status_code == 409
+        assert "stale" in resolve_response.json()["detail"]
+
+        contract_response = stale_client.get(
+            f"/api/agent-studio/versions/{version['id']}/contract",
+            params=_params(environment="development"),
+            headers=USER_HEADERS,
+        )
+        assert contract_response.status_code == 409
+        assert "stale" in contract_response.json()["detail"]
+
+        # The bulk catalog listing must omit the stale agent rather than
+        # 500ing the entire response for this tenant/project.
+        catalog_response = stale_client.get(
+            "/api/agent-studio/catalog",
+            params=_params(environment="development"),
+            headers=USER_HEADERS,
+        )
+        assert catalog_response.status_code == 200
+        assert catalog_response.json() == []
+
+
 def test_activate_route_covers_missing_version_authorization_and_conflict(
     client: TestClient,
     store: AgentStudioStore,

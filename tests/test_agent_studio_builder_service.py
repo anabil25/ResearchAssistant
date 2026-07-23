@@ -39,6 +39,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
     CapabilityChangeKind,
     CapabilityChangeSummary,
+    CapabilityConfigurationRef,
     CapabilityConnectionRef,
     CapabilityDescriptorRef,
     CapabilityInstance,
@@ -51,6 +52,7 @@ from research_assistant_api.agent_studio.models import (
     ModelDeploymentRef,
     ProposalRiskCategory,
     RuntimeRequirements,
+    SanitizedCapabilityBinding,
     SpecialistPolicy,
 )
 from research_assistant_api.agent_studio.release_service import AuthorizationError, ReleaseService
@@ -220,6 +222,52 @@ def test_diff_capability_bindings_no_changes_for_identical_sets() -> None:
     assert diff_capability_bindings(before, after) == ()
 
 
+def test_diff_capability_bindings_sanitizes_raw_config_from_changed_category_output() -> None:
+    """Changed-category output (``CapabilityChangeSummary``) must never leak
+    raw connector ``config`` values -- only ``configuration_ref.digest``
+    (already a hash pin, not a secret) may be used to prove config drifted."""
+    before_binding = _binding(descriptor_id="descriptor-secret-config", operation="op-secret-config").model_copy(
+        update={
+            "config": {"api_key": "super-secret-value", "endpoint": "https://internal.example.test"},
+            "configuration_ref": CapabilityConfigurationRef(digest="sha256:before-digest"),
+        }
+    )
+    after_binding = before_binding.model_copy(
+        update={
+            "config": {"api_key": "rotated-secret-value", "endpoint": "https://internal.example.test/v2"},
+            "configuration_ref": CapabilityConfigurationRef(digest="sha256:after-digest"),
+        }
+    )
+    before = _manifest().model_copy(update={"capabilities": (before_binding,)})
+    after = _manifest().model_copy(update={"capabilities": (after_binding,)})
+
+    changes = diff_capability_bindings(before, after)
+    assert len(changes) == 1
+    change = changes[0]
+    assert change.kind is CapabilityChangeKind.RECONFIGURED
+
+    # The sanitized before/after views are a distinct type with no ``config``
+    # field at all -- not merely a redacted value -- so raw secrets can never
+    # round-trip through this API response by construction.
+    assert isinstance(change.before, SanitizedCapabilityBinding)
+    assert isinstance(change.after, SanitizedCapabilityBinding)
+    assert not hasattr(change.before, "config")
+    assert not hasattr(change.after, "config")
+
+    serialized = change.model_dump()
+    assert "config" not in serialized["before"]
+    assert "config" not in serialized["after"]
+    dumped_json = change.model_dump_json()
+    assert "super-secret-value" not in dumped_json
+    assert "rotated-secret-value" not in dumped_json
+    assert "internal.example.test" not in dumped_json
+
+    # ``configuration_ref.digest`` is preserved and still proves the config
+    # drifted, without exposing what changed.
+    assert serialized["before"]["configuration_ref"]["digest"] == "sha256:before-digest"
+    assert serialized["after"]["configuration_ref"]["digest"] == "sha256:after-digest"
+
+
 # --------------------------------------------------------------------------
 # classify_risk_escalations
 # --------------------------------------------------------------------------
@@ -281,7 +329,7 @@ def test_classify_risk_escalations_ignores_detached_capability_and_unrelated_rec
         descriptor_id=detached_binding.descriptor_ref.id,
         operation=detached_binding.operation_ref.id,
         kind=CapabilityChangeKind.DETACHED,
-        before=detached_binding,
+        before=SanitizedCapabilityBinding.from_binding(detached_binding),
         after=None,
     )
 
@@ -294,8 +342,8 @@ def test_classify_risk_escalations_ignores_detached_capability_and_unrelated_rec
         descriptor_id=destination_only_before.descriptor_ref.id,
         operation=destination_only_before.operation_ref.id,
         kind=CapabilityChangeKind.RECONFIGURED,
-        before=destination_only_before,
-        after=destination_only_after,
+        before=SanitizedCapabilityBinding.from_binding(destination_only_before),
+        after=SanitizedCapabilityBinding.from_binding(destination_only_after),
     )
 
     connection_only_before = _binding(descriptor_id="descriptor-conn-only", operation="op-conn-only")
@@ -307,8 +355,8 @@ def test_classify_risk_escalations_ignores_detached_capability_and_unrelated_rec
         descriptor_id=connection_only_before.descriptor_ref.id,
         operation=connection_only_before.operation_ref.id,
         kind=CapabilityChangeKind.RECONFIGURED,
-        before=connection_only_before,
-        after=connection_only_after,
+        before=SanitizedCapabilityBinding.from_binding(connection_only_before),
+        after=SanitizedCapabilityBinding.from_binding(connection_only_after),
     )
 
     manifest = _manifest()

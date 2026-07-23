@@ -545,6 +545,55 @@ class CapabilityBinding(BaseModel):
     attached_at: datetime = Field(default_factory=utc_now)
 
 
+class SanitizedCapabilityBinding(BaseModel):
+    """A ``CapabilityBinding`` view safe to return in changed-category output.
+
+    Identical to ``CapabilityBinding`` except it omits the raw ``config``
+    dict, which may carry non-secret-by-contract but still sensitive
+    connector configuration (endpoints, resource identifiers, filters,
+    etc.). Builder proposal "changed category" output (``CapabilityChangeSummary``)
+    must never reveal raw config/auth details to a reviewer who only has
+    permission to see *that something changed*, not full connector detail --
+    ``configuration_ref.digest`` (still present here) is sufficient to prove
+    config drift without exposing values. Every other field, including
+    ``connection_ref``/``policy_ref``/``destination_constraints``, is
+    preserved verbatim since those are already reference/digest pins, not
+    raw secrets, and are required for a reviewer to assess risk escalation.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    binding_id: str
+    provider_contract_version: str
+    descriptor_ref: CapabilityDescriptorRef
+    operation_ref: CapabilityOperationRef
+    instance_ref: CapabilityInstanceRef | None = None
+    configuration_ref: CapabilityConfigurationRef
+    connection_ref: CapabilityConnectionRef | None = None
+    policy_ref: CapabilityPolicyRef | None = None
+    destination_constraints: tuple[str, ...] = Field(default_factory=tuple)
+    destination_constraints_digest: str | None = None
+    attached_by: str
+    attached_at: datetime
+
+    @classmethod
+    def from_binding(cls, binding: CapabilityBinding) -> SanitizedCapabilityBinding:
+        return cls(
+            binding_id=binding.binding_id,
+            provider_contract_version=binding.provider_contract_version,
+            descriptor_ref=binding.descriptor_ref,
+            operation_ref=binding.operation_ref,
+            instance_ref=binding.instance_ref,
+            configuration_ref=binding.configuration_ref,
+            connection_ref=binding.connection_ref,
+            policy_ref=binding.policy_ref,
+            destination_constraints=binding.destination_constraints,
+            destination_constraints_digest=binding.destination_constraints_digest,
+            attached_by=binding.attached_by,
+            attached_at=binding.attached_at,
+        )
+
+
 class CapabilityVersionPin(BaseModel):
     """Full, non-lossy version-pin record for one attached ``CapabilityBinding``.
 
@@ -1400,6 +1449,11 @@ class CapabilityChangeSummary(BaseModel):
     reported (derived from whichever side is present, preferring ``after``)
     for readability, but ``binding_id`` is the authoritative key a caller
     must use to distinguish changes.
+
+    ``before``/``after`` are ``SanitizedCapabilityBinding``, not the raw
+    ``CapabilityBinding`` -- changed-category output must never reveal raw
+    connector ``config`` values to a reviewer; ``configuration_ref.digest``
+    still proves whether config drifted without exposing its contents.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1408,8 +1462,8 @@ class CapabilityChangeSummary(BaseModel):
     descriptor_id: str
     operation: str
     kind: CapabilityChangeKind
-    before: CapabilityBinding | None = None
-    after: CapabilityBinding | None = None
+    before: SanitizedCapabilityBinding | None = None
+    after: SanitizedCapabilityBinding | None = None
 
 
 class ProposalRiskCategory(StrEnum):

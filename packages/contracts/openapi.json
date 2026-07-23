@@ -1687,12 +1687,12 @@
       },
       "CapabilityChangeSummary": {
         "additionalProperties": false,
-        "description": "One deterministic capability-binding change.\n\nKeyed by ``binding_id`` -- the stable identity of a ``CapabilityBinding``\nitself -- rather than ``(descriptor_id, operation)``. Two distinct\nbindings can legitimately share the same descriptor+operation (e.g.\nattached against different discovered instances); keying by that tuple\nwould silently collapse a genuine detach+attach pair into a single\nmisreported \"reconfigure\". ``descriptor_id``/``operation`` are still\nreported (derived from whichever side is present, preferring ``after``)\nfor readability, but ``binding_id`` is the authoritative key a caller\nmust use to distinguish changes.",
+        "description": "One deterministic capability-binding change.\n\nKeyed by ``binding_id`` -- the stable identity of a ``CapabilityBinding``\nitself -- rather than ``(descriptor_id, operation)``. Two distinct\nbindings can legitimately share the same descriptor+operation (e.g.\nattached against different discovered instances); keying by that tuple\nwould silently collapse a genuine detach+attach pair into a single\nmisreported \"reconfigure\". ``descriptor_id``/``operation`` are still\nreported (derived from whichever side is present, preferring ``after``)\nfor readability, but ``binding_id`` is the authoritative key a caller\nmust use to distinguish changes.\n\n``before``/``after`` are ``SanitizedCapabilityBinding``, not the raw\n``CapabilityBinding`` -- changed-category output must never reveal raw\nconnector ``config`` values to a reviewer; ``configuration_ref.digest``\nstill proves whether config drifted without exposing its contents.",
         "properties": {
           "after": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/CapabilityBinding"
+                "$ref": "#/components/schemas/SanitizedCapabilityBinding"
               },
               {
                 "type": "null"
@@ -1702,7 +1702,7 @@
           "before": {
             "anyOf": [
               {
-                "$ref": "#/components/schemas/CapabilityBinding"
+                "$ref": "#/components/schemas/SanitizedCapabilityBinding"
               },
               {
                 "type": "null"
@@ -5991,6 +5991,97 @@
         "title": "RuntimeTarget",
         "type": "string"
       },
+      "SanitizedCapabilityBinding": {
+        "additionalProperties": false,
+        "description": "A ``CapabilityBinding`` view safe to return in changed-category output.\n\nIdentical to ``CapabilityBinding`` except it omits the raw ``config``\ndict, which may carry non-secret-by-contract but still sensitive\nconnector configuration (endpoints, resource identifiers, filters,\netc.). Builder proposal \"changed category\" output (``CapabilityChangeSummary``)\nmust never reveal raw config/auth details to a reviewer who only has\npermission to see *that something changed*, not full connector detail --\n``configuration_ref.digest`` (still present here) is sufficient to prove\nconfig drift without exposing values. Every other field, including\n``connection_ref``/``policy_ref``/``destination_constraints``, is\npreserved verbatim since those are already reference/digest pins, not\nraw secrets, and are required for a reviewer to assess risk escalation.",
+        "properties": {
+          "attached_at": {
+            "format": "date-time",
+            "title": "Attached At",
+            "type": "string"
+          },
+          "attached_by": {
+            "title": "Attached By",
+            "type": "string"
+          },
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "configuration_ref": {
+            "$ref": "#/components/schemas/CapabilityConfigurationRef"
+          },
+          "connection_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityConnectionRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "descriptor_ref": {
+            "$ref": "#/components/schemas/CapabilityDescriptorRef"
+          },
+          "destination_constraints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Destination Constraints",
+            "type": "array"
+          },
+          "destination_constraints_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Destination Constraints Digest"
+          },
+          "instance_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityInstanceRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "operation_ref": {
+            "$ref": "#/components/schemas/CapabilityOperationRef"
+          },
+          "policy_ref": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CapabilityPolicyRef"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
+          "provider_contract_version": {
+            "title": "Provider Contract Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding_id",
+          "provider_contract_version",
+          "descriptor_ref",
+          "operation_ref",
+          "configuration_ref",
+          "attached_by",
+          "attached_at"
+        ],
+        "title": "SanitizedCapabilityBinding",
+        "type": "object"
+      },
       "SchemaRef": {
         "description": "A reference to a JSON Schema plus its content digest.\n\nMirrors the pattern used for the manifest's own schema\n(``GET /schemas/agent-manifest``): consumers resolve the schema via\n``ref`` + verify ``digest``, never by importing a Python type. ``ref`` is\ntypically a stored schema id/URL; ``inline_schema`` is an optional\nconvenience copy for callers that don't want a second round-trip, but\n``digest`` (computed the same way as the manifest schema digest \u2014\n``sha256:`` + canonical JSON) is always the source of truth.",
         "properties": {
@@ -7814,7 +7905,7 @@
     },
     "/api/agent-studio/agents/{logical_agent_id}/resolve": {
       "get": {
-        "description": "Composition/resolution contract for the future typed workflow compiler.\n\nResolves a stable logical agent ID (within this tenant/workspace and the\nrequested ``environment``) to the exact pinned version/release, its\nmanifest hash, runtime endpoint, typed I/O schema refs, and capability\nversions. A published workflow must pin this response's ``version_id``/\n``release_id``/``manifest_hash`` at compose time; execution must never\nsilently re-resolve to \"whatever is latest\" later.",
+        "description": "Composition/resolution contract for the future typed workflow compiler.\n\nResolves a stable logical agent ID (within this tenant/workspace and the\nrequested ``environment``) to the exact pinned version/release, its\nmanifest hash, runtime endpoint, typed I/O schema refs, and capability\nversions. A published workflow must pin this response's ``version_id``/\n``release_id``/``manifest_hash`` at compose time; execution must never\nsilently re-resolve to \"whatever is latest\" later.\n\nFails closed: if the pinned release's capability bindings have gone\nstale since cut (descriptor/instance/schema/destination drift), this\nraises 409 rather than returning a contract that would no longer pass\ngate-time validation.",
         "operationId": "resolve_logical_agent_api_agent_studio_agents__logical_agent_id__resolve_get",
         "parameters": [
           {
@@ -8623,7 +8714,7 @@
     },
     "/api/agent-studio/versions/{version_id}/contract": {
       "get": {
-        "description": "Exact-version contract lookup for the future node palette/compiler.\n\nUnlike ``/resolve`` (which follows the *current* environment binding for\na logical agent), this looks up one already-known ``version_id``\ndirectly - for re-validating a previously composed/pinned workflow node\nwithout depending on whatever is currently bound to an environment.",
+        "description": "Exact-version contract lookup for the future node palette/compiler.\n\nUnlike ``/resolve`` (which follows the *current* environment binding for\na logical agent), this looks up one already-known ``version_id``\ndirectly - for re-validating a previously composed/pinned workflow node\nwithout depending on whatever is currently bound to an environment.\n\nFails closed on stale capability bindings, same as ``/resolve``.",
         "operationId": "get_exact_version_contract_api_agent_studio_versions__version_id__contract_get",
         "parameters": [
           {
