@@ -1345,19 +1345,60 @@ class CapabilityChangeKind(StrEnum):
 class CapabilityChangeSummary(BaseModel):
     """One deterministic capability-binding change.
 
-    Keyed by ``(descriptor_id, operation)`` -- the natural identity of a
-    ``CapabilityBinding`` within a manifest's ``capabilities`` tuple -- so a
-    reconfiguration of an existing binding is reported distinctly from an
-    attach/detach.
+    Keyed by ``binding_id`` -- the stable identity of a ``CapabilityBinding``
+    itself -- rather than ``(descriptor_id, operation)``. Two distinct
+    bindings can legitimately share the same descriptor+operation (e.g.
+    attached against different discovered instances); keying by that tuple
+    would silently collapse a genuine detach+attach pair into a single
+    misreported "reconfigure". ``descriptor_id``/``operation`` are still
+    reported (derived from whichever side is present, preferring ``after``)
+    for readability, but ``binding_id`` is the authoritative key a caller
+    must use to distinguish changes.
     """
 
     model_config = ConfigDict(extra="forbid")
 
+    binding_id: str
     descriptor_id: str
     operation: str
     kind: CapabilityChangeKind
     before: CapabilityBinding | None = None
     after: CapabilityBinding | None = None
+
+
+class ProposalRiskCategory(StrEnum):
+    """Semantic classification of a Builder proposal's behavioral impact.
+
+    Distinct from the raw field/binding diff (``ManifestChangeSummary``/
+    ``CapabilityChangeSummary``): a risk escalation flags *why* a change
+    matters to a human reviewer -- widened permissions/scope, a new
+    side-effect destination, loosened memory persistence, expanded
+    delegation, a runtime-requirement shift, or a different model -- rather
+    than merely that some field's raw value differs.
+    """
+
+    PERMISSION_SCOPE = "permission_scope"
+    DESTINATION = "destination"
+    MEMORY_POLICY = "memory_policy"
+    SPECIALIST_POLICY = "specialist_policy"
+    RUNTIME = "runtime"
+    MODEL = "model"
+
+
+class ProposalRiskEscalation(BaseModel):
+    """One deterministic, semantic risk finding surfaced on a proposal.
+
+    ``binding_id`` is set when the escalation is tied to a specific
+    capability-binding change (``PERMISSION_SCOPE``/``DESTINATION``); it is
+    ``None`` for whole-manifest escalations (``MEMORY_POLICY``/
+    ``SPECIALIST_POLICY``/``RUNTIME``/``MODEL``).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    category: ProposalRiskCategory
+    detail: str = Field(min_length=1, max_length=2000)
+    binding_id: str | None = None
 
 
 class BuilderProvenance(BaseModel):
@@ -1399,6 +1440,11 @@ class BuilderProposal(BaseModel):
     after_manifest_hash: str
     changes: tuple[ManifestChangeSummary, ...] = Field(default_factory=tuple)
     capability_changes: tuple[CapabilityChangeSummary, ...] = Field(default_factory=tuple)
+    risk_escalations: tuple[ProposalRiskEscalation, ...] = Field(default_factory=tuple)
+    """Deterministic semantic risk findings (beyond the raw diff) a human
+    reviewer should weigh before applying: widened permissions/destinations,
+    loosened memory persistence, expanded delegation, runtime-requirement
+    shifts, or a different declared model."""
     validation_warnings: tuple[str, ...] = Field(default_factory=tuple)
     source_bundle_ref: str | None = None
     """Content-addressed, immutable reference (see ``artifact_bundle_store``)

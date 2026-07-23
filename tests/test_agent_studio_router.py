@@ -227,14 +227,16 @@ def memory_service() -> MemoryService:
 
 
 @pytest.fixture
-def builder_service(store: AgentStudioStore) -> BuilderService:
+def builder_service(store: AgentStudioStore, release_service: ReleaseService) -> BuilderService:
     def _transform(manifest: AgentManifest, message: str) -> ProposedManifestChange:
         return ProposedManifestChange(
             after_manifest=manifest.model_copy(update={"description": message}),
             generator="test-builder-generator",
         )
 
-    return BuilderService(store, InMemoryManifestProposalGenerator(_transform), InMemoryArtifactBundleStore())
+    return BuilderService(
+        store, InMemoryManifestProposalGenerator(_transform), InMemoryArtifactBundleStore(), release_service
+    )
 
 
 @pytest.fixture
@@ -2379,6 +2381,7 @@ def test_builder_propose_returns_503_when_generator_unavailable(
         store,
         UnavailableManifestProposalGenerator(),
         InMemoryArtifactBundleStore(),
+        release_service,
     )
     app = _build_app(
         settings,

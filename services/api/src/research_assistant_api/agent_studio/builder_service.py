@@ -35,17 +35,26 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposal,
     BuilderProposalState,
     BuilderProvenance,
-    CapabilityBinding,
     CapabilityChangeKind,
     CapabilityChangeSummary,
     ManifestChangeSummary,
     ManifestFieldChangeKind,
+    ProposalRiskCategory,
+    ProposalRiskEscalation,
     role_at_least,
     utc_now,
 )
-from research_assistant_api.agent_studio.release_service import AuthorizationError, manifest_hash
+from research_assistant_api.agent_studio.release_service import (
+    AuthorizationError,
+    ReleaseService,
+    ReleaseServiceError,
+    manifest_hash,
+)
+from research_assistant_api.agent_studio.release_service import (
+    DraftConflictError as ReleaseDraftConflictError,
+)
 from research_assistant_api.agent_studio.scope import ScopeContext
-from research_assistant_api.agent_studio.store import AgentStudioStore, DraftConflictError
+from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.config import Settings
 
 
@@ -173,20 +182,31 @@ def diff_manifest_fields(before: AgentManifest, after: AgentManifest) -> tuple[M
 def diff_capability_bindings(
     before: AgentManifest, after: AgentManifest
 ) -> tuple[CapabilityChangeSummary, ...]:
-    """Deterministic capability-binding diff, keyed by (descriptor_id, operation)."""
+    """Deterministic capability-binding diff, keyed by ``binding_id``.
 
-    def _key(binding: CapabilityBinding) -> tuple[str, str]:
-        return (binding.descriptor_ref.id, binding.operation_ref.id)
+    ``binding_id`` (not ``(descriptor_id, operation)``) is the natural
+    identity of a ``CapabilityBinding``: two distinct bindings can
+    legitimately share the same descriptor+operation (e.g. attached against
+    different discovered instances), and keying by that tuple would
+    silently collapse a genuine detach+attach pair into a misreported
+    "reconfigure". A binding is only ever reported as ``RECONFIGURED`` when
+    the *same* ``binding_id`` appears on both sides with different content
+    -- which only happens when the manifest-editing path explicitly
+    preserves the identity of an existing binding (e.g. via
+    ``model_copy(update={...})``) rather than re-attaching (which always
+    mints a fresh ``binding_id``).
+    """
 
-    before_by_key = {_key(binding): binding for binding in before.capabilities}
-    after_by_key = {_key(binding): binding for binding in after.capabilities}
+    before_by_id = {binding.binding_id: binding for binding in before.capabilities}
+    after_by_id = {binding.binding_id: binding for binding in after.capabilities}
     changes: list[CapabilityChangeSummary] = []
-    for key in sorted(set(before_by_key) | set(after_by_key)):
-        before_binding = before_by_key.get(key)
-        after_binding = after_by_key.get(key)
+    for binding_id in sorted(set(before_by_id) | set(after_by_id)):
+        before_binding = before_by_id.get(binding_id)
+        after_binding = after_by_id.get(binding_id)
         if before_binding == after_binding:
             continue
-        descriptor_id, operation = key
+        reference = after_binding if after_binding is not None else before_binding
+        assert reference is not None  # at least one side must be present
         if before_binding is None:
             kind = CapabilityChangeKind.ATTACHED
         elif after_binding is None:
@@ -195,14 +215,157 @@ def diff_capability_bindings(
             kind = CapabilityChangeKind.RECONFIGURED
         changes.append(
             CapabilityChangeSummary(
-                descriptor_id=descriptor_id,
-                operation=operation,
+                binding_id=binding_id,
+                descriptor_id=reference.descriptor_ref.id,
+                operation=reference.operation_ref.id,
                 kind=kind,
                 before=before_binding,
                 after=after_binding,
             )
         )
     return tuple(changes)
+
+
+def classify_risk_escalations(
+    before: AgentManifest,
+    after: AgentManifest,
+    capability_changes: tuple[CapabilityChangeSummary, ...],
+) -> tuple[ProposalRiskEscalation, ...]:
+    """Deterministic semantic risk classification for a proposed change.
+
+    Complements the raw field/binding diff with *why* a change matters:
+    widened permission/destination scope on a capability binding, memory
+    scopes moving from disabled/session-only to enabled/persistent, expanded
+    specialist delegation, a runtime-requirement shift (e.g. now requiring
+    custom code, or a non-GA tool), or a different declared model
+    deployment. Every finding is derived from the already-materialized
+    before/after manifests and capability-change list -- nothing here is
+    inferred from free-text proposal content.
+    """
+
+    escalations: list[ProposalRiskEscalation] = []
+
+    for change in capability_changes:
+        if change.kind is CapabilityChangeKind.ATTACHED:
+            escalations.append(
+                ProposalRiskEscalation(
+                    category=ProposalRiskCategory.PERMISSION_SCOPE,
+                    detail=(
+                        f"New capability attached: '{change.descriptor_id}.{change.operation}' "
+                        "grants a permission this agent did not previously have."
+                    ),
+                    binding_id=change.binding_id,
+                )
+            )
+            if change.after is not None and change.after.destination_constraints:
+                escalations.append(
+                    ProposalRiskEscalation(
+                        category=ProposalRiskCategory.DESTINATION,
+                        detail=(
+                            f"New capability '{change.descriptor_id}.{change.operation}' can reach "
+                            f"destinations: {', '.join(sorted(change.after.destination_constraints))}."
+                        ),
+                        binding_id=change.binding_id,
+                    )
+                )
+        elif (
+            change.kind is CapabilityChangeKind.RECONFIGURED
+            and change.before is not None
+            and change.after is not None
+        ):
+            if (
+                change.before.connection_ref != change.after.connection_ref
+                or change.before.policy_ref != change.after.policy_ref
+            ):
+                escalations.append(
+                    ProposalRiskEscalation(
+                        category=ProposalRiskCategory.PERMISSION_SCOPE,
+                        detail=(
+                            f"Capability '{change.descriptor_id}.{change.operation}' reconfigured its "
+                            "connection/policy pin, changing what it is authorized to access."
+                        ),
+                        binding_id=change.binding_id,
+                    )
+                )
+            if set(change.before.destination_constraints) != set(change.after.destination_constraints):
+                added = set(change.after.destination_constraints) - set(change.before.destination_constraints)
+                escalations.append(
+                    ProposalRiskEscalation(
+                        category=ProposalRiskCategory.DESTINATION,
+                        detail=(
+                            f"Capability '{change.descriptor_id}.{change.operation}' destination "
+                            f"constraints changed (added: {', '.join(sorted(added)) or 'none'})."
+                        ),
+                        binding_id=change.binding_id,
+                    )
+                )
+
+    for scope_kind in {binding.kind for binding in (*before.memory_policy.scopes, *after.memory_policy.scopes)}:
+        before_scope = before.memory_policy.scope(scope_kind)
+        after_scope = after.memory_policy.scope(scope_kind)
+        before_enabled = before_scope is not None and before_scope.enabled
+        after_enabled = after_scope is not None and after_scope.enabled
+        before_persistent = before_scope is not None and before_scope.persistent
+        after_persistent = after_scope is not None and after_scope.persistent
+        if (not before_enabled and after_enabled) or (not before_persistent and after_persistent):
+            escalations.append(
+                ProposalRiskEscalation(
+                    category=ProposalRiskCategory.MEMORY_POLICY,
+                    detail=(
+                        f"Memory scope '{scope_kind.value}' widened "
+                        f"(enabled {before_enabled}->{after_enabled}, "
+                        f"persistent {before_persistent}->{after_persistent})."
+                    ),
+                )
+            )
+
+    if before.specialist_policy != after.specialist_policy:
+        before_ids = set(before.specialist_policy.allowed_specialist_logical_agent_ids)
+        after_ids = set(after.specialist_policy.allowed_specialist_logical_agent_ids)
+        widened = (
+            after.specialist_policy.delegation_scope != before.specialist_policy.delegation_scope
+            or after.specialist_policy.max_delegation_depth > before.specialist_policy.max_delegation_depth
+            or bool(after_ids - before_ids)
+        )
+        if widened:
+            escalations.append(
+                ProposalRiskEscalation(
+                    category=ProposalRiskCategory.SPECIALIST_POLICY,
+                    detail=(
+                        f"Specialist delegation policy widened: scope "
+                        f"{before.specialist_policy.delegation_scope.value}->"
+                        f"{after.specialist_policy.delegation_scope.value}, depth "
+                        f"{before.specialist_policy.max_delegation_depth}->"
+                        f"{after.specialist_policy.max_delegation_depth}, added agents: "
+                        f"{', '.join(sorted(after_ids - before_ids)) or 'none'}."
+                    ),
+                )
+            )
+
+    if before.runtime_requirements != after.runtime_requirements:
+        escalations.append(
+            ProposalRiskEscalation(
+                category=ProposalRiskCategory.RUNTIME,
+                detail=(
+                    f"Runtime requirements changed: {before.runtime_requirements.model_dump(mode='json')} "
+                    f"-> {after.runtime_requirements.model_dump(mode='json')}."
+                ),
+            )
+        )
+
+    if before.model_deployment != after.model_deployment:
+        escalations.append(
+            ProposalRiskEscalation(
+                category=ProposalRiskCategory.MODEL,
+                detail=(
+                    f"Declared model deployment changed: "
+                    f"{before.model_deployment.model_dump(mode='json') if before.model_deployment else None} "
+                    f"-> {after.model_deployment.model_dump(mode='json') if after.model_deployment else None}."
+                ),
+            )
+        )
+
+    return tuple(escalations)
 
 
 # --------------------------------------------------------------------------
@@ -223,10 +386,12 @@ class BuilderService:
         store: AgentStudioStore,
         generator: ManifestProposalGenerator,
         bundle_store: ArtifactBundleStore,
+        release_service: ReleaseService,
     ) -> None:
         self._store = store
         self._generator = generator
         self._bundle_store = bundle_store
+        self._release_service = release_service
 
     @staticmethod
     def _require_role(actor_role: AgentRole, minimum: AgentRole) -> None:
@@ -268,6 +433,7 @@ class BuilderService:
                 content=result.source_bundle_content,
             )
             source_bundle_ref = stored.uri
+        capability_changes = diff_capability_bindings(draft.manifest, after_manifest)
         proposal = BuilderProposal(
             id=str(uuid4()),
             tenant_id=tenant_id,
@@ -279,7 +445,8 @@ class BuilderService:
             before_manifest_hash=manifest_hash(draft.manifest),
             after_manifest_hash=manifest_hash(after_manifest),
             changes=diff_manifest_fields(draft.manifest, after_manifest),
-            capability_changes=diff_capability_bindings(draft.manifest, after_manifest),
+            capability_changes=capability_changes,
+            risk_escalations=classify_risk_escalations(draft.manifest, after_manifest, capability_changes),
             validation_warnings=result.validation_warnings,
             source_bundle_ref=source_bundle_ref,
             provenance=BuilderProvenance(
@@ -333,6 +500,16 @@ class BuilderService:
         unchanged since the proposal was generated (``draft.etag ==
         proposal.draft_base_etag``) -- otherwise the proposal is stale even
         if the caller's ``base_etag`` happens to match the current draft.
+
+        The actual write is delegated to ``ReleaseService.update_draft`` --
+        never a raw store write -- so the same capability-binding freshness/
+        provider-pin-drift revalidation every other draft save goes through
+        also re-runs here. A capability instance can drift (reconfigured,
+        deregistered, or gone non-GA/non-ACTIVE) in the window between
+        ``propose()`` generating a candidate manifest and a reviewer calling
+        ``apply()``; without this delegation a stale/fabricated binding
+        captured at propose-time could otherwise be silently carried into
+        the draft.
         """
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
@@ -348,27 +525,30 @@ class BuilderService:
             raise BuilderConcurrencyError(
                 f"Proposal '{proposal_id}' is stale: the draft changed since it was generated; regenerate it."
             )
-        new_etag = str(uuid4())
-        updated_draft = draft.model_copy(
-            update={
-                "manifest": proposal.after_manifest,
-                "updated_by": applied_by,
-                "updated_at": utc_now(),
-                "etag": new_etag,
-            }
-        )
         try:
-            self._store.save_draft(scope, updated_draft, expected_etag=base_etag)
-        except DraftConflictError as exc:
+            updated_draft = self._release_service.update_draft(
+                tenant_id=tenant_id,
+                project_id=project_id,
+                logical_agent_id=logical_agent_id,
+                manifest=proposal.after_manifest,
+                updated_by=applied_by,
+                actor_role=actor_role,
+                expected_etag=base_etag,
+            )
+        except ReleaseDraftConflictError as exc:
             raise BuilderConcurrencyError(
                 f"base_etag '{base_etag}' no longer matches the current draft etag; refresh and retry."
+            ) from exc
+        except ReleaseServiceError as exc:
+            raise BuilderServiceError(
+                f"Applying proposal '{proposal_id}' failed manifest/capability-binding revalidation: {exc}"
             ) from exc
         decided = proposal.model_copy(
             update={
                 "state": BuilderProposalState.APPLIED,
                 "decided_by": applied_by,
                 "decided_at": utc_now(),
-                "applied_draft_etag": new_etag,
+                "applied_draft_etag": updated_draft.etag,
             }
         )
         self._store.save_builder_proposal_decision(scope, decided)

@@ -1374,6 +1374,13 @@
             ],
             "title": "Rejection Reason"
           },
+          "risk_escalations": {
+            "items": {
+              "$ref": "#/components/schemas/ProposalRiskEscalation"
+            },
+            "title": "Risk Escalations",
+            "type": "array"
+          },
           "source_bundle_ref": {
             "anyOf": [
               {
@@ -1680,7 +1687,7 @@
       },
       "CapabilityChangeSummary": {
         "additionalProperties": false,
-        "description": "One deterministic capability-binding change.\n\nKeyed by ``(descriptor_id, operation)`` -- the natural identity of a\n``CapabilityBinding`` within a manifest's ``capabilities`` tuple -- so a\nreconfiguration of an existing binding is reported distinctly from an\nattach/detach.",
+        "description": "One deterministic capability-binding change.\n\nKeyed by ``binding_id`` -- the stable identity of a ``CapabilityBinding``\nitself -- rather than ``(descriptor_id, operation)``. Two distinct\nbindings can legitimately share the same descriptor+operation (e.g.\nattached against different discovered instances); keying by that tuple\nwould silently collapse a genuine detach+attach pair into a single\nmisreported \"reconfigure\". ``descriptor_id``/``operation`` are still\nreported (derived from whichever side is present, preferring ``after``)\nfor readability, but ``binding_id`` is the authoritative key a caller\nmust use to distinguish changes.",
         "properties": {
           "after": {
             "anyOf": [
@@ -1702,6 +1709,10 @@
               }
             ]
           },
+          "binding_id": {
+            "title": "Binding Id",
+            "type": "string"
+          },
           "descriptor_id": {
             "title": "Descriptor Id",
             "type": "string"
@@ -1715,6 +1726,7 @@
           }
         },
         "required": [
+          "binding_id",
           "descriptor_id",
           "operation",
           "kind"
@@ -4974,6 +4986,51 @@
           "evidence_summary"
         ],
         "title": "PromotionRequest",
+        "type": "object"
+      },
+      "ProposalRiskCategory": {
+        "description": "Semantic classification of a Builder proposal's behavioral impact.\n\nDistinct from the raw field/binding diff (``ManifestChangeSummary``/\n``CapabilityChangeSummary``): a risk escalation flags *why* a change\nmatters to a human reviewer -- widened permissions/scope, a new\nside-effect destination, loosened memory persistence, expanded\ndelegation, a runtime-requirement shift, or a different model -- rather\nthan merely that some field's raw value differs.",
+        "enum": [
+          "permission_scope",
+          "destination",
+          "memory_policy",
+          "specialist_policy",
+          "runtime",
+          "model"
+        ],
+        "title": "ProposalRiskCategory",
+        "type": "string"
+      },
+      "ProposalRiskEscalation": {
+        "additionalProperties": false,
+        "description": "One deterministic, semantic risk finding surfaced on a proposal.\n\n``binding_id`` is set when the escalation is tied to a specific\ncapability-binding change (``PERMISSION_SCOPE``/``DESTINATION``); it is\n``None`` for whole-manifest escalations (``MEMORY_POLICY``/\n``SPECIALIST_POLICY``/``RUNTIME``/``MODEL``).",
+        "properties": {
+          "binding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "category": {
+            "$ref": "#/components/schemas/ProposalRiskCategory"
+          },
+          "detail": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "category",
+          "detail"
+        ],
+        "title": "ProposalRiskEscalation",
         "type": "object"
       },
       "ProvenanceManifest": {

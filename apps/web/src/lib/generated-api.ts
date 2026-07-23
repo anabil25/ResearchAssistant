@@ -1607,6 +1607,8 @@ export interface components {
             provenance: components["schemas"]["BuilderProvenance"];
             /** Rejection Reason */
             rejection_reason?: string | null;
+            /** Risk Escalations */
+            risk_escalations?: components["schemas"]["ProposalRiskEscalation"][];
             /** Source Bundle Ref */
             source_bundle_ref?: string | null;
             /** @default pending */
@@ -1743,14 +1745,21 @@ export interface components {
          * CapabilityChangeSummary
          * @description One deterministic capability-binding change.
          *
-         *     Keyed by ``(descriptor_id, operation)`` -- the natural identity of a
-         *     ``CapabilityBinding`` within a manifest's ``capabilities`` tuple -- so a
-         *     reconfiguration of an existing binding is reported distinctly from an
-         *     attach/detach.
+         *     Keyed by ``binding_id`` -- the stable identity of a ``CapabilityBinding``
+         *     itself -- rather than ``(descriptor_id, operation)``. Two distinct
+         *     bindings can legitimately share the same descriptor+operation (e.g.
+         *     attached against different discovered instances); keying by that tuple
+         *     would silently collapse a genuine detach+attach pair into a single
+         *     misreported "reconfigure". ``descriptor_id``/``operation`` are still
+         *     reported (derived from whichever side is present, preferring ``after``)
+         *     for readability, but ``binding_id`` is the authoritative key a caller
+         *     must use to distinguish changes.
          */
         CapabilityChangeSummary: {
             after?: components["schemas"]["CapabilityBinding"] | null;
             before?: components["schemas"]["CapabilityBinding"] | null;
+            /** Binding Id */
+            binding_id: string;
             /** Descriptor Id */
             descriptor_id: string;
             kind: components["schemas"]["CapabilityChangeKind"];
@@ -3143,6 +3152,35 @@ export interface components {
              * @default medium
              */
             risk: string;
+        };
+        /**
+         * ProposalRiskCategory
+         * @description Semantic classification of a Builder proposal's behavioral impact.
+         *
+         *     Distinct from the raw field/binding diff (``ManifestChangeSummary``/
+         *     ``CapabilityChangeSummary``): a risk escalation flags *why* a change
+         *     matters to a human reviewer -- widened permissions/scope, a new
+         *     side-effect destination, loosened memory persistence, expanded
+         *     delegation, a runtime-requirement shift, or a different model -- rather
+         *     than merely that some field's raw value differs.
+         * @enum {string}
+         */
+        ProposalRiskCategory: "permission_scope" | "destination" | "memory_policy" | "specialist_policy" | "runtime" | "model";
+        /**
+         * ProposalRiskEscalation
+         * @description One deterministic, semantic risk finding surfaced on a proposal.
+         *
+         *     ``binding_id`` is set when the escalation is tied to a specific
+         *     capability-binding change (``PERMISSION_SCOPE``/``DESTINATION``); it is
+         *     ``None`` for whole-manifest escalations (``MEMORY_POLICY``/
+         *     ``SPECIALIST_POLICY``/``RUNTIME``/``MODEL``).
+         */
+        ProposalRiskEscalation: {
+            /** Binding Id */
+            binding_id?: string | null;
+            category: components["schemas"]["ProposalRiskCategory"];
+            /** Detail */
+            detail: string;
         };
         /** ProvenanceManifest */
         ProvenanceManifest: {
