@@ -535,229 +535,30 @@ def configure_connector_toolboxes() -> dict[str, str]:
     return endpoints
 
 
-def configure_internal_container_app_dns() -> str:
-    resource_group = required_env("AZURE_RESOURCE_GROUP")
-    environment_name = required_env("AZURE_CONTAINER_APPS_ENVIRONMENT_NAME")
-    vnet_id = required_env("AZURE_APP_VNET_ID")
-    environment = subprocess.run(
+def configure_connector_adapter_identity() -> None:
+    subprocess.run(
         [
             AZ_CLI,
             "containerapp",
-            "env",
-            "show",
+            "update",
             "--resource-group",
-            resource_group,
+            required_env("AZURE_RESOURCE_GROUP"),
             "--name",
-            environment_name,
-            "--query",
-            "{domain:properties.defaultDomain,ip:properties.staticIp}",
+            required_env("SERVICE_CONNECTOR_ADAPTER_NAME"),
+            "--set-env-vars",
+            (
+                "RESEARCH_APIM_PRINCIPAL_ID="
+                f"{required_env('AZURE_API_MANAGEMENT_PRINCIPAL_ID')}"
+            ),
+            (
+                "RESEARCH_WORKSPACE_TENANT_ID="
+                f"{required_env('AZURE_TENANT_ID')}"
+            ),
             "--output",
-            "json",
+            "none",
         ],
         check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
     )
-    details = json.loads(environment.stdout)
-    domain = details.get("domain")
-    static_ip = details.get("ip")
-    if not isinstance(domain, str) or not isinstance(static_ip, str):
-        raise RuntimeError("Container Apps environment DNS properties are unavailable")
-    zone = f"internal.{domain}"
-    zone_exists = subprocess.run(
-        [
-            AZ_CLI,
-            "network",
-            "private-dns",
-            "zone",
-            "show",
-            "--resource-group",
-            resource_group,
-            "--name",
-            zone,
-            "--output",
-            "none",
-        ],
-        check=False,
-    )
-    if zone_exists.returncode != 0:
-        record_set = subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "record-set",
-                "a",
-                "show",
-                "--resource-group",
-                resource_group,
-                "--zone-name",
-                zone,
-                "--name",
-                "*",
-                "--output",
-                "json",
-            ],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-        if record_set.returncode != 0:
-            subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "zone",
-                "create",
-                "--resource-group",
-                resource_group,
-                "--name",
-                zone,
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
-    link = subprocess.run(
-        [
-            AZ_CLI,
-            "network",
-            "private-dns",
-            "link",
-            "vnet",
-            "show",
-            "--resource-group",
-            resource_group,
-            "--zone-name",
-            zone,
-            "--name",
-            "container-apps",
-            "--output",
-            "none",
-        ],
-        check=False,
-    )
-    if link.returncode != 0:
-        subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "link",
-                "vnet",
-                "create",
-                "--resource-group",
-                resource_group,
-                "--zone-name",
-                zone,
-                "--name",
-                "container-apps",
-                "--virtual-network",
-                vnet_id,
-                "--registration-enabled",
-                "false",
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
-    record_set = subprocess.run(
-        [
-            AZ_CLI,
-            "network",
-            "private-dns",
-            "record-set",
-            "a",
-            "show",
-            "--resource-group",
-            resource_group,
-            "--zone-name",
-            zone,
-            "--name",
-            "*",
-            "--output",
-            "json",
-        ],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    if record_set.returncode != 0:
-        subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "record-set",
-                "a",
-                "create",
-                "--resource-group",
-                resource_group,
-                "--zone-name",
-                zone,
-                "--name",
-                "*",
-                "--ttl",
-                "60",
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
-        record_set = subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "record-set",
-                "a",
-                "show",
-                "--resource-group",
-                resource_group,
-                "--zone-name",
-                zone,
-                "--name",
-                "*",
-                "--output",
-                "json",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        )
-    records = json.loads(record_set.stdout).get("aRecords", [])
-    if not any(
-        isinstance(record, dict)
-        and record.get("ipv4Address") == static_ip
-        for record in records
-    ):
-        subprocess.run(
-            [
-                AZ_CLI,
-                "network",
-                "private-dns",
-                "record-set",
-                "a",
-                "add-record",
-                "--resource-group",
-                resource_group,
-                "--zone-name",
-                zone,
-                "--record-set-name",
-                "*",
-                "--ipv4-address",
-                static_ip,
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
-    return zone
 
 
 def main() -> None:
@@ -774,7 +575,7 @@ def main() -> None:
     embed_documents(documents, credential)
     upload_search_documents(endpoint, index_name, documents, credential)
     upload_source_artifacts(credential)
-    configure_internal_container_app_dns()
+    configure_connector_adapter_identity()
     configure_connector_toolboxes()
     wait_for_acr_pull_roles()
     configure_container_registries()

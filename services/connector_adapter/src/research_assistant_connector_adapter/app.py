@@ -10,6 +10,7 @@ from xml.etree.ElementTree import ParseError
 
 import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
+from fastapi.responses import JSONResponse
 from research_assistant_connectors import ResearchConnectorRegistry, connector_catalog
 from research_assistant_core.connector_gateway import (
     ConnectorCatalogResponse,
@@ -23,6 +24,11 @@ from research_assistant_core.connector_gateway import (
 )
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_connector_adapter.auth import (
+    GatewayAuthorizationError,
+    build_gateway_validator,
+)
+
 logger = logging.getLogger(__name__)
 RegistryFactory = Callable[[], ResearchConnectorRegistry]
 
@@ -32,6 +38,7 @@ app = FastAPI(
     version="1.0.0",
 )
 app.state.registry_factory = ResearchConnectorRegistry
+app.state.gateway_validator = build_gateway_validator()
 
 
 @app.middleware("http")
@@ -40,6 +47,21 @@ async def add_security_headers(
     call_next: RequestResponseEndpoint,
 ) -> Response:
     request_id = request.headers.get("X-Request-ID") or f"req-{uuid4().hex[:16]}"
+    if request.url.path.startswith("/v1/") and request.app.state.gateway_validator:
+        try:
+            request.app.state.gateway_validator.validate(
+                request.headers.get("Authorization")
+            )
+        except GatewayAuthorizationError as exc:
+            return JSONResponse(
+                status_code=401,
+                content={"detail": str(exc)},
+                headers={
+                    "X-Request-ID": request_id,
+                    "X-Content-Type-Options": "nosniff",
+                    "Cache-Control": "no-store",
+                },
+            )
     response = await call_next(request)
     response.headers["X-Request-ID"] = request_id
     response.headers["X-Content-Type-Options"] = "nosniff"

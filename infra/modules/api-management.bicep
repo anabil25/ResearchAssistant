@@ -36,6 +36,7 @@ var connectorPolicyTemplate = '''
     </validate-content>
   </inbound>
   <backend>
+    <authentication-managed-identity resource="__ARM_AUDIENCE__" />
     <base />
   </backend>
   <outbound>

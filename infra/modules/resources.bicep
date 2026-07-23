@@ -438,5 +438,4 @@ output CONNECTOR_ADAPTER_URL string = includeAcr ? containerApps!.outputs.connec
 output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.serviceName : ''
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
 output AZURE_CONNECTOR_MCP_URL string = includeAcr ? apiManagement!.outputs.connectorMcpUrl : ''
-output AZURE_APP_VNET_ID string = includeAcr ? appPrivateNetwork!.outputs.vnetId : ''
-output AZURE_CONTAINER_APPS_ENVIRONMENT_NAME string = includeAcr ? containerApps!.outputs.environmentName : ''
+output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''

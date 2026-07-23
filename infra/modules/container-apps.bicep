@@ -81,7 +81,7 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
       activeRevisionsMode: 'Single'
       ingress: {
         allowInsecure: false
-        external: false
+        external: true
         targetPort: 8200
         traffic: [
           {
@@ -101,6 +101,10 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
               value: appInsightsConnectionString
+            }
+            {
+              name: 'RESEARCH_WORKSPACE_TENANT_ID'
+              value: workspaceTenantId
             }
             {
               name: 'OTEL_SERVICE_NAME'

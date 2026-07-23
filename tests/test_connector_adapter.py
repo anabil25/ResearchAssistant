@@ -37,6 +37,7 @@ def client() -> Iterator[TestClient]:
     FakeRegistry.calls = []
     FakeRegistry.closed = 0
     app.state.registry_factory = FakeRegistry
+    app.state.gateway_validator = None
     with TestClient(app) as test_client:
         yield test_client
 
