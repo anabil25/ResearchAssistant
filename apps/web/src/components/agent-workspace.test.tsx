@@ -1306,17 +1306,16 @@ describe("AgentWorkspaceView", () => {
         capabilities: [
           {
             binding: {
-              descriptor_id: "web-search",
-              descriptor_version: "1.0.0",
+              descriptor: { id: "web-search", version: "1.0.0" },
               operation: "search",
-              instance_id: "web-search-instance-1",
-              instance_version: "3.2.0",
-              instance_fingerprint: "fp-web-search-1",
+              instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
+              configuration: null,
+              connection: { ref: "conn-bing" },
+              policy: null,
+              provider_contract_version: "2024-06-01",
+              destination_constraints: ["bing.com"],
               input_schema_digest: "sha256:in1",
               output_schema_digest: "sha256:out1",
-              config_ref: null,
-              connection_ref: "conn-bing",
-              policy_ref: null,
               enabled: true,
               approval: {
                 status: "not_required",
@@ -1399,6 +1398,12 @@ describe("AgentWorkspaceView", () => {
     expect(within(contract).getByText("web") ).toBeInTheDocument();
     expect(within(contract).getByText(/search/)).toBeInTheDocument();
     expect(within(contract).getByText(/pinned to 3\.2\.0/)).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/provider contract v2024-06-01/),
+    ).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/Destinations: bing\.com/),
+    ).toBeInTheDocument();
     expect(within(contract).getByText("Active")).toBeInTheDocument();
     expect(
       screen.getByText(/Showing the immutable release/),
@@ -1626,17 +1631,16 @@ describe("AgentWorkspaceView", () => {
           capabilities: [
             {
               binding: {
-                descriptor_id: "analysis-summarize",
-                descriptor_version: "1.0.0",
+                descriptor: { id: "analysis-summarize", version: "1.0.0" },
                 operation: "summarize",
-                instance_id: "analysis-summarize-instance",
-                instance_version: null,
-                instance_fingerprint: "fp-analysis-1",
+                instance: { id: "analysis-summarize-instance", version: null, fingerprint: "fp-analysis-1" },
+                configuration: null,
+                connection: null,
+                policy: null,
+                provider_contract_version: null,
+                destination_constraints: null,
                 input_schema_digest: null,
                 output_schema_digest: null,
-                config_ref: null,
-                connection_ref: null,
-                policy_ref: null,
                 enabled: false,
                 approval: {
                   status: "not_required",
@@ -1661,17 +1665,16 @@ describe("AgentWorkspaceView", () => {
             },
             {
               binding: {
-                descriptor_id: "unresolved-descriptor-op",
-                descriptor_version: "1.0.0",
+                descriptor: { id: "unresolved-descriptor-op", version: "1.0.0" },
                 operation: "unresolved-operation",
-                instance_id: "unresolved-instance",
-                instance_version: null,
-                instance_fingerprint: "fp-unresolved",
+                instance: { id: "unresolved-instance", version: null, fingerprint: "fp-unresolved" },
+                configuration: null,
+                connection: null,
+                policy: null,
+                provider_contract_version: null,
+                destination_constraints: null,
                 input_schema_digest: null,
                 output_schema_digest: null,
-                config_ref: null,
-                connection_ref: null,
-                policy_ref: null,
                 enabled: true,
                 approval: {
                   status: "pending",
@@ -1688,17 +1691,16 @@ describe("AgentWorkspaceView", () => {
             },
             {
               binding: {
-                descriptor_id: "analysis-classify",
-                descriptor_version: "1.0.0",
+                descriptor: { id: "analysis-classify", version: "1.0.0" },
                 operation: "classify",
-                instance_id: "analysis-classify-instance",
-                instance_version: null,
-                instance_fingerprint: "fp-classify-1",
+                instance: { id: "analysis-classify-instance", version: null, fingerprint: "fp-classify-1" },
+                configuration: null,
+                connection: null,
+                policy: null,
+                provider_contract_version: "2.1",
+                destination_constraints: null,
                 input_schema_digest: null,
                 output_schema_digest: null,
-                config_ref: null,
-                connection_ref: null,
-                policy_ref: null,
                 enabled: true,
                 approval: {
                   status: "not_required",
@@ -1736,17 +1738,16 @@ describe("AgentWorkspaceView", () => {
             },
             {
               binding: {
-                descriptor_id: "analysis-legacy-extract",
-                descriptor_version: "1.0.0",
+                descriptor: { id: "analysis-legacy-extract", version: "1.0.0" },
                 operation: "extract",
-                instance_id: "analysis-legacy-extract-instance",
-                instance_version: null,
-                instance_fingerprint: "fp-legacy-extract-1",
+                instance: { id: "analysis-legacy-extract-instance", version: null, fingerprint: "fp-legacy-extract-1" },
+                configuration: null,
+                connection: null,
+                policy: null,
+                provider_contract_version: null,
+                destination_constraints: ["internal-store"],
                 input_schema_digest: null,
                 output_schema_digest: null,
-                config_ref: null,
-                connection_ref: null,
-                policy_ref: null,
                 enabled: false,
                 approval: {
                   status: "not_required",
@@ -1823,7 +1824,13 @@ describe("AgentWorkspaceView", () => {
     expect(within(contract).getAllByText("unknown").length).toBe(5);
     expect(within(contract).getAllByText(/Disabled/).length).toBeGreaterThan(0);
     expect(within(contract).queryByText(/pinned to/)).not.toBeInTheDocument();
-    // Descriptor unresolved: falls back to the pinned binding's raw descriptor_id/operation.
+    expect(
+      within(contract).getByText(/provider contract v2\.1/),
+    ).toBeInTheDocument();
+    expect(
+      within(contract).getByText(/Destinations: internal-store/),
+    ).toBeInTheDocument();
+    // Descriptor unresolved: falls back to the pinned binding's raw descriptor.id/operation.
     expect(within(contract).getByText("unresolved-descriptor-op")).toBeInTheDocument();
     expect(
       within(contract).getByText(/unresolved-operation/),

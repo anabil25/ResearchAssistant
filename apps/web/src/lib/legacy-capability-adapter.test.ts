@@ -20,10 +20,15 @@ describe("adaptLegacyCapabilityRef", () => {
     };
     const view = adaptLegacyCapabilityRef(ref);
 
-    expect(view.binding.descriptor_id).toBe("legacy-web-search");
+    expect(view.binding.descriptor.id).toBe("legacy-web-search");
     expect(view.binding.operation).toBe("search");
     expect(view.binding.enabled).toBe(false);
     expect(view.binding.approval.status).toBe("not_required");
+    expect(view.binding.configuration).toBeNull();
+    expect(view.binding.connection).toBeNull();
+    expect(view.binding.policy).toBeNull();
+    expect(view.binding.provider_contract_version).toBeNull();
+    expect(view.binding.destination_constraints).toBeNull();
     expect(view.resolved_descriptor).toEqual({
       id: "legacy-web-search",
       version: "unknown",

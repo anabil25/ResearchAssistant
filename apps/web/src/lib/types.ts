@@ -272,25 +272,77 @@ export function isCapabilityAttachable(
 }
 
 /**
+ * Typed reference to the pinned capability descriptor + version this binding
+ * was created against. Never a bare string id — always carries the version
+ * that was pinned so drift can be detected against the live catalog.
+ */
+export interface CapabilityDescriptorRef {
+  id: string;
+  version: string;
+}
+
+/**
+ * Typed reference to the pinned discovered instance this binding was created
+ * against. `version` is nullable — a binding may pin to "whatever version is
+ * live" rather than a specific release — but `fingerprint` is always the
+ * concrete configuration/version fingerprint pinned at bind time.
+ */
+export interface CapabilityInstanceRef {
+  id: string;
+  version: string | null;
+  fingerprint: string;
+}
+
+/** Typed reference to a workspace configuration resource this binding depends on. */
+export interface CapabilityConfigurationRef {
+  ref: string;
+}
+
+/** Typed reference to a workspace connection resource this binding depends on. */
+export interface CapabilityConnectionRef {
+  ref: string;
+}
+
+/** Typed reference to a governing policy resource this binding depends on. */
+export interface CapabilityPolicyRef {
+  ref: string;
+}
+
+/**
  * Persisted, immutable-manifest-embedded binding of one capability to a
- * specific agent version. Embeds only pinned identifiers/versions/digests
- * and the authorizing approval summary — never the full descriptor or any
+ * specific agent version. Embeds only pinned typed references, schema
+ * digests, provider contract version, frozen destination constraints, and
+ * the authorizing approval summary — never the full descriptor or any
  * volatile instance health/readiness (see `CapabilityBindingView` for the
- * derived, resolved-for-display expansion of this row).
+ * derived, resolved-for-display expansion of this row, kept strictly
+ * separate from this persisted shape).
  */
 export interface CapabilityBinding {
-  descriptor_id: string;
-  descriptor_version: string;
+  descriptor: CapabilityDescriptorRef;
   operation: string;
-  instance_id: string;
-  instance_version: string | null;
-  /** Instance fingerprint pinned at bind time — compared against the resolved instance's live fingerprint to detect staleness. */
-  instance_fingerprint: string;
+  instance: CapabilityInstanceRef;
+  /** `null` when this binding needs no workspace configuration. */
+  configuration: CapabilityConfigurationRef | null;
+  /** `null` when this binding needs no workspace connection (e.g. a pure/local operation). */
+  connection: CapabilityConnectionRef | null;
+  /** `null` when no policy beyond the descriptor's own risk class governs this binding. */
+  policy: CapabilityPolicyRef | null;
+  /**
+   * The actual upstream provider's contract/API version this binding was
+   * authorized against — distinct from `descriptor.version`/`instance.version`
+   * (Agent Studio's own catalog versions). Never exposed as an ambiguous
+   * bare `provider_version` alias; `null` only when the provider doesn't
+   * version its contract.
+   */
+  provider_contract_version: string | null;
+  /**
+   * Frozen at bind time: the destinations this binding is constrained to
+   * send data to. Distinct from the live, volatile `CapabilityInstance.destination`
+   * — this is what was actually authorized, not what the instance currently reports.
+   */
+  destination_constraints: string[] | null;
   input_schema_digest: string | null;
   output_schema_digest: string | null;
-  config_ref: string | null;
-  connection_ref: string | null;
-  policy_ref: string | null;
   enabled: boolean;
   approval: CapabilityApprovalSummary;
 }
@@ -328,7 +380,7 @@ export function resolveCapabilityBindingView(
   } else if (!instance) {
     staleReason =
       "This binding's discovered instance is no longer resolvable — it may have been removed or is unavailable.";
-  } else if (instance.fingerprint !== binding.instance_fingerprint) {
+  } else if (instance.fingerprint !== binding.instance.fingerprint) {
     staleReason =
       "The discovered instance's live fingerprint no longer matches what this binding pinned at bind time.";
   } else if (instance.descriptor_digest !== descriptor.digest) {

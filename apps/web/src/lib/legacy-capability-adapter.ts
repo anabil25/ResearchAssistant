@@ -19,17 +19,16 @@ export function adaptLegacyCapabilityRef(
 ): CapabilityBindingView {
   return {
     binding: {
-      descriptor_id: ref.id,
-      descriptor_version: "unknown",
+      descriptor: { id: ref.id, version: "unknown" },
       operation: ref.operation,
-      instance_id: ref.id,
-      instance_version: null,
-      instance_fingerprint: "unknown",
+      instance: { id: ref.id, version: null, fingerprint: "unknown" },
+      configuration: null,
+      connection: null,
+      policy: null,
+      provider_contract_version: null,
+      destination_constraints: null,
       input_schema_digest: null,
       output_schema_digest: null,
-      config_ref: null,
-      connection_ref: null,
-      policy_ref: null,
       enabled: false,
       approval: {
         status: "not_required",

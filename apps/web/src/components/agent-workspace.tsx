@@ -1051,12 +1051,12 @@ export function AgentWorkspaceView({
                       const lifecycle = instance?.lifecycle ?? null;
                       return (
                         <li
-                          key={`${capability.binding.descriptor_id}-${capability.binding.instance_id}`}
+                          key={`${capability.binding.descriptor.id}-${capability.binding.instance.id}`}
                           data-attachable={isCapabilityAttachable(instance)}
                           data-stale={Boolean(capability.stale_reason)}
                         >
                           <strong>
-                            {descriptor?.family ?? capability.binding.descriptor_id}
+                            {descriptor?.family ?? capability.binding.descriptor.id}
                           </strong>{" "}
                           · {descriptor?.operation ?? capability.binding.operation}
                           <span
@@ -1084,10 +1084,19 @@ export function AgentWorkspaceView({
                             !isCapabilityApprovalActive(approval)
                               ? " (not currently active)"
                               : ""}
-                            {capability.binding.instance_version
-                              ? ` · pinned to ${capability.binding.instance_version}`
+                            {capability.binding.instance.version
+                              ? ` · pinned to ${capability.binding.instance.version}`
+                              : ""}
+                            {capability.binding.provider_contract_version
+                              ? ` · provider contract v${capability.binding.provider_contract_version}`
                               : ""}
                           </small>
+                          {capability.binding.destination_constraints &&
+                          capability.binding.destination_constraints.length > 0 ? (
+                            <small className="agent-capability-destinations">
+                              Destinations: {capability.binding.destination_constraints.join(", ")}
+                            </small>
+                          ) : null}
                           {lifecycle && lifecycle !== "active" ? (
                             <small
                               className="agent-capability-lifecycle-warning"

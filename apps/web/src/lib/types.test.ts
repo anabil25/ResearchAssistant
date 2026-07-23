@@ -62,17 +62,16 @@ function approval(overrides: Partial<CapabilityApprovalSummary> = {}): Capabilit
 
 function binding(overrides: Partial<CapabilityBinding> = {}): CapabilityBinding {
   return {
-    descriptor_id: "web-search",
-    descriptor_version: "1.0.0",
+    descriptor: { id: "web-search", version: "1.0.0" },
     operation: "search",
-    instance_id: "web-search-instance-1",
-    instance_version: "3.2.0",
-    instance_fingerprint: "fp-1",
+    instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-1" },
+    configuration: null,
+    connection: null,
+    policy: null,
+    provider_contract_version: "2024-06-01",
+    destination_constraints: null,
     input_schema_digest: "sha256:in1",
     output_schema_digest: "sha256:out1",
-    config_ref: null,
-    connection_ref: null,
-    policy_ref: null,
     enabled: true,
     approval: approval(),
     ...overrides,
@@ -186,9 +185,9 @@ describe("resolveCapabilityBindingView", () => {
     expect(view.stale_reason).toMatch(/instance is no longer resolvable/);
   });
 
-  it("is stale when the resolved instance's live fingerprint no longer matches the pinned instance_fingerprint", () => {
+  it("is stale when the resolved instance's live fingerprint no longer matches the pinned instance.fingerprint", () => {
     const view = resolveCapabilityBindingView(
-      binding({ instance_fingerprint: "fp-pinned" }),
+      binding({ instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-pinned" } }),
       descriptor(),
       instance({ fingerprint: "fp-drifted" }),
     );

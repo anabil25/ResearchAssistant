@@ -776,6 +776,12 @@ button {
   color: #88443e;
 }
 
+.agent-capability-destinations {
+  display: block;
+  margin-top: 2px;
+  color: #4a5560;
+}
+
 .status-chip[data-tone="disabled"] {
   color: #606863;
   background: #e8ebe8;
