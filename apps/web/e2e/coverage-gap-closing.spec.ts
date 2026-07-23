@@ -279,13 +279,7 @@ test.describe("[pw.approval-notification] pending approvals notification", () =>
   test("[pw.approval-notification] shows a zero count with no numeric badge when there are no pending approvals", async ({
     page,
   }, testInfo) => {
-    await page.route("**/api/backend/api/approvals", async (route) => {
-      await route.fulfill({
-        status: 200,
-        contentType: "application/json",
-        body: "[]",
-      });
-    });
+    await mockRunsAndApprovals(page, [FIXED_RUN_COMPLETED], []);
     await waitForWorkspace(page);
     const bell = page.getByLabel("0 pending approvals");
     await expect(bell).toBeVisible();
