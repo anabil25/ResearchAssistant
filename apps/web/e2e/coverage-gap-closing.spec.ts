@@ -22,6 +22,19 @@ async function gotoView(page: Page, view: string) {
   );
 }
 
+async function navigateAndWaitForWorkspaceRefresh(
+  page: Page,
+  navigate: () => Promise<void>,
+) {
+  const workflowsResponse = page.waitForResponse(
+    (response) =>
+      response.request().method() === "GET" &&
+      response.url().endsWith("/api/backend/api/workflows"),
+  );
+  await navigate();
+  expect((await workflowsResponse).ok()).toBe(true);
+}
+
 async function capture(page: Page, testInfo: TestInfo, id: string) {
   const filename = `${id}-${testInfo.project.name}.png`;
   const path = testInfo.outputPath(filename);
@@ -391,7 +404,9 @@ test.describe("[pw.overview-runs] overview run list and preselection", () => {
     expect(secondRowTitle).not.toBe(firstRowTitle);
     await capture(page, testInfo, "overview-runs-list");
 
-    await runRows.nth(1).click();
+    await navigateAndWaitForWorkspaceRefresh(page, () =>
+      runRows.nth(1).click(),
+    );
     await expect(
       page.getByRole("heading", { name: "Runs & Approvals", level: 1 }),
     ).toBeVisible();
@@ -413,10 +428,12 @@ test.describe("[pw.overview-runs] overview run list and preselection", () => {
       [FIXED_APPROVAL],
     );
     await waitForWorkspace(page);
-    await page
-      .locator(".work-in-motion")
-      .getByRole("button", { name: /view all runs/i })
-      .click();
+    await navigateAndWaitForWorkspaceRefresh(page, () =>
+      page
+        .locator(".work-in-motion")
+        .getByRole("button", { name: /view all runs/i })
+        .click(),
+    );
     await expect(
       page.getByRole("heading", { name: "Runs & Approvals", level: 1 }),
     ).toBeVisible();
