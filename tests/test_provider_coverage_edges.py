@@ -75,7 +75,8 @@ def approve(
     operation_id: str,
     arguments: dict[str, Any],
 ) -> InvocationContext:
-    operation = next(item for item in discovery.descriptor_for(target).operations if item.operation_id == operation_id)
+    descriptor = discovery.descriptor_for(target)
+    operation = next(item for item in descriptor.operations if item.operation_id == operation_id)
     return replace(
         context,
         approval_decisions=(
@@ -83,6 +84,7 @@ def approve(
                 context,
                 target=target,
                 instance=target,
+                descriptor=descriptor,
                 operation=operation,
                 arguments=arguments,
                 decision_id=f"approve:{target.instance_id}:{operation_id}",
@@ -294,7 +296,9 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
         assert "idempotency-key" not in request.headers
         return httpx.Response(503)
 
-    provider = GitHubProvider(GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.NONE)))
+    provider = GitHubProvider(
+        GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.OAUTH, "github.scope"))
+    )
     context = ctx(handler)
     github_discovery = provider.discover(context)
     write = next(capability for capability in github_discovery if capability.name.endswith("issues-write"))
@@ -334,24 +338,50 @@ def test_blob_list_without_prefix() -> None:
 
 
 def test_write_instance_fingerprints_pin_configured_origins() -> None:
+    def fingerprint(discovered: Any, instance: Any) -> str:
+        return capability_instance_fingerprint(
+            instance,
+            discovered.descriptor_for(instance),
+            policy_ref="agent-studio-v1",
+        )
+
     containers = b"<R><Containers><Container><Name>c</Name></Container></Containers></R>"
     blob_context = ctx(lambda _: httpx.Response(200, content=containers))
-    blob_instances = (
-        AzureBlobProvider(BlobConfig("https://one.blob.test", "tenant")).discover(blob_context)[0],
-        AzureBlobProvider(BlobConfig("https://two.blob.test", "tenant")).discover(blob_context)[0],
+    blob_discoveries = (
+        AzureBlobProvider(BlobConfig("https://one.blob.test", "tenant")).discover(blob_context),
+        AzureBlobProvider(BlobConfig("https://two.blob.test", "tenant")).discover(blob_context),
     )
+    blob_fingerprints = tuple(fingerprint(discovered, discovered[0]) for discovered in blob_discoveries)
+    secret_blob_discovery = AzureBlobProvider(
+        BlobConfig(
+            "https://user:password@blob.test/container?sig=secret",
+            "tenant",
+        )
+    ).discover(blob_context)
+    secret_blob = secret_blob_discovery[0]
+    secret_blob_serialized = json.dumps(
+        {
+            "destinations": secret_blob_discovery.descriptor_for(
+                secret_blob
+            ).operations[-1].side_effect_destinations,
+            "configuration": plain_json(secret_blob.configuration),
+        }
+    )
+    assert "password" not in secret_blob_serialized
+    assert "sig=secret" not in secret_blob_serialized
 
     github_context = ctx(lambda _: httpx.Response(200, json=[{"full_name": "owner/repo"}]))
-    github_instances = tuple(
-        next(
+    github_fingerprints = []
+    for endpoint in ("https://one.github.test", "https://two.github.test"):
+        discovered = GitHubProvider(GitHubConfig(endpoint, "tenant", AuthConfig(AuthMode.NONE))).discover(
+            github_context
+        )
+        instance = next(
             instance
-            for instance in GitHubProvider(GitHubConfig(endpoint, "tenant", AuthConfig(AuthMode.NONE))).discover(
-                github_context
-            )
+            for instance in discovered
             if instance.name.endswith("issues-write")
         )
-        for endpoint in ("https://one.github.test", "https://two.github.test")
-    )
+        github_fingerprints.append(fingerprint(discovered, instance))
 
     def graph_handler(request: httpx.Request) -> httpx.Response:
         payload = {"value": [{"id": "site"}]} if request.url.path.endswith("/sites") else {"value": [{"id": "drive"}]}
@@ -359,22 +389,347 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
 
     graph_context = ctx(graph_handler)
 
-    def graph_write(endpoint: str) -> Any:
+    def graph_fingerprint(endpoint: str) -> str:
         discovered = MicrosoftGraphProvider(GraphConfig(endpoint, "tenant", discover_items=False)).discover(
             graph_context
         )
-        return next(
+        instance = next(
             instance
             for instance in discovered
             if discovered.descriptor_for(instance).operations[0].operation_id == "graph.drive.content.put"
         )
+        return fingerprint(discovered, instance)
 
-    graph_instances = tuple(
-        graph_write(endpoint) for endpoint in ("https://one.graph.test/v1.0", "https://two.graph.test/v1.0")
+    graph_fingerprints = tuple(
+        graph_fingerprint(endpoint) for endpoint in ("https://one.graph.test/v1.0", "https://two.graph.test/v1.0")
     )
 
-    for instances in (blob_instances, github_instances, graph_instances):
-        assert capability_instance_fingerprint(instances[0]) != capability_instance_fingerprint(instances[1])
+    webhook_fingerprints = []
+    for method in ("POST", "PUT"):
+        discovered = WebhookProvider(
+            WebhookConfig(
+                "https://hooks.test/events",
+                "tenant",
+                "publish",
+                method=method,
+                health_method=None,
+            )
+        ).discover(ctx(lambda _: httpx.Response(200)))
+        webhook_fingerprints.append(fingerprint(discovered, discovered[0]))
+
+    signed_webhook_fingerprints = []
+    for signature in ("first-secret", "second-secret"):
+        discovered = WebhookProvider(
+            WebhookConfig(
+                f"https://hooks.test/events?sig={signature}",
+                "tenant",
+                "publish",
+                health_method=None,
+            )
+        ).discover(ctx(lambda _: httpx.Response(200)))
+        instance = discovered[0]
+        serialized = json.dumps(
+            {
+                "descriptor": plain_json(discovered.descriptor_for(instance).metadata),
+                "destinations": discovered.descriptor_for(instance).operations[0].side_effect_destinations,
+                "configuration": plain_json(instance.configuration),
+                "resource_id": instance.provider_resource_id,
+            }
+        )
+        assert signature not in serialized
+        signed_webhook_fingerprints.append(fingerprint(discovered, instance))
+    userinfo_provider = WebhookProvider(
+        WebhookConfig(
+            "https://user:password@hooks.test/events?sig=secret",
+            "tenant",
+            "publish",
+            health_method=None,
+        )
+    )
+    userinfo_discovery = userinfo_provider.discover(ctx(lambda _: httpx.Response(200)))
+    userinfo_instance = userinfo_discovery[0]
+    userinfo_serialized = json.dumps(
+        {
+            "destinations": userinfo_discovery.descriptor_for(
+                userinfo_instance
+            ).operations[0].side_effect_destinations,
+            "configuration": plain_json(userinfo_instance.configuration),
+            "resource_id": userinfo_instance.provider_resource_id,
+        }
+    )
+    assert "user" not in userinfo_serialized
+    assert "password" not in userinfo_serialized
+    assert "secret" not in userinfo_serialized
+    path_secret_provider = WebhookProvider(
+        WebhookConfig(
+            "https://hooks.test/services/path-token/path-secret",
+            "tenant",
+            "publish",
+            health_method=None,
+        )
+    )
+    path_secret_discovery = path_secret_provider.discover(
+        ctx(lambda _: httpx.Response(200))
+    )
+    path_secret_instance = path_secret_discovery[0]
+    path_secret_serialized = json.dumps(
+        {
+            "destinations": path_secret_discovery.descriptor_for(
+                path_secret_instance
+            ).operations[0].side_effect_destinations,
+            "configuration": plain_json(path_secret_instance.configuration),
+            "resource_id": path_secret_instance.provider_resource_id,
+        }
+    )
+    assert "path-token" not in path_secret_serialized
+    assert "path-secret" not in path_secret_serialized
+    malformed_webhook = WebhookProvider(
+        WebhookConfig("https://[", "tenant", "publish", health_method=None)
+    ).discover(ctx(lambda _: httpx.Response(200)))
+    assert malformed_webhook[0].readiness is Readiness.MISCONFIGURED
+    assert malformed_webhook[0].provider_resource_id == "invalid:webhook-destination"
+    invalid_port_webhook = WebhookProvider(
+        WebhookConfig(
+            "https://hooks.test:notaport/events",
+            "tenant",
+            "publish",
+            health_method=None,
+        )
+    ).discover(ctx(lambda _: httpx.Response(200)))
+    assert invalid_port_webhook[0].readiness is Readiness.MISCONFIGURED
+
+    openapi_document = {
+        "openapi": "3.0.0",
+        "paths": {
+            "/ping": {
+                "get": {
+                    "operationId": "ping",
+                    "responses": {"200": {"description": "ok"}},
+                }
+            }
+        },
+    }
+    openapi_fingerprints = []
+    for endpoint in ("https://one.openapi.test", "https://two.openapi.test"):
+        discovered = OpenAPIProvider(
+            OpenAPIConfig(
+                endpoint,
+                "tenant",
+                document=openapi_document,
+                operation_policies=(
+                    OpenAPIOperationPolicy(
+                        "ping",
+                        OperationClass.READ,
+                        ApprovalPolicy.NEVER,
+                        maturity=Maturity.GA,
+                    ),
+                ),
+            )
+        ).discover(ctx(lambda _: httpx.Response(200)))
+        openapi_fingerprints.append(fingerprint(discovered, discovered[0]))
+    managed_openapi = OpenAPIProvider(
+        OpenAPIConfig(
+            "https://managed.openapi.test",
+            "tenant",
+            AuthConfig(
+                AuthMode.MANAGED_IDENTITY,
+                "api://managed/.default",
+                connection_ref="managed-connection",
+            ),
+            document=openapi_document,
+            operation_policies=(
+                OpenAPIOperationPolicy(
+                    "ping",
+                    OperationClass.READ,
+                    ApprovalPolicy.NEVER,
+                    maturity=Maturity.GA,
+                ),
+            ),
+        )
+    ).discover(ctx(lambda _: httpx.Response(200)))
+    assert managed_openapi[0].auth_mode in managed_openapi.descriptor_for(
+        managed_openapi[0]
+    ).auth_modes
+
+    foundry_fingerprints = []
+    foundry_secrets = ("/responses/path-secret-one", "/responses/path-secret-two")
+    for index, responses_path in enumerate(foundry_secrets):
+        discovered = FoundryProvider(
+            FoundryConfig(
+                None,
+                "tenant",
+                responses_path=responses_path,
+                api_version=f"api-secret-{index}",
+            )
+        ).discover(ctx(lambda _: httpx.Response(200)))
+        instance = discovered[0]
+        serialized = json.dumps(
+            {
+                "descriptor": plain_json(discovered.descriptor_for(instance).metadata),
+                "configuration": plain_json(instance.configuration),
+                "evidence": instance.status_evidence,
+            }
+        )
+        assert responses_path not in serialized
+        assert f"api-secret-{index}" not in serialized
+        foundry_fingerprints.append(fingerprint(discovered, instance))
+
+    function_fingerprints = []
+    function_templates = ("/api/route-secret-one/{name}", "/api/route-secret-two/{name}")
+    for invoke_path_template in function_templates:
+        discovered = AzureFunctionsProvider(
+            FunctionsConfig(
+                None,
+                "tenant",
+                AuthConfig(AuthMode.NONE),
+                invoke_path_template=invoke_path_template,
+            )
+        ).discover(ctx(lambda _: httpx.Response(200)))
+        instance = discovered[0]
+        assert invoke_path_template not in json.dumps(plain_json(instance.configuration))
+        function_fingerprints.append(fingerprint(discovered, instance))
+
+    fallback_fingerprints: list[tuple[str, str]] = []
+    fallback_providers = (
+        tuple(
+            (
+                secret,
+                GitHubProvider(
+                    GitHubConfig(
+                        f"https://user:password@service.test/private/{secret}?token={secret}",
+                        "tenant",
+                        AuthConfig(AuthMode.NONE),
+                    )
+                ),
+            )
+            for secret in ("first-secret", "second-secret")
+        ),
+        tuple(
+            (
+                secret,
+                MicrosoftGraphProvider(
+                    GraphConfig(
+                        f"https://user:password@service.test/private/{secret}?token={secret}",
+                        "tenant",
+                    )
+                ),
+            )
+            for secret in ("first-secret", "second-secret")
+        ),
+    )
+    for provider_group in fallback_providers:
+        provider_fingerprints = []
+        for secret, provider in provider_group:
+            discovered = provider.discover(ctx(lambda _: httpx.Response(200)))
+            instance = next(
+                (
+                    candidate
+                    for candidate in discovered
+                    if candidate.instance_id.endswith(".configuration")
+                ),
+                discovered[0],
+            )
+            serialized = json.dumps(
+                {
+                    "configuration": plain_json(instance.configuration),
+                    "evidence": instance.status_evidence,
+                    "reason": instance.unavailable_reason,
+                }
+            )
+            assert "user:password" not in serialized
+            assert "password" not in serialized
+            assert secret not in serialized
+            provider_fingerprints.append(fingerprint(discovered, instance))
+        fallback_fingerprints.append((provider_fingerprints[0], provider_fingerprints[1]))
+
+    fingerprint_groups = (
+        ("blob", blob_fingerprints),
+        ("github", github_fingerprints),
+        ("graph", graph_fingerprints),
+        ("webhook", webhook_fingerprints),
+        ("signed-webhook", signed_webhook_fingerprints),
+        ("openapi", openapi_fingerprints),
+        ("foundry", foundry_fingerprints),
+        ("functions", function_fingerprints),
+        ("github-fallback", fallback_fingerprints[0]),
+        ("graph-fallback", fallback_fingerprints[1]),
+    )
+    for label, fingerprints in fingerprint_groups:
+        assert fingerprints[0] != fingerprints[1], label
+
+
+def test_provider_fingerprints_pin_auth_routing_and_protocol_versions() -> None:
+    context = ctx(lambda _: httpx.Response(200))
+
+    def fingerprint(provider: Any) -> str:
+        discovered = provider.discover(context)
+        instance = next(
+            (
+                candidate
+                for candidate in discovered
+                if candidate.instance_id.endswith(".configuration")
+            ),
+            discovered[0],
+        )
+        return capability_instance_fingerprint(
+            instance,
+            discovered.descriptor_for(instance),
+            policy_ref="agent-studio-v1",
+        )
+
+    def api_key(header_name: str, *, mode: AuthMode = AuthMode.API_KEY) -> AuthConfig:
+        return AuthConfig(
+            mode,
+            secret_name="provider-key",
+            header_name=header_name,
+            connection_ref="connection",
+        )
+
+    auth_routing_groups = (
+        (
+            AzureFunctionsProvider(FunctionsConfig(None, "tenant", api_key("x-key-one"))),
+            AzureFunctionsProvider(FunctionsConfig(None, "tenant", api_key("x-key-two"))),
+        ),
+        (
+            MCPStreamableHTTPProvider(MCPConfig(None, "tenant", api_key("x-key-one"))),
+            MCPStreamableHTTPProvider(MCPConfig(None, "tenant", api_key("x-key-two"))),
+        ),
+        (
+            OpenAPIProvider(OpenAPIConfig(None, "tenant", api_key("x-key-one"))),
+            OpenAPIProvider(OpenAPIConfig(None, "tenant", api_key("x-key-two"))),
+        ),
+        (
+            AzureAISearchProvider(SearchConfig(None, "tenant", api_key("x-key-one"))),
+            AzureAISearchProvider(SearchConfig(None, "tenant", api_key("x-key-two"))),
+        ),
+        (
+            AzureBlobProvider(
+                BlobConfig(None, "tenant", api_key("x-key-one", mode=AuthMode.SHARED_KEY))
+            ),
+            AzureBlobProvider(
+                BlobConfig(None, "tenant", api_key("x-key-two", mode=AuthMode.SHARED_KEY))
+            ),
+        ),
+    )
+    for providers in auth_routing_groups:
+        assert fingerprint(providers[0]) != fingerprint(providers[1])
+
+    protocol_version_groups = (
+        (
+            AzureBlobProvider(BlobConfig(None, "tenant", api_version="version-one")),
+            AzureBlobProvider(BlobConfig(None, "tenant", api_version="version-two")),
+        ),
+        (
+            AzureAISearchProvider(SearchConfig(None, "tenant", api_version="version-one")),
+            AzureAISearchProvider(SearchConfig(None, "tenant", api_version="version-two")),
+        ),
+        (
+            MCPStreamableHTTPProvider(MCPConfig(None, "tenant", protocol_version="version-one")),
+            MCPStreamableHTTPProvider(MCPConfig(None, "tenant", protocol_version="version-two")),
+        ),
+    )
+    for providers in protocol_version_groups:
+        assert fingerprint(providers[0]) != fingerprint(providers[1])
 
 
 def _mcp_response(request: httpx.Request, *, version: str = "2025-06-18", session: str | None = None) -> httpx.Response:

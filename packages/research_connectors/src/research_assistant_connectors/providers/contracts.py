@@ -119,14 +119,52 @@ def _validate_sha256(value: str, *, path: str) -> None:
         raise ValueError(f"{path} must be lowercase SHA-256")
 
 
-def _contains_secret_key(value: Mapping[str, Any]) -> bool:
-    secret_tokens = ("secret", "token", "password", "credential", "api_key", "apikey")
-    for key, child in value.items():
-        if any(token in key.casefold() for token in secret_tokens):
-            return True
-        if isinstance(child, Mapping) and _contains_secret_key(child):
-            return True
-    return False
+_BINDING_SAFE_CONFIGURATION_KEYS = frozenset(
+    {
+        "auth_header_name",
+        "agents_path_digest",
+        "api_version_digest",
+        "container",
+        "connections_path_digest",
+        "deployments_path_digest",
+        "drive_id",
+        "full_name",
+        "function_name",
+        "health_method",
+        "index_name",
+        "item_id",
+        "invoke_path_template_digest",
+        "max_upload_bytes",
+        "method",
+        "models_path_digest",
+        "path",
+        "provider_endpoint",
+        "provider_endpoint_digest",
+        "protocol_version_digest",
+        "request_limits",
+        "resource_id",
+        "resource_ids",
+        "signature_header",
+        "signing_algorithm",
+        "site_id",
+        "source",
+        "tool_name",
+        "untrusted_tool_metadata_digest",
+        "vector_stores_path_digest",
+        "responses_path_digest",
+    }
+)
+
+
+def _validate_binding_safe_configuration(value: Any) -> None:
+    if isinstance(value, Mapping):
+        if any(key not in _BINDING_SAFE_CONFIGURATION_KEYS for key in value):
+            raise ValueError("Capability configuration contains a non-binding-safe key")
+        for child in value.values():
+            _validate_binding_safe_configuration(child)
+    elif isinstance(value, Sequence) and not isinstance(value, str | bytes):
+        for child in value:
+            _validate_binding_safe_configuration(child)
 
 
 def _validate_utc_timestamp(value: str, *, path: str) -> None:
@@ -281,42 +319,68 @@ def capability_descriptor_digest(descriptor: CapabilityDescriptor) -> str:
             "family": descriptor.family,
             "resource_kind": descriptor.resource_kind,
             "name": descriptor.name,
-            "auth_modes": [mode.value for mode in descriptor.auth_modes],
+            "auth_modes": sorted(mode.value for mode in descriptor.auth_modes),
             "operations": [
-                {
-                    "operation_id": operation.operation_id,
-                    "version": operation.version,
-                    "maturity": operation.maturity.value,
-                    "input_schema_digest": operation.input_schema_digest,
-                    "output_schema_digest": operation.output_schema_digest,
-                    "operation_class": operation.operation_class.value,
-                    "approval_policy": operation.approval_policy.value,
-                    "external_side_effect": operation.external_side_effect,
-                    "side_effect_destinations": list(operation.side_effect_destinations),
-                    "timeout_seconds": operation.timeout_seconds,
-                    "max_retries": operation.max_retries,
-                    "idempotency": operation.idempotency.value,
-                    "least_privilege_scopes": list(operation.least_privilege_scopes),
-                    "least_privilege_roles": list(operation.least_privilege_roles),
-                    "docs": list(operation.docs),
-                    "audit_events": list(operation.audit_events),
-                    "policy_exception_ref": operation.policy_exception_ref,
-                }
-                for operation in descriptor.operations
+                _operation_governance_payload(operation)
+                for operation in sorted(
+                    descriptor.operations,
+                    key=lambda item: (item.operation_id, item.version),
+                )
             ],
             "provenance": [
                 {
                     "official_url": record.official_url,
                     "source_version": record.source_version,
-                    "last_verified_at": record.last_verified_at,
                     "retirement_date": record.retirement_date,
                 }
-                for record in descriptor.provenance
+                for record in sorted(
+                    descriptor.provenance,
+                    key=lambda item: (
+                        item.official_url,
+                        item.source_version,
+                        item.last_verified_at,
+                        item.retirement_date or "",
+                    ),
+                )
             ],
-            "observability": list(descriptor.observability),
-            "audit": list(descriptor.audit),
+            "observability": sorted(descriptor.observability),
+            "audit": sorted(descriptor.audit),
             "metadata": plain_json(descriptor.metadata),
         }
+    )
+
+
+def _operation_governance_payload(operation: OperationDescriptor) -> dict[str, Any]:
+    return {
+        "operation_id": operation.operation_id,
+        "operation_version": operation.version,
+        "maturity": operation.maturity.value,
+        "input_schema_digest": operation.input_schema_digest,
+        "output_schema_digest": operation.output_schema_digest,
+        "operation_class": operation.operation_class.value,
+        "approval_policy": operation.approval_policy.value,
+        "external_side_effect": operation.external_side_effect,
+        "side_effect_destinations": sorted(operation.side_effect_destinations),
+        "timeout_seconds": operation.timeout_seconds,
+        "max_retries": operation.max_retries,
+        "idempotency": operation.idempotency.value,
+        "least_privilege_scopes": sorted(operation.least_privilege_scopes),
+        "least_privilege_roles": sorted(operation.least_privilege_roles),
+        "docs": sorted(operation.docs),
+        "audit_events": sorted(operation.audit_events),
+        "policy_exception_ref": operation.policy_exception_ref,
+    }
+
+
+def capability_operations_digest(descriptor: CapabilityDescriptor) -> str:
+    return canonical_json_hash(
+        [
+            _operation_governance_payload(operation)
+            for operation in sorted(
+                descriptor.operations,
+                key=lambda item: (item.operation_id, item.version),
+            )
+        ]
     )
 
 
@@ -335,11 +399,13 @@ class CapabilityInstance:
     discovered_provider_version: str
     discovered_resource_version: str | None
     connection_ref: str | None
+    auth_mode: AuthMode
     health: Readiness
     last_checked_at: str
     configuration: Mapping[str, Any] = field(default_factory=dict)
     config_fingerprint: str = ""
     config_validated: bool = True
+    connection_scopes: tuple[str, ...] = ()
     allowed_destination_constraints: tuple[str, ...] = ()
     status_evidence: tuple[str, ...] = ()
     unavailable_reason: str | None = None
@@ -367,6 +433,7 @@ class CapabilityInstance:
         if self.readiness is not Readiness.READY and not self.unavailable_reason:
             raise ValueError("Non-ready capability instances require an unavailable reason")
         _validate_json_value(self.configuration, path="instance.configuration")
+        _validate_binding_safe_configuration(self.configuration)
         object.__setattr__(self, "configuration", _freeze(self.configuration))
         fingerprint = canonical_json_hash(self.configuration)
         if self.config_fingerprint and self.config_fingerprint != fingerprint:
@@ -374,6 +441,16 @@ class CapabilityInstance:
         object.__setattr__(self, "config_fingerprint", fingerprint)
         if any(not constraint for constraint in self.allowed_destination_constraints):
             raise ValueError("Instance destination constraints cannot be empty")
+        if any(not scope for scope in self.connection_scopes) or len(set(self.connection_scopes)) != len(
+            self.connection_scopes
+        ):
+            raise ValueError("Instance connection scopes must be non-empty and unique")
+        object.__setattr__(self, "connection_scopes", tuple(sorted(self.connection_scopes)))
+        object.__setattr__(
+            self,
+            "allowed_destination_constraints",
+            tuple(sorted(self.allowed_destination_constraints)),
+        )
 
 
 @dataclass(frozen=True, slots=True)
@@ -495,6 +572,8 @@ def capability_instance(
     status_evidence: tuple[str, ...],
     unavailable_reason: str | None = None,
     configuration: Mapping[str, Any] | None = None,
+    selected_auth_mode: AuthMode | None = None,
+    connection_scopes: tuple[str, ...] = (),
     descriptor_id: str | None = None,
     descriptor_metadata: Mapping[str, Any] | None = None,
     resource_id: str | None = None,
@@ -505,6 +584,10 @@ def capability_instance(
     allowed_destination_constraints: tuple[str, ...] = (),
     last_checked_at: str | None = None,
 ) -> CapabilityRecord:
+    if selected_auth_mode is None:
+        if len(auth_modes) != 1:
+            raise ValueError("Capability instances with multiple supported auth modes require a selected auth mode")
+        selected_auth_mode = auth_modes[0]
     descriptor = CapabilityDescriptor(
         descriptor_id=descriptor_id or instance_id,
         descriptor_version=descriptor_version,
@@ -532,9 +615,11 @@ def capability_instance(
         discovered_provider_version=resolved_version,
         discovered_resource_version=resolved_version,
         connection_ref=connection_id,
+        auth_mode=selected_auth_mode,
         health=health or readiness,
         last_checked_at=last_checked_at or utc_now(),
         configuration=configuration or {},
+        connection_scopes=connection_scopes,
         allowed_destination_constraints=allowed_destination_constraints,
         status_evidence=status_evidence,
         unavailable_reason=unavailable_reason,
@@ -542,22 +627,53 @@ def capability_instance(
     return CapabilityRecord(descriptor=descriptor, instance=instance)
 
 
-def capability_instance_fingerprint(instance: CapabilityInstance) -> str:
+def capability_instance_fingerprint(
+    instance: CapabilityInstance,
+    descriptor: CapabilityDescriptor,
+    *,
+    policy_ref: str,
+) -> str:
+    if (
+        instance.descriptor_id != descriptor.descriptor_id
+        or instance.descriptor_version != descriptor.descriptor_version
+        or instance.descriptor_digest != descriptor.descriptor_digest
+    ):
+        raise ValueError("Capability fingerprint descriptor reference does not match the instance")
+    if not policy_ref:
+        raise ValueError("Capability fingerprint policy reference is required")
     payload = {
-        "provider_id": instance.provider_id,
-        "instance_id": instance.instance_id,
-        "descriptor_id": instance.descriptor_id,
-        "descriptor_version": instance.descriptor_version,
-        "descriptor_digest": instance.descriptor_digest,
-        "tenant_id": instance.tenant_id,
-        "project_id": instance.project_id,
-        "provider_resource_id": instance.provider_resource_id,
-        "connection_ref": instance.connection_ref,
-        "discovered_provider_version": instance.discovered_provider_version,
-        "discovered_resource_version": instance.discovered_resource_version,
+        "provider": {"provider_id": instance.provider_id},
+        "descriptor": {
+            "descriptor_id": descriptor.descriptor_id,
+            "descriptor_version": descriptor.descriptor_version,
+            "descriptor_digest": descriptor.descriptor_digest,
+            "auth_modes": sorted(mode.value for mode in descriptor.auth_modes),
+        },
+        "operations": [
+            _operation_governance_payload(operation)
+            for operation in sorted(
+                descriptor.operations,
+                key=lambda item: (item.operation_id, item.version),
+            )
+        ],
+        "instance": {
+            "instance_id": instance.instance_id,
+            "provider_resource_id": instance.provider_resource_id,
+            "discovered_provider_version": instance.discovered_provider_version,
+            "discovered_resource_version": instance.discovered_resource_version,
+        },
+        "boundary": {
+            "tenant_id": instance.tenant_id,
+            "project_id": instance.project_id,
+        },
+        "connection": {
+            "connection_ref": instance.connection_ref,
+            "auth_mode": instance.auth_mode.value,
+            "connection_scopes": sorted(instance.connection_scopes),
+        },
+        "allowed_destination_constraints": sorted(instance.allowed_destination_constraints),
+        "policy_ref": policy_ref,
         "configuration": plain_json(instance.configuration),
-        "config_validated": instance.config_validated,
-        "allowed_destination_constraints": list(instance.allowed_destination_constraints),
     }
     return canonical_json_hash(payload)
 
@@ -565,18 +681,26 @@ def capability_instance_fingerprint(instance: CapabilityInstance) -> str:
 @dataclass(frozen=True, slots=True)
 class CapabilityBinding:
     binding_id: str
+    provider_id: str
     descriptor_id: str
     descriptor_version: str
     descriptor_digest: str
+    operations_digest: str
     operation_id: str
     operation_version: str
     instance_id: str
+    provider_resource_id: str
+    tenant_id: str
+    project_id: str
     instance_discovered_version: str
+    instance_discovered_resource_version: str | None
     input_schema_digest: str
     output_schema_digest: str
     config: Mapping[str, Any]
     config_hash: str
     connection_ref: str | None
+    auth_mode: AuthMode
+    connection_scopes: tuple[str, ...]
     policy_ref: str
     allowed_destination_constraints: tuple[str, ...]
     instance_fingerprint: str
@@ -585,11 +709,15 @@ class CapabilityBinding:
         if not all(
             (
                 self.binding_id,
+                self.provider_id,
                 self.descriptor_id,
                 self.descriptor_version,
                 self.operation_id,
                 self.operation_version,
                 self.instance_id,
+                self.provider_resource_id,
+                self.tenant_id,
+                self.project_id,
                 self.instance_discovered_version,
                 self.config_hash,
                 self.policy_ref,
@@ -601,13 +729,13 @@ class CapabilityBinding:
             ("input_schema_digest", self.input_schema_digest),
             ("output_schema_digest", self.output_schema_digest),
             ("descriptor_digest", self.descriptor_digest),
+            ("operations_digest", self.operations_digest),
             ("config_hash", self.config_hash),
             ("instance_fingerprint", self.instance_fingerprint),
         ):
             _validate_sha256(value, path=f"binding.{field_name}")
         _validate_json_value(self.config, path="binding.config")
-        if _contains_secret_key(self.config):
-            raise ValueError("Capability binding configuration cannot contain secrets")
+        _validate_binding_safe_configuration(self.config)
         object.__setattr__(self, "config", _freeze(self.config))
         if canonical_json_hash(self.config) != self.config_hash:
             raise ValueError("Capability binding config hash does not match canonical config")
@@ -615,6 +743,16 @@ class CapabilityBinding:
             set(self.allowed_destination_constraints)
         ) != len(self.allowed_destination_constraints):
             raise ValueError("Capability binding destination constraints must be non-empty and unique")
+        if any(not scope for scope in self.connection_scopes) or len(set(self.connection_scopes)) != len(
+            self.connection_scopes
+        ):
+            raise ValueError("Capability binding connection scopes must be non-empty and unique")
+        object.__setattr__(self, "connection_scopes", tuple(sorted(self.connection_scopes)))
+        object.__setattr__(
+            self,
+            "allowed_destination_constraints",
+            tuple(sorted(self.allowed_destination_constraints)),
+        )
 
     @property
     def provider_version(self) -> str:
@@ -643,21 +781,33 @@ def capability_binding(
 ) -> CapabilityBinding:
     binding = CapabilityBinding(
         binding_id=binding_id,
+        provider_id=instance.provider_id,
         descriptor_id=descriptor.descriptor_id,
         descriptor_version=descriptor.descriptor_version,
         descriptor_digest=descriptor.descriptor_digest,
+        operations_digest=capability_operations_digest(descriptor),
         operation_id=operation.operation_id,
         operation_version=operation.version,
         instance_id=instance.instance_id,
+        provider_resource_id=instance.provider_resource_id,
+        tenant_id=instance.tenant_id,
+        project_id=instance.project_id,
         instance_discovered_version=instance.discovered_provider_version,
+        instance_discovered_resource_version=instance.discovered_resource_version,
         input_schema_digest=operation.input_schema_digest,
         output_schema_digest=operation.output_schema_digest,
         config=instance.configuration,
         config_hash=instance.config_fingerprint,
         connection_ref=instance.connection_ref,
+        auth_mode=instance.auth_mode,
+        connection_scopes=instance.connection_scopes,
         policy_ref=policy_ref,
         allowed_destination_constraints=instance.allowed_destination_constraints or operation.side_effect_destinations,
-        instance_fingerprint=capability_instance_fingerprint(instance),
+        instance_fingerprint=capability_instance_fingerprint(
+            instance,
+            descriptor,
+            policy_ref=policy_ref,
+        ),
     )
     validate_binding(instance, descriptor, binding)
     return binding
@@ -952,6 +1102,44 @@ class PolicyError(ProviderError):
     code = "policy"
 
 
+class BindingChangeCategory(StrEnum):
+    PROVIDER = "provider"
+    DESCRIPTOR = "descriptor"
+    OPERATIONS = "operations"
+    INSTANCE = "instance"
+    BOUNDARY = "boundary"
+    CONNECTION = "connection"
+    DESTINATIONS = "destinations"
+    POLICY = "policy"
+    CONFIGURATION = "configuration"
+
+
+class StaleBindingError(PolicyError):
+    code = "stale_binding"
+
+    def __init__(
+        self,
+        *,
+        provider_id: str,
+        instance_id: str,
+        old_fingerprint: str,
+        new_fingerprint: str,
+        changed_categories: tuple[BindingChangeCategory, ...],
+    ) -> None:
+        _validate_sha256(old_fingerprint, path="stale_binding.old_fingerprint")
+        _validate_sha256(new_fingerprint, path="stale_binding.new_fingerprint")
+        if not changed_categories or len(set(changed_categories)) != len(changed_categories):
+            raise ValueError("Stale binding change categories must be non-empty and unique")
+        super().__init__(
+            "Capability binding is stale and requires explicit rebind and review",
+            provider_id=provider_id,
+            instance_id=instance_id,
+        )
+        self.old_fingerprint = old_fingerprint
+        self.new_fingerprint = new_fingerprint
+        self.changed_categories = changed_categories
+
+
 class BindabilityReason(StrEnum):
     MATURITY_NOT_GA = "maturity_not_ga"
     INSTANCE_NOT_READY = "instance_not_ready"
@@ -1040,7 +1228,11 @@ def bindability_decisions(
             reasons.append(BindabilityReason.TENANT_MISMATCH)
         if instance.project_id != project_id:
             reasons.append(BindabilityReason.PROJECT_MISMATCH)
-        if instance.readiness in {Readiness.UNAUTHORIZED, Readiness.NEEDS_CONSENT}:
+        if (
+            instance.readiness in {Readiness.UNAUTHORIZED, Readiness.NEEDS_CONSENT}
+            or (instance.auth_mode is not AuthMode.NONE and not instance.connection_ref)
+            or instance.auth_mode not in descriptor.auth_modes
+        ):
             reasons.append(BindabilityReason.CONNECTION_NOT_AUTHORIZED)
         if not instance.config_validated:
             reasons.append(BindabilityReason.CONFIGURATION_NOT_VALIDATED)
@@ -1060,30 +1252,10 @@ def validate_binding(
     instance: CapabilityInstance,
     descriptor: CapabilityDescriptor,
     binding: CapabilityBinding,
+    *,
+    policy_ref: str | None = None,
 ) -> OperationDescriptor:
-    if binding.instance_id != instance.instance_id:
-        raise ValueError("Capability binding targets a different instance")
-    if (
-        binding.descriptor_id != instance.descriptor_id
-        or binding.descriptor_version != instance.descriptor_version
-        or binding.descriptor_digest != instance.descriptor_digest
-        or descriptor.descriptor_digest != instance.descriptor_digest
-    ):
-        raise ValueError("Capability binding targets a different descriptor")
-    if binding.instance_fingerprint != capability_instance_fingerprint(instance):
-        raise ValueError("Capability binding targets changed instance configuration")
-    if binding.config_hash != instance.config_fingerprint or binding.config != instance.configuration:
-        raise ValueError("Capability binding targets a different configuration reference")
-    if binding.connection_ref != instance.connection_ref:
-        raise ValueError("Capability binding targets a different connection reference")
-    if binding.instance_discovered_version != instance.discovered_provider_version:
-        raise ValueError("Capability binding targets a different discovered instance version")
-    if instance.readiness is not Readiness.READY:
-        raise ValueError("Capability binding requires a ready instance")
-    if instance.health is not Readiness.READY:
-        raise ValueError("Capability binding requires a healthy instance")
-    if not instance.config_validated:
-        raise ValueError("Capability binding requires validated configuration")
+    active_policy_ref = policy_ref or binding.policy_ref
     operation = next(
         (
             item
@@ -1092,6 +1264,101 @@ def validate_binding(
         ),
         None,
     )
+    current_fingerprint = capability_instance_fingerprint(
+        instance,
+        descriptor,
+        policy_ref=active_policy_ref,
+    )
+    if binding.instance_fingerprint != current_fingerprint:
+        categories: list[BindingChangeCategory] = []
+        if binding.provider_id != instance.provider_id:
+            categories.append(BindingChangeCategory.PROVIDER)
+        descriptor_changed = (
+            binding.descriptor_id != instance.descriptor_id
+            or binding.descriptor_version != instance.descriptor_version
+            or binding.descriptor_digest != instance.descriptor_digest
+            or descriptor.descriptor_digest != instance.descriptor_digest
+        )
+        if descriptor_changed:
+            categories.append(BindingChangeCategory.DESCRIPTOR)
+        if (
+            binding.operations_digest != capability_operations_digest(descriptor)
+            or operation is None
+            or binding.input_schema_digest != operation.input_schema_digest
+            or binding.output_schema_digest != operation.output_schema_digest
+        ):
+            categories.append(BindingChangeCategory.OPERATIONS)
+        if (
+            binding.instance_id != instance.instance_id
+            or binding.provider_resource_id != instance.provider_resource_id
+            or binding.instance_discovered_version != instance.discovered_provider_version
+            or binding.instance_discovered_resource_version != instance.discovered_resource_version
+        ):
+            categories.append(BindingChangeCategory.INSTANCE)
+        if binding.tenant_id != instance.tenant_id or binding.project_id != instance.project_id:
+            categories.append(BindingChangeCategory.BOUNDARY)
+        if (
+            binding.connection_ref != instance.connection_ref
+            or binding.auth_mode is not instance.auth_mode
+            or set(binding.connection_scopes) != set(instance.connection_scopes)
+        ):
+            categories.append(BindingChangeCategory.CONNECTION)
+        effective_destinations = instance.allowed_destination_constraints or (
+            operation.side_effect_destinations if operation is not None else ()
+        )
+        if set(binding.allowed_destination_constraints) != set(effective_destinations):
+            categories.append(BindingChangeCategory.DESTINATIONS)
+        if binding.policy_ref != active_policy_ref:
+            categories.append(BindingChangeCategory.POLICY)
+        if binding.config_hash != instance.config_fingerprint or binding.config != instance.configuration:
+            categories.append(BindingChangeCategory.CONFIGURATION)
+        if not categories:
+            categories.append(BindingChangeCategory.DESCRIPTOR)
+        raise StaleBindingError(
+            provider_id=instance.provider_id,
+            instance_id=instance.instance_id,
+            old_fingerprint=binding.instance_fingerprint,
+            new_fingerprint=current_fingerprint,
+            changed_categories=tuple(categories),
+        )
+    if instance.readiness is not Readiness.READY:
+        raise ValueError("Capability binding requires a ready instance")
+    if instance.health is not Readiness.READY:
+        raise ValueError("Capability binding requires a healthy instance")
+    if not instance.config_validated:
+        raise ValueError("Capability binding requires validated configuration")
+    if instance.auth_mode not in descriptor.auth_modes:
+        raise ValueError("Capability binding authentication mode is not supported by the descriptor")
+    if binding.provider_id != instance.provider_id:
+        raise ValueError("Capability binding belongs to a different provider")
+    if binding.instance_id != instance.instance_id:
+        raise ValueError("Capability binding belongs to a different instance")
+    if (
+        binding.descriptor_id != instance.descriptor_id
+        or binding.descriptor_version != instance.descriptor_version
+        or binding.descriptor_digest != instance.descriptor_digest
+    ):
+        raise ValueError("Capability binding belongs to a different descriptor")
+    if binding.operations_digest != capability_operations_digest(descriptor):
+        raise ValueError("Capability binding operation set digest does not match")
+    if (
+        binding.provider_resource_id != instance.provider_resource_id
+        or binding.instance_discovered_version != instance.discovered_provider_version
+        or binding.instance_discovered_resource_version != instance.discovered_resource_version
+    ):
+        raise ValueError("Capability binding resource identity or discovered instance version does not match")
+    if binding.tenant_id != instance.tenant_id or binding.project_id != instance.project_id:
+        raise ValueError("Capability binding tenant or project boundary does not match")
+    if (
+        binding.connection_ref != instance.connection_ref
+        or binding.auth_mode is not instance.auth_mode
+        or set(binding.connection_scopes) != set(instance.connection_scopes)
+    ):
+        raise ValueError("Capability binding connection reference or authorization scope does not match")
+    if binding.config_hash != instance.config_fingerprint or binding.config != instance.configuration:
+        raise ValueError("Capability binding configuration reference does not match")
+    if binding.policy_ref != active_policy_ref:
+        raise ValueError("Capability binding policy reference does not match")
     if operation is None:
         raise ValueError("Capability binding operation or version is not declared")
     if binding.input_schema_digest != operation.input_schema_digest:
@@ -1126,14 +1393,15 @@ def resolve_capability_target(
             instance_id=target.instance_id,
         )
     if isinstance(target, CapabilityBinding):
-        if policy_ref is not None and target.policy_ref != policy_ref:
-            raise PolicyError(
-                "Capability binding policy reference does not match the active policy",
-                provider_id=provider_id,
-                instance_id=current.instance_id,
-            )
         try:
-            validate_binding(current, discovery.descriptor_for(current), target)
+            validate_binding(
+                current,
+                discovery.descriptor_for(current),
+                target,
+                policy_ref=policy_ref,
+            )
+        except StaleBindingError:
+            raise
         except ValueError as exc:
             raise PolicyError(
                 str(exc),
@@ -1141,11 +1409,78 @@ def resolve_capability_target(
                 instance_id=current.instance_id,
             ) from exc
         return current, target
-    if capability_instance_fingerprint(current) != capability_instance_fingerprint(target):
-        raise PolicyError(
-            "Capability instance changed since it was selected",
+    descriptor = discovery.descriptor_for(current)
+    active_policy_ref = policy_ref or "unbound"
+    current_fingerprint = capability_instance_fingerprint(
+        current,
+        descriptor,
+        policy_ref=active_policy_ref,
+    )
+    if (
+        target.descriptor_id != descriptor.descriptor_id
+        or target.descriptor_version != descriptor.descriptor_version
+        or target.descriptor_digest != descriptor.descriptor_digest
+    ):
+        old_snapshot_fingerprint = canonical_json_hash(
+            {
+                "provider_id": target.provider_id,
+                "instance_id": target.instance_id,
+                "descriptor_id": target.descriptor_id,
+                "descriptor_version": target.descriptor_version,
+                "descriptor_digest": target.descriptor_digest,
+                "provider_resource_id": target.provider_resource_id,
+                "discovered_provider_version": target.discovered_provider_version,
+                "discovered_resource_version": target.discovered_resource_version,
+                "tenant_id": target.tenant_id,
+                "project_id": target.project_id,
+                "connection_ref": target.connection_ref,
+                "auth_mode": target.auth_mode.value,
+                "connection_scopes": sorted(target.connection_scopes),
+                "allowed_destination_constraints": sorted(target.allowed_destination_constraints),
+                "policy_ref": active_policy_ref,
+                "configuration": plain_json(target.configuration),
+            }
+        )
+        raise StaleBindingError(
             provider_id=provider_id,
             instance_id=current.instance_id,
+            old_fingerprint=old_snapshot_fingerprint,
+            new_fingerprint=current_fingerprint,
+            changed_categories=(BindingChangeCategory.DESCRIPTOR,),
+        )
+    target_fingerprint = capability_instance_fingerprint(
+        target,
+        descriptor,
+        policy_ref=active_policy_ref,
+    )
+    if current_fingerprint != target_fingerprint:
+        categories: list[BindingChangeCategory] = []
+        if current.provider_id != target.provider_id:
+            categories.append(BindingChangeCategory.PROVIDER)
+        if (
+            current.provider_resource_id != target.provider_resource_id
+            or current.discovered_provider_version != target.discovered_provider_version
+            or current.discovered_resource_version != target.discovered_resource_version
+        ):
+            categories.append(BindingChangeCategory.INSTANCE)
+        if current.tenant_id != target.tenant_id or current.project_id != target.project_id:
+            categories.append(BindingChangeCategory.BOUNDARY)
+        if (
+            current.connection_ref != target.connection_ref
+            or current.auth_mode is not target.auth_mode
+            or set(current.connection_scopes) != set(target.connection_scopes)
+        ):
+            categories.append(BindingChangeCategory.CONNECTION)
+        if set(current.allowed_destination_constraints) != set(target.allowed_destination_constraints):
+            categories.append(BindingChangeCategory.DESTINATIONS)
+        if current.configuration != target.configuration:
+            categories.append(BindingChangeCategory.CONFIGURATION)
+        raise StaleBindingError(
+            provider_id=provider_id,
+            instance_id=current.instance_id,
+            old_fingerprint=target_fingerprint,
+            new_fingerprint=current_fingerprint,
+            changed_categories=tuple(categories or (BindingChangeCategory.DESCRIPTOR,)),
         )
     return current, None
 
@@ -1190,6 +1525,7 @@ def approval_decision(
     *,
     target: CapabilityInstance | CapabilityBinding,
     instance: CapabilityInstance,
+    descriptor: CapabilityDescriptor,
     operation: OperationDescriptor,
     arguments: Mapping[str, Any],
     decision_id: str,
@@ -1218,7 +1554,11 @@ def approval_decision(
         instance_id=instance.instance_id,
         project_id=instance.project_id,
         provider_resource_id=instance.provider_resource_id,
-        instance_fingerprint=capability_instance_fingerprint(instance),
+        instance_fingerprint=capability_instance_fingerprint(
+            instance,
+            descriptor,
+            policy_ref=context.policy_release,
+        ),
         descriptor_id=instance.descriptor_id,
         operation_id=operation.operation_id,
         operation_version=operation.version,
@@ -1269,6 +1609,7 @@ def _approval_matches(
     *,
     context: InvocationContext,
     instance: CapabilityInstance,
+    descriptor: CapabilityDescriptor,
     operation: OperationDescriptor,
     request: InvocationRequest,
     binding: CapabilityBinding | None,
@@ -1282,7 +1623,12 @@ def _approval_matches(
         and decision.instance_id == instance.instance_id
         and decision.project_id == instance.project_id
         and decision.provider_resource_id == instance.provider_resource_id
-        and decision.instance_fingerprint == capability_instance_fingerprint(instance)
+        and decision.instance_fingerprint
+        == capability_instance_fingerprint(
+            instance,
+            descriptor,
+            policy_ref=context.policy_release,
+        )
         and decision.descriptor_id == instance.descriptor_id
         and decision.operation_id == operation.operation_id
         and decision.operation_version == operation.version
@@ -1341,6 +1687,12 @@ def find_operation(
             instance_id=instance.instance_id,
         )
     descriptor = discovery.descriptor_for(instance)
+    if instance.auth_mode not in descriptor.auth_modes:
+        raise PolicyError(
+            "Capability authentication mode is not supported by the descriptor",
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
     operation = next(
         (
             item
@@ -1392,6 +1744,7 @@ def find_operation(
                     candidate,
                     context=context,
                     instance=instance,
+                    descriptor=descriptor,
                     operation=operation,
                     request=request,
                     binding=binding,

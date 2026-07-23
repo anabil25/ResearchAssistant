@@ -4,8 +4,17 @@ from __future__ import annotations
 
 from urllib.parse import quote
 
-from ._http import auth_headers, collection, json_object, require_endpoint, safe_url, send, stable_resource_id
-from .config import SearchConfig
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    collection,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
+from .config import AuthConfig, SearchConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
@@ -26,6 +35,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -65,7 +75,14 @@ def _search_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     index_name: str | None = None,
+    auth: AuthConfig,
+    endpoint: str,
+    api_version: str,
 ) -> CapabilityRecord:
+    safe_endpoint, endpoint_digest = binding_safe_endpoint(
+        endpoint,
+        invalid_label="invalid:search-endpoint",
+    )
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=capability_id,
@@ -96,7 +113,16 @@ def _search_capability(
         provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
-        configuration={"index_name": index_name} if index_name else {},
+        configuration={
+            "provider_endpoint": safe_endpoint,
+            "provider_endpoint_digest": endpoint_digest,
+            "api_version_digest": canonical_json_hash(api_version),
+            "auth_header_name": auth.header_name,
+            **({"index_name": index_name} if index_name else {}),
+        },
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
     )
 
 
@@ -142,6 +168,9 @@ class AzureAISearchProvider:
                     validation.readiness,
                     reason="; ".join(validation.reasons),
                     evidence=("No index discovery request was sent.",),
+                    auth=self._config.auth,
+                    endpoint=self._config.endpoint or "unconfigured:search-service",
+                    api_version=self._config.api_version,
                 ),
             )
         endpoint = require_endpoint(self._config.endpoint)
@@ -165,6 +194,9 @@ class AzureAISearchProvider:
                 reason=None,
                 evidence=("Index returned by successful Search service discovery.",),
                 index_name=name,
+                auth=self._config.auth,
+                endpoint=endpoint,
+                api_version=self._config.api_version,
             )
             for item in indexes
             if (name := str(item.get("name") or ""))

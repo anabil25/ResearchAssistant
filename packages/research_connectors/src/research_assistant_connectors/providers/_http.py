@@ -9,7 +9,7 @@ from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from time import monotonic
 from typing import Any
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urljoin, urlsplit, urlunsplit
 
 import httpx
 
@@ -27,6 +27,7 @@ from .contracts import (
     TokenCredential,
     UnauthorizedError,
     UpstreamError,
+    canonical_json_hash,
     plain_json,
 )
 
@@ -35,8 +36,28 @@ MAX_RETRY_DELAY_SECONDS = 30.0
 RETRY_WAIT_SLICE_SECONDS = 0.1
 
 
+def binding_safe_endpoint(value: str | None, *, invalid_label: str) -> tuple[str, str]:
+    raw_value = value or invalid_label
+    digest = canonical_json_hash(raw_value)
+    try:
+        parsed = urlsplit(raw_value)
+        _ = parsed.port
+    except ValueError:
+        return invalid_label, digest
+    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
+        return invalid_label, digest
+    sanitized = urlunsplit(
+        (parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], "", "", "")
+    ).rstrip("/")
+    return sanitized, digest
+
+
 def safe_url(base_url: str, path: str) -> str:
     base = urlsplit(base_url)
+    try:
+        _ = base.port
+    except ValueError as exc:
+        raise ValueError("A valid HTTP(S) endpoint port is required") from exc
     if base.scheme not in {"https", "http"} or not base.netloc or base.username or base.password:
         raise ValueError("A valid HTTP(S) endpoint without userinfo is required")
     if base.scheme == "http" and base.hostname not in {"localhost", "127.0.0.1", "::1"}:

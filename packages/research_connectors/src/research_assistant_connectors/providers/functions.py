@@ -5,8 +5,17 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import urlsplit
 
-from ._http import auth_headers, collection, json_object, require_endpoint, safe_url, send, stable_resource_id
-from .config import FunctionPolicy, FunctionsConfig
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    collection,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
+from .config import AuthConfig, FunctionPolicy, FunctionsConfig
 from .contracts import (
     AuthMode,
     CapabilityBinding,
@@ -24,6 +33,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -52,7 +62,19 @@ def _function_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     destination: str,
+    invoke_path_template: str,
+    auth: AuthConfig,
 ) -> CapabilityRecord:
+    safe_destination, destination_digest = binding_safe_endpoint(
+        destination,
+        invalid_label="invalid:function-endpoint",
+    )
+    route_digest = canonical_json_hash(
+        {
+            "endpoint": destination,
+            "invoke_path_template": invoke_path_template,
+        }
+    )
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("functions.http", name),
@@ -60,7 +82,7 @@ def _function_capability(
         resource_kind="http_function",
         name=name,
         readiness=readiness,
-        auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
+        auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured Function App endpoint",
         resource_id=name,
@@ -74,7 +96,9 @@ def _function_capability(
                 operation_class=policy.operation_class,
                 approval_policy=policy.approval_policy,
                 external_side_effect=True,
-                side_effect_destinations=(destination or "unconfigured:function-app",),
+                side_effect_destinations=(
+                    f"{safe_destination}#route-sha256={route_digest}",
+                ),
                 idempotency=policy.idempotency,
                 least_privilege_scopes=("Function App application scope",),
                 docs=DOCS,
@@ -83,7 +107,16 @@ def _function_capability(
         provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
-        configuration={"function_name": name},
+        configuration={
+            "function_name": name,
+            "provider_endpoint": safe_destination,
+            "provider_endpoint_digest": destination_digest,
+            "invoke_path_template_digest": canonical_json_hash(invoke_path_template),
+            "auth_header_name": auth.header_name,
+        },
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
     )
 
 
@@ -95,7 +128,7 @@ class AzureFunctionsProvider:
             "azure_functions",
             "Azure Functions",
             "Discovers configured HTTP functions and invokes only fixed Function App routes.",
-            (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
+            (AuthMode.NONE, AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
             PROVENANCE,
         )
 
@@ -147,6 +180,8 @@ class AzureFunctionsProvider:
                     "; ".join(validation.reasons),
                     ("No discovery request was sent.",),
                     self._config.endpoint or "unconfigured:function-app",
+                    self._config.invoke_path_template,
+                    self._config.auth,
                 )
                 for name, policy in policies.items()
             )
@@ -178,6 +213,8 @@ class AzureFunctionsProvider:
                     None,
                     (f"Function returned by successful {self._config.discovery_style} discovery.",),
                     self._config.endpoint or "unconfigured:function-app",
+                    self._config.invoke_path_template,
+                    self._config.auth,
                 )
             )
         return tuple(discovered)

@@ -109,6 +109,7 @@ def approve(
         context,
         target=target,
         instance=target,
+        descriptor=descriptor,
         operation=operation,
         arguments=arguments,
         decision_id=f"approve:{target.instance_id}:{operation_id}",
@@ -160,7 +161,9 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
     responses_operation = capabilities.descriptor_for(responses).operations[0]
     assert responses_operation.operation_class is OperationClass.PRIVILEGED
     assert responses_operation.approval_policy is ApprovalPolicy.REQUIRED
-    assert responses_operation.side_effect_destinations == ("https://foundry.test/project",)
+    assert responses_operation.side_effect_destinations[0].startswith(
+        "https://foundry.test#url-sha256="
+    )
     response_arguments = {
         "model": "deployment-1",
         "input": "Summarize",
@@ -472,7 +475,9 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
     assert put_operation.version == "1.1.0"
     assert put_operation.input_schema["properties"]["content_base64"]["maxLength"] == 4
     assert capability.configuration["max_upload_bytes"] == 3
-    assert put_operation.side_effect_destinations == ("https://account.blob.core.windows.net/research",)
+    assert put_operation.side_effect_destinations[0].startswith(
+        "https://account.blob.core.windows.net/research#endpoint-sha256="
+    )
     listed = provider.invoke(
         InvocationRequest(capability, "blob.blobs.list", {"prefix": "folder/"}),
         ctx,
@@ -649,7 +654,8 @@ def test_mcp_protocol_session_untrusted_annotations_and_tool_call() -> None:
     capabilities = provider.discover(ctx)
     capability = capabilities[0]
     assert capabilities.descriptor_for(capability).operations[0].operation_class is OperationClass.PRIVILEGED
-    assert capability.configuration["untrusted_tool_metadata"]["annotations"]["readOnlyHint"] is True
+    assert len(capability.configuration["untrusted_tool_metadata_digest"]) == 64
+    assert "untrusted_tool_metadata" not in capability.configuration
     assert tuple(capabilities.descriptor_for(capability).operations[0].input_schema["required"]) == ("value",)
     arguments = {"value": "x"}
     result = provider.invoke(
@@ -1003,7 +1009,9 @@ def test_openapi_discovery_fixed_destination_policy_and_invocation() -> None:
     update_operation = capabilities.descriptor_for(update).operations[0]
     assert update_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
     assert update_operation.approval_policy is ApprovalPolicy.REQUIRED
-    assert update_operation.side_effect_destinations == ("https://api.test/v1",)
+    assert update_operation.side_effect_destinations[0].startswith(
+        "https://api.test#url-sha256="
+    )
     with pytest.raises(PolicyError):
         provider.invoke(
             InvocationRequest(
@@ -1223,7 +1231,9 @@ def test_github_dynamic_repositories_read_write_rate_and_consent() -> None:
     assert all(
         operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
         and operation.approval_policy is ApprovalPolicy.REQUIRED
-        and operation.side_effect_destinations == ("https://api.github.test/repos/acme/research/issues",)
+        and operation.side_effect_destinations[0].startswith(
+            "https://api.github.test/repos/acme/research/issues#endpoint-sha256="
+        )
         for operation in capabilities.descriptor_for(write).operations
     )
     create_arguments = {"title": "Issue"}
@@ -1339,7 +1349,9 @@ def test_graph_sites_drives_items_ga_operations_and_work_iq_preview() -> None:
     assert graph_write.version == "1.1.0"
     assert graph_write.input_schema["properties"]["content_base64"]["maxLength"] == 8
     assert write.configuration["max_upload_bytes"] == 5
-    assert graph_write.side_effect_destinations == ("https://graph.microsoft.test/v1.0/drives/drive-1/root",)
+    assert graph_write.side_effect_destinations[0].startswith(
+        "https://graph.microsoft.test/drives/drive-1/root#endpoint-sha256="
+    )
     write_arguments = {
         "path": "folder/paper.txt",
         "content_base64": base64.b64encode(b"paper").decode(),

@@ -3,10 +3,20 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any, cast
 from urllib.parse import quote
 
-from ._http import auth_headers, collection, json_object, require_endpoint, safe_url, send, stable_resource_id
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    collection,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
 from .config import FoundryConfig
 from .contracts import (
     ApprovalPolicy,
@@ -29,6 +39,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -116,7 +127,22 @@ def _capability(
     metadata: Mapping[str, Any] | None = None,
     auth_modes: tuple[AuthMode, ...] = (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
     data_boundary: str = "configured Foundry project endpoint",
+    config: FoundryConfig,
 ) -> CapabilityRecord:
+    safe_endpoint, endpoint_digest = binding_safe_endpoint(
+        config.endpoint,
+        invalid_label="invalid:foundry-endpoint",
+    )
+    bound_operation = (
+        replace(
+            operation,
+            side_effect_destinations=(
+                f"{safe_endpoint}#url-sha256={endpoint_digest}",
+            ),
+        )
+        if operation.side_effect_destinations
+        else operation
+    )
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=capability_id,
@@ -128,11 +154,25 @@ def _capability(
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary=data_boundary,
         resource_id=str((metadata or {}).get("resource_id") or capability_id),
-        operations=(operation,),
+        operations=(bound_operation,),
         provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
-        configuration=metadata or {},
+        configuration={
+            "provider_endpoint": safe_endpoint,
+            "provider_endpoint_digest": endpoint_digest,
+            "api_version_digest": canonical_json_hash(config.api_version),
+            "models_path_digest": canonical_json_hash(config.models_path),
+            "deployments_path_digest": canonical_json_hash(config.deployments_path),
+            "agents_path_digest": canonical_json_hash(config.agents_path),
+            "connections_path_digest": canonical_json_hash(config.connections_path),
+            "vector_stores_path_digest": canonical_json_hash(config.vector_stores_path),
+            "responses_path_digest": canonical_json_hash(config.responses_path),
+            **(metadata or {}),
+        },
+        selected_auth_mode=config.auth.mode,
+        connection_id=config.auth.connection_ref,
+        connection_scopes=config.auth.connection_scopes,
     )
 
 
@@ -153,6 +193,7 @@ class FoundryProvider:
             Readiness.UNAVAILABLE,
             evidence=("Service status: preview; provider policy blocks attachment.",),
             reason="Foundry Memory is preview and is not attachable",
+            config=config,
         )
         self._descriptor = ProviderDescriptor(
             provider_id=PROVIDER_ID,
@@ -203,7 +244,7 @@ class FoundryProvider:
             "connections": self._config.connections_path,
             "vector_stores": self._config.vector_stores_path,
         }
-        for kind, path in paths.items():
+        for kind, _path in paths.items():
             capabilities.append(
                 _capability(
                     f"foundry.{kind}.inventory",
@@ -211,8 +252,9 @@ class FoundryProvider:
                     kind,
                     _operation(f"foundry.{kind}.list"),
                     readiness,
-                    evidence=(f"Configured path: {path!r}.",),
+                    evidence=("A project discovery path is configured.",),
                     reason=reason,
+                    config=self._config,
                 )
             )
         if self._config.responses_path:
@@ -230,6 +272,7 @@ class FoundryProvider:
                     readiness,
                     evidence=("No successful project discovery is available.",),
                     reason=reason,
+                    config=self._config,
                 )
             )
         return tuple(capabilities)
@@ -261,6 +304,7 @@ class FoundryProvider:
                         Readiness.MISCONFIGURED,
                         evidence=("No discovery request was sent.",),
                         reason=f"{kind} discovery path is not configured",
+                        config=self._config,
                     )
                 )
                 continue
@@ -286,6 +330,7 @@ class FoundryProvider:
                         readiness,
                         evidence=(f"Discovery failed with typed error {exc.code}.",),
                         reason=str(exc),
+                        config=self._config,
                     )
                 )
                 continue
@@ -301,8 +346,9 @@ class FoundryProvider:
                     kind,
                     _operation(f"foundry.{kind}.list"),
                     Readiness.READY,
-                    evidence=(f"GET {path} succeeded; {len(items)} resource(s) observed.",),
+                    evidence=(f"Project discovery succeeded; {len(items)} resource(s) observed.",),
                     metadata={"resource_ids": tuple(str(item.get("id") or item.get("name")) for item in items)},
+                    config=self._config,
                 )
             )
             for item in items:
@@ -354,6 +400,7 @@ class FoundryProvider:
                             reason=resource_reason,
                             metadata={"resource_id": resource_id, "source": "untrusted_remote_metadata"},
                             data_boundary=data_boundary,
+                            config=self._config,
                         )
                     )
         if self._config.responses_path:
@@ -386,6 +433,7 @@ class FoundryProvider:
                     evidence=(f"{successful} configured project discovery endpoint(s) succeeded.",),
                     reason=reason,
                     data_boundary="configured Foundry project; app-owned conversation/session state",
+                    config=self._config,
                 )
             )
         return tuple(capabilities)

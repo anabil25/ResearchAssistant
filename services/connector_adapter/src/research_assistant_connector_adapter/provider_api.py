@@ -22,6 +22,7 @@ from research_assistant_connectors.providers import (
     ProviderError,
     ProviderRegistry,
     ProviderValidationError,
+    StaleBindingError,
     UnavailableError,
     ValidationReport,
     bindability_decisions,
@@ -97,6 +98,7 @@ def _instance_json(
     discovery: Any,
     context: InvocationContext,
 ) -> dict[str, Any]:
+    descriptor = discovery.descriptor_for(instance)
     bindability = bindability_decisions(
         discovery,
         instance,
@@ -110,7 +112,11 @@ def _instance_json(
         "descriptor_id": instance.descriptor_id,
         "descriptor_version": instance.descriptor_version,
         "descriptor_digest": instance.descriptor_digest,
-        "instance_fingerprint": capability_instance_fingerprint(instance),
+        "instance_fingerprint": capability_instance_fingerprint(
+            instance,
+            descriptor,
+            policy_ref=context.policy_release,
+        ),
         "name": instance.name,
         "readiness": instance.readiness.value,
         "health": instance.health.value,
@@ -127,6 +133,8 @@ def _instance_json(
         "project_id": instance.project_id,
         "provider_resource_id": instance.provider_resource_id,
         "connection_ref": instance.connection_ref,
+        "auth_mode": instance.auth_mode.value,
+        "connection_scopes": list(instance.connection_scopes),
         "discovered_provider_version": instance.discovered_provider_version,
         "discovered_resource_version": instance.discovered_resource_version,
         "configuration": plain_json(instance.configuration),
@@ -191,7 +199,7 @@ class ProviderService:
 
     def catalog(self) -> dict[str, Any]:
         return {
-            "schema_version": "research-assistant.integration-provider.v4",
+            "schema_version": "research-assistant.integration-provider.v5",
             "providers": [_provider_json(provider.descriptor) for provider in self._registry.providers.values()],
         }
 
@@ -395,6 +403,7 @@ PROVIDER_ERROR_STATUS = {
     "unauthorized": 401,
     "needs_consent": 403,
     "policy": 403,
+    "stale_binding": 409,
     "validation": 422,
     "rate_limit": 429,
     "upstream": 502,
@@ -412,6 +421,15 @@ def provider_error_response(error: ProviderError) -> JSONResponse:
             "instance_id": error.instance_id,
         }
     }
+    if isinstance(error, StaleBindingError):
+        content["error"].update(
+            {
+                "old_fingerprint": error.old_fingerprint,
+                "new_fingerprint": error.new_fingerprint,
+                "changed_categories": [category.value for category in error.changed_categories],
+                "action": "rebind_and_review",
+            }
+        )
     headers = {"Retry-After": str(max(0, int(error.retry_after)))} if error.retry_after is not None else None
     return JSONResponse(
         status_code=PROVIDER_ERROR_STATUS.get(error.code, 500),

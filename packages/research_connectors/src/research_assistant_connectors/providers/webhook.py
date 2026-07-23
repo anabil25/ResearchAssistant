@@ -6,7 +6,7 @@ import json
 import re
 from typing import Any
 
-from ._http import auth_headers, require_endpoint, send, signing_credential
+from ._http import auth_headers, binding_safe_endpoint, require_endpoint, send, signing_credential
 from .config import WebhookConfig
 from .contracts import (
     ApprovalPolicy,
@@ -29,6 +29,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -64,6 +65,14 @@ PROVENANCE = official_provenance(
 )
 
 
+def _destination_policy(url: str | None) -> tuple[str, str]:
+    sanitized, digest = binding_safe_endpoint(
+        url,
+        invalid_label="invalid:webhook-destination",
+    )
+    return sanitized, f"{sanitized}#url-sha256={digest}"
+
+
 class WebhookProvider:
     def __init__(self, config: WebhookConfig) -> None:
         self._config = config
@@ -72,6 +81,7 @@ class WebhookProvider:
             if not config.signing_algorithm or config.auth.mode is AuthMode.SIGNATURE
             else (config.auth.mode, AuthMode.SIGNATURE)
         )
+        self._sanitized_destination, destination_policy = _destination_policy(config.destination_url)
         operation = OperationDescriptor(
             config.operation_id,
             "1.0.0",
@@ -81,7 +91,7 @@ class WebhookProvider:
             OperationClass.PRIVILEGED,
             ApprovalPolicy.REQUIRED,
             external_side_effect=True,
-            side_effect_destinations=(config.destination_url or "unconfigured:webhook-destination",),
+            side_effect_destinations=(destination_policy,),
             idempotency=Idempotency.CALLER_KEY,
             docs=DOCS,
         )
@@ -169,12 +179,26 @@ class WebhookProvider:
                 auth_modes=self._auth_modes,
                 tenant_boundary="configured tenant",
                 data_boundary="single configured destination URL",
-                resource_id=self._config.destination_url or self._config.operation_id,
+                resource_id=self._sanitized_destination,
                 operations=(operation,),
                 provenance=PROVENANCE,
                 status_evidence=("Fixed destination and credential abstraction validated.",),
                 unavailable_reason=reason,
+                configuration={
+                    "provider_endpoint": self._sanitized_destination,
+                    "provider_endpoint_digest": canonical_json_hash(
+                        self._config.destination_url or "unconfigured:webhook-destination"
+                    ),
+                    "method": self._config.method,
+                    "health_method": self._config.health_method,
+                    "signing_algorithm": self._config.signing_algorithm,
+                    "signature_header": self._config.signature_header,
+                    "auth_header_name": self._config.auth.header_name,
+                },
                 descriptor_version="1.1.0",
+                selected_auth_mode=self._config.auth.mode,
+                connection_id=self._config.auth.connection_ref,
+                connection_scopes=self._config.auth.connection_scopes,
             ),
         )
 

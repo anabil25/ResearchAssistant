@@ -7,7 +7,15 @@ from collections.abc import Mapping
 from typing import Any
 from urllib.parse import quote
 
-from ._http import auth_headers, json_object, require_endpoint, safe_url, send, stable_resource_id
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
 from .config import OpenAPIConfig, OpenAPIOperationPolicy
 from .contracts import (
     ApprovalPolicy,
@@ -117,7 +125,7 @@ class OpenAPIProvider:
             "openapi",
             "OpenAPI",
             "Discovers operationId-bearing operations and invokes only the configured API origin.",
-            (AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
+            (AuthMode.NONE, AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
             PROVENANCE,
         )
 
@@ -190,6 +198,10 @@ class OpenAPIProvider:
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
+        safe_endpoint, endpoint_digest = binding_safe_endpoint(
+            self._config.base_url,
+            invalid_label="invalid:openapi-endpoint",
+        )
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
                 "openapi.invoke",
@@ -200,7 +212,9 @@ class OpenAPIProvider:
                 OperationClass.PRIVILEGED,
                 ApprovalPolicy.REQUIRED,
                 external_side_effect=True,
-                side_effect_destinations=(self._config.base_url or "unconfigured:openapi-endpoint",),
+                side_effect_destinations=(
+                    f"{safe_endpoint}#url-sha256={endpoint_digest}",
+                ),
                 docs=DOCS,
             )
             return (
@@ -219,6 +233,14 @@ class OpenAPIProvider:
                     provenance=PROVENANCE,
                     status_evidence=("No OpenAPI document was loaded.",),
                     unavailable_reason="; ".join(validation.reasons),
+                    configuration={
+                        "provider_endpoint": safe_endpoint,
+                        "provider_endpoint_digest": endpoint_digest,
+                        "auth_header_name": self._config.auth.header_name,
+                    },
+                    selected_auth_mode=self._config.auth.mode,
+                    connection_id=self._config.auth.connection_ref,
+                    connection_scopes=self._config.auth.connection_scopes,
                 ),
             )
         policies = {policy.operation_id: policy for policy in self._config.operation_policies}
@@ -246,7 +268,12 @@ class OpenAPIProvider:
                     resource_kind="api_operation",
                     name=operation_id,
                     readiness=Readiness.READY,
-                    auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
+                    auth_modes=(
+                        AuthMode.NONE,
+                        AuthMode.OAUTH,
+                        AuthMode.MANAGED_IDENTITY,
+                        AuthMode.API_KEY,
+                    ),
                     tenant_boundary="configured tenant",
                     data_boundary="configured base URL; document server values are not invocation authority",
                     resource_id=operation_id,
@@ -263,14 +290,26 @@ class OpenAPIProvider:
                             not in {OperationClass.PURE, OperationClass.READ},
                             side_effect_destinations=()
                             if policy.operation_class in {OperationClass.PURE, OperationClass.READ}
-                            else (self._config.base_url or "unconfigured:openapi-endpoint",),
+                            else (
+                                f"{safe_endpoint}#url-sha256={endpoint_digest}",
+                            ),
                             idempotency=idempotency,
                             docs=DOCS,
                         ),
                     ),
                     provenance=PROVENANCE,
                     status_evidence=("operationId found in a validated OpenAPI 3.x document.",),
-                    configuration={"method": method, "path": path, "source": "untrusted_openapi_document"},
+                    configuration={
+                        "method": method,
+                        "path": path,
+                        "provider_endpoint": safe_endpoint,
+                        "provider_endpoint_digest": endpoint_digest,
+                        "auth_header_name": self._config.auth.header_name,
+                        "source": "untrusted_openapi_document",
+                    },
+                    selected_auth_mode=self._config.auth.mode,
+                    connection_id=self._config.auth.connection_ref,
+                    connection_scopes=self._config.auth.connection_scopes,
                 )
             )
         return tuple(capabilities)

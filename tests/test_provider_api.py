@@ -77,6 +77,7 @@ def client() -> Iterator[TestClient]:
         base_context,
         target=capability,
         instance=capability,
+        descriptor=descriptor,
         operation=operation,
         arguments={"event": "updated"},
         decision_id="api-approval",
@@ -86,6 +87,7 @@ def client() -> Iterator[TestClient]:
         base_context,
         target=binding,
         instance=capability,
+        descriptor=descriptor,
         operation=operation,
         arguments={"event": "updated"},
         decision_id="api-binding-approval",
@@ -124,13 +126,15 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
         },
     )
 
-    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v4"
+    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v5"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
     assert instance["bindability"] == [{"operation_id": "publish", "bindable": True, "reason_codes": []}]
     assert instance["config_fingerprint"]
     assert instance["tenant_id"] == "tenant"
     assert instance["project_id"] == "project"
-    assert instance["provider_resource_id"] == "https://hooks.test/events"
+    assert instance["provider_resource_id"] == "https://hooks.test"
+    assert instance["auth_mode"] == "none"
+    assert instance["connection_scopes"] == []
     assert instance["descriptor_digest"] == descriptor["descriptor_digest"]
     assert len(instance["instance_fingerprint"]) == 64
     assert descriptor["operations"][0]["maturity"] == "ga"
@@ -140,7 +144,9 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
     assert len(descriptor["operations"][0]["output_schema_digest"]) == 64
     assert descriptor["operations"][0]["operation_class"] == "privileged"
     assert descriptor["operations"][0]["approval_policy"] == "required"
-    assert descriptor["operations"][0]["side_effect_destinations"] == ["https://hooks.test/events"]
+    assert descriptor["operations"][0]["side_effect_destinations"][0].startswith(
+        "https://hooks.test#url-sha256="
+    )
     assert validation.json()["readiness"] == "ready"
     assert health.json()["readiness"] == "ready"
     assert invoked.status_code == 200
@@ -217,15 +223,29 @@ def test_provider_api_rejects_unknown_runtime_and_model_supplied_approval(
         content=('{"instance_id":"webhook.publish","operation_id":"publish","arguments":{"event":NaN}}'),
         headers={"content-type": "application/json"},
     )
-    injected_approval = client.post(
-        "/v1/providers/webhook/invoke",
-        json={
-            "instance_id": "webhook.publish",
-            "operation_id": "publish",
-            "arguments": {},
-            "approved_instance_ids": ["webhook.publish"],
-        },
-    )
+    server_only_fields = {
+        "approved_instance_ids": ["webhook.publish"],
+        "approval_decisions": [],
+        "context": {},
+        "tenant_id": "tenant",
+        "principal_id": "principal",
+        "project_id": "project",
+        "policy_release": "agent-studio-v1",
+        "credential": {},
+        "destinations": ["https://hooks.test"],
+    }
+    injected_context = [
+        client.post(
+            "/v1/providers/webhook/invoke",
+            json={
+                "instance_id": "webhook.publish",
+                "operation_id": "publish",
+                "arguments": {},
+                field_name: value,
+            },
+        )
+        for field_name, value in server_only_fields.items()
+    ]
     original = app.state.provider_service
     app.state.provider_service = object()
     unavailable = client.get("/v1/providers")
@@ -240,8 +260,56 @@ def test_provider_api_rejects_unknown_runtime_and_model_supplied_approval(
     assert mismatched_operation.json()["error"]["code"] == "validation"
     assert non_finite_arguments.status_code == 422
     assert non_finite_arguments.json()["error"]["code"] == "validation"
-    assert injected_approval.status_code == 422
+    assert {response.status_code for response in injected_context} == {422}
     assert unavailable.status_code == 503
+
+
+def test_provider_api_returns_sanitized_stale_binding_conflict(client: TestClient) -> None:
+    old_provider = WebhookProvider(
+        WebhookConfig("https://old.hooks.test/events", "tenant", "publish", health_method=None)
+    )
+    current_provider = WebhookProvider(
+        WebhookConfig("https://current.hooks.test/events", "tenant", "publish", health_method=None)
+    )
+    request_context = context(lambda _: httpx.Response(200))
+    old_discovery = old_provider.discover(request_context)
+    old_instance = old_discovery[0]
+    old_descriptor = old_discovery.descriptor_for(old_instance)
+    stale_binding = capability_binding(
+        binding_id="stale-binding",
+        instance=old_instance,
+        descriptor=old_descriptor,
+        operation=old_descriptor.operations[0],
+        policy_ref=request_context.policy_release,
+    )
+    original = app.state.provider_service
+    app.state.provider_service = ProviderService(
+        ProviderRegistry((current_provider,)),
+        lambda _provider_id, _request: request_context,
+        lambda _provider_id, _binding_id, _request: stale_binding,
+    )
+    try:
+        response = client.get(
+            "/v1/providers/webhook/instances/webhook.publish/validation",
+            params={"binding_id": "stale-binding"},
+        )
+    finally:
+        app.state.provider_service = original
+
+    payload = response.json()["error"]
+    assert response.status_code == 409
+    assert payload["code"] == "stale_binding"
+    assert payload["action"] == "rebind_and_review"
+    assert payload["old_fingerprint"] == stale_binding.instance_fingerprint
+    assert len(payload["new_fingerprint"]) == 64
+    assert payload["changed_categories"] == [
+        "descriptor",
+        "operations",
+        "instance",
+        "destinations",
+        "configuration",
+    ]
+    assert "old.hooks.test" not in json.dumps(payload)
 
 
 def test_provider_api_without_context_and_error_mapping() -> None:

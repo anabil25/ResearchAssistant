@@ -9,8 +9,15 @@ from typing import Any
 
 import httpx
 
-from ._http import auth_headers, json_object, require_endpoint, send, stable_resource_id
-from .config import MCPConfig, MCPToolPolicy
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    json_object,
+    require_endpoint,
+    send,
+    stable_resource_id,
+)
+from .config import AuthConfig, MCPConfig, MCPToolPolicy
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
@@ -33,6 +40,7 @@ from .contracts import (
     UpstreamError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -74,7 +82,13 @@ def _tool_capability(
     *,
     metadata: Mapping[str, Any],
     destination: str,
+    protocol_version: str,
+    auth: AuthConfig,
 ) -> CapabilityRecord:
+    safe_destination, destination_digest = binding_safe_endpoint(
+        destination,
+        invalid_label="invalid:mcp-endpoint",
+    )
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("mcp.tool", name),
@@ -96,7 +110,9 @@ def _tool_capability(
                 policy.operation_class,
                 policy.approval_policy,
                 external_side_effect=policy.operation_class not in {OperationClass.PURE, OperationClass.READ},
-                side_effect_destinations=(destination,),
+                side_effect_destinations=(
+                    f"{safe_destination}#url-sha256={destination_digest}",
+                ),
                 idempotency=policy.idempotency,
                 max_retries=1
                 if policy.operation_class is not OperationClass.WRITE_IRREVERSIBLE
@@ -110,8 +126,18 @@ def _tool_capability(
         ),
         provenance=PROVENANCE,
         status_evidence=("Tool returned by a protocol-valid tools/list response.",),
-        configuration={"tool_name": name, "untrusted_tool_metadata": metadata},
+        configuration={
+            "tool_name": name,
+            "provider_endpoint": safe_destination,
+            "provider_endpoint_digest": destination_digest,
+            "protocol_version_digest": canonical_json_hash(protocol_version),
+            "auth_header_name": auth.header_name,
+            "untrusted_tool_metadata_digest": canonical_json_hash(metadata),
+        },
         descriptor_version="1.1.0",
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
     )
 
 
@@ -348,6 +374,10 @@ class MCPStreamableHTTPProvider:
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
+        safe_endpoint, endpoint_digest = binding_safe_endpoint(
+            self._config.endpoint,
+            invalid_label="invalid:mcp-endpoint",
+        )
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
                 "mcp.tools.call",
@@ -358,7 +388,9 @@ class MCPStreamableHTTPProvider:
                 OperationClass.PRIVILEGED,
                 ApprovalPolicy.REQUIRED,
                 external_side_effect=True,
-                side_effect_destinations=(self._config.endpoint or "unconfigured:mcp-endpoint",),
+                side_effect_destinations=(
+                    f"{safe_endpoint}#url-sha256={endpoint_digest}",
+                ),
                 docs=DOCS,
             )
             return (
@@ -377,6 +409,15 @@ class MCPStreamableHTTPProvider:
                     provenance=PROVENANCE,
                     status_evidence=("No MCP initialization request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
+                    configuration={
+                        "provider_endpoint": safe_endpoint,
+                        "provider_endpoint_digest": endpoint_digest,
+                        "protocol_version_digest": canonical_json_hash(self._config.protocol_version),
+                        "auth_header_name": self._config.auth.header_name,
+                    },
+                    selected_auth_mode=self._config.auth.mode,
+                    connection_id=self._config.auth.connection_ref,
+                    connection_scopes=self._config.auth.connection_scopes,
                 ),
             )
         self._initialize_with_session(context)
@@ -403,6 +444,8 @@ class MCPStreamableHTTPProvider:
                         "annotations": tool.get("annotations"),
                     },
                     destination=self._config.endpoint or "unconfigured:mcp-endpoint",
+                    protocol_version=self._config.protocol_version,
+                    auth=self._config.auth,
                 )
             )
         return tuple(capabilities)

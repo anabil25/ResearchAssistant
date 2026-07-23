@@ -17,6 +17,7 @@ from research_assistant_connectors.providers import (
     AuthMode,
     BindabilityDecision,
     BindabilityReason,
+    BindingChangeCategory,
     BlobConfig,
     CapabilityDescriptor,
     CapabilityInstance,
@@ -49,6 +50,7 @@ from research_assistant_connectors.providers import (
     RateLimitError,
     Readiness,
     SearchConfig,
+    StaleBindingError,
     ToolRegistration,
     UnauthorizedError,
     UnavailableError,
@@ -76,6 +78,7 @@ from research_assistant_connectors.providers._http import (
 from research_assistant_connectors.providers.contracts import (
     audit_metadata,
     capability_instance,
+    capability_operations_digest,
     discovery_result,
     find_operation,
     official_provenance,
@@ -180,7 +183,7 @@ def capability(
             last_verified_at="2026-07-23T08:37:02Z",
         ),
         descriptor_metadata={"nested": {"items": [1, 2]}},
-        configuration={"nested": {"items": [1, 2]}},
+        configuration={"request_limits": {"max_upload_bytes": 2}},
         status_evidence=("tested",),
         unavailable_reason=None if readiness is Readiness.READY else "not ready",
         discovered_version="1.0.0",
@@ -200,11 +203,346 @@ def discovery(instance: CapabilityInstance) -> DiscoveryResult:
     return discovery_result((CapabilityRecord(descriptor_of(instance), instance),))
 
 
+def test_instance_fingerprint_is_canonical_secret_free_and_ignores_volatile_state() -> None:
+    config = {
+        "provider_endpoint": "https://provider.test",
+        "request_limits": {"max_upload_bytes": 2},
+    }
+    first_operation = replace(
+        operation(operation_id="z.read"),
+        least_privilege_scopes=("scope.z", "scope.a"),
+        least_privilege_roles=("Role Z", "Role A"),
+        docs=("https://example.test/z", "https://example.test/a"),
+        audit_events=("completed", "started"),
+    )
+    second_operation = operation(operation_id="a.read")
+
+    def record(
+        *,
+        operations: tuple[OperationDescriptor, ...],
+        auth_modes: tuple[AuthMode, ...],
+        scopes: tuple[str, ...],
+        destinations: tuple[str, ...],
+        configuration: Mapping[str, Any],
+    ) -> CapabilityRecord:
+        return capability_instance(
+            provider_id="provider",
+            instance_id="canonical",
+            descriptor_id="canonical-descriptor",
+            family="family",
+            resource_kind="resource",
+            name="Canonical",
+            readiness=Readiness.READY,
+            auth_modes=auth_modes,
+            selected_auth_mode=AuthMode.OAUTH,
+            tenant_boundary="tenant",
+            data_boundary="project",
+            resource_id="/resources/canonical",
+            connection_id="connection",
+            connection_scopes=scopes,
+            allowed_destination_constraints=destinations,
+            operations=operations,
+            provenance=official_provenance(
+                ("https://example.test/docs-b", "https://example.test/docs-a"),
+                source_version="test-v1",
+                last_verified_at="2026-07-23T08:37:02Z",
+            ),
+            configuration=configuration,
+            status_evidence=("tested",),
+        )
+
+    first = record(
+        operations=(first_operation, second_operation),
+        auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
+        scopes=("scope.z", "scope.a"),
+        destinations=("https://z.test", "https://a.test"),
+        configuration=config,
+    )
+    second = record(
+        operations=(second_operation, first_operation),
+        auth_modes=(AuthMode.MANAGED_IDENTITY, AuthMode.OAUTH),
+        scopes=("scope.a", "scope.z"),
+        destinations=("https://a.test", "https://z.test"),
+        configuration={
+            "request_limits": {"max_upload_bytes": 2},
+            "provider_endpoint": "https://provider.test",
+        },
+    )
+    first_hash = capability_instance_fingerprint(
+        first.instance,
+        first.descriptor,
+        policy_ref="policy-v1",
+    )
+    second_hash = capability_instance_fingerprint(
+        second.instance,
+        second.descriptor,
+        policy_ref="policy-v1",
+    )
+    assert first_hash == second_hash
+    assert first.descriptor.descriptor_digest == second.descriptor.descriptor_digest
+    assert first_hash == first_hash.lower() and len(first_hash) == 64
+    refreshed_descriptor = replace(
+        first.descriptor,
+        provenance=tuple(
+            replace(record, last_verified_at="2026-07-24T08:37:02Z")
+            for record in first.descriptor.provenance
+        ),
+    )
+    refreshed_instance = replace(
+        first.instance,
+        descriptor_digest=refreshed_descriptor.descriptor_digest,
+    )
+    assert refreshed_descriptor.descriptor_digest == first.descriptor.descriptor_digest
+    assert (
+        capability_instance_fingerprint(
+            refreshed_instance,
+            refreshed_descriptor,
+            policy_ref="policy-v1",
+        )
+        == first_hash
+    )
+
+    config["provider_endpoint"] = "https://mutated.test"
+    config["request_limits"]["max_upload_bytes"] = 3  # type: ignore[index]
+    assert (
+        capability_instance_fingerprint(
+            first.instance,
+            first.descriptor,
+            policy_ref="policy-v1",
+        )
+        == first_hash
+    )
+    volatile = replace(
+        first.instance,
+        readiness=Readiness.DEGRADED,
+        health=Readiness.UNAVAILABLE,
+        unavailable_reason="temporary outage",
+        last_checked_at="2026-07-24T08:37:02Z",
+        config_validated=False,
+    )
+    assert (
+        capability_instance_fingerprint(
+            volatile,
+            first.descriptor,
+            policy_ref="policy-v1",
+        )
+        == first_hash
+    )
+    with pytest.raises(ValueError, match="non-binding-safe"):
+        replace(first.instance, configuration={"access_token": "do-not-store"}, config_fingerprint="")
+    with pytest.raises(ValueError, match="non-binding-safe"):
+        replace(
+            first.instance,
+            configuration={"request_limits": [{"Authorization": "do-not-store"}]},
+            config_fingerprint="",
+        )
+    with pytest.raises(ValueError, match="connection scopes"):
+        replace(first.instance, connection_scopes=("scope", "scope"))
+    with pytest.raises(ValueError, match="selected auth mode"):
+        capability_instance(
+            provider_id="provider",
+            instance_id="ambiguous-auth",
+            family="family",
+            resource_kind="resource",
+            name="Ambiguous auth",
+            readiness=Readiness.READY,
+            auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
+            tenant_boundary="tenant",
+            data_boundary="project",
+            operations=(operation(),),
+            provenance=first.descriptor.provenance,
+            status_evidence=("tested",),
+        )
+    with pytest.raises(ValueError, match="descriptor reference"):
+        capability_instance_fingerprint(
+            first.instance,
+            replace(first.descriptor, descriptor_id="other"),
+            policy_ref="policy-v1",
+        )
+    with pytest.raises(ValueError, match="policy reference"):
+        capability_instance_fingerprint(first.instance, first.descriptor, policy_ref="")
+
+
+def test_stale_binding_reports_deterministic_non_secret_change_categories() -> None:
+    instance = capability()
+    descriptor = descriptor_of(instance)
+    operation_descriptor = descriptor.operations[0]
+    binding = capability_binding(
+        binding_id="binding",
+        instance=instance,
+        descriptor=descriptor,
+        operation=operation_descriptor,
+        policy_ref="policy-v1",
+    )
+    changes = (
+        (
+            replace(instance, provider_resource_id="changed-resource"),
+            descriptor,
+            None,
+            (BindingChangeCategory.INSTANCE,),
+        ),
+        (
+            replace(instance, discovered_resource_version="2.0.0"),
+            descriptor,
+            None,
+            (BindingChangeCategory.INSTANCE,),
+        ),
+        (
+            replace(instance, tenant_id="other-tenant"),
+            descriptor,
+            None,
+            (BindingChangeCategory.BOUNDARY,),
+        ),
+        (
+            replace(
+                instance,
+                connection_ref="other-connection",
+                auth_mode=AuthMode.OAUTH,
+                connection_scopes=("scope.read",),
+            ),
+            descriptor,
+            None,
+            (BindingChangeCategory.CONNECTION,),
+        ),
+        (
+            replace(instance, allowed_destination_constraints=("https://destination.test",)),
+            descriptor,
+            None,
+            (BindingChangeCategory.DESTINATIONS,),
+        ),
+        (
+            replace(instance, configuration={"source": "changed"}, config_fingerprint=""),
+            descriptor,
+            None,
+            (BindingChangeCategory.CONFIGURATION,),
+        ),
+        (
+            instance,
+            descriptor,
+            "policy-v2",
+            (BindingChangeCategory.POLICY,),
+        ),
+    )
+    for current, current_descriptor, policy_ref, expected in changes:
+        with pytest.raises(StaleBindingError) as caught:
+            validate_binding(
+                current,
+                current_descriptor,
+                binding,
+                policy_ref=policy_ref,
+            )
+        assert caught.value.old_fingerprint == binding.instance_fingerprint
+        assert caught.value.new_fingerprint != binding.instance_fingerprint
+        assert caught.value.changed_categories == expected
+        assert "source" not in str(caught.value)
+
+    changed_operation = replace(operation_descriptor, input_schema={"type": "object"})
+    changed_descriptor = replace(descriptor, operations=(changed_operation,))
+    changed_instance = replace(
+        instance,
+        descriptor_digest=changed_descriptor.descriptor_digest,
+    )
+    with pytest.raises(StaleBindingError) as operation_change:
+        validate_binding(changed_instance, changed_descriptor, binding)
+    assert operation_change.value.changed_categories == (
+        BindingChangeCategory.DESCRIPTOR,
+        BindingChangeCategory.OPERATIONS,
+    )
+    renamed_descriptor = replace(descriptor, name="Renamed descriptor")
+    renamed_instance = replace(
+        instance,
+        descriptor_digest=renamed_descriptor.descriptor_digest,
+    )
+    with pytest.raises(StaleBindingError) as descriptor_change:
+        validate_binding(renamed_instance, renamed_descriptor, binding)
+    assert descriptor_change.value.changed_categories == (BindingChangeCategory.DESCRIPTOR,)
+    with pytest.raises(StaleBindingError) as provider_change:
+        validate_binding(
+            instance,
+            descriptor,
+            replace(binding, provider_id="other", instance_fingerprint="0" * 64),
+        )
+    assert provider_change.value.changed_categories == (BindingChangeCategory.PROVIDER,)
+    with pytest.raises(ValueError, match="different provider"):
+        validate_binding(instance, descriptor, replace(binding, provider_id="other"))
+    with pytest.raises(ValueError, match="tenant or project"):
+        validate_binding(instance, descriptor, replace(binding, tenant_id="other"))
+    with pytest.raises(ValueError, match="discovered instance version"):
+        validate_binding(
+            instance,
+            descriptor,
+            replace(binding, instance_discovered_resource_version="other"),
+        )
+    with pytest.raises(ValueError, match="connection scopes"):
+        replace(binding, connection_scopes=("scope", "scope"))
+    with pytest.raises(ValueError, match="non-empty and unique"):
+        StaleBindingError(
+            provider_id="provider",
+            instance_id="capability",
+            old_fingerprint="0" * 64,
+            new_fingerprint="1" * 64,
+            changed_categories=(),
+        )
+
+
+def test_raw_instance_drift_reports_each_changed_field_category() -> None:
+    original = capability()
+    cases = (
+        (replace(original, provider_id="other"), BindingChangeCategory.PROVIDER),
+        (replace(original, provider_resource_id="other"), BindingChangeCategory.INSTANCE),
+        (replace(original, discovered_provider_version="2.0.0"), BindingChangeCategory.INSTANCE),
+        (replace(original, discovered_resource_version="2.0.0"), BindingChangeCategory.INSTANCE),
+        (replace(original, tenant_id="other"), BindingChangeCategory.BOUNDARY),
+        (replace(original, project_id="other"), BindingChangeCategory.BOUNDARY),
+        (
+            replace(original, connection_ref="other", auth_mode=AuthMode.OAUTH),
+            BindingChangeCategory.CONNECTION,
+        ),
+        (replace(original, auth_mode=AuthMode.OAUTH), BindingChangeCategory.CONNECTION),
+        (
+            replace(original, connection_scopes=("scope.read",)),
+            BindingChangeCategory.CONNECTION,
+        ),
+        (
+            replace(original, allowed_destination_constraints=("https://destination.test",)),
+            BindingChangeCategory.DESTINATIONS,
+        ),
+        (
+            replace(original, configuration={"source": "changed"}, config_fingerprint=""),
+            BindingChangeCategory.CONFIGURATION,
+        ),
+    )
+    for current, category in cases:
+        _DESCRIPTORS[current.descriptor_digest] = descriptor_of(original)
+        with pytest.raises(StaleBindingError) as caught:
+            resolve_capability_target(
+                discovery(current),
+                original,
+                provider_id="provider",
+                policy_ref="policy-v1",
+            )
+        assert category in caught.value.changed_categories
+
+    renamed_descriptor = replace(descriptor_of(original), name="Renamed descriptor")
+    renamed_instance = replace(original, descriptor_digest=renamed_descriptor.descriptor_digest)
+    renamed_discovery = discovery_result(
+        (CapabilityRecord(renamed_descriptor, renamed_instance),)
+    )
+    with pytest.raises(StaleBindingError) as descriptor_drift:
+        resolve_capability_target(
+            renamed_discovery,
+            original,
+            provider_id="provider",
+            policy_ref="policy-v1",
+        )
+    assert descriptor_drift.value.changed_categories == (BindingChangeCategory.DESCRIPTOR,)
+
+
 def test_descriptor_contracts_are_deeply_immutable_and_validate_invariants() -> None:
     instance = capability()
     descriptor = descriptor_of(instance)
     assert descriptor.metadata["nested"]["items"] == (1, 2)
-    assert instance.configuration["nested"]["items"] == (1, 2)
+    assert instance.configuration["request_limits"]["max_upload_bytes"] == 2
     with pytest.raises(TypeError):
         descriptor.metadata["new"] = "value"  # type: ignore[index]
     with pytest.raises(TypeError):
@@ -275,7 +613,7 @@ def test_discovery_provenance_and_instance_state_invariants() -> None:
     with pytest.raises(ValueError, match="configuration fingerprint"):
         replace(
             instance,
-            configuration={"changed": True},
+            configuration={"source": "changed"},
             config_fingerprint=instance.config_fingerprint,
         )
 
@@ -351,13 +689,16 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
         (replace(binding, descriptor_id="other"), "different descriptor"),
         (replace(binding, operation_id="other"), "not declared"),
         (replace(binding, operation_version="2.0.0"), "not declared"),
-        (replace(binding, instance_fingerprint="0" * 64), "changed instance"),
+        (replace(binding, operations_digest="0" * 64), "operation set digest"),
         (replace(binding, connection_ref="other"), "connection reference"),
         (replace(binding, input_schema_digest="0" * 64), "input schema digest"),
         (replace(binding, output_schema_digest="0" * 64), "output schema digest"),
     ):
         with pytest.raises(ValueError, match=message):
             validate_binding(instance, descriptor, changed)
+    with pytest.raises(StaleBindingError) as stale:
+        validate_binding(instance, descriptor, replace(binding, instance_fingerprint="0" * 64))
+    assert stale.value.changed_categories == (BindingChangeCategory.DESCRIPTOR,)
     with pytest.raises(ValueError, match="config hash"):
         replace(binding, config_hash="0" * 64)
     with pytest.raises(ValueError, match="destination constraints"):
@@ -374,7 +715,12 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
         descriptor_id=preview.descriptor_id,
         descriptor_digest=preview.descriptor_digest,
         descriptor_version=preview.descriptor_version,
-        instance_fingerprint=capability_instance_fingerprint(preview),
+        operations_digest=capability_operations_digest(preview_descriptor),
+        instance_fingerprint=capability_instance_fingerprint(
+            preview,
+            preview_descriptor,
+            policy_ref=binding.policy_ref,
+        ),
     )
     with pytest.raises(ValueError, match="Only GA"):
         validate_binding(preview, preview_descriptor, preview_binding)
@@ -393,7 +739,14 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
         )
 
     changed_instance = replace(instance, provider_resource_id="changed")
-    assert capability_instance_fingerprint(changed_instance) != binding.instance_fingerprint
+    assert (
+        capability_instance_fingerprint(
+            changed_instance,
+            descriptor,
+            policy_ref=binding.policy_ref,
+        )
+        != binding.instance_fingerprint
+    )
 
     async def handler(
         arguments: Mapping[str, Any],
@@ -425,11 +778,33 @@ def test_migration_lock_policy_scope_cancellation_and_bindability_edges() -> Non
         operation=operation_descriptor,
         policy_ref="agent-studio-v1",
     )
+    unsupported_auth = replace(
+        instance,
+        auth_mode=AuthMode.OAUTH,
+        connection_ref="oauth-connection",
+        connection_scopes=("scope.read",),
+    )
+    with pytest.raises(ValueError, match="authentication mode"):
+        capability_binding(
+            binding_id="unsupported-auth",
+            instance=unsupported_auth,
+            descriptor=descriptor,
+            operation=operation_descriptor,
+            policy_ref="agent-studio-v1",
+        )
+    with pytest.raises(PolicyError, match="authentication mode"):
+        find_operation(
+            discovery(unsupported_auth),
+            InvocationRequest(unsupported_auth, operation_descriptor.operation_id, {"value": "ok"}),
+            context(),
+            provider_id="provider",
+            tenant_id="tenant",
+        )
 
-    with pytest.raises(ValueError, match="secrets"):
-        secret_config: dict[str, Any] = {"nested": {"api_token": "sensitive"}}
+    with pytest.raises(ValueError, match="non-binding-safe"):
+        secret_config: dict[str, Any] = {"request_limits": [{"Authorization": "sensitive"}]}
         replace(binding, config=secret_config, config_hash=canonical_json_hash(secret_config))
-    with pytest.raises(ValueError, match="secrets"):
+    with pytest.raises(ValueError, match="non-binding-safe"):
         secret_config = {"password": "sensitive"}
         replace(binding, config=secret_config, config_hash=canonical_json_hash(secret_config))
     with pytest.raises(ValueError, match="evaluated policy"):
@@ -501,7 +876,7 @@ def test_migration_lock_policy_scope_cancellation_and_bindability_edges() -> Non
         policy_ref="agent-studio-v1",
     )[0].bindable
 
-    different_config = {"different": True}
+    different_config = {"source": "different"}
     with pytest.raises(ValueError, match="configuration reference"):
         validate_binding(
             instance,
@@ -525,7 +900,14 @@ def test_migration_lock_policy_scope_cancellation_and_bindability_edges() -> Non
         validate_binding(
             unvalidated_instance,
             descriptor,
-            replace(binding, instance_fingerprint=capability_instance_fingerprint(unvalidated_instance)),
+            replace(
+                binding,
+                instance_fingerprint=capability_instance_fingerprint(
+                    unvalidated_instance,
+                    descriptor,
+                    policy_ref=binding.policy_ref,
+                ),
+            ),
         )
     with pytest.raises(ValueError, match="destination constraints"):
         validate_binding(
@@ -726,6 +1108,7 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
         ctx,
         target=approval_cap,
         instance=approval_cap,
+        descriptor=descriptor_of(approval_cap),
         operation=descriptor_of(approval_cap).operations[0],
         arguments=approval_request.arguments,
         decision_id="decision",
@@ -775,6 +1158,7 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
                 out_of_scope,
                 target=binding,
                 instance=instance,
+                descriptor=descriptor,
                 operation=operation_descriptor,
                 arguments=request.arguments,
                 decision_id="out-of-scope",
@@ -784,6 +1168,7 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
         ctx,
         target=binding,
         instance=instance,
+        descriptor=descriptor,
         operation=operation_descriptor,
         arguments=request.arguments,
         decision_id="decision",
@@ -856,20 +1241,22 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
         replace(decision, arguments_hash="bad")
     with pytest.raises(ValueError, match="match the capability binding"):
         replace(request, operation_id="other")
-    stale = replace(instance, configuration={"changed": True}, config_fingerprint="")
+    stale = replace(instance, configuration={"source": "changed"}, config_fingerprint="")
     _DESCRIPTORS[stale.descriptor_digest] = descriptor
-    with pytest.raises(PolicyError, match="changed"):
+    with pytest.raises(StaleBindingError) as stale_instance:
         resolve_capability_target(
             discovery(stale),
             instance,
             provider_id="provider",
         )
-    with pytest.raises(PolicyError, match="changed instance configuration"):
+    assert stale_instance.value.changed_categories == (BindingChangeCategory.CONFIGURATION,)
+    with pytest.raises(StaleBindingError) as stale_binding:
         resolve_capability_target(
             discovery(stale),
             binding,
             provider_id="provider",
         )
+    assert stale_binding.value.changed_categories == (BindingChangeCategory.CONFIGURATION,)
 
 
 def test_retry_policy_never_replays_streams_or_irreversible_writes() -> None:

@@ -7,8 +7,16 @@ from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
-from ._http import auth_headers, json_object, require_endpoint, safe_url, send, stable_resource_id
-from .config import GitHubConfig
+from ._http import (
+    auth_headers,
+    binding_safe_endpoint,
+    json_object,
+    require_endpoint,
+    safe_url,
+    send,
+    stable_resource_id,
+)
+from .config import AuthConfig, GitHubConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
@@ -30,6 +38,7 @@ from .contracts import (
     UpstreamError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -124,8 +133,17 @@ def _repo_capability(
     suffix: str,
     operations: tuple[OperationDescriptor, ...],
     endpoint: str,
+    api_version: str,
+    auth: AuthConfig,
 ) -> CapabilityRecord:
-    destination = f"{endpoint.rstrip('/')}/repos/{full_name}/issues"
+    safe_endpoint, endpoint_digest = binding_safe_endpoint(
+        endpoint,
+        invalid_label="invalid:github-endpoint",
+    )
+    destination = (
+        f"{safe_endpoint}/repos/{full_name}/issues"
+        f"#endpoint-sha256={endpoint_digest}"
+    )
     bound_operations = tuple(
         replace(operation, external_side_effect=True, side_effect_destinations=(destination,))
         if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
@@ -139,14 +157,26 @@ def _repo_capability(
         resource_kind="repository",
         name=f"{full_name} {suffix}",
         readiness=Readiness.READY,
-        auth_modes=(AuthMode.OAUTH, AuthMode.GITHUB_APP),
+        auth_modes=(
+            (AuthMode.OAUTH, AuthMode.GITHUB_APP)
+            if suffix == "issues-write"
+            else (AuthMode.NONE, AuthMode.OAUTH, AuthMode.GITHUB_APP)
+        ),
         tenant_boundary="configured organization/account and application installation",
         data_boundary=f"repository {full_name}",
         resource_id=full_name,
         operations=bound_operations,
         provenance=PROVENANCE,
         status_evidence=("Repository returned by an authenticated GitHub REST discovery request.",),
-        configuration={"full_name": full_name},
+        configuration={
+            "full_name": full_name,
+            "provider_endpoint": safe_endpoint,
+            "provider_endpoint_digest": endpoint_digest,
+            "api_version_digest": canonical_json_hash(api_version),
+        },
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
     )
 
 
@@ -158,7 +188,7 @@ class GitHubProvider:
             "github",
             "GitHub REST",
             "Discovers repositories and exposes selected GA repository and issue operations.",
-            (AuthMode.OAUTH, AuthMode.GITHUB_APP),
+            (AuthMode.NONE, AuthMode.OAUTH, AuthMode.GITHUB_APP),
             PROVENANCE,
         )
 
@@ -194,6 +224,10 @@ class GitHubProvider:
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
+        safe_endpoint, endpoint_digest = binding_safe_endpoint(
+            self._config.endpoint,
+            invalid_label="invalid:github-endpoint",
+        )
         if validation.readiness is not Readiness.READY:
             operation = READ_OPERATIONS[0]
             return (
@@ -212,6 +246,14 @@ class GitHubProvider:
                     provenance=PROVENANCE,
                     status_evidence=("No repository discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
+                    configuration={
+                        "provider_endpoint": safe_endpoint,
+                        "provider_endpoint_digest": endpoint_digest,
+                        "api_version_digest": canonical_json_hash(self._config.api_version),
+                    },
+                    selected_auth_mode=self._config.auth.mode,
+                    connection_id=self._config.auth.connection_ref,
+                    connection_scopes=self._config.auth.connection_scopes,
                 ),
             )
         path = f"/orgs/{quote(self._config.owner, safe='')}/repos" if self._config.owner else "/user/repos"
@@ -245,12 +287,16 @@ class GitHubProvider:
                         "read",
                         READ_OPERATIONS,
                         require_endpoint(self._config.endpoint),
+                        self._config.api_version,
+                        self._config.auth,
                     ),
                     _repo_capability(
                         full_name,
                         "issues-write",
                         (CREATE_ISSUE, CREATE_COMMENT),
                         require_endpoint(self._config.endpoint),
+                        self._config.api_version,
+                        self._config.auth,
                     ),
                 )
             )

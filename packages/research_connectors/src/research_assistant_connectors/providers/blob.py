@@ -15,6 +15,7 @@ from defusedxml import ElementTree
 from ._http import (
     auth_headers,
     base64_encoded_length,
+    binding_safe_endpoint,
     decode_base64_limited,
     request_signing_credential,
     require_endpoint,
@@ -22,7 +23,7 @@ from ._http import (
     send,
     stable_resource_id,
 )
-from .config import BlobConfig
+from .config import AuthConfig, BlobConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
@@ -44,6 +45,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    canonical_json_hash,
     capability_instance,
     discovery_result,
     find_operation,
@@ -136,7 +138,13 @@ def _container_capability(
     evidence: tuple[str, ...],
     endpoint: str,
     max_upload_bytes: int,
+    api_version: str,
+    auth: AuthConfig,
 ) -> CapabilityRecord:
+    safe_endpoint, endpoint_digest = binding_safe_endpoint(
+        endpoint,
+        invalid_label="invalid:blob-endpoint",
+    )
     return capability_instance(
         provider_id=PROVIDER_ID,
         instance_id=stable_resource_id("blob.container", name),
@@ -154,13 +162,25 @@ def _container_capability(
             replace(
                 _put_operation(max_upload_bytes),
                 external_side_effect=True,
-                side_effect_destinations=(f"{endpoint.rstrip('/')}/{quote(name, safe='')}",),
+                side_effect_destinations=(
+                    f"{safe_endpoint}/{quote(name, safe='')}#endpoint-sha256={endpoint_digest}",
+                ),
             ),
         ),
         provenance=PROVENANCE,
         status_evidence=evidence,
         unavailable_reason=reason,
-        configuration={"container": name, "max_upload_bytes": max_upload_bytes},
+        configuration={
+            "container": name,
+            "max_upload_bytes": max_upload_bytes,
+            "provider_endpoint": safe_endpoint,
+            "provider_endpoint_digest": endpoint_digest,
+            "api_version_digest": canonical_json_hash(api_version),
+            "auth_header_name": auth.header_name,
+        },
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
         descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}},
         descriptor_version="1.1.0",
     )
@@ -244,6 +264,8 @@ class AzureBlobProvider:
                     ("No container discovery request was sent.",),
                     self._config.endpoint or "unconfigured:blob-endpoint",
                     self._config.max_upload_bytes,
+                    self._config.api_version,
+                    self._config.auth,
                 ),
             )
         endpoint = require_endpoint(self._config.endpoint)
@@ -267,6 +289,8 @@ class AzureBlobProvider:
                 ("Container returned by successful Blob service discovery.",),
                 endpoint,
                 self._config.max_upload_bytes,
+                self._config.api_version,
+                self._config.auth,
             )
             for name in self._xml_names(response.content, "Container/Name")
         )

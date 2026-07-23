@@ -10,6 +10,7 @@ from urllib.parse import quote
 from ._http import (
     auth_headers,
     base64_encoded_length,
+    binding_safe_endpoint,
     collection,
     decode_base64_limited,
     json_object,
@@ -18,7 +19,7 @@ from ._http import (
     send,
     stable_resource_id,
 )
-from .config import GraphConfig
+from .config import AuthConfig, GraphConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
@@ -150,17 +151,27 @@ def _capability(
     metadata: Mapping[str, Any],
     endpoint: str,
     max_upload_bytes: int,
+    auth: AuthConfig,
 ) -> CapabilityRecord:
+    safe_endpoint, endpoint_digest = binding_safe_endpoint(
+        endpoint,
+        invalid_label="invalid:graph-endpoint",
+    )
     drive_id = metadata.get("drive_id")
     has_upload = any(operation.operation_id == "graph.drive.content.put" for operation in operations)
     configuration = dict(metadata)
+    configuration["provider_endpoint"] = safe_endpoint
+    configuration["provider_endpoint_digest"] = endpoint_digest
     if has_upload:
         configuration["max_upload_bytes"] = max_upload_bytes
     bound_operations = tuple(
         replace(
             operation,
             external_side_effect=True,
-            side_effect_destinations=(f"{endpoint.rstrip('/')}/drives/{quote(str(drive_id), safe='')}/root",),
+            side_effect_destinations=(
+                f"{safe_endpoint}/drives/{quote(str(drive_id), safe='')}/root"
+                f"#endpoint-sha256={endpoint_digest}",
+            ),
         )
         if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
         else operation
@@ -185,6 +196,9 @@ def _capability(
         configuration=configuration,
         descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}} if has_upload else {},
         descriptor_version="1.1.0" if has_upload else "1.0.0",
+        selected_auth_mode=auth.mode,
+        connection_id=auth.connection_ref,
+        connection_scopes=auth.connection_scopes,
     )
 
 
@@ -210,6 +224,9 @@ class MicrosoftGraphProvider:
             ),
             status_evidence=("Service status: preview; provider policy blocks attachment.",),
             unavailable_reason="Work IQ is preview and is not attachable",
+            selected_auth_mode=config.auth.mode,
+            connection_id=config.auth.connection_ref,
+            connection_scopes=config.auth.connection_scopes,
         )
         self._descriptor = ProviderDescriptor(
             PROVIDER_ID,
@@ -255,6 +272,10 @@ class MicrosoftGraphProvider:
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
+        safe_endpoint, endpoint_digest = binding_safe_endpoint(
+            self._config.endpoint,
+            invalid_label="invalid:graph-endpoint",
+        )
         if validation.readiness is not Readiness.READY:
             operation = SITE_GET
             return (
@@ -274,6 +295,13 @@ class MicrosoftGraphProvider:
                     provenance=PROVENANCE,
                     status_evidence=("No Microsoft Graph discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
+                    configuration={
+                        "provider_endpoint": safe_endpoint,
+                        "provider_endpoint_digest": endpoint_digest,
+                    },
+                    selected_auth_mode=self._config.auth.mode,
+                    connection_id=self._config.auth.connection_ref,
+                    connection_scopes=self._config.auth.connection_scopes,
                 ),
             )
         capabilities: list[CapabilityRecord] = [self._work_iq]
@@ -291,6 +319,7 @@ class MicrosoftGraphProvider:
                     metadata={"site_id": site_id},
                     endpoint=require_endpoint(self._config.endpoint),
                     max_upload_bytes=self._config.max_upload_bytes,
+                    auth=self._config.auth,
                 )
             )
             drives = collection(self._get(f"/sites/{quote(site_id, safe='')}/drives", context))
@@ -308,6 +337,7 @@ class MicrosoftGraphProvider:
                             metadata={"drive_id": drive_id},
                             endpoint=require_endpoint(self._config.endpoint),
                             max_upload_bytes=self._config.max_upload_bytes,
+                            auth=self._config.auth,
                         ),
                         _capability(
                             stable_resource_id("graph.drive.write", drive_id),
@@ -317,6 +347,7 @@ class MicrosoftGraphProvider:
                             metadata={"drive_id": drive_id},
                             endpoint=require_endpoint(self._config.endpoint),
                             max_upload_bytes=self._config.max_upload_bytes,
+                            auth=self._config.auth,
                         ),
                     )
                 )
@@ -335,6 +366,7 @@ class MicrosoftGraphProvider:
                                 metadata={"drive_id": drive_id, "item_id": item_id},
                                 endpoint=require_endpoint(self._config.endpoint),
                                 max_upload_bytes=self._config.max_upload_bytes,
+                                auth=self._config.auth,
                             )
                         )
         return tuple(capabilities)

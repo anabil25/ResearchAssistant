@@ -17,6 +17,11 @@ class AuthConfig:
     token_scope: str | None = None
     secret_name: str | None = None
     header_name: str | None = None
+    connection_ref: str | None = None
+
+    @property
+    def connection_scopes(self) -> tuple[str, ...]:
+        return (self.token_scope,) if self.token_scope else ()
 
 
 @dataclass(frozen=True, slots=True)

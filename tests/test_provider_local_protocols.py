@@ -228,7 +228,8 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         webhook_discovery = webhook.discover(context)
         webhook_capability = webhook_discovery[0]
         webhook_arguments = {"value": "network"}
-        operation = webhook_discovery.descriptor_for(webhook_capability).operations[0]
+        descriptor = webhook_discovery.descriptor_for(webhook_capability)
+        operation = descriptor.operations[0]
         approved = replace(
             context,
             approval_decisions=(
@@ -236,6 +237,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                     context,
                     target=webhook_capability,
                     instance=webhook_capability,
+                    descriptor=descriptor,
                     operation=operation,
                     arguments=webhook_arguments,
                     decision_id="local-webhook",
