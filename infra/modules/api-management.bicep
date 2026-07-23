@@ -34,9 +34,9 @@ var connectorPolicyTemplate = '''
     <validate-content unspecified-content-type-action="ignore" max-size="32768" size-exceeded-action="prevent" errors-variable-name="connector-validation-errors">
       <content type="application/json" validate-as="json" action="prevent" allow-additional-properties="false" />
     </validate-content>
+    <authentication-managed-identity resource="__ARM_AUDIENCE__" />
   </inbound>
   <backend>
-    <authentication-managed-identity resource="__ARM_AUDIENCE__" />
     <base />
   </backend>
   <outbound>
