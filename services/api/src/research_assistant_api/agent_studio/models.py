@@ -215,7 +215,7 @@ class CapabilityOperation(BaseModel):
     since a single descriptor's operations can have distinct I/O shapes.
     ``version`` is the operation's own version (independent of
     ``CapabilityDescriptor.version``, the whole-descriptor catalog version) —
-    ``CapabilityBinding.operation_version`` pins it at attach time so a later
+    ``CapabilityBinding.operation_ref.version`` pins it at attach time so a later
     per-operation version bump is independently detectable from a descriptor
     content/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,
     independent of ``maturity`` — see ``is_bindable``.
@@ -315,7 +315,7 @@ class CapabilityInstance(BaseModel):
     descriptor_id: str = Field(min_length=1, max_length=160)
     #: The exact ``CapabilityDescriptor.version`` consulted when this
     #: instance was discovered/registered — the descriptor-side half of the
-    #: pin that ``CapabilityBinding.descriptor_digest``/``instance_fingerprint``
+    #: pin that ``CapabilityBinding.descriptor_ref.digest``/``instance_ref.fingerprint``
     #: freeze at attach time.
     descriptor_version: str = Field(default="1", min_length=1, max_length=40)
     #: Content digest of the descriptor consulted at discovery/registration
@@ -343,60 +343,149 @@ class CapabilityInstance(BaseModel):
     registered_by: str = Field(min_length=1, max_length=200)
 
 
+class CapabilityDescriptorRef(BaseModel):
+    """Pin of the attached ``CapabilityDescriptor``'s identity/content.
+
+    ``digest`` pins the descriptor's *content* (not just its declared
+    ``version`` string) so a catalog edit that bumps content without
+    bumping the version string cannot silently change an already-attached
+    binding's behavior — see ``capability_registry.compute_descriptor_digest``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=160)
+    version: str = Field(default="1", min_length=1, max_length=40)
+    digest: str | None = None
+
+
+class CapabilityOperationRef(BaseModel):
+    """Pin of the attached ``CapabilityOperation``'s identity/version/schemas.
+
+    ``version`` pins ``CapabilityOperation.version`` (per-operation,
+    independent of ``CapabilityDescriptorRef.version``) at attach time so a
+    later per-operation version bump is independently detectable from a
+    descriptor content/version change. ``input_schema_digest``/
+    ``output_schema_digest`` are copied from the resolved operation —
+    independent digests because a single descriptor's operations can have
+    distinct I/O shapes.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str = Field(min_length=1, max_length=120)
+    version: str | None = None
+    input_schema_digest: str | None = None
+    output_schema_digest: str | None = None
+
+
+class CapabilityInstanceRef(BaseModel):
+    """Pin of the discovered ``CapabilityInstance`` this binding targets.
+
+    ``discovered_version`` is the instance's own ``discovered_provider_version``
+    at attach time (renamed from the former flat ``pinned_provider_version``
+    to make explicit it is the *instance's* discovered version, distinct from
+    ``CapabilityBinding.provider_contract_version`` — the provider integration
+    contract generation this binding conforms to). ``fingerprint`` is copied
+    from ``CapabilityInstance.instance_fingerprint``; release/invoke re-checks
+    it against the current instance and hard-fails on drift (stale binding).
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    provider_id: str | None = None
+    id: str | None = None
+    discovered_version: str | None = None
+    fingerprint: str | None = None
+
+
+class CapabilityConfigurationRef(BaseModel):
+    """Pin of the non-secret binding configuration bundle.
+
+    ``digest`` is a canonical digest of ``CapabilityBinding.config`` computed
+    at attach time (see ``capability_registry.compute_config_hash``) so any
+    later config drift is independently detectable. ``id`` optionally names
+    an externally-stored/registered configuration bundle when the config is
+    not solely inline.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    digest: str | None = None
+
+
+class CapabilityConnectionRef(BaseModel):
+    """Pin of the workspace connection this binding authorizes through.
+
+    Distinct from ``WorkspaceConnectionRef`` (the manifest-level connection
+    declaration): this is the binding-side pin of *which* connection and
+    *how* it authorizes. ``auth_mode``/``authorization_digest`` are honestly
+    ``None`` until a real workspace-connection resolution service supplies
+    them — never fabricated at attach time.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    auth_mode: str | None = None
+    authorization_digest: str | None = None
+
+
+class CapabilityPolicyRef(BaseModel):
+    """Pin of the approval/destination policy governing this binding."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    id: str | None = None
+    version: str | None = None
+    digest: str | None = None
+
+
 class CapabilityBinding(BaseModel):
     """An agent's *attachment* of a catalog operation: config + version pins.
 
     Distinct from ``CapabilityDescriptor`` (the catalog/governance entry),
     ``CapabilityInstance`` (the discovered tenant/project resource), and
-    ``ToolRegistrationSpec`` (the runtime handler wiring below): ``CapabilityBinding``
-    only records that this manifest has chosen to use ``descriptor_id.operation``
-    at ``descriptor_version``/``pinned_provider_version``, pointed at a specific
-    ``instance_id`` (when the operation requires a discovered resource) via
-    ``connection_ref``, with what config and policy.
+    ``ToolRegistrationSpec`` (the runtime handler wiring below):
+    ``CapabilityBinding`` only records that this manifest has chosen to use
+    ``descriptor_ref.id``.``operation_ref.id``, pointed at a specific
+    ``instance_ref`` (when the operation requires a discovered resource) via
+    ``connection_ref``, with what config and policy — using **typed refs**
+    rather than ambiguous flat fields so each pinned identity/version/digest
+    is independently named and independently checkable for drift.
 
-    ``descriptor_digest`` pins the *content* of the attached descriptor (not
-    just its declared ``descriptor_version`` string) so a catalog edit that
-    bumps content without bumping the version string cannot silently change
-    an already-attached binding's behavior. ``input_schema_digest``/
-    ``output_schema_digest`` are copied from the resolved
-    ``CapabilityOperation`` at attach time — independent digests because a
-    descriptor's operations can have distinct I/O shapes. ``instance_fingerprint``
-    is copied from the resolved ``CapabilityInstance`` at attach time (see
-    ``CapabilityInstance.instance_fingerprint``); release/invoke re-checks it
-    against the current instance and hard-fails on drift (stale binding).
-    ``config_hash`` is a canonical digest of ``config`` computed at attach
-    time so any later config drift is independently detectable.
-    ``destination_constraints`` pins the resolved operation's
-    ``side_effect_destinations`` at attach time, independent of
-    ``descriptor_digest`` — an operation whose declared destinations change
-    (e.g. a provider widening what a "write" operation can reach) is
-    detected explicitly by ``check_binding_freshness`` rather than only
-    incidentally via a whole-descriptor digest mismatch. ``operation_version``
-    pins ``CapabilityOperation.version`` (per-operation, independent of
-    ``descriptor_version``) at attach time; freshness checks reject drift
-    on this field the same way they reject a ``descriptor_digest``/
-    ``instance_fingerprint`` mismatch, and also reject a binding whose
-    resolved operation is no longer ``is_bindable`` (moved to
-    non-``GA``/non-``ACTIVE``) since attach.
+    ``provider_contract_version`` is the provider integration *contract*
+    generation this binding was validated against (e.g. this backend's own
+    local capability-registry contract until a real external provider
+    adapter is wired and reports its own negotiated contract version) —
+    distinct from ``instance_ref.discovered_version`` (a specific instance's
+    discovered provider *software* version). ``destination_constraints``
+    pins the resolved operation's ``side_effect_destinations`` at attach
+    time, independent of ``descriptor_ref.digest`` — an operation whose
+    declared destinations change (e.g. a provider widening what a "write"
+    operation can reach) is detected explicitly by ``check_binding_freshness``
+    rather than only incidentally via a whole-descriptor digest mismatch.
+    ``destination_constraints_digest`` is a canonical digest over
+    ``destination_constraints`` for callers that only want to compare a
+    single value. Freshness checks reject drift on any ref field the same
+    way they reject a ``descriptor_ref.digest``/``instance_ref.fingerprint``
+    mismatch, and also reject a binding whose resolved operation is no
+    longer ``is_bindable`` (moved to non-``GA``/non-``ACTIVE``) since attach.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    descriptor_id: str = Field(min_length=1, max_length=160)
-    descriptor_version: str = Field(default="1", min_length=1, max_length=40)
-    descriptor_digest: str | None = None
-    operation: str = Field(min_length=1, max_length=120)
-    operation_version: str | None = None
-    instance_id: str | None = None
-    pinned_provider_version: str | None = None
-    instance_fingerprint: str | None = None
-    input_schema_digest: str | None = None
-    output_schema_digest: str | None = None
-    config: dict[str, Any] = Field(default_factory=dict)
-    config_hash: str | None = None
-    connection_ref: str | None = None
-    policy_ref: str | None = None
+    provider_contract_version: str = Field(min_length=1, max_length=80)
+    descriptor_ref: CapabilityDescriptorRef
+    operation_ref: CapabilityOperationRef
+    instance_ref: CapabilityInstanceRef | None = None
+    configuration_ref: CapabilityConfigurationRef = Field(default_factory=CapabilityConfigurationRef)
+    connection_ref: CapabilityConnectionRef | None = None
+    policy_ref: CapabilityPolicyRef | None = None
     destination_constraints: tuple[str, ...] = Field(default_factory=tuple)
+    destination_constraints_digest: str | None = None
+    config: dict[str, Any] = Field(default_factory=dict)
     attached_by: str = Field(min_length=1, max_length=200)
     attached_at: datetime = Field(default_factory=utc_now)
 

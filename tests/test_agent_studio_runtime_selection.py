@@ -6,6 +6,8 @@ from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
     CapabilityBinding,
+    CapabilityDescriptorRef,
+    CapabilityOperationRef,
     RuntimeRequirements,
     RuntimeTarget,
 )
@@ -25,12 +27,19 @@ def _manifest(**overrides: object) -> AgentManifest:
     return AgentManifest(**base)  # type: ignore[arg-type]
 
 
+def _binding(descriptor_id: str, operation: str) -> CapabilityBinding:
+    return CapabilityBinding(
+        provider_contract_version="agent-studio.capability-registry.v1",
+        descriptor_ref=CapabilityDescriptorRef(id=descriptor_id),
+        operation_ref=CapabilityOperationRef(id=operation),
+        attached_by="user-1",
+    )
+
+
 def test_select_runtime_managed_foundry_when_no_disqualifiers() -> None:
     registry = default_registry()
     manifest = _manifest(
-        capabilities=(
-            CapabilityBinding(descriptor_id="foundry.web_search", operation="search", attached_by="user-1"),
-        )
+        capabilities=(_binding("foundry.web_search", "search"),)
     )
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.MANAGED_FOUNDRY
@@ -71,9 +80,7 @@ def test_select_runtime_custom_hosted_when_model_source_not_project_deployed() -
 
 def test_select_runtime_custom_hosted_when_capability_missing_from_catalog() -> None:
     manifest = _manifest(
-        capabilities=(
-            CapabilityBinding(descriptor_id="unknown.capability", operation="run", attached_by="user-1"),
-        )
+        capabilities=(_binding("unknown.capability", "run"),)
     )
     selection = select_runtime(manifest, {})
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -83,9 +90,7 @@ def test_select_runtime_custom_hosted_when_capability_missing_from_catalog() -> 
 def test_select_runtime_custom_hosted_when_capability_not_foundry_native() -> None:
     registry = default_registry()
     manifest = _manifest(
-        capabilities=(
-            CapabilityBinding(descriptor_id="custom.hosted_code", operation="run", attached_by="user-1"),
-        )
+        capabilities=(_binding("custom.hosted_code", "run"),)
     )
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -95,9 +100,7 @@ def test_select_runtime_custom_hosted_when_capability_not_foundry_native() -> No
 def test_select_runtime_custom_hosted_when_operation_not_declared() -> None:
     registry = default_registry()
     manifest = _manifest(
-        capabilities=(
-            CapabilityBinding(descriptor_id="foundry.web_search", operation="not_declared", attached_by="user-1"),
-        )
+        capabilities=(_binding("foundry.web_search", "not_declared"),)
     )
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -107,11 +110,7 @@ def test_select_runtime_custom_hosted_when_operation_not_declared() -> None:
 def test_select_runtime_custom_hosted_when_operation_not_ga() -> None:
     registry = default_registry()
     manifest = _manifest(
-        capabilities=(
-            CapabilityBinding(
-                descriptor_id="foundry.code_interpreter", operation="custom_environment", attached_by="user-1"
-            ),
-        )
+        capabilities=(_binding("foundry.code_interpreter", "custom_environment"),)
     )
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED
@@ -122,9 +121,7 @@ def test_select_runtime_collects_multiple_disqualifiers() -> None:
     registry = default_registry()
     manifest = _manifest(
         runtime_requirements=RuntimeRequirements(requires_custom_code=True, requires_non_ga_tool=True),
-        capabilities=(
-            CapabilityBinding(descriptor_id="custom.hosted_code", operation="run", attached_by="user-1"),
-        ),
+        capabilities=(_binding("custom.hosted_code", "run"),),
     )
     selection = select_runtime(manifest, registry.as_mapping())
     assert selection.target == RuntimeTarget.CUSTOM_HOSTED

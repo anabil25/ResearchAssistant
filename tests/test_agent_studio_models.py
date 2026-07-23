@@ -19,8 +19,14 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ArtifactContract,
     CapabilityBinding,
+    CapabilityConfigurationRef,
+    CapabilityConnectionRef,
     CapabilityDescriptor,
+    CapabilityDescriptorRef,
+    CapabilityInstanceRef,
     CapabilityOperation,
+    CapabilityOperationRef,
+    CapabilityPolicyRef,
     CitationPolicy,
     DelegationScope,
     DeploymentEnvironment,
@@ -71,19 +77,26 @@ def _schema_ref(name: str) -> SchemaRef:
 
 def _binding() -> CapabilityBinding:
     return CapabilityBinding(
-        descriptor_id="foundry.azure_ai_search",
-        descriptor_version="7",
-        descriptor_digest="sha256:descriptor",
-        operation="search",
-        instance_id="instance-1",
-        pinned_provider_version="2026.07",
-        instance_fingerprint="sha256:instance",
-        input_schema_digest="sha256:input",
-        output_schema_digest="sha256:output",
+        provider_contract_version="agent-studio.capability-registry.v1",
+        descriptor_ref=CapabilityDescriptorRef(
+            id="foundry.azure_ai_search", version="7", digest="sha256:descriptor"
+        ),
+        operation_ref=CapabilityOperationRef(
+            id="search",
+            version="1",
+            input_schema_digest="sha256:input",
+            output_schema_digest="sha256:output",
+        ),
+        instance_ref=CapabilityInstanceRef(
+            provider_id="foundry",
+            id="instance-1",
+            discovered_version="2026.07",
+            fingerprint="sha256:instance",
+        ),
+        configuration_ref=CapabilityConfigurationRef(digest="sha256:config"),
         config={"index": "docs"},
-        config_hash="sha256:config",
-        connection_ref="conn-search",
-        policy_ref="policy://search",
+        connection_ref=CapabilityConnectionRef(id="conn-search"),
+        policy_ref=CapabilityPolicyRef(id="policy://search"),
         attached_by="user-1",
     )
 
@@ -207,8 +220,10 @@ def test_agent_manifest_validates_full_current_shape_and_defaults() -> None:
 
     assert manifest.project_id == "project-1"
     assert manifest.schema_version == AGENT_MANIFEST_SCHEMA_VERSION
-    assert manifest.capabilities[0].instance_id == "instance-1"
-    assert manifest.capabilities[0].connection_ref == "conn-search"
+    assert manifest.capabilities[0].instance_ref is not None
+    assert manifest.capabilities[0].instance_ref.id == "instance-1"
+    assert manifest.capabilities[0].connection_ref is not None
+    assert manifest.capabilities[0].connection_ref.id == "conn-search"
     assert manifest.knowledge_bindings[0].capability_binding_index == 0
     assert manifest.memory_policy.is_enabled(MemoryScopeKind.PROJECT) is True
     assert manifest.specialist_policy.delegation_scope is DelegationScope.SPECIALIST_POOL

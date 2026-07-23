@@ -51,22 +51,26 @@ def select_runtime(
         disqualifiers.append("Manifest declares a model source other than project-deployed models.")
 
     for instance in manifest.capabilities:
-        descriptor = capability_catalog.get(instance.descriptor_id)
+        descriptor = capability_catalog.get(instance.descriptor_ref.id)
         if descriptor is None:
-            disqualifiers.append(f"Capability '{instance.descriptor_id}' is not present in the capability catalog.")
+            disqualifiers.append(
+                f"Capability '{instance.descriptor_ref.id}' is not present in the capability catalog."
+            )
             continue
         if not descriptor.managed_foundry_native:
-            disqualifiers.append(f"Capability '{instance.descriptor_id}' has no Managed Foundry native implementation.")
+            disqualifiers.append(
+                f"Capability '{instance.descriptor_ref.id}' has no Managed Foundry native implementation."
+            )
             continue
-        operation = descriptor.operation(instance.operation)
+        operation = descriptor.operation(instance.operation_ref.id)
         if operation is None:
             disqualifiers.append(
-                f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is not declared."
+                f"Capability '{instance.descriptor_ref.id}' operation '{instance.operation_ref.id}' is not declared."
             )
             continue
         if not operation.is_bindable:
             disqualifiers.append(
-                f"Capability '{instance.descriptor_id}' operation '{instance.operation}' is "
+                f"Capability '{instance.descriptor_ref.id}' operation '{instance.operation_ref.id}' is "
                 f"{operation.maturity.value} maturity ({operation.lifecycle.value} lifecycle), "
                 "not GA+ACTIVE."
             )

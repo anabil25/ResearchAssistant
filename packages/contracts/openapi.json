@@ -1574,7 +1574,7 @@
       },
       "CapabilityBinding": {
         "additionalProperties": false,
-        "description": "An agent's *attachment* of a catalog operation: config + version pins.\n\nDistinct from ``CapabilityDescriptor`` (the catalog/governance entry),\n``CapabilityInstance`` (the discovered tenant/project resource), and\n``ToolRegistrationSpec`` (the runtime handler wiring below): ``CapabilityBinding``\nonly records that this manifest has chosen to use ``descriptor_id.operation``\nat ``descriptor_version``/``pinned_provider_version``, pointed at a specific\n``instance_id`` (when the operation requires a discovered resource) via\n``connection_ref``, with what config and policy.\n\n``descriptor_digest`` pins the *content* of the attached descriptor (not\njust its declared ``descriptor_version`` string) so a catalog edit that\nbumps content without bumping the version string cannot silently change\nan already-attached binding's behavior. ``input_schema_digest``/\n``output_schema_digest`` are copied from the resolved\n``CapabilityOperation`` at attach time \u2014 independent digests because a\ndescriptor's operations can have distinct I/O shapes. ``instance_fingerprint``\nis copied from the resolved ``CapabilityInstance`` at attach time (see\n``CapabilityInstance.instance_fingerprint``); release/invoke re-checks it\nagainst the current instance and hard-fails on drift (stale binding).\n``config_hash`` is a canonical digest of ``config`` computed at attach\ntime so any later config drift is independently detectable.\n``destination_constraints`` pins the resolved operation's\n``side_effect_destinations`` at attach time, independent of\n``descriptor_digest`` \u2014 an operation whose declared destinations change\n(e.g. a provider widening what a \"write\" operation can reach) is\ndetected explicitly by ``check_binding_freshness`` rather than only\nincidentally via a whole-descriptor digest mismatch. ``operation_version``\npins ``CapabilityOperation.version`` (per-operation, independent of\n``descriptor_version``) at attach time; freshness checks reject drift\non this field the same way they reject a ``descriptor_digest``/\n``instance_fingerprint`` mismatch, and also reject a binding whose\nresolved operation is no longer ``is_bindable`` (moved to\nnon-``GA``/non-``ACTIVE``) since attach.",
+        "description": "An agent's *attachment* of a catalog operation: config + version pins.\n\nDistinct from ``CapabilityDescriptor`` (the catalog/governance entry),\n``CapabilityInstance`` (the discovered tenant/project resource), and\n``ToolRegistrationSpec`` (the runtime handler wiring below):\n``CapabilityBinding`` only records that this manifest has chosen to use\n``descriptor_ref.id``.``operation_ref.id``, pointed at a specific\n``instance_ref`` (when the operation requires a discovered resource) via\n``connection_ref``, with what config and policy \u2014 using **typed refs**\nrather than ambiguous flat fields so each pinned identity/version/digest\nis independently named and independently checkable for drift.\n\n``provider_contract_version`` is the provider integration *contract*\ngeneration this binding was validated against (e.g. this backend's own\nlocal capability-registry contract until a real external provider\nadapter is wired and reports its own negotiated contract version) \u2014\ndistinct from ``instance_ref.discovered_version`` (a specific instance's\ndiscovered provider *software* version). ``destination_constraints``\npins the resolved operation's ``side_effect_destinations`` at attach\ntime, independent of ``descriptor_ref.digest`` \u2014 an operation whose\ndeclared destinations change (e.g. a provider widening what a \"write\"\noperation can reach) is detected explicitly by ``check_binding_freshness``\nrather than only incidentally via a whole-descriptor digest mismatch.\n``destination_constraints_digest`` is a canonical digest over\n``destination_constraints`` for callers that only want to compare a\nsingle value. Freshness checks reject drift on any ref field the same\nway they reject a ``descriptor_ref.digest``/``instance_ref.fingerprint``\nmismatch, and also reject a binding whose resolved operation is no\nlonger ``is_bindable`` (moved to non-``GA``/non-``ACTIVE``) since attach.",
         "properties": {
           "attached_at": {
             "format": "date-time",
@@ -1592,51 +1592,21 @@
             "title": "Config",
             "type": "object"
           },
-          "config_hash": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Config Hash"
+          "configuration_ref": {
+            "$ref": "#/components/schemas/CapabilityConfigurationRef"
           },
           "connection_ref": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/CapabilityConnectionRef"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Connection Ref"
+            ]
           },
-          "descriptor_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Descriptor Digest"
-          },
-          "descriptor_id": {
-            "maxLength": 160,
-            "minLength": 1,
-            "title": "Descriptor Id",
-            "type": "string"
-          },
-          "descriptor_version": {
-            "default": "1",
-            "maxLength": 40,
-            "minLength": 1,
-            "title": "Descriptor Version",
-            "type": "string"
+          "descriptor_ref": {
+            "$ref": "#/components/schemas/CapabilityDescriptorRef"
           },
           "destination_constraints": {
             "items": {
@@ -1645,7 +1615,7 @@
             "title": "Destination Constraints",
             "type": "array"
           },
-          "input_schema_digest": {
+          "destination_constraints_digest": {
             "anyOf": [
               {
                 "type": "string"
@@ -1654,84 +1624,42 @@
                 "type": "null"
               }
             ],
-            "title": "Input Schema Digest"
+            "title": "Destination Constraints Digest"
           },
-          "instance_fingerprint": {
+          "instance_ref": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/CapabilityInstanceRef"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Instance Fingerprint"
+            ]
           },
-          "instance_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instance Id"
-          },
-          "operation": {
-            "maxLength": 120,
-            "minLength": 1,
-            "title": "Operation",
-            "type": "string"
-          },
-          "operation_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operation Version"
-          },
-          "output_schema_digest": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Output Schema Digest"
-          },
-          "pinned_provider_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Pinned Provider Version"
+          "operation_ref": {
+            "$ref": "#/components/schemas/CapabilityOperationRef"
           },
           "policy_ref": {
             "anyOf": [
               {
-                "type": "string"
+                "$ref": "#/components/schemas/CapabilityPolicyRef"
               },
               {
                 "type": "null"
               }
-            ],
-            "title": "Policy Ref"
+            ]
+          },
+          "provider_contract_version": {
+            "maxLength": 80,
+            "minLength": 1,
+            "title": "Provider Contract Version",
+            "type": "string"
           }
         },
         "required": [
-          "descriptor_id",
-          "operation",
+          "provider_contract_version",
+          "descriptor_ref",
+          "operation_ref",
           "attached_by"
         ],
         "title": "CapabilityBinding",
@@ -1788,6 +1716,77 @@
           "kind"
         ],
         "title": "CapabilityChangeSummary",
+        "type": "object"
+      },
+      "CapabilityConfigurationRef": {
+        "additionalProperties": false,
+        "description": "Pin of the non-secret binding configuration bundle.\n\n``digest`` is a canonical digest of ``CapabilityBinding.config`` computed\nat attach time (see ``capability_registry.compute_config_hash``) so any\nlater config drift is independently detectable. ``id`` optionally names\nan externally-stored/registered configuration bundle when the config is\nnot solely inline.",
+        "properties": {
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          }
+        },
+        "title": "CapabilityConfigurationRef",
+        "type": "object"
+      },
+      "CapabilityConnectionRef": {
+        "additionalProperties": false,
+        "description": "Pin of the workspace connection this binding authorizes through.\n\nDistinct from ``WorkspaceConnectionRef`` (the manifest-level connection\ndeclaration): this is the binding-side pin of *which* connection and\n*how* it authorizes. ``auth_mode``/``authorization_digest`` are honestly\n``None`` until a real workspace-connection resolution service supplies\nthem \u2014 never fabricated at attach time.",
+        "properties": {
+          "auth_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Auth Mode"
+          },
+          "authorization_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Authorization Digest"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          }
+        },
+        "title": "CapabilityConnectionRef",
         "type": "object"
       },
       "CapabilityDescriptor": {
@@ -1867,6 +1866,41 @@
           "operations"
         ],
         "title": "CapabilityDescriptor",
+        "type": "object"
+      },
+      "CapabilityDescriptorRef": {
+        "additionalProperties": false,
+        "description": "Pin of the attached ``CapabilityDescriptor``'s identity/content.\n\n``digest`` pins the descriptor's *content* (not just its declared\n``version`` string) so a catalog edit that bumps content without\nbumping the version string cannot silently change an already-attached\nbinding's behavior \u2014 see ``capability_registry.compute_descriptor_digest``.",
+        "properties": {
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "id": {
+            "maxLength": 160,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "version": {
+            "default": "1",
+            "maxLength": 40,
+            "minLength": 1,
+            "title": "Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CapabilityDescriptorRef",
         "type": "object"
       },
       "CapabilityDiscoverySnapshot": {
@@ -2027,8 +2061,60 @@
         "title": "CapabilityInstance",
         "type": "object"
       },
+      "CapabilityInstanceRef": {
+        "additionalProperties": false,
+        "description": "Pin of the discovered ``CapabilityInstance`` this binding targets.\n\n``discovered_version`` is the instance's own ``discovered_provider_version``\nat attach time (renamed from the former flat ``pinned_provider_version``\nto make explicit it is the *instance's* discovered version, distinct from\n``CapabilityBinding.provider_contract_version`` \u2014 the provider integration\ncontract generation this binding conforms to). ``fingerprint`` is copied\nfrom ``CapabilityInstance.instance_fingerprint``; release/invoke re-checks\nit against the current instance and hard-fails on drift (stale binding).",
+        "properties": {
+          "discovered_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered Version"
+          },
+          "fingerprint": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Fingerprint"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "provider_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Provider Id"
+          }
+        },
+        "title": "CapabilityInstanceRef",
+        "type": "object"
+      },
       "CapabilityOperation": {
-        "description": "A single operation on a capability descriptor.\n\n``maturity``/``risk``/``operation_class``/``requires_approval`` are all\noperation-level (not descriptor-level): two operations on the same\ndescriptor can have entirely different maturity and risk profiles.\n``source_url``/``source_version``/``last_verified_at`` are the honest\nprovenance trail for the maturity claim \u2014 where it was confirmed, against\nwhich provider release, and when it was last checked; a maturity claim\nwith no provenance is a catalog-authoring smell, not a runtime error.\n\n``requires_approval`` is *not* purely informational: ``approval_policy_ref``\nnames the versioned approval policy that ``CapabilityRegistry.attach``\n(attach-time satisfiability), the ``APPROVAL`` release gate (cut/release\nhard-block on missing/expired/mismatched approval), and deploy-time\nchecks all resolve against. ``least_privilege_scopes``/``least_privilege_roles``\ndeclare the minimum access an invocation needs; ``timeout_seconds``/\n``max_retries``/``idempotent`` are runtime dispatch contract facts (not\nbehavior this backend executes itself \u2014 the harness/runtime owns\ninvocation \u2014 but real, declared metadata a caller must honor).\n``input_schema_digest``/``output_schema_digest`` are operation-level\n(independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),\nsince a single descriptor's operations can have distinct I/O shapes.\n``version`` is the operation's own version (independent of\n``CapabilityDescriptor.version``, the whole-descriptor catalog version) \u2014\n``CapabilityBinding.operation_version`` pins it at attach time so a later\nper-operation version bump is independently detectable from a descriptor\ncontent/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,\nindependent of ``maturity`` \u2014 see ``is_bindable``.",
+        "description": "A single operation on a capability descriptor.\n\n``maturity``/``risk``/``operation_class``/``requires_approval`` are all\noperation-level (not descriptor-level): two operations on the same\ndescriptor can have entirely different maturity and risk profiles.\n``source_url``/``source_version``/``last_verified_at`` are the honest\nprovenance trail for the maturity claim \u2014 where it was confirmed, against\nwhich provider release, and when it was last checked; a maturity claim\nwith no provenance is a catalog-authoring smell, not a runtime error.\n\n``requires_approval`` is *not* purely informational: ``approval_policy_ref``\nnames the versioned approval policy that ``CapabilityRegistry.attach``\n(attach-time satisfiability), the ``APPROVAL`` release gate (cut/release\nhard-block on missing/expired/mismatched approval), and deploy-time\nchecks all resolve against. ``least_privilege_scopes``/``least_privilege_roles``\ndeclare the minimum access an invocation needs; ``timeout_seconds``/\n``max_retries``/``idempotent`` are runtime dispatch contract facts (not\nbehavior this backend executes itself \u2014 the harness/runtime owns\ninvocation \u2014 but real, declared metadata a caller must honor).\n``input_schema_digest``/``output_schema_digest`` are operation-level\n(independent of the manifest's own ``input_schema_ref``/``output_schema_ref``),\nsince a single descriptor's operations can have distinct I/O shapes.\n``version`` is the operation's own version (independent of\n``CapabilityDescriptor.version``, the whole-descriptor catalog version) \u2014\n``CapabilityBinding.operation_ref.version`` pins it at attach time so a later\nper-operation version bump is independently detectable from a descriptor\ncontent/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,\nindependent of ``maturity`` \u2014 see ``is_bindable``.",
         "properties": {
           "approval_policy_ref": {
             "anyOf": [
@@ -2194,6 +2280,97 @@
           "maturity"
         ],
         "title": "CapabilityOperation",
+        "type": "object"
+      },
+      "CapabilityOperationRef": {
+        "additionalProperties": false,
+        "description": "Pin of the attached ``CapabilityOperation``'s identity/version/schemas.\n\n``version`` pins ``CapabilityOperation.version`` (per-operation,\nindependent of ``CapabilityDescriptorRef.version``) at attach time so a\nlater per-operation version bump is independently detectable from a\ndescriptor content/version change. ``input_schema_digest``/\n``output_schema_digest`` are copied from the resolved operation \u2014\nindependent digests because a single descriptor's operations can have\ndistinct I/O shapes.",
+        "properties": {
+          "id": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Id",
+            "type": "string"
+          },
+          "input_schema_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input Schema Digest"
+          },
+          "output_schema_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Output Schema Digest"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "id"
+        ],
+        "title": "CapabilityOperationRef",
+        "type": "object"
+      },
+      "CapabilityPolicyRef": {
+        "additionalProperties": false,
+        "description": "Pin of the approval/destination policy governing this binding.",
+        "properties": {
+          "digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Digest"
+          },
+          "id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Id"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "title": "CapabilityPolicyRef",
         "type": "object"
       },
       "CapabilitySpec": {

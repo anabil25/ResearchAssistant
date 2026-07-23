@@ -13,8 +13,11 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ApprovalState,
     CapabilityBinding,
+    CapabilityConnectionRef,
     CapabilityDescriptor,
+    CapabilityDescriptorRef,
     CapabilityOperation,
+    CapabilityOperationRef,
     GateName,
     GateResult,
     GateStatus,
@@ -61,10 +64,11 @@ def _binding(
     config: dict[str, object] | None = None,
 ) -> CapabilityBinding:
     return CapabilityBinding(
-        descriptor_id=descriptor_id,
-        operation=operation,
+        provider_contract_version="agent-studio.capability-registry.v1",
+        descriptor_ref=CapabilityDescriptorRef(id=descriptor_id),
+        operation_ref=CapabilityOperationRef(id=operation),
         attached_by="user-1",
-        connection_ref=connection_ref,
+        connection_ref=CapabilityConnectionRef(id=connection_ref) if connection_ref is not None else None,
         config=config or {},
     )
 

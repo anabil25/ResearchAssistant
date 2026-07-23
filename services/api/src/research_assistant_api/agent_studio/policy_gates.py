@@ -131,14 +131,14 @@ def _auth_gate(
 ) -> GateResult:
     missing: list[str] = []
     for instance in manifest.capabilities:
-        descriptor = capability_catalog.get(instance.descriptor_id)
+        descriptor = capability_catalog.get(instance.descriptor_ref.id)
         if descriptor is None:
-            missing.append(f"capability '{instance.descriptor_id}' is not in the capability catalog")
+            missing.append(f"capability '{instance.descriptor_ref.id}' is not in the capability catalog")
             continue
         for requirement in descriptor.auth_requirements:
             if requirement.startswith("workspace_connection:") and instance.connection_ref is None:
                 missing.append(
-                    f"capability '{instance.descriptor_id}' requires a workspace connection but none is attached"
+                    f"capability '{instance.descriptor_ref.id}' requires a workspace connection but none is attached"
                 )
     if missing:
         return GateResult(name=GateName.AUTH, status=GateStatus.FAILED, detail="; ".join(missing))
@@ -153,14 +153,14 @@ def _policy_gate(
 ) -> GateResult:
     violations: list[str] = []
     for instance in manifest.capabilities:
-        descriptor = capability_catalog.get(instance.descriptor_id)
+        descriptor = capability_catalog.get(instance.descriptor_ref.id)
         if descriptor is None:
-            violations.append(f"capability '{instance.descriptor_id}' is not in the capability catalog")
+            violations.append(f"capability '{instance.descriptor_ref.id}' is not in the capability catalog")
             continue
-        operation = descriptor.operation(instance.operation)
+        operation = descriptor.operation(instance.operation_ref.id)
         if operation is None or not operation.is_bindable:
             violations.append(
-                f"capability '{instance.descriptor_id}.{instance.operation}' is not a GA operation "
+                f"capability '{instance.descriptor_ref.id}.{instance.operation_ref.id}' is not a GA operation "
                 "and cannot be released"
             )
         if (
@@ -168,7 +168,7 @@ def _policy_gate(
             and descriptor.risk_tier in _HIGH_RISK_TIERS
         ):
             violations.append(
-                f"high-risk capability '{instance.descriptor_id}' cannot be released at "
+                f"high-risk capability '{instance.descriptor_ref.id}' cannot be released at "
                 f"'{manifest.visibility.value}' visibility"
             )
     if violations:
@@ -196,13 +196,13 @@ def _approval_gate(
     """
     violations: list[str] = []
     for binding in manifest.capabilities:
-        descriptor = capability_catalog.get(binding.descriptor_id)
+        descriptor = capability_catalog.get(binding.descriptor_ref.id)
         if descriptor is None:
             continue  # already reported by the AUTH/POLICY gates
-        operation = descriptor.operation(binding.operation)
+        operation = descriptor.operation(binding.operation_ref.id)
         if operation is None or not operation.requires_approval:
             continue
-        destination = f"{binding.descriptor_id}.{binding.operation}"
+        destination = f"{binding.descriptor_ref.id}.{binding.operation_ref.id}"
         matching = [
             record
             for record in capability_approvals
@@ -243,8 +243,8 @@ def _security_gate(
     findings: list[str] = []
     for instance in manifest.capabilities:
         if _contains_secret(instance.config):
-            findings.append(f"capability '{instance.descriptor_id}' config appears to contain an embedded secret")
-        descriptor = capability_catalog.get(instance.descriptor_id)
+            findings.append(f"capability '{instance.descriptor_ref.id}' config appears to contain an embedded secret")
+        descriptor = capability_catalog.get(instance.descriptor_ref.id)
         if (
             descriptor is not None
             and manifest.owner_kind.value == "system"
@@ -252,7 +252,8 @@ def _security_gate(
             and descriptor.risk_tier in _HIGH_RISK_TIERS
         ):
             findings.append(
-                f"system-owned agent attaches high-risk public-data-boundary capability '{instance.descriptor_id}'"
+                f"system-owned agent attaches high-risk public-data-boundary capability "
+                f"'{instance.descriptor_ref.id}'"
             )
     if findings:
         return GateResult(name=GateName.SECURITY, status=GateStatus.FAILED, detail="; ".join(findings))

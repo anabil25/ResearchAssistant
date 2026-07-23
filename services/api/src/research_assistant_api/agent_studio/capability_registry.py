@@ -34,9 +34,15 @@ from research_assistant_api.agent_studio.capability_discovery import (
 )
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
+    CapabilityConfigurationRef,
+    CapabilityConnectionRef,
     CapabilityDescriptor,
+    CapabilityDescriptorRef,
     CapabilityInstance,
+    CapabilityInstanceRef,
     CapabilityOperation,
+    CapabilityOperationRef,
+    CapabilityPolicyRef,
     InstanceReadiness,
     OperationClass,
     OperationLifecycle,
@@ -47,6 +53,15 @@ from research_assistant_api.agent_studio.models import (
 _LEARN_TOOL_CATALOG_URL = (
     "https://learn.microsoft.com/azure/ai-foundry/agents/how-to/tools/tool-catalog"
 )
+
+#: The provider integration *contract* generation this backend's
+#: ``CapabilityBinding``s are validated against. Until a real external
+#: provider adapter is wired (see ``capability_discovery.CapabilityDiscoverySource``)
+#: and reports its own negotiated contract version, every binding is honestly
+#: pinned to this backend-local contract identifier — never a copied/fabricated
+#: external "v2"/"v3" provider contract version this backend has not actually
+#: integrated against.
+LOCAL_PROVIDER_CONTRACT_VERSION = "agent-studio.capability-registry.v1"
 
 
 class CapabilityAttachmentError(ValueError):
@@ -80,6 +95,31 @@ def compute_config_hash(config: dict[str, Any]) -> str:
     """Canonical digest of a binding's non-secret ``config`` dict."""
 
     return _canonical_digest(config)
+
+
+def _connection_ref(connection_ref: str | None) -> CapabilityConnectionRef | None:
+    """Wrap an attach-time raw connection id into a typed ``CapabilityConnectionRef``.
+
+    ``auth_mode``/``authorization_digest`` are honestly left ``None`` here:
+    this registry has no workspace-connection resolution service wired in to
+    verify them, so it never fabricates a value it cannot back with evidence.
+    """
+
+    if connection_ref is None:
+        return None
+    return CapabilityConnectionRef(id=connection_ref)
+
+
+def _policy_ref(policy_ref: str | None) -> CapabilityPolicyRef | None:
+    """Wrap an attach-time raw policy id into a typed ``CapabilityPolicyRef``.
+
+    ``version``/``digest`` are honestly left ``None`` until a real approval
+    policy registry is wired in to resolve and verify them.
+    """
+
+    if policy_ref is None:
+        return None
+    return CapabilityPolicyRef(id=policy_ref)
 
 
 def compute_instance_fingerprint(
@@ -687,56 +727,76 @@ class CapabilityRegistry:
                 descriptor, instance
             )
         resolved_config = dict(config or {})
+        instance_ref: CapabilityInstanceRef | None = None
+        if instance_id is not None:
+            instance_ref = CapabilityInstanceRef(
+                provider_id=descriptor.provider,
+                id=instance_id,
+                discovered_version=pinned_provider_version,
+                fingerprint=instance_fingerprint,
+            )
         return CapabilityBinding(
-            descriptor_id=descriptor_id,
-            descriptor_version=descriptor.version,
-            descriptor_digest=compute_descriptor_digest(descriptor),
-            operation=operation,
-            operation_version=resolved.version,
-            instance_id=instance_id,
-            pinned_provider_version=pinned_provider_version,
-            instance_fingerprint=instance_fingerprint,
-            input_schema_digest=resolved.input_schema_digest,
-            output_schema_digest=resolved.output_schema_digest,
+            provider_contract_version=LOCAL_PROVIDER_CONTRACT_VERSION,
+            descriptor_ref=CapabilityDescriptorRef(
+                id=descriptor_id,
+                version=descriptor.version,
+                digest=compute_descriptor_digest(descriptor),
+            ),
+            operation_ref=CapabilityOperationRef(
+                id=operation,
+                version=resolved.version,
+                input_schema_digest=resolved.input_schema_digest,
+                output_schema_digest=resolved.output_schema_digest,
+            ),
+            instance_ref=instance_ref,
+            configuration_ref=CapabilityConfigurationRef(digest=compute_config_hash(resolved_config)),
             config=resolved_config,
-            config_hash=compute_config_hash(resolved_config),
-            connection_ref=connection_ref,
-            policy_ref=policy_ref,
+            connection_ref=_connection_ref(connection_ref),
+            policy_ref=_policy_ref(policy_ref),
             destination_constraints=resolved.side_effect_destinations,
+            destination_constraints_digest=_canonical_digest(sorted(resolved.side_effect_destinations)),
             attached_by=attached_by,
         )
 
     def check_binding_freshness(self, binding: CapabilityBinding) -> str | None:
         """Return a stale-binding reason, or ``None`` if the binding is fresh.
 
-        Re-resolves the binding's ``descriptor_id``/``instance_id`` against
-        the *current* registry state and compares digests/fingerprints. A
-        release/invoke path must call this and hard-fail on a non-``None``
-        result — a binding whose pinned descriptor/instance no longer
-        matches the live catalog must never be silently honored.
+        Re-resolves the binding's ``descriptor_ref.id``/``instance_ref.id``
+        against the *current* registry state and compares digests/
+        fingerprints. A release/invoke path must call this and hard-fail on
+        a non-``None`` result — a binding whose pinned descriptor/instance no
+        longer matches the live catalog must never be silently honored.
         """
-        descriptor = self._descriptors.get(binding.descriptor_id)
+        descriptor_id = binding.descriptor_ref.id
+        operation_id = binding.operation_ref.id
+        descriptor = self._descriptors.get(descriptor_id)
         if descriptor is None:
-            return f"Descriptor '{binding.descriptor_id}' is no longer in the catalog."
+            return f"Descriptor '{descriptor_id}' is no longer in the catalog."
         current_descriptor_digest = compute_descriptor_digest(descriptor)
-        if binding.descriptor_digest is not None and current_descriptor_digest != binding.descriptor_digest:
+        if (
+            binding.descriptor_ref.digest is not None
+            and current_descriptor_digest != binding.descriptor_ref.digest
+        ):
             return (
-                f"Descriptor '{binding.descriptor_id}' content has changed since attach "
-                "(descriptor_digest mismatch)."
+                f"Descriptor '{descriptor_id}' content has changed since attach "
+                "(descriptor_ref.digest mismatch)."
             )
-        current_operation = descriptor.operation(binding.operation)
+        current_operation = descriptor.operation(operation_id)
         if current_operation is None:
-            return f"Operation '{binding.operation}' no longer exists on descriptor '{binding.descriptor_id}'."
+            return f"Operation '{operation_id}' no longer exists on descriptor '{descriptor_id}'."
         if not current_operation.is_bindable:
             return (
-                f"Operation '{binding.descriptor_id}.{binding.operation}' is no longer bindable "
+                f"Operation '{descriptor_id}.{operation_id}' is no longer bindable "
                 f"({current_operation.maturity.value} maturity / {current_operation.lifecycle.value} "
                 "lifecycle) — rebind and re-review before release/invoke."
             )
-        if binding.operation_version is not None and current_operation.version != binding.operation_version:
+        if (
+            binding.operation_ref.version is not None
+            and current_operation.version != binding.operation_ref.version
+        ):
             return (
-                f"Operation '{binding.descriptor_id}.{binding.operation}' version has changed since attach "
-                f"(operation_version mismatch: pinned '{binding.operation_version}', now "
+                f"Operation '{descriptor_id}.{operation_id}' version has changed since attach "
+                f"(operation_ref.version mismatch: pinned '{binding.operation_ref.version}', now "
                 f"'{current_operation.version}') — rebind and re-review before release/invoke."
             )
         if (
@@ -744,27 +804,28 @@ class CapabilityRegistry:
             and tuple(current_operation.side_effect_destinations) != tuple(binding.destination_constraints)
         ):
             return (
-                f"Operation '{binding.descriptor_id}.{binding.operation}' side-effect destinations have "
+                f"Operation '{descriptor_id}.{operation_id}' side-effect destinations have "
                 "changed since attach (destination_constraints mismatch) — rebind and re-review before "
                 "release/invoke."
             )
-        if binding.instance_id is not None:
-            instance = self._instances.get(binding.instance_id)
+        if binding.instance_ref is not None and binding.instance_ref.id is not None:
+            instance_id = binding.instance_ref.id
+            instance = self._instances.get(instance_id)
             if instance is None:
-                return f"Capability instance '{binding.instance_id}' is no longer registered."
+                return f"Capability instance '{instance_id}' is no longer registered."
             if instance.readiness == InstanceReadiness.UNAVAILABLE:
                 return (
-                    f"Capability instance '{binding.instance_id}' is unavailable: "
+                    f"Capability instance '{instance_id}' is unavailable: "
                     f"{instance.unavailable_reason or 'no reason supplied'}."
                 )
-            if binding.instance_fingerprint is not None:
+            if binding.instance_ref.fingerprint is not None:
                 current_fingerprint = instance.instance_fingerprint or compute_instance_fingerprint(
                     descriptor, instance
                 )
-                if current_fingerprint != binding.instance_fingerprint:
+                if current_fingerprint != binding.instance_ref.fingerprint:
                     return (
-                        f"Capability instance '{binding.instance_id}' has been reconfigured since attach "
-                        "(instance_fingerprint mismatch) — rebind and re-review before release/invoke."
+                        f"Capability instance '{instance_id}' has been reconfigured since attach "
+                        "(instance_ref.fingerprint mismatch) — rebind and re-review before release/invoke."
                     )
         return None
 

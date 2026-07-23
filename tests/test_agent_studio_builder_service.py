@@ -35,6 +35,8 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     BuilderProposalState,
     CapabilityBinding,
+    CapabilityDescriptorRef,
+    CapabilityOperationRef,
 )
 from research_assistant_api.agent_studio.release_service import AuthorizationError
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -66,15 +68,15 @@ def _scope(project_id: str = TEST_PROJECT_ID) -> ScopeContext:
 
 
 def _binding(
-    *, descriptor_id: str = "descriptor-a", operation: str = "search", **overrides: object
+    *, descriptor_id: str = "descriptor-a", operation: str = "search", config: dict[str, object] | None = None
 ) -> CapabilityBinding:
-    base: dict[str, object] = {
-        "descriptor_id": descriptor_id,
-        "operation": operation,
-        "attached_by": USER_ID,
-    }
-    base.update(overrides)
-    return CapabilityBinding(**base)  # type: ignore[arg-type]
+    return CapabilityBinding(
+        provider_contract_version="agent-studio.capability-registry.v1",
+        descriptor_ref=CapabilityDescriptorRef(id=descriptor_id),
+        operation_ref=CapabilityOperationRef(id=operation),
+        attached_by=USER_ID,
+        config=config or {},
+    )
 
 
 def _draft(

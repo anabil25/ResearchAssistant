@@ -1678,36 +1678,31 @@ export interface components {
          *
          *     Distinct from ``CapabilityDescriptor`` (the catalog/governance entry),
          *     ``CapabilityInstance`` (the discovered tenant/project resource), and
-         *     ``ToolRegistrationSpec`` (the runtime handler wiring below): ``CapabilityBinding``
-         *     only records that this manifest has chosen to use ``descriptor_id.operation``
-         *     at ``descriptor_version``/``pinned_provider_version``, pointed at a specific
-         *     ``instance_id`` (when the operation requires a discovered resource) via
-         *     ``connection_ref``, with what config and policy.
+         *     ``ToolRegistrationSpec`` (the runtime handler wiring below):
+         *     ``CapabilityBinding`` only records that this manifest has chosen to use
+         *     ``descriptor_ref.id``.``operation_ref.id``, pointed at a specific
+         *     ``instance_ref`` (when the operation requires a discovered resource) via
+         *     ``connection_ref``, with what config and policy — using **typed refs**
+         *     rather than ambiguous flat fields so each pinned identity/version/digest
+         *     is independently named and independently checkable for drift.
          *
-         *     ``descriptor_digest`` pins the *content* of the attached descriptor (not
-         *     just its declared ``descriptor_version`` string) so a catalog edit that
-         *     bumps content without bumping the version string cannot silently change
-         *     an already-attached binding's behavior. ``input_schema_digest``/
-         *     ``output_schema_digest`` are copied from the resolved
-         *     ``CapabilityOperation`` at attach time — independent digests because a
-         *     descriptor's operations can have distinct I/O shapes. ``instance_fingerprint``
-         *     is copied from the resolved ``CapabilityInstance`` at attach time (see
-         *     ``CapabilityInstance.instance_fingerprint``); release/invoke re-checks it
-         *     against the current instance and hard-fails on drift (stale binding).
-         *     ``config_hash`` is a canonical digest of ``config`` computed at attach
-         *     time so any later config drift is independently detectable.
-         *     ``destination_constraints`` pins the resolved operation's
-         *     ``side_effect_destinations`` at attach time, independent of
-         *     ``descriptor_digest`` — an operation whose declared destinations change
-         *     (e.g. a provider widening what a "write" operation can reach) is
-         *     detected explicitly by ``check_binding_freshness`` rather than only
-         *     incidentally via a whole-descriptor digest mismatch. ``operation_version``
-         *     pins ``CapabilityOperation.version`` (per-operation, independent of
-         *     ``descriptor_version``) at attach time; freshness checks reject drift
-         *     on this field the same way they reject a ``descriptor_digest``/
-         *     ``instance_fingerprint`` mismatch, and also reject a binding whose
-         *     resolved operation is no longer ``is_bindable`` (moved to
-         *     non-``GA``/non-``ACTIVE``) since attach.
+         *     ``provider_contract_version`` is the provider integration *contract*
+         *     generation this binding was validated against (e.g. this backend's own
+         *     local capability-registry contract until a real external provider
+         *     adapter is wired and reports its own negotiated contract version) —
+         *     distinct from ``instance_ref.discovered_version`` (a specific instance's
+         *     discovered provider *software* version). ``destination_constraints``
+         *     pins the resolved operation's ``side_effect_destinations`` at attach
+         *     time, independent of ``descriptor_ref.digest`` — an operation whose
+         *     declared destinations change (e.g. a provider widening what a "write"
+         *     operation can reach) is detected explicitly by ``check_binding_freshness``
+         *     rather than only incidentally via a whole-descriptor digest mismatch.
+         *     ``destination_constraints_digest`` is a canonical digest over
+         *     ``destination_constraints`` for callers that only want to compare a
+         *     single value. Freshness checks reject drift on any ref field the same
+         *     way they reject a ``descriptor_ref.digest``/``instance_ref.fingerprint``
+         *     mismatch, and also reject a binding whose resolved operation is no
+         *     longer ``is_bindable`` (moved to non-``GA``/non-``ACTIVE``) since attach.
          */
         CapabilityBinding: {
             /**
@@ -1721,37 +1716,18 @@ export interface components {
             config?: {
                 [key: string]: unknown;
             };
-            /** Config Hash */
-            config_hash?: string | null;
-            /** Connection Ref */
-            connection_ref?: string | null;
-            /** Descriptor Digest */
-            descriptor_digest?: string | null;
-            /** Descriptor Id */
-            descriptor_id: string;
-            /**
-             * Descriptor Version
-             * @default 1
-             */
-            descriptor_version: string;
+            configuration_ref?: components["schemas"]["CapabilityConfigurationRef"];
+            connection_ref?: components["schemas"]["CapabilityConnectionRef"] | null;
+            descriptor_ref: components["schemas"]["CapabilityDescriptorRef"];
             /** Destination Constraints */
             destination_constraints?: string[];
-            /** Input Schema Digest */
-            input_schema_digest?: string | null;
-            /** Instance Fingerprint */
-            instance_fingerprint?: string | null;
-            /** Instance Id */
-            instance_id?: string | null;
-            /** Operation */
-            operation: string;
-            /** Operation Version */
-            operation_version?: string | null;
-            /** Output Schema Digest */
-            output_schema_digest?: string | null;
-            /** Pinned Provider Version */
-            pinned_provider_version?: string | null;
-            /** Policy Ref */
-            policy_ref?: string | null;
+            /** Destination Constraints Digest */
+            destination_constraints_digest?: string | null;
+            instance_ref?: components["schemas"]["CapabilityInstanceRef"] | null;
+            operation_ref: components["schemas"]["CapabilityOperationRef"];
+            policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
+            /** Provider Contract Version */
+            provider_contract_version: string;
         };
         /**
          * CapabilityChangeKind
@@ -1775,6 +1751,40 @@ export interface components {
             kind: components["schemas"]["CapabilityChangeKind"];
             /** Operation */
             operation: string;
+        };
+        /**
+         * CapabilityConfigurationRef
+         * @description Pin of the non-secret binding configuration bundle.
+         *
+         *     ``digest`` is a canonical digest of ``CapabilityBinding.config`` computed
+         *     at attach time (see ``capability_registry.compute_config_hash``) so any
+         *     later config drift is independently detectable. ``id`` optionally names
+         *     an externally-stored/registered configuration bundle when the config is
+         *     not solely inline.
+         */
+        CapabilityConfigurationRef: {
+            /** Digest */
+            digest?: string | null;
+            /** Id */
+            id?: string | null;
+        };
+        /**
+         * CapabilityConnectionRef
+         * @description Pin of the workspace connection this binding authorizes through.
+         *
+         *     Distinct from ``WorkspaceConnectionRef`` (the manifest-level connection
+         *     declaration): this is the binding-side pin of *which* connection and
+         *     *how* it authorizes. ``auth_mode``/``authorization_digest`` are honestly
+         *     ``None`` until a real workspace-connection resolution service supplies
+         *     them — never fabricated at attach time.
+         */
+        CapabilityConnectionRef: {
+            /** Auth Mode */
+            auth_mode?: string | null;
+            /** Authorization Digest */
+            authorization_digest?: string | null;
+            /** Id */
+            id?: string | null;
         };
         /**
          * CapabilityDescriptor
@@ -1820,6 +1830,26 @@ export interface components {
             risk_tier: string;
             /** Title */
             title: string;
+            /**
+             * Version
+             * @default 1
+             */
+            version: string;
+        };
+        /**
+         * CapabilityDescriptorRef
+         * @description Pin of the attached ``CapabilityDescriptor``'s identity/content.
+         *
+         *     ``digest`` pins the descriptor's *content* (not just its declared
+         *     ``version`` string) so a catalog edit that bumps content without
+         *     bumping the version string cannot silently change an already-attached
+         *     binding's behavior — see ``capability_registry.compute_descriptor_digest``.
+         */
+        CapabilityDescriptorRef: {
+            /** Digest */
+            digest?: string | null;
+            /** Id */
+            id: string;
             /**
              * Version
              * @default 1
@@ -1899,6 +1929,28 @@ export interface components {
             unavailable_reason?: string | null;
         };
         /**
+         * CapabilityInstanceRef
+         * @description Pin of the discovered ``CapabilityInstance`` this binding targets.
+         *
+         *     ``discovered_version`` is the instance's own ``discovered_provider_version``
+         *     at attach time (renamed from the former flat ``pinned_provider_version``
+         *     to make explicit it is the *instance's* discovered version, distinct from
+         *     ``CapabilityBinding.provider_contract_version`` — the provider integration
+         *     contract generation this binding conforms to). ``fingerprint`` is copied
+         *     from ``CapabilityInstance.instance_fingerprint``; release/invoke re-checks
+         *     it against the current instance and hard-fails on drift (stale binding).
+         */
+        CapabilityInstanceRef: {
+            /** Discovered Version */
+            discovered_version?: string | null;
+            /** Fingerprint */
+            fingerprint?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Provider Id */
+            provider_id?: string | null;
+        };
+        /**
          * CapabilityOperation
          * @description A single operation on a capability descriptor.
          *
@@ -1924,7 +1976,7 @@ export interface components {
          *     since a single descriptor's operations can have distinct I/O shapes.
          *     ``version`` is the operation's own version (independent of
          *     ``CapabilityDescriptor.version``, the whole-descriptor catalog version) —
-         *     ``CapabilityBinding.operation_version`` pins it at attach time so a later
+         *     ``CapabilityBinding.operation_ref.version`` pins it at attach time so a later
          *     per-operation version bump is independently detectable from a descriptor
          *     content/version change. ``lifecycle`` is the ``OperationLifecycle`` axis,
          *     independent of ``maturity`` — see ``is_bindable``.
@@ -1984,6 +2036,40 @@ export interface components {
              * @default 1
              */
             version: string;
+        };
+        /**
+         * CapabilityOperationRef
+         * @description Pin of the attached ``CapabilityOperation``'s identity/version/schemas.
+         *
+         *     ``version`` pins ``CapabilityOperation.version`` (per-operation,
+         *     independent of ``CapabilityDescriptorRef.version``) at attach time so a
+         *     later per-operation version bump is independently detectable from a
+         *     descriptor content/version change. ``input_schema_digest``/
+         *     ``output_schema_digest`` are copied from the resolved operation —
+         *     independent digests because a single descriptor's operations can have
+         *     distinct I/O shapes.
+         */
+        CapabilityOperationRef: {
+            /** Id */
+            id: string;
+            /** Input Schema Digest */
+            input_schema_digest?: string | null;
+            /** Output Schema Digest */
+            output_schema_digest?: string | null;
+            /** Version */
+            version?: string | null;
+        };
+        /**
+         * CapabilityPolicyRef
+         * @description Pin of the approval/destination policy governing this binding.
+         */
+        CapabilityPolicyRef: {
+            /** Digest */
+            digest?: string | null;
+            /** Id */
+            id?: string | null;
+            /** Version */
+            version?: string | null;
         };
         /** CapabilitySpec */
         CapabilitySpec: {

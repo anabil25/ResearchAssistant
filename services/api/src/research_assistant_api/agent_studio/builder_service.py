@@ -176,7 +176,7 @@ def diff_capability_bindings(
     """Deterministic capability-binding diff, keyed by (descriptor_id, operation)."""
 
     def _key(binding: CapabilityBinding) -> tuple[str, str]:
-        return (binding.descriptor_id, binding.operation)
+        return (binding.descriptor_ref.id, binding.operation_ref.id)
 
     before_by_key = {_key(binding): binding for binding in before.capabilities}
     after_by_key = {_key(binding): binding for binding in after.capabilities}

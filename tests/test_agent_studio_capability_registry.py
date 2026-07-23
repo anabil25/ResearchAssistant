@@ -24,8 +24,11 @@ from research_assistant_api.agent_studio.capability_registry import (
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
     CapabilityDescriptor,
+    CapabilityDescriptorRef,
     CapabilityInstance,
+    CapabilityInstanceRef,
     CapabilityOperation,
+    CapabilityOperationRef,
     InstanceReadiness,
     OperationClass,
     OperationLifecycle,
@@ -296,13 +299,16 @@ def test_attach_returns_binding_with_instance_pin_and_copied_config() -> None:
     )
     config["index"] = "mutated"
 
-    assert binding.descriptor_id == "foundry.azure_ai_search"
-    assert binding.descriptor_version == "1"
-    assert binding.operation == "search"
-    assert binding.instance_id == "search-1"
-    assert binding.pinned_provider_version == "2026.07"
-    assert binding.connection_ref == "conn-1"
-    assert binding.policy_ref == "policy://search"
+    assert binding.descriptor_ref.id == "foundry.azure_ai_search"
+    assert binding.descriptor_ref.version == "1"
+    assert binding.operation_ref.id == "search"
+    assert binding.instance_ref is not None
+    assert binding.instance_ref.id == "search-1"
+    assert binding.instance_ref.discovered_version == "2026.07"
+    assert binding.connection_ref is not None
+    assert binding.connection_ref.id == "conn-1"
+    assert binding.policy_ref is not None
+    assert binding.policy_ref.id == "policy://search"
     assert binding.config == {"index": "docs"}
 
 
@@ -313,8 +319,7 @@ def test_attach_without_instance_defaults_to_empty_config_and_no_pin() -> None:
         attached_by="user-1",
     )
 
-    assert binding.instance_id is None
-    assert binding.pinned_provider_version is None
+    assert binding.instance_ref is None
     assert binding.config == {}
     assert binding.connection_ref is None
     assert binding.policy_ref is None
@@ -431,13 +436,14 @@ def test_attach_stamps_digests_and_fingerprint_on_binding() -> None:
         config={"index": "docs"},
     )
 
-    assert binding.descriptor_digest == compute_descriptor_digest(descriptor)
-    assert binding.instance_fingerprint == instance.instance_fingerprint
-    assert binding.config_hash == compute_config_hash({"index": "docs"})
+    assert binding.descriptor_ref.digest == compute_descriptor_digest(descriptor)
+    assert binding.instance_ref is not None
+    assert binding.instance_ref.fingerprint == instance.instance_fingerprint
+    assert binding.configuration_ref.digest == compute_config_hash({"index": "docs"})
     operation = descriptor.operation("search")
     assert operation is not None
-    assert binding.input_schema_digest == operation.input_schema_digest
-    assert binding.output_schema_digest == operation.output_schema_digest
+    assert binding.operation_ref.input_schema_digest == operation.input_schema_digest
+    assert binding.operation_ref.output_schema_digest == operation.output_schema_digest
 
 
 def test_compute_instance_fingerprint_is_deterministic_and_sensitive_to_content() -> None:
@@ -490,11 +496,13 @@ def test_check_binding_freshness_detects_unknown_descriptor() -> None:
 def test_check_binding_freshness_detects_descriptor_digest_drift() -> None:
     registry = default_registry()
     binding = registry.attach(descriptor_id="foundry.web_search", operation="search", attached_by="user-1")
-    drifted = binding.model_copy(update={"descriptor_digest": "sha256:tampered"})
+    drifted = binding.model_copy(
+        update={"descriptor_ref": binding.descriptor_ref.model_copy(update={"digest": "sha256:tampered"})}
+    )
 
     reason = registry.check_binding_freshness(drifted)
     assert reason is not None
-    assert "descriptor_digest mismatch" in reason
+    assert "descriptor_ref.digest mismatch" in reason
 
 
 def test_check_binding_freshness_detects_missing_instance() -> None:
@@ -572,9 +580,10 @@ def test_check_binding_freshness_ignores_bindings_created_without_digest_pins() 
         _instance(instance_id="unpinned", descriptor_id="foundry.azure_ai_search")
     )
     binding = CapabilityBinding(
-        descriptor_id="foundry.azure_ai_search",
-        operation="search",
-        instance_id=instance.id,
+        provider_contract_version="agent-studio.capability-registry.v1",
+        descriptor_ref=CapabilityDescriptorRef(id="foundry.azure_ai_search"),
+        operation_ref=CapabilityOperationRef(id="search"),
+        instance_ref=CapabilityInstanceRef(provider_id="foundry", id=instance.id),
         attached_by="user-1",
     )
 
@@ -618,7 +627,11 @@ def test_check_binding_freshness_detects_operation_removed_from_descriptor() -> 
     )
     stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
     binding = binding.model_copy(
-        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+        update={
+            "descriptor_ref": binding.descriptor_ref.model_copy(
+                update={"digest": compute_descriptor_digest(replacement_descriptor)}
+            )
+        }
     )
 
     reason = stale_registry.check_binding_freshness(binding)
@@ -664,7 +677,11 @@ def test_check_binding_freshness_detects_operation_no_longer_bindable() -> None:
     )
     stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
     binding = binding.model_copy(
-        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+        update={
+            "descriptor_ref": binding.descriptor_ref.model_copy(
+                update={"digest": compute_descriptor_digest(replacement_descriptor)}
+            )
+        }
     )
 
     reason = stale_registry.check_binding_freshness(binding)
@@ -680,7 +697,7 @@ def test_check_binding_freshness_detects_operation_version_drift() -> None:
     )
     registry = CapabilityRegistry(descriptors=(descriptor,))
     binding = registry.attach(descriptor_id="custom.version-test", operation="run", attached_by="user-1")
-    assert binding.operation_version == "1"
+    assert binding.operation_ref.version == "1"
 
     # Catalog update bumps the operation's version while keeping it GA+ACTIVE.
     replacement_descriptor = _descriptor(
@@ -689,11 +706,15 @@ def test_check_binding_freshness_detects_operation_version_drift() -> None:
     )
     stale_registry = CapabilityRegistry(descriptors=(replacement_descriptor,))
     binding = binding.model_copy(
-        update={"descriptor_digest": compute_descriptor_digest(replacement_descriptor)}
+        update={
+            "descriptor_ref": binding.descriptor_ref.model_copy(
+                update={"digest": compute_descriptor_digest(replacement_descriptor)}
+            )
+        }
     )
 
     reason = stale_registry.check_binding_freshness(binding)
     assert reason is not None
-    assert "operation_version mismatch" in reason
+    assert "operation_ref.version mismatch" in reason
     assert "pinned '1'" in reason
     assert "now '2'" in reason

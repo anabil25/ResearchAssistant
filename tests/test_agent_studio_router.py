@@ -571,12 +571,12 @@ def test_list_capabilities_and_attach_cover_catalog_and_new_request_shape(
     )
     assert attach_response.status_code == 200, attach_response.text
     body = attach_response.json()
-    assert body["descriptor_id"] == "foundry.azure_ai_search"
-    assert body["operation"] == "search"
-    assert body["instance_id"] == "search-instance-1"
-    assert body["connection_ref"] == "conn://azure-ai-search"
-    assert body["policy_ref"] == "policy://grounding"
-    assert body["pinned_provider_version"] == "2026-07-01"
+    assert body["descriptor_ref"]["id"] == "foundry.azure_ai_search"
+    assert body["operation_ref"]["id"] == "search"
+    assert body["instance_ref"]["id"] == "search-instance-1"
+    assert body["connection_ref"]["id"] == "conn://azure-ai-search"
+    assert body["policy_ref"]["id"] == "policy://grounding"
+    assert body["instance_ref"]["discovered_version"] == "2026-07-01"
     assert body["attached_by"] == "user-1"
 
 

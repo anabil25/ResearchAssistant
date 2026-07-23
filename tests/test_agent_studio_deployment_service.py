@@ -26,6 +26,8 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ApprovalState,
     CapabilityBinding,
+    CapabilityDescriptorRef,
+    CapabilityOperationRef,
     DeploymentEnvironment,
     HealthStatus,
     LogicalAgentBinding,
@@ -137,7 +139,7 @@ class ReleaseServiceHarness:
         parent_version_id = previous_versions[-1].id if previous_versions else None
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
         capability_versions = {
-            binding.descriptor_id: binding.descriptor_version for binding in draft.manifest.capabilities
+            binding.descriptor_ref.id: binding.descriptor_ref.version for binding in draft.manifest.capabilities
         }
         return self._store.allocate_version(
             scope,
@@ -876,8 +878,9 @@ def test_resolve_returns_full_contract_for_bound_version(
             update={
                 "capabilities": (
                     CapabilityBinding(
-                        descriptor_id="foundry.web_search",
-                        operation="search",
+                        provider_contract_version="agent-studio.capability-registry.v1",
+                        descriptor_ref=CapabilityDescriptorRef(id="foundry.web_search"),
+                        operation_ref=CapabilityOperationRef(id="search"),
                         attached_by="user-1",
                     ),
                 ),

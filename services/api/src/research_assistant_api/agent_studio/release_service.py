@@ -344,7 +344,7 @@ class ReleaseService:
 
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
         capability_versions = {
-            binding.descriptor_id: binding.descriptor_version for binding in draft.manifest.capabilities
+            binding.descriptor_ref.id: binding.descriptor_ref.version for binding in draft.manifest.capabilities
         }
 
         def _build(sequence: int) -> AgentVersion:
@@ -546,7 +546,7 @@ class ReleaseService:
             (
                 b
                 for b in version.manifest.capabilities
-                if b.descriptor_id == descriptor_id and b.operation == operation
+                if b.descriptor_ref.id == descriptor_id and b.operation_ref.id == operation
             ),
             None,
         )

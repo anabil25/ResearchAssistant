@@ -92,13 +92,13 @@ class DeploymentService:
         catalog = self._registry.as_mapping()
         approvals = self._store.list_approvals(scope, version.id)
         for binding in version.manifest.capabilities:
-            descriptor = catalog.get(binding.descriptor_id)
+            descriptor = catalog.get(binding.descriptor_ref.id)
             if descriptor is None:
                 continue
-            operation = descriptor.operation(binding.operation)
+            operation = descriptor.operation(binding.operation_ref.id)
             if operation is None or not operation.requires_approval:
                 continue
-            destination = f"{binding.descriptor_id}.{binding.operation}"
+            destination = f"{binding.descriptor_ref.id}.{binding.operation_ref.id}"
             approved = next(
                 (
                     record
