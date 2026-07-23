@@ -45,9 +45,12 @@ def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
     return {
         "operation_id": operation.operation_id,
         "version": operation.version,
+        "provider_version": operation.provider_version,
         "maturity": operation.maturity.value,
         "input_schema": plain_json(operation.input_schema),
+        "input_schema_digest": operation.input_schema_digest,
         "output_schema": plain_json(operation.output_schema),
+        "output_schema_digest": operation.output_schema_digest,
         "operation_class": operation.operation_class.value,
         "approval_policy": operation.approval_policy.value,
         "external_side_effect": operation.external_side_effect,
@@ -88,6 +91,7 @@ def _instance_json(instance: CapabilityInstance) -> dict[str, Any]:
     return {
         "provider_id": instance.provider_id,
         "instance_id": instance.instance_id,
+        "instance_ref": instance.instance_ref,
         "descriptor_id": instance.descriptor.descriptor_id,
         "instance_fingerprint": capability_instance_fingerprint(instance),
         "name": instance.name,
@@ -98,9 +102,12 @@ def _instance_json(instance: CapabilityInstance) -> dict[str, Any]:
         "data_boundary": instance.data_boundary,
         "resource_id": instance.resource_id,
         "connection_id": instance.connection_id,
+        "connection_ref": instance.connection_ref,
         "discovered_version": instance.discovered_version,
+        "discovered_provider_version": instance.discovered_provider_version,
         "configuration": plain_json(instance.configuration),
         "configuration_fingerprint": instance.configuration_fingerprint,
+        "config_ref": instance.config_ref,
         "status_evidence": list(instance.status_evidence),
         "unavailable_reason": instance.unavailable_reason,
     }

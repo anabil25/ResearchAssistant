@@ -261,14 +261,24 @@ class GitHubProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> ValidationReport:
-        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return validation_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     def health(
         self,
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> HealthReport:
-        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return health_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         instance, operation = find_operation(

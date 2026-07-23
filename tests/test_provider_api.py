@@ -17,14 +17,13 @@ from research_assistant_connector_adapter.provider_api import (
 )
 from research_assistant_connectors.providers import (
     AuthMode,
-    CapabilityBinding,
     InvocationContext,
     ProviderRegistry,
     RateLimitError,
     WebhookConfig,
     WebhookProvider,
     approval_decision,
-    capability_instance_fingerprint,
+    capability_binding,
 )
 
 
@@ -63,14 +62,12 @@ def client() -> Iterator[TestClient]:
     )
     capability = provider.discover(base_context)[0]
     operation = capability.descriptor.operations[0]
-    binding = CapabilityBinding(
+    binding = capability_binding(
         binding_id="binding",
         agent_id="agent",
-        instance_id=capability.instance_id,
-        descriptor_id=capability.descriptor.descriptor_id,
-        operation_id=operation.operation_id,
-        operation_version=operation.version,
-        instance_fingerprint=capability_instance_fingerprint(capability),
+        instance=capability,
+        operation=operation,
+        policy_ref=base_context.policy_release,
     )
     instance_decision = approval_decision(
         base_context,
@@ -126,9 +123,16 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
     assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v3"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
     assert instance["attachable_operation_ids"] == ["publish"]
+    assert instance["instance_ref"] == instance["instance_id"]
+    assert instance["config_ref"] == instance["configuration_fingerprint"]
+    assert instance["connection_ref"] == instance["connection_id"]
+    assert instance["discovered_provider_version"] == instance["discovered_version"]
     assert len(instance["instance_fingerprint"]) == 64
     assert descriptor["operations"][0]["maturity"] == "ga"
     assert descriptor["operations"][0]["version"] == "1.0.0"
+    assert descriptor["operations"][0]["provider_version"] == "1.0.0"
+    assert len(descriptor["operations"][0]["input_schema_digest"]) == 64
+    assert len(descriptor["operations"][0]["output_schema_digest"]) == 64
     assert descriptor["operations"][0]["operation_class"] == "privileged"
     assert descriptor["operations"][0]["approval_policy"] == "required"
     assert descriptor["operations"][0]["side_effect_destinations"] == ["https://hooks.test/events"]

@@ -279,14 +279,24 @@ class OpenAPIProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> ValidationReport:
-        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return validation_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     def health(
         self,
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> HealthReport:
-        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return health_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     @staticmethod
     def _render_path(template: str, values: Mapping[str, Any]) -> str:

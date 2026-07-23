@@ -137,14 +137,24 @@ class WebhookProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> ValidationReport:
-        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return validation_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     def health(
         self,
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> HealthReport:
-        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        instance, _ = resolve_capability_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
         if instance.readiness is not Readiness.READY or self._config.health_method is None:
             return HealthReport(
                 instance.health or instance.readiness,

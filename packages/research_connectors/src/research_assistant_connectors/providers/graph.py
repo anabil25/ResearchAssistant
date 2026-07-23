@@ -309,14 +309,24 @@ class MicrosoftGraphProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> ValidationReport:
-        return validation_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return validation_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     def health(
         self,
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> HealthReport:
-        return health_for_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        return health_for_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
 
     @staticmethod
     def _safe_drive_path(path: str) -> str:

@@ -14,7 +14,6 @@ from research_assistant_connectors.providers import (
     AuthConfig,
     AuthMode,
     BlobConfig,
-    CapabilityBinding,
     CapabilityDescriptor,
     CapabilityInstance,
     DiscoveryResult,
@@ -51,6 +50,8 @@ from research_assistant_connectors.providers import (
     UpstreamError,
     WebhookConfig,
     approval_decision,
+    canonical_json_hash,
+    capability_binding,
     capability_instance_fingerprint,
     operation_allows_retry,
 )
@@ -305,26 +306,36 @@ def test_discovery_provenance_and_instance_state_invariants() -> None:
 
 def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
     instance = capability()
-    binding = CapabilityBinding(
-        "binding",
-        "agent",
-        instance.instance_id,
-        instance.descriptor.descriptor_id,
-        "operation",
-        "1.0.0",
-        capability_instance_fingerprint(instance),
-        {"fixed": True},
+    operation_descriptor = instance.descriptor.operations[0]
+    binding = capability_binding(
+        binding_id="binding",
+        agent_id="agent",
+        instance=instance,
+        operation=operation_descriptor,
+        policy_ref="agent-studio-v1",
     )
     assert validate_binding(instance, binding).operation_id == "operation"
-    assert binding.configuration["fixed"] is True
-    with pytest.raises(TypeError):
-        binding.configuration["fixed"] = False  # type: ignore[index]
+    assert binding.instance_ref == instance.instance_id
+    assert binding.pinned_provider_version == operation_descriptor.version
+    assert binding.provider_version == binding.pinned_provider_version
+    assert binding.operation_version == binding.pinned_provider_version
+    assert binding.input_schema_digest == operation_descriptor.input_schema_digest
+    assert binding.output_schema_digest == operation_descriptor.output_schema_digest
+    assert binding.input_schema_digest == canonical_json_hash(operation_descriptor.input_schema)
+    assert canonical_json_hash({"b": 2, "a": "\u00e9"}) == canonical_json_hash({"a": "\u00e9", "b": 2})
+    assert binding.config_ref == instance.configuration_fingerprint
+    assert binding.connection_ref is instance.connection_id
+    assert binding.policy_ref == "agent-studio-v1"
     for changed, message in (
-        (replace(binding, instance_id="other"), "different instance"),
+        (replace(binding, instance_ref="other"), "different instance"),
         (replace(binding, descriptor_id="other"), "different descriptor"),
         (replace(binding, operation_id="other"), "not declared"),
-        (replace(binding, operation_version="2.0.0"), "not declared"),
+        (replace(binding, pinned_provider_version="2.0.0"), "not declared"),
         (replace(binding, instance_fingerprint="0" * 64), "changed instance"),
+        (replace(binding, config_ref="0" * 64), "configuration reference"),
+        (replace(binding, connection_ref="other"), "connection reference"),
+        (replace(binding, input_schema_digest="0" * 64), "input schema digest"),
+        (replace(binding, output_schema_digest="0" * 64), "output schema digest"),
     ):
         with pytest.raises(ValueError, match=message):
             validate_binding(instance, changed)
@@ -342,8 +353,15 @@ def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
         replace(binding, binding_id="")
     with pytest.raises(ValueError, match="lowercase SHA-256"):
         replace(binding, instance_fingerprint="x" * 64)
-    with pytest.raises(ValueError, match="non-JSON"):
-        replace(binding, configuration={"bad": object()})
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        replace(binding, input_schema_digest="x" * 64)
+    with pytest.raises(PolicyError, match="policy reference"):
+        resolve_capability_target(
+            discovery_result((instance,)),
+            replace(binding, policy_ref="other"),
+            provider_id="provider",
+            policy_ref="agent-studio-v1",
+        )
 
     changed_destination = replace(
         instance,
@@ -549,14 +567,12 @@ def test_approval_decisions_bind_every_authorization_dimension() -> None:
     ctx = context()
     instance = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
     operation_descriptor = instance.descriptor.operations[0]
-    binding = CapabilityBinding(
-        "binding",
-        "agent",
-        instance.instance_id,
-        instance.descriptor.descriptor_id,
-        operation_descriptor.operation_id,
-        operation_descriptor.version,
-        capability_instance_fingerprint(instance),
+    binding = capability_binding(
+        binding_id="binding",
+        agent_id="agent",
+        instance=instance,
+        operation=operation_descriptor,
+        policy_ref=ctx.policy_release,
     )
     request = InvocationRequest(binding, operation_descriptor.operation_id, {"value": "ok"})
     decision = approval_decision(

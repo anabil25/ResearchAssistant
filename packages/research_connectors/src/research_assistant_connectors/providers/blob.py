@@ -261,7 +261,12 @@ class AzureBlobProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> ValidationReport:
-        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        instance, _ = resolve_capability_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
         return ValidationReport(
             instance.readiness,
             () if instance.readiness is Readiness.READY else (instance.unavailable_reason or "Not ready",),
@@ -272,7 +277,12 @@ class AzureBlobProvider:
         target: CapabilityInstance | CapabilityBinding,
         context: InvocationContext,
     ) -> HealthReport:
-        instance, _ = resolve_capability_target(self.discover(context), target, provider_id=PROVIDER_ID)
+        instance, _ = resolve_capability_target(
+            self.discover(context),
+            target,
+            provider_id=PROVIDER_ID,
+            policy_ref=context.policy_release,
+        )
         return HealthReport(instance.health or instance.readiness, instance.status_evidence)
 
     @staticmethod

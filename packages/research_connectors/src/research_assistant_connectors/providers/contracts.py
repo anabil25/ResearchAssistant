@@ -114,6 +114,11 @@ def canonical_json_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _validate_sha256(value: str, *, path: str) -> None:
+    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
+        raise ValueError(f"{path} must be lowercase SHA-256")
+
+
 def _validate_utc_timestamp(value: str, *, path: str) -> None:
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
@@ -185,6 +190,18 @@ class OperationDescriptor:
         _validate_json_value(self.output_schema, path="output_schema")
         object.__setattr__(self, "input_schema", _freeze(self.input_schema))
         object.__setattr__(self, "output_schema", _freeze(self.output_schema))
+
+    @property
+    def provider_version(self) -> str:
+        return self.version
+
+    @property
+    def input_schema_digest(self) -> str:
+        return canonical_json_hash(self.input_schema)
+
+    @property
+    def output_schema_digest(self) -> str:
+        return canonical_json_hash(self.output_schema)
 
 
 @dataclass(frozen=True, slots=True)
@@ -260,6 +277,22 @@ class CapabilityInstance:
         return tuple(
             operation.operation_id for operation in self.descriptor.operations if operation.maturity is Maturity.GA
         )
+
+    @property
+    def instance_ref(self) -> str:
+        return self.instance_id
+
+    @property
+    def config_ref(self) -> str:
+        return self.configuration_fingerprint
+
+    @property
+    def connection_ref(self) -> str | None:
+        return self.connection_id
+
+    @property
+    def discovered_provider_version(self) -> str:
+        return self.discovered_version or "multiple"
 
 
 @dataclass(frozen=True, slots=True)
@@ -397,46 +430,84 @@ def capability_instance_fingerprint(instance: CapabilityInstance) -> str:
         "discovered_version": instance.discovered_version,
         "configuration": plain_json(instance.configuration),
     }
-    encoded = json.dumps(
-        payload,
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return canonical_json_hash(payload)
 
 
 @dataclass(frozen=True, slots=True)
 class CapabilityBinding:
     binding_id: str
     agent_id: str
-    instance_id: str
     descriptor_id: str
     operation_id: str
-    operation_version: str
+    instance_ref: str
+    pinned_provider_version: str
+    input_schema_digest: str
+    output_schema_digest: str
+    config_ref: str
+    connection_ref: str | None
+    policy_ref: str
     instance_fingerprint: str
-    configuration: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
         if not all(
             (
                 self.binding_id,
                 self.agent_id,
-                self.instance_id,
                 self.descriptor_id,
                 self.operation_id,
-                self.operation_version,
+                self.instance_ref,
+                self.pinned_provider_version,
+                self.config_ref,
+                self.policy_ref,
                 self.instance_fingerprint,
             )
         ):
-            raise ValueError("Capability binding identifiers and operation version are required")
-        if len(self.instance_fingerprint) != 64 or any(
-            character not in "0123456789abcdef" for character in self.instance_fingerprint
+            raise ValueError("Capability binding identifiers, versions, fingerprints, and references are required")
+        for field_name, value in (
+            ("input_schema_digest", self.input_schema_digest),
+            ("output_schema_digest", self.output_schema_digest),
+            ("config_ref", self.config_ref),
+            ("instance_fingerprint", self.instance_fingerprint),
         ):
-            raise ValueError("Capability binding instance fingerprint must be lowercase SHA-256")
-        _validate_json_value(self.configuration, path="binding.configuration")
-        object.__setattr__(self, "configuration", _freeze(self.configuration))
+            _validate_sha256(value, path=f"binding.{field_name}")
+
+    @property
+    def instance_id(self) -> str:
+        return self.instance_ref
+
+    @property
+    def operation_version(self) -> str:
+        return self.pinned_provider_version
+
+    @property
+    def provider_version(self) -> str:
+        return self.pinned_provider_version
+
+
+def capability_binding(
+    *,
+    binding_id: str,
+    agent_id: str,
+    instance: CapabilityInstance,
+    operation: OperationDescriptor,
+    policy_ref: str,
+) -> CapabilityBinding:
+    binding = CapabilityBinding(
+        binding_id=binding_id,
+        agent_id=agent_id,
+        descriptor_id=instance.descriptor.descriptor_id,
+        operation_id=operation.operation_id,
+        instance_ref=instance.instance_ref,
+        pinned_provider_version=operation.provider_version,
+        input_schema_digest=operation.input_schema_digest,
+        output_schema_digest=operation.output_schema_digest,
+        config_ref=instance.config_ref,
+        connection_ref=instance.connection_ref,
+        policy_ref=policy_ref,
+        instance_fingerprint=capability_instance_fingerprint(instance),
+    )
+    validate_binding(instance, binding)
+    return binding
 
 
 @runtime_checkable
@@ -738,24 +809,32 @@ def validate_binding(
     instance: CapabilityInstance,
     binding: CapabilityBinding,
 ) -> OperationDescriptor:
-    if binding.instance_id != instance.instance_id:
+    if binding.instance_ref != instance.instance_ref:
         raise ValueError("Capability binding targets a different instance")
     if binding.descriptor_id != instance.descriptor.descriptor_id:
         raise ValueError("Capability binding targets a different descriptor")
     if binding.instance_fingerprint != capability_instance_fingerprint(instance):
         raise ValueError("Capability binding targets changed instance configuration")
+    if binding.config_ref != instance.config_ref:
+        raise ValueError("Capability binding targets a different configuration reference")
+    if binding.connection_ref != instance.connection_ref:
+        raise ValueError("Capability binding targets a different connection reference")
     if instance.readiness is not Readiness.READY:
         raise ValueError("Capability binding requires a ready instance")
     operation = next(
         (
             item
             for item in instance.descriptor.operations
-            if item.operation_id == binding.operation_id and item.version == binding.operation_version
+            if item.operation_id == binding.operation_id and item.provider_version == binding.pinned_provider_version
         ),
         None,
     )
     if operation is None:
         raise ValueError("Capability binding operation or version is not declared")
+    if binding.input_schema_digest != operation.input_schema_digest:
+        raise ValueError("Capability binding input schema digest does not match")
+    if binding.output_schema_digest != operation.output_schema_digest:
+        raise ValueError("Capability binding output schema digest does not match")
     if operation.maturity is not Maturity.GA:
         raise ValueError("Only GA operations can be bound")
     return operation
@@ -766,6 +845,7 @@ def resolve_capability_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
+    policy_ref: str | None = None,
 ) -> tuple[CapabilityInstance, CapabilityBinding | None]:
     current = next(
         (instance for instance in discovery.instances if instance.instance_id == target.instance_id),
@@ -778,6 +858,12 @@ def resolve_capability_target(
             instance_id=target.instance_id,
         )
     if isinstance(target, CapabilityBinding):
+        if policy_ref is not None and target.policy_ref != policy_ref:
+            raise PolicyError(
+                "Capability binding policy reference does not match the active policy",
+                provider_id=provider_id,
+                instance_id=current.instance_id,
+            )
         try:
             validate_binding(current, target)
         except ValueError as exc:
@@ -801,8 +887,14 @@ def validation_for_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
+    policy_ref: str | None = None,
 ) -> ValidationReport:
-    instance, _ = resolve_capability_target(discovery, target, provider_id=provider_id)
+    instance, _ = resolve_capability_target(
+        discovery,
+        target,
+        provider_id=provider_id,
+        policy_ref=policy_ref,
+    )
     return ValidationReport(
         instance.readiness,
         () if instance.readiness is Readiness.READY else (instance.unavailable_reason or "Not ready",),
@@ -814,8 +906,14 @@ def health_for_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
+    policy_ref: str | None = None,
 ) -> HealthReport:
-    instance, _ = resolve_capability_target(discovery, target, provider_id=provider_id)
+    instance, _ = resolve_capability_target(
+        discovery,
+        target,
+        provider_id=provider_id,
+        policy_ref=policy_ref,
+    )
     return HealthReport(instance.health or instance.readiness, instance.status_evidence)
 
 
@@ -903,6 +1001,7 @@ def find_operation(
         discovery,
         request.target,
         provider_id=provider_id,
+        policy_ref=context.policy_release,
     )
     if instance.readiness is not Readiness.READY:
         raise UnavailableError(
