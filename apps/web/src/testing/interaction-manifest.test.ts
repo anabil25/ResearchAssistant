@@ -51,6 +51,7 @@ describe("V3 interaction manifest", () => {
       "visual.state.empty",
       "visual.state.loading",
       "visual.state.error",
+      "visual.state.authorization",
     ]);
     expect(UI_COVERAGE_MANIFEST).toHaveLength(INTERACTION_MANIFEST.length);
     for (const interaction of UI_COVERAGE_MANIFEST) {
