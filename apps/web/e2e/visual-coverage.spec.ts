@@ -23,7 +23,7 @@ async function expectAccessible(page: Page) {
   expect(results.violations).toEqual([]);
 }
 
-test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] captures core and critical states", async ({
+test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] captures core and critical states [pw.literature.protocol.run:loading][pw.literature.protocol.run:error][pw.literature.screen.tab:empty]", async ({
   page,
   releaseDiagnostics,
 }, testInfo) => {

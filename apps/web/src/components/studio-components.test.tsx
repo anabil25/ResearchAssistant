@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
 import {
@@ -1869,6 +1869,120 @@ describe("DatasetStudio", () => {
       }),
     );
     expect(onRun.mock.calls[0][2].inputs).not.toHaveProperty("csv_text");
+    fileReaderSpy.mockRestore();
+  });
+
+  it("[pw.dataset-upload:reading] shows a reading status and disables analysis until the CSV read resolves", async () => {
+    let deliverLoad: (() => void) | null = null;
+    const fileReaderSpy = jest
+      .spyOn(window, "FileReader")
+      .mockImplementation(() => {
+        const reader: {
+          result: string;
+          onload: ((event: ProgressEvent<FileReader>) => void) | null;
+          onerror: ((event: ProgressEvent<FileReader>) => void) | null;
+          readAsText: () => void;
+        } = {
+          result: "a,b\n1,2",
+          onload: null,
+          onerror: null,
+          readAsText() {
+            deliverLoad = () =>
+              reader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+          },
+        };
+        return reader as unknown as FileReader;
+      });
+
+    render(
+      <DatasetStudio result={null} running={false} error={null} onRun={jest.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [new File(["a,b\n1,2"], "pending.csv", { type: "text/csv" })],
+      },
+    });
+
+    const tile = screen
+      .getByText("pending.csv")
+      .closest(".asset-upload-tile") as HTMLElement;
+    expect(tile).toHaveAttribute("data-read-status", "reading");
+    expect(screen.getByText(/reading csv/i)).toBeInTheDocument();
+
+    const runButton = screen.getByRole("button", {
+      name: "Analyze with Foundry Code Interpreter",
+    });
+    fireEvent.click(
+      screen.getByLabelText(
+        /i approve sending this bounded dataset to the foundry dataset agent/i,
+      ),
+    );
+    expect(runButton).toBeDisabled();
+
+    await act(async () => {
+      deliverLoad?.();
+    });
+
+    expect(tile).toHaveAttribute("data-read-status", "ready");
+    expect(runButton).toBeEnabled();
+    fileReaderSpy.mockRestore();
+  });
+
+  it("[pw.dataset-upload:error] surfaces a read error and keeps analysis disabled", async () => {
+    let deliverError: (() => void) | null = null;
+    const fileReaderSpy = jest
+      .spyOn(window, "FileReader")
+      .mockImplementation(() => {
+        const reader: {
+          result: string | null;
+          onload: ((event: ProgressEvent<FileReader>) => void) | null;
+          onerror: ((event: ProgressEvent<FileReader>) => void) | null;
+          readAsText: () => void;
+        } = {
+          result: null,
+          onload: null,
+          onerror: null,
+          readAsText() {
+            deliverError = () =>
+              reader.onerror?.(new ProgressEvent("error") as ProgressEvent<FileReader>);
+          },
+        };
+        return reader as unknown as FileReader;
+      });
+
+    render(
+      <DatasetStudio result={null} running={false} error={null} onRun={jest.fn()} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [new File(["a,b\n1,2"], "broken.csv", { type: "text/csv" })],
+      },
+    });
+
+    const tile = screen
+      .getByText("broken.csv")
+      .closest(".asset-upload-tile") as HTMLElement;
+    expect(tile).toHaveAttribute("data-read-status", "reading");
+
+    await act(async () => {
+      deliverError?.();
+    });
+
+    expect(tile).toHaveAttribute("data-read-status", "error");
+    expect(
+      screen.getByText(/this csv file could not be read/i),
+    ).toBeInTheDocument();
+    const runButton = screen.getByRole("button", {
+      name: "Analyze with Foundry Code Interpreter",
+    });
+    fireEvent.click(
+      screen.getByLabelText(
+        /i approve sending this bounded dataset to the foundry dataset agent/i,
+      ),
+    );
+    expect(runButton).toBeEnabled();
     fileReaderSpy.mockRestore();
   });
 });

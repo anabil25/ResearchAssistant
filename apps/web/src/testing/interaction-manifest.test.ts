@@ -71,20 +71,27 @@ describe("V3 interaction manifest", () => {
       ).toBe(interaction.testIds.length);
       expect(interaction.playwrightTestIds.length).toBeGreaterThan(0);
       expect(
-        interaction.playwrightStateTestIds.every(
-          ({ testIds }) =>
-            testIds.length > 0 &&
-            testIds.every((testId) =>
-              interaction.playwrightTestIds.includes(testId),
-            ),
-        ),
-      ).toBe(true);
-      expect(
         interaction.rtlTestIds.every((id) => id.startsWith("jest.")),
       ).toBe(true);
       expect(
         interaction.playwrightTestIds.every((id) => id.startsWith("pw.")),
       ).toBe(true);
+    }
+  });
+
+  it("no longer derives a blanket per-state Playwright coverage claim", () => {
+    // Regression guard for the bug this task fixes: every interaction must NOT carry a
+    // pre-derived `playwrightStateTestIds`-style field that maps every state to every
+    // test id. Truthful per-state coverage is machine-checked in
+    // e2e/coverage-contract.spec.ts by scanning actual `[pw.<id>:<state>]` test title
+    // tokens, not declared in this manifest.
+    for (const interaction of UI_COVERAGE_MANIFEST) {
+      expect(
+        Object.prototype.hasOwnProperty.call(
+          interaction,
+          "playwrightStateTestIds",
+        ),
+      ).toBe(false);
     }
   });
 

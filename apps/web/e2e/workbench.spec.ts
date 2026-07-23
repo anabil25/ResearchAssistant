@@ -16,19 +16,26 @@ async function runStudioWorkflow(
   page: import("@playwright/test").Page,
   capability: string,
   buttonName: string,
+  activation: "click" | "keyboard" = "click",
 ) {
   const responsePromise = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
       response.url().includes(`/api/studios/${capability}/run`),
   );
-  await page.getByRole("button", { name: buttonName }).click();
+  const button = page.getByRole("button", { name: buttonName });
+  if (activation === "keyboard") {
+    await button.focus();
+    await page.keyboard.press("Enter");
+  } else {
+    await button.click();
+  }
   const response = await responsePromise;
   const responseBody = await response.text();
   expect(response.status(), responseBody).toBe(200);
 }
 
-test("[pw.distinct-studios] overview presents six purpose-built research studios", async ({ page }) => {
+test("[pw.distinct-studios] overview presents six purpose-built research studios [pw.overview.open-studio-card:ready]", async ({ page }) => {
   await waitForWorkspace(page);
 
   await expect(
@@ -39,7 +46,7 @@ test("[pw.distinct-studios] overview presents six purpose-built research studios
   await expect(page.getByText("Governance is product state")).toBeVisible();
 });
 
-test("[pw.literature-open] [pw.literature-protocol] keyboard opens the literature protocol workspace", async ({ page }) => {
+test("[pw.literature-open] [pw.literature-protocol] keyboard opens the literature protocol workspace [pw.overview.start-literature:ready][pw.overview.start-literature:keyboard][pw.literature.protocol.question:ready][pw.literature.protocol.sources:ready]", async ({ page }) => {
   await waitForWorkspace(page);
   const literature = page.getByRole("button", {
     name: /literature review synthesis/i,
@@ -57,7 +64,20 @@ test("[pw.literature-open] [pw.literature-protocol] keyboard opens the literatur
   await expect(page.getByText("No screening run yet")).toBeVisible();
 });
 
-test("[pw.route-state] workspace routes survive direct links and browser history", async ({
+test("[pw.literature-open] pointer click opens the literature protocol workspace at mobile viewport [pw.overview.start-literature:selected][pw.overview.start-literature:mobile]", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspace(page);
+  await page
+    .getByRole("button", { name: /start a literature review/i })
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Literature Studio", level: 1 }),
+  ).toBeVisible();
+});
+
+test("[pw.route-state] workspace routes survive direct links and browser history [pw.shell.navigation.primary-routes:ready][pw.shell.navigation.primary-routes:selected]", async ({
   page,
 }) => {
   await page.goto("/?view=dataset");
@@ -77,6 +97,29 @@ test("[pw.route-state] workspace routes survive direct links and browser history
 
   await page.goBack();
   await expect(page).toHaveURL(/view=dataset/);
+  await expect(
+    page.getByRole("heading", { name: "Dataset Lab", level: 1 }),
+  ).toBeVisible();
+});
+
+test("[pw.route-state] keyboard activation and mobile viewport navigate to a URL-addressable route [pw.shell.navigation.primary-routes:keyboard][pw.shell.navigation.primary-routes:mobile]", async ({
+  page,
+}) => {
+  await waitForWorkspace(page);
+  const settings = page.getByLabel("Open project settings");
+  await settings.focus();
+  await page.keyboard.press("Enter");
+  await expect(page).toHaveURL(/view=settings/);
+  await expect(
+    page.getByRole("heading", { name: "Project Settings", level: 1 }),
+  ).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.goto("/?view=dataset");
+  await expect(page.locator(".workbench-shell")).toHaveAttribute(
+    "data-workspace-ready",
+    "true",
+  );
   await expect(
     page.getByRole("heading", { name: "Dataset Lab", level: 1 }),
   ).toBeVisible();
@@ -125,7 +168,7 @@ test("visible workbench text never renders below twelve pixels", async ({
   }
 });
 
-test("[pw.mobile-navigation] interactive targets meet desktop and mobile size floors", async ({
+test("[pw.mobile-navigation] interactive targets meet desktop and mobile size floors [pw.shell.navigation.open-mobile:mobile]", async ({
   page,
 }) => {
   const undersizedButtons = async (minimum: number) =>
@@ -163,7 +206,7 @@ test("[pw.mobile-navigation] interactive targets meet desktop and mobile size fl
   expect(await undersizedButtons(44)).toEqual([]);
 });
 
-test("[pw.distinct-studios] every studio exposes a distinct workflow and artifact surface", async ({
+test("[pw.distinct-studios] every studio exposes a distinct workflow and artifact surface [pw.overview.open-studio-card:selected]", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -187,7 +230,32 @@ test("[pw.distinct-studios] every studio exposes a distinct workflow and artifac
   }
 });
 
-test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literature workflow returns screening, extraction, and resolved evidence", async ({
+test("[pw.distinct-studios] keyboard activation and mobile viewport open a studio card [pw.overview.open-studio-card:keyboard][pw.overview.open-studio-card:mobile]", async ({
+  page,
+}) => {
+  await waitForWorkspace(page);
+  const grantCard = page
+    .getByRole("button", { name: "Grant Studio", exact: true })
+    .first();
+  await grantCard.focus();
+  await page.keyboard.press("Enter");
+  await expect(
+    page.getByRole("heading", { name: "Grant Studio", level: 1 }),
+  ).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspace(page);
+  await page.getByLabel("Open navigation").click();
+  await page
+    .getByRole("button", { name: "Matching Explorer", exact: true })
+    .first()
+    .click();
+  await expect(
+    page.getByRole("heading", { name: "Matching Explorer", level: 1 }),
+  ).toBeVisible();
+});
+
+test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literature workflow returns screening, extraction, and resolved evidence [pw.literature.protocol.run:ready][pw.literature.protocol.run:keyboard][pw.literature.protocol.run:success][pw.literature.screen.tab:ready][pw.literature.extract.tab:ready]", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -198,6 +266,7 @@ test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literat
     page,
     "literature",
     "Search & screen evidence",
+    "keyboard",
   );
 
   await expect(page.locator(".screening-record")).not.toHaveCount(0);
@@ -208,7 +277,7 @@ test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literat
   await expect(page.getByText(/research-run-/).first()).toBeVisible();
 });
 
-test("[pw.operational-surfaces] [pw.run-detail] [pw.connector-test] Library, Runs, and connector settings contain operational data", async ({
+test("[pw.operational-surfaces] [pw.run-detail] [pw.connector-test] Library, Runs, and connector settings contain operational data [pw.runs.select:ready][pw.runs.select:selected][pw.settings.connectors.test:ready][pw.overview.open-library:ready][pw.overview.open-library:selected]", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -240,7 +309,23 @@ test("[pw.operational-surfaces] [pw.run-detail] [pw.connector-test] Library, Run
   await expect(page.getByText("Assigned specialists").first()).toBeVisible();
 });
 
-test("[pw.library-ingest] Library ingestion creates a governed item and durable run", async ({
+test("[pw.operational-surfaces] keyboard activation and mobile viewport open the Library [pw.overview.open-library:keyboard][pw.overview.open-library:mobile]", async ({
+  page,
+}) => {
+  await waitForWorkspace(page);
+  const library = page.getByRole("button", { name: /^Library \d+$/ });
+  await library.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspace(page);
+  await page.getByLabel("Open navigation").click();
+  await page.getByRole("button", { name: /^Library \d+$/ }).click();
+  await expect(page.getByRole("heading", { name: "Library" })).toBeVisible();
+});
+
+test("[pw.library-ingest] Library ingestion creates a governed item and durable run [pw.library.ingest.open-close:closed][pw.library.ingest.open-close:open][pw.library.ingest.form:empty][pw.library.ingest.form:invalid][pw.library.ingest.form:valid][pw.library.ingest.form:success]", async ({
   page,
 }) => {
   const title = `New reproducibility protocol ${Date.now()}`;
@@ -249,7 +334,19 @@ test("[pw.library-ingest] Library ingestion creates a governed item and durable 
   await page.getByRole("button", { name: "Ingest source" }).click();
 
   const dialog = page.getByRole("dialog", { name: "Add source to Library" });
+  await expect(dialog.getByLabel("Title")).toHaveValue("");
+  await dialog.getByLabel("Title").fill("ab");
+  expect(
+    await dialog
+      .getByLabel("Title")
+      .evaluate((el: HTMLInputElement) => el.validity.valid),
+  ).toBe(false);
   await dialog.getByLabel("Title").fill(title);
+  expect(
+    await dialog
+      .getByLabel("Title")
+      .evaluate((el: HTMLInputElement) => el.validity.valid),
+  ).toBe(true);
   await dialog.getByLabel("Source file").setInputFiles({
     name: "protocol.txt",
     mimeType: "text/plain",
@@ -278,7 +375,24 @@ test("[pw.library-ingest] Library ingestion creates a governed item and durable 
   await expect(page.getByText(title, { exact: true })).toBeVisible();
 });
 
-test("[pw.library-oversize] BFF rejects oversized uploads before API processing", async ({
+test("[pw.library-ingest] keyboard opens and closes the ingest dialog [pw.library.ingest.open-close:keyboard]", async ({
+  page,
+}) => {
+  await waitForWorkspace(page);
+  await page.getByRole("button", { name: /^Library \d+$/ }).click();
+  const ingestButton = page.getByRole("button", { name: "Ingest source" });
+  await ingestButton.focus();
+  await page.keyboard.press("Enter");
+
+  const dialog = page.getByRole("dialog", { name: "Add source to Library" });
+  await expect(dialog).toBeVisible();
+  const closeButton = page.getByLabel("Close ingest dialog");
+  await closeButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(dialog).not.toBeVisible();
+});
+
+test("[pw.library-oversize] BFF rejects oversized uploads before API processing [pw.library.ingest.form:error]", async ({
   page,
   releaseDiagnostics,
 }) => {
@@ -306,7 +420,7 @@ test("[pw.library-oversize] BFF rejects oversized uploads before API processing"
   );
 });
 
-test("[pw.mobile-navigation] mobile navigation opens, closes, and preserves the selected view", async ({
+test("[pw.mobile-navigation] mobile navigation opens, closes, and preserves the selected view [pw.shell.navigation.open-mobile:ready][pw.shell.navigation.open-mobile:selected][pw.shell.navigation.close-mobile:selected]", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });
@@ -325,6 +439,20 @@ test("[pw.mobile-navigation] mobile navigation opens, closes, and preserves the 
   await expect(page.getByLabel("Project navigation")).toHaveAttribute(
     "data-open",
     "false",
+  );
+});
+
+test("[pw.mobile-navigation] keyboard opens the mobile navigation drawer [pw.shell.navigation.open-mobile:keyboard]", async ({
+  page,
+}) => {
+  await page.setViewportSize({ width: 390, height: 844 });
+  await waitForWorkspace(page);
+  const openButton = page.getByLabel("Open navigation");
+  await openButton.focus();
+  await page.keyboard.press("Enter");
+  await expect(page.getByLabel("Project navigation")).toHaveAttribute(
+    "data-open",
+    "true",
   );
 });
 

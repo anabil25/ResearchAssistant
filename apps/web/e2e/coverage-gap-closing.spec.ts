@@ -143,7 +143,7 @@ async function runStudioAndCapturePayload(
 }
 
 test.describe("[pw.keyboard-shell] shell keyboard interactions", () => {
-  test("[pw.keyboard-shell] Escape closes the mobile navigation and the Open navigation trigger loses aria-expanded", async ({
+  test("[pw.keyboard-shell] Escape closes the mobile navigation, moves focus into the drawer on open, and restores focus to the trigger on close [pw.shell.navigation.close-mobile:ready][pw.shell.navigation.close-mobile:keyboard][pw.shell.navigation.close-mobile:mobile]", async ({
     page,
   }, testInfo) => {
     await page.setViewportSize(MOBILE);
@@ -157,12 +157,12 @@ test.describe("[pw.keyboard-shell] shell keyboard interactions", () => {
     await expect(openNavButton).toHaveAttribute("aria-expanded", "true");
     await capture(page, testInfo, "keyboard-shell-mobile-nav-open");
 
-    // The shell has no focus-trap: opening the nav never moves focus into the
-    // panel, so the trigger button remains the active element while open.
+    // Opening the drawer moves focus into it (onto its close control), it
+    // does not linger on the trigger button that opened it.
     const openActiveLabel = await page.evaluate(
       () => document.activeElement?.getAttribute("aria-label") ?? null,
     );
-    expect(openActiveLabel).toBe("Open navigation");
+    expect(openActiveLabel).toBe("Close navigation");
 
     await page.keyboard.press("Escape");
     await expect(page.getByLabel("Project navigation")).toHaveAttribute(
@@ -172,20 +172,17 @@ test.describe("[pw.keyboard-shell] shell keyboard interactions", () => {
     await expect(openNavButton).toHaveAttribute("aria-expanded", "false");
     await capture(page, testInfo, "keyboard-shell-mobile-nav-closed");
 
-    // Documented contract claims Escape "restores focus" to the trigger.
-    // Real behavior: focus was never moved away in the first place (no focus
-    // trap into the nav panel), so it trivially remains on the trigger after
-    // Escape -- this is not deliberate focus-restoration code, and there is
-    // no verification that focus would survive if it had moved elsewhere.
+    // Escape restores focus to the trigger that originally opened the drawer.
     const closedActiveLabel = await page.evaluate(
       () => document.activeElement?.getAttribute("aria-label") ?? null,
     );
     expect(closedActiveLabel).toBe("Open navigation");
+    await expectAccessible(page);
   });
 });
 
 test.describe("[pw.command-palette] command palette", () => {
-  test("[pw.command-palette] opens via Ctrl+K and the search button, live-filters results, and has no fake empty-state text", async ({
+  test("[pw.command-palette] opens via Ctrl+K and the search button, live-filters results, and has no fake empty-state text [pw.shell.search.open:ready][pw.shell.search.open:keyboard][pw.shell.search.open:open][pw.shell.search.query:ready][pw.shell.search.query:typing][pw.shell.search.query:empty][pw.shell.search.query:no-results][pw.shell.search.select-result:ready][pw.shell.search.select-result:keyboard][pw.shell.search.select-result:selected][pw.shell.search.close:open][pw.shell.search.close:keyboard][pw.shell.search.close:closed]", async ({
     page,
   }, testInfo) => {
     await waitForWorkspace(page);
@@ -240,7 +237,7 @@ test.describe("[pw.command-palette] command palette", () => {
     ).toBeVisible();
   });
 
-  test("[pw.command-palette] renders correctly at tablet viewport", async ({
+  test("[pw.command-palette] renders correctly at tablet and mobile viewports [pw.shell.search.open:mobile]", async ({
     page,
   }, testInfo) => {
     await page.setViewportSize(TABLET);
@@ -248,11 +245,18 @@ test.describe("[pw.command-palette] command palette", () => {
     await page.keyboard.press("Control+k");
     await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
     await capture(page, testInfo, "command-palette-tablet");
+    await page.keyboard.press("Escape");
+
+    await page.setViewportSize(MOBILE);
+    await page.getByLabel("Search workspace").click();
+    await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
+    await capture(page, testInfo, "command-palette-mobile");
+    await expectAccessible(page);
   });
 });
 
 test.describe("[pw.approval-notification] pending approvals notification", () => {
-  test("[pw.approval-notification] shows the pending count, navigates to Runs, and supports keyboard activation", async ({
+  test("[pw.approval-notification] shows the pending count, navigates to Runs, and supports keyboard activation [pw.shell.approvals.open:pending][pw.shell.approvals.open:keyboard]", async ({
     page,
   }, testInfo) => {
     await mockRunsAndApprovals(
@@ -289,7 +293,7 @@ test.describe("[pw.approval-notification] pending approvals notification", () =>
     ).toBeVisible();
   });
 
-  test("[pw.approval-notification] shows a zero count with no numeric badge when there are no pending approvals", async ({
+  test("[pw.approval-notification] shows a zero count with no numeric badge when there are no pending approvals [pw.shell.approvals.open:none]", async ({
     page,
   }, testInfo) => {
     await mockRunsAndApprovals(page, [FIXED_RUN_COMPLETED], []);
@@ -302,7 +306,7 @@ test.describe("[pw.approval-notification] pending approvals notification", () =>
 });
 
 test.describe("[pw.evidence-inspector] evidence inspector", () => {
-  test("[pw.evidence-inspector] is a permanently visible sidebar at desktop width with no toggle control", async ({
+  test("[pw.evidence-inspector] is a permanently visible sidebar at desktop width with no toggle control [pw.shell.evidence.open-close:ready]", async ({
     page,
   }, testInfo) => {
     await waitForWorkspace(page);
@@ -315,7 +319,7 @@ test.describe("[pw.evidence-inspector] evidence inspector", () => {
     await capture(page, testInfo, "evidence-inspector-desktop-permanent");
   });
 
-  test("[pw.evidence-inspector] opens/closes via trigger, close button, scrim, and Escape at tablet width; shows empty then resolved state", async ({
+  test("[pw.evidence-inspector] opens/closes via trigger, close button, scrim, and Escape at tablet width; shows empty then resolved state [pw.shell.evidence.open-close:open][pw.shell.evidence.open-close:empty][pw.shell.evidence.open-close:resolved][pw.shell.evidence.open-close:keyboard]", async ({
     page,
   }, testInfo) => {
     await page.setViewportSize(TABLET);
@@ -361,7 +365,7 @@ test.describe("[pw.evidence-inspector] evidence inspector", () => {
     await capture(page, testInfo, "evidence-inspector-resolved");
   });
 
-  test("[pw.evidence-inspector] opens at mobile viewport", async ({
+  test("[pw.evidence-inspector] opens at mobile viewport [pw.shell.evidence.open-close:mobile]", async ({
     page,
   }, testInfo) => {
     await page.setViewportSize(MOBILE);
@@ -376,7 +380,7 @@ test.describe("[pw.evidence-inspector] evidence inspector", () => {
 });
 
 test.describe("[pw.overview-runs] overview run list and preselection", () => {
-  test("[pw.overview-runs] run rows and View all runs navigate to Runs but do not preselect the clicked run (documented defect)", async ({
+  test("[pw.overview-runs] run rows and View all runs navigate to Runs but do not preselect the clicked run (documented defect) [pw.overview.open-runs:ready]", async ({
     page,
   }, testInfo) => {
     // The real backend sorts runs by started_at desc and is shared across
@@ -444,7 +448,28 @@ test.describe("[pw.overview-runs] overview run list and preselection", () => {
     expect(selectedHeadingFromViewAll.trim()).toBe(firstRowTitle);
   });
 
-  test("[pw.overview-runs] empty and loading run lists render identical placeholder copy (documented defect)", async ({
+  test("[pw.overview-runs] a run row is keyboard-activatable [pw.overview.open-runs:keyboard]", async ({
+    page,
+  }) => {
+    await mockRunsAndApprovals(
+      page,
+      [FIXED_RUN_WAITING, FIXED_RUN_COMPLETED],
+      [FIXED_APPROVAL],
+    );
+    await waitForWorkspace(page);
+    const runRows = page.locator(".work-in-motion .run-list button");
+    await expect(runRows).toHaveCount(2);
+    await runRows.first().focus();
+    await navigateAndWaitForWorkspaceRefresh(page, () =>
+      page.keyboard.press("Enter"),
+    );
+    await expect(
+      page.getByRole("heading", { name: "Runs & Approvals", level: 1 }),
+    ).toBeVisible();
+    await expectAccessible(page);
+  });
+
+  test("[pw.overview-runs] empty and loading run lists render identical placeholder copy (documented defect) [pw.overview.open-runs:empty]", async ({
     page,
   }, testInfo) => {
     await page.route("**/api/backend/api/runs", async (route) => {
@@ -463,12 +488,18 @@ test.describe("[pw.overview-runs] overview run list and preselection", () => {
 });
 
 test.describe("[pw.literature-online] literature online research toggle", () => {
-  test("[pw.literature-online] toggles online research and sends the acknowledgement fields only when enabled", async ({
+  test("[pw.literature-online] toggles online research, always shows the acknowledgement note, and sends the acknowledgement fields only when enabled [pw.literature.protocol.online:off][pw.literature.protocol.online:acknowledgement][pw.literature.protocol.online:on]", async ({
     page,
   }) => {
     await gotoView(page, "literature");
     const toggle = page.getByRole("checkbox", { name: "Current public research" });
     await expect(toggle).not.toBeChecked();
+    // The acknowledgement note is static copy always rendered next to the
+    // toggle (there is no separate confirmation step or dialog) -- this is
+    // the entirety of the "acknowledgement" state for this control.
+    await expect(
+      page.getByText("Off by default. Public protocol text only."),
+    ).toBeVisible();
 
     const offPayload = await runStudioAndCapturePayload(
       page,
@@ -492,7 +523,7 @@ test.describe("[pw.literature-online] literature online research toggle", () => 
 });
 
 test.describe("[pw.grant-fit] grant core project facts checkbox", () => {
-  test("[pw.grant-fit] checking core project facts changes the submitted project_facts payload", async ({
+  test("[pw.grant-fit] checking core project facts changes the submitted project_facts payload [pw.grant.facts.confirm:unchecked][pw.grant.facts.confirm:checked]", async ({
     page,
   }) => {
     await gotoView(page, "grant");
@@ -523,7 +554,7 @@ test.describe("[pw.grant-fit] grant core project facts checkbox", () => {
 });
 
 test.describe("[pw.matching-need] matching need query", () => {
-  test("[pw.matching-need] editing the expertise/need field changes the submitted objective", async ({
+  test("[pw.matching-need] editing the expertise/need field changes the submitted objective [pw.matching.need.query:ready][pw.matching.need.query:success]", async ({
     page,
   }) => {
     await gotoView(page, "matching");
@@ -544,10 +575,24 @@ test.describe("[pw.matching-need] matching need query", () => {
       "Need a biostatistics collaborator for survival analysis.",
     );
   });
+
+  test("[pw.matching-need] the need field supports real keyboard typing [pw.matching.need.query:keyboard]", async ({
+    page,
+  }) => {
+    await gotoView(page, "matching");
+    const field = page.getByRole("textbox", {
+      name: "Expertise, method, or need",
+    });
+    await field.fill("");
+    await field.focus();
+    await page.keyboard.type("Keyboard-typed matching need.");
+    await expect(field).toHaveValue("Keyboard-typed matching need.");
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.dataset-assets] dataset asset selection", () => {
-  test("[pw.dataset-assets] switching assets requires re-approval and changes the submitted asset payload", async ({
+  test("[pw.dataset-assets] switching assets requires re-approval and changes the submitted asset payload [pw.dataset.upload:rejected][pw.dataset.asset.select:ready][pw.dataset.asset.select:selected][pw.dataset.asset.select:rejected]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "dataset");
@@ -608,10 +653,11 @@ test.describe("[pw.dataset-assets] dataset asset selection", () => {
     await expect(
       page.locator(".asset-upload-tile", { hasText: "cohort.csv" }),
     ).toHaveAttribute("data-active", "true");
-    // FileReader populates csv_text asynchronously with no DOM-observable
-    // completion signal; a short deterministic wait avoids a race where the
-    // approval/run payload is captured before the read resolves.
-    await page.waitForTimeout(300);
+    // Wait on the observable read-status attribute the DatasetStudio exposes
+    // once FileReader resolves, instead of a fixed sleep.
+    await expect(
+      page.locator(".asset-upload-tile", { hasText: "cohort.csv" }),
+    ).toHaveAttribute("data-read-status", "ready");
     await expect(approvalCheckbox).not.toBeChecked();
     await approvalCheckbox.check();
     const uploadPayload = await runStudioAndCapturePayload(
@@ -624,8 +670,96 @@ test.describe("[pw.dataset-assets] dataset asset selection", () => {
   });
 });
 
+test.describe("[pw.dataset-upload] dataset CSV read readiness", () => {
+  test("[pw.dataset.upload:reading] shows a reading status and blocks analysis until the deferred read resolves", async ({
+    page,
+  }, testInfo) => {
+    // Defer FileReader's onload dispatch so the transient "reading" status is
+    // deterministically observable, instead of relying on a fixed sleep.
+    await page.addInitScript(() => {
+      const OriginalFileReader = window.FileReader;
+      class DeferredFileReader extends OriginalFileReader {
+        override readAsText(...args: Parameters<FileReader["readAsText"]>) {
+          window.setTimeout(() => {
+            OriginalFileReader.prototype.readAsText.apply(this, args);
+          }, 1500);
+        }
+      }
+      window.FileReader = DeferredFileReader;
+    });
+    await gotoView(page, "dataset");
+
+    const approvalCheckbox = page.getByRole("checkbox", {
+      name: /I approve sending this bounded dataset/,
+    });
+    const runButton = page.getByRole("button", {
+      name: "Analyze with Foundry Code Interpreter",
+    });
+    await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
+      name: "deferred.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("id,outcome\n1,improved\n"),
+    });
+
+    const tile = page.locator(".asset-upload-tile", { hasText: "deferred.csv" });
+    await expect(tile).toHaveAttribute("data-read-status", "reading");
+    await expect(tile).toContainText("Reading CSV…");
+    // Selecting a file resets approval, so approve only after the upload
+    // has registered; the 1.5s deferred read leaves ample headroom for this
+    // action to land while the control is still in the "reading" state.
+    await approvalCheckbox.check();
+    await expect(runButton).toBeDisabled();
+    await capture(page, testInfo, "dataset-upload-reading");
+    await expectAccessible(page);
+
+    await expect(tile).toHaveAttribute("data-read-status", "ready");
+    await expect(runButton).toBeEnabled();
+  });
+
+  test("[pw.dataset.upload:error] surfaces a read error and keeps analysis blocked", async ({
+    page,
+  }, testInfo) => {
+    // Force the native FileReader to fail so the production onerror handler
+    // (previously absent) is exercised without a real corrupted file.
+    await page.addInitScript(() => {
+      class FailingFileReader extends window.FileReader {
+        override readAsText() {
+          window.setTimeout(() => {
+            this.dispatchEvent(new ProgressEvent("error"));
+          }, 10);
+        }
+      }
+      window.FileReader = FailingFileReader;
+    });
+    await gotoView(page, "dataset");
+
+    const approvalCheckbox = page.getByRole("checkbox", {
+      name: /I approve sending this bounded dataset/,
+    });
+    const runButton = page.getByRole("button", {
+      name: "Analyze with Foundry Code Interpreter",
+    });
+    await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
+      name: "broken.csv",
+      mimeType: "text/csv",
+      buffer: Buffer.from("id,outcome\n1,improved\n"),
+    });
+
+    const tile = page.locator(".asset-upload-tile", { hasText: "broken.csv" });
+    await expect(tile).toHaveAttribute("data-read-status", "error");
+    await expect(
+      page.getByText(/this csv file could not be read/i),
+    ).toBeVisible();
+    await capture(page, testInfo, "dataset-upload-error");
+    await expectAccessible(page);
+
+    await approvalCheckbox.check();
+    await expect(runButton).toBeEnabled();
+  });
+});
+
 test.describe("[pw.workflow-template] workflow template selection", () => {
-  test("[pw.workflow-template] switching templates changes template_id but not the submitted step graph (documented defect)", async ({
+  test("[pw.workflow-template] switching templates changes template_id but not the submitted step graph (documented defect) [pw.workflow.template:ready][pw.workflow.template:selected]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "orchestration");
@@ -665,7 +799,7 @@ test.describe("[pw.workflow-template] workflow template selection", () => {
 });
 
 test.describe("[pw.workflow-trigger] workflow trigger selector", () => {
-  test("[pw.workflow-trigger] changing the trigger selector changes the submitted trigger field", async ({
+  test("[pw.workflow-trigger] changing the trigger selector changes the submitted trigger field [pw.workflow.trigger:ready][pw.workflow.trigger:success]", async ({
     page,
   }) => {
     await gotoView(page, "orchestration");
@@ -700,7 +834,7 @@ test.describe("[pw.workflow-trigger] workflow trigger selector", () => {
 });
 
 test.describe("[pw.library-filter] library search and type filters", () => {
-  test("[pw.library-filter] search text and type pills filter real library records and show a no-results state", async ({
+  test("[pw.library-filter] search text and type pills filter real library records and show a no-results state [pw.library.search-filter:ready][pw.library.search-filter:filtered][pw.library.search-filter:empty]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "library");
@@ -733,10 +867,25 @@ test.describe("[pw.library-filter] library search and type filters", () => {
       .click();
     await expect(rows).toHaveCount(totalCount);
   });
+
+  test("[pw.library-filter] search box supports real keyboard typing [pw.library.search-filter:keyboard]", async ({
+    page,
+  }) => {
+    await gotoView(page, "library");
+    const rows = page.locator(".library-table .library-row:not(.library-head)");
+    const totalCount = await rows.count();
+    expect(totalCount).toBeGreaterThan(0);
+
+    const search = page.getByPlaceholder("Search title, source, or tag");
+    await search.focus();
+    await page.keyboard.type("zzzznonexistentzzzz");
+    await expect(page.getByText("No sources match this view")).toBeVisible();
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.runs-filter] runs status filters", () => {
-  test("[pw.runs-filter] filters runs by status and preserves a valid selected run when the filter excludes it", async ({
+  test("[pw.runs-filter] filters runs by status and preserves a valid selected run when the filter excludes it [pw.runs.filter:all][pw.runs.filter:filtered][pw.runs.filter:empty]", async ({
     page,
   }, testInfo) => {
     await mockRunsAndApprovals(
@@ -772,10 +921,30 @@ test.describe("[pw.runs-filter] runs status filters", () => {
     await page.getByRole("button", { name: "All", exact: true }).click();
     await expect(page.locator(".detailed-run-list button")).toHaveCount(2);
   });
+
+  test("[pw.runs-filter] status filter tabs are keyboard-activatable [pw.runs.filter:keyboard]", async ({
+    page,
+  }) => {
+    await mockRunsAndApprovals(
+      page,
+      [FIXED_RUN_WAITING, FIXED_RUN_COMPLETED],
+      [FIXED_APPROVAL],
+    );
+    await gotoView(page, "runs");
+    const completedTab = page.getByRole("button", {
+      name: "Completed",
+      exact: true,
+    });
+    await completedTab.focus();
+    await page.keyboard.press("Enter");
+    await expect(completedTab).toHaveAttribute("data-active", "true");
+    await expect(page.locator(".detailed-run-list button")).toHaveCount(1);
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.approval-decision] approval rationale and decision recording", () => {
-  test("[pw.approval-decision] requires a rationale and records an approval decision with the exact payload", async ({
+  test("[pw.approval-decision] requires a rationale and records an approval decision with the exact payload [pw.approvals.rationale:empty][pw.approvals.rationale:valid][pw.approvals.rationale:invalid][pw.approvals.decide:pending][pw.approvals.decide:approved]", async ({
     page,
   }) => {
     await mockRunsAndApprovals(page, [FIXED_RUN_WAITING], [FIXED_APPROVAL]);
@@ -818,7 +987,7 @@ test.describe("[pw.approval-decision] approval rationale and decision recording"
 });
 
 test.describe("[pw.settings-tabs] settings section navigation", () => {
-  test("[pw.settings-tabs] every settings tab opens a distinct, non-blank panel", async ({
+  test("[pw.settings-tabs] every settings tab opens a distinct, non-blank panel [pw.settings.tabs:ready][pw.settings.tabs:selected]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "settings");
@@ -855,10 +1024,32 @@ test.describe("[pw.settings-tabs] settings section navigation", () => {
     await expect(page.getByText("APIM / Toolbox")).toBeVisible();
     await capture(page, testInfo, "settings-tabs-readiness");
   });
+
+  test("[pw.settings-tabs] tabs are keyboard-activatable and render at mobile viewport [pw.settings.tabs:keyboard][pw.settings.tabs:mobile]", async ({
+    page,
+  }) => {
+    await gotoView(page, "settings");
+    const connectorsTab = page.locator(
+      '.settings-nav[aria-label="Settings sections"] button',
+      { hasText: "Connectors" },
+    );
+    await connectorsTab.focus();
+    await page.keyboard.press("Enter");
+    await expect(page.locator(".settings-content h2").first()).toHaveText(
+      "Research data connectors",
+    );
+
+    await page.setViewportSize(MOBILE);
+    await expect(
+      page.getByRole("heading", { name: "Project Settings", level: 1 }),
+    ).toBeVisible();
+    await expect(page.locator(".settings-content")).not.toBeEmpty();
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.settings-general] settings general project profile form", () => {
-  test("[pw.settings-general] validates, persists the full settings payload, and reports success", async ({
+  test("[pw.settings-general] validates, persists the full settings payload, and reports success [pw.settings.general.form:ready][pw.settings.general.form:success]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "settings");
@@ -902,10 +1093,22 @@ test.describe("[pw.settings-general] settings general project profile form", () 
       page.getByText("Online research is always opt-in per run"),
     ).toBeVisible();
   });
+
+  test("[pw.settings-general] project name field supports real keyboard typing [pw.settings.general.form:keyboard]", async ({
+    page,
+  }) => {
+    await gotoView(page, "settings");
+    const nameField = page.getByRole("textbox", { name: "Project name" });
+    await nameField.fill("");
+    await nameField.focus();
+    await page.keyboard.type("Keyboard-typed project name");
+    await expect(nameField).toHaveValue("Keyboard-typed project name");
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.connector-filter] connector search and category filters", () => {
-  test("[pw.connector-filter] search text and category pills filter the connector catalog and show a no-results state", async ({
+  test("[pw.connector-filter] search text and category pills filter the connector catalog and show a no-results state [pw.settings.connectors.search-filter:ready][pw.settings.connectors.search-filter:filtered][pw.settings.connectors.search-filter:empty]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "settings");
@@ -936,10 +1139,28 @@ test.describe("[pw.connector-filter] connector search and category filters", () 
     await page.locator(".filter-pills button", { hasText: "All" }).click();
     await expect(cards).toHaveCount(totalCount);
   });
+
+  test("[pw.connector-filter] search box supports real keyboard typing [pw.settings.connectors.search-filter:keyboard]", async ({
+    page,
+  }) => {
+    await gotoView(page, "settings");
+    await page
+      .locator('.settings-nav[aria-label="Settings sections"] button', {
+        hasText: "Connectors",
+      })
+      .click();
+    const cards = page.locator(".connector-grid .connector-card");
+    const search = page.getByPlaceholder("Search connectors");
+    await search.focus();
+    await page.keyboard.type("arxiv");
+    await expect(cards).toHaveCount(1);
+    await expect(cards.first()).toContainText("arXiv");
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.connector-enable] connector enable/disable", () => {
-  test("[pw.connector-enable] required connectors are locked; optional connectors can be disabled and saved", async ({
+  test("[pw.connector-enable] required connectors are locked; optional connectors can be disabled and saved [pw.settings.connectors.enable:enabled][pw.settings.connectors.enable:disabled][pw.settings.connectors.enable:locked]", async ({
     page,
   }, testInfo) => {
     await gotoView(page, "settings");
@@ -992,7 +1213,7 @@ test.describe("[pw.connector-enable] connector enable/disable", () => {
 });
 
 test.describe("[pw.connector-assign] connector specialist assignment", () => {
-  test("[pw.connector-assign] toggling a specialist checkbox persists the assigned_agents list", async ({
+  test("[pw.connector-assign] toggling a specialist checkbox persists the assigned_agents list [pw.settings.connectors.assign:selected][pw.settings.connectors.assign:unselected]", async ({
     page,
   }) => {
     await gotoView(page, "settings");
@@ -1039,9 +1260,51 @@ test.describe("[pw.connector-assign] connector specialist assignment", () => {
 });
 
 test.describe("[pw.connector-terms] connector provider terms link", () => {
-  test("[pw.connector-terms] opens the provider terms URL in a new, safely-referenced tab", async ({
+  const CONTROLLED_TERMS_URL = "https://arxiv.org/help/api/tou";
+
+  function mockConnectorsList(page: Page, termsUrl: string) {
+    return page.route("**/api/backend/api/connectors", async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify([
+          {
+            id: "pubmed",
+            name: "PubMed",
+            category: "Literature",
+            auth_kind: "none",
+            enabled: true,
+            assigned_agents: ["literature"],
+            capabilities: ["search"],
+            data_boundary: "Public metadata",
+            secret_status: "not_required",
+            last_tested_at: new Date().toISOString(),
+            terms_url: termsUrl,
+          },
+        ]),
+      });
+    });
+  }
+
+  test("[pw.connector-terms] opens an approved terms URL in a new tab against a controlled, intercepted destination [pw.settings.connectors.terms:ready]", async ({
     page,
   }, testInfo) => {
+    // Real-navigation-safety contract: the connector list is mocked so the only
+    // policy-approved terms_url present is CONTROLLED_TERMS_URL (an allowlisted
+    // host per src/lib/url-policy.ts), and that exact destination is itself
+    // intercepted below so the click never reaches the real third-party network --
+    // it lands on a synthetic, locally-served response instead. This proves the
+    // whole open-in-new-tab behavior (target/rel/href, popup load) without ever
+    // performing real third-party navigation.
+    await mockConnectorsList(page, CONTROLLED_TERMS_URL);
+    await page.context().route(CONTROLLED_TERMS_URL, async (route) => {
+      await route.fulfill({
+        status: 200,
+        contentType: "text/html",
+        body: "<!doctype html><title>Intercepted terms fixture</title><body>Intercepted terms fixture: no real third-party network call was made.</body>",
+      });
+    });
+
     await gotoView(page, "settings");
     await page
       .locator('.settings-nav[aria-label="Settings sections"] button', {
@@ -1053,19 +1316,57 @@ test.describe("[pw.connector-terms] connector provider terms link", () => {
     const termsLink = page.getByRole("link", { name: /Provider terms/ });
     await expect(termsLink).toHaveAttribute("target", "_blank");
     await expect(termsLink).toHaveAttribute("rel", "noreferrer");
-    const href = await termsLink.getAttribute("href");
-    expect(href).toMatch(/^https:\/\//);
-    await capture(page, testInfo, "connector-terms-panel");
+    await expect(termsLink).toHaveAttribute("href", CONTROLLED_TERMS_URL);
+    await expectAccessible(page);
+    await capture(page, testInfo, "connector-terms-ready");
 
     const [popup] = await Promise.all([
       page.context().waitForEvent("page"),
       termsLink.click(),
     ]);
-    await popup.waitForLoadState("domcontentloaded").catch(() => undefined);
-    expect(popup.url()).toBe(href);
+    let loadError: unknown = null;
+    try {
+      await popup.waitForLoadState("load");
+    } catch (error) {
+      loadError = error;
+    }
+    // No swallowed load errors: assert directly instead of catching-and-ignoring.
+    expect(loadError).toBeNull();
+    expect(popup.url()).toBe(CONTROLLED_TERMS_URL);
+    await expect(popup.getByText("Intercepted terms fixture")).toBeVisible();
     await popup.close();
-    // Documented contract: "Opens an allowlisted HTTPS terms URL safely" with
-    // a "blocked-url" state. The real link has no client-side allowlist check
-    // at all -- any https terms_url from the backend is opened unvalidated.
+  });
+
+  test("[pw.connector-terms] blocks an unapproved-host terms URL and shows a visible unavailable state with no clickable link [pw.settings.connectors.terms:blocked-url]", async ({
+    page,
+  }, testInfo) => {
+    await mockConnectorsList(page, "https://evil.example.com/terms");
+
+    await gotoView(page, "settings");
+    await page
+      .locator('.settings-nav[aria-label="Settings sections"] button', {
+        hasText: "Connectors",
+      })
+      .click();
+    await page.locator(".connector-card", { hasText: "PubMed" }).click();
+
+    // The blocked state must be visibly presented, not merely absent: a status
+    // element with the exact rejection reason, and no "Provider terms" link at
+    // all (nothing to click, no navigation is ever attempted).
+    const blockedStatus = page.locator('[data-terms-state="blocked-url"]');
+    await expect(blockedStatus).toBeVisible();
+    await expect(blockedStatus).toHaveAttribute(
+      "aria-label",
+      "This link targets a host that is not on the approved list.",
+    );
+    await expect(
+      page.getByRole("link", { name: /Provider terms/ }),
+    ).toHaveCount(0);
+
+    const pagesBefore = page.context().pages().length;
+    await expectAccessible(page);
+    await capture(page, testInfo, "connector-terms-blocked-url");
+    expect(page.context().pages().length).toBe(pagesBefore);
   });
 });
+

@@ -1865,6 +1865,9 @@ export function DatasetStudio({
   const [csvText, setCsvText] = useState<string | null>(null);
   const [fileKind, setFileKind] = useState<"csv" | "json" | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [csvReadStatus, setCsvReadStatus] = useState<
+    "idle" | "reading" | "ready" | "error"
+  >("idle");
   const [planApproved, setPlanApproved] = useState(false);
   const [libraryUploadStatus, setLibraryUploadStatus] = useState<
     "idle" | "uploading" | "uploaded" | "error"
@@ -1902,11 +1905,22 @@ export function DatasetStudio({
     setPlanApproved(false);
     setCsvText(null);
     if (isCsv) {
+      setCsvReadStatus("reading");
       const reader = new FileReader();
       reader.onload = () => {
         setCsvText(typeof reader.result === "string" ? reader.result : null);
+        setCsvReadStatus("ready");
+      };
+      reader.onerror = () => {
+        setCsvText(null);
+        setCsvReadStatus("error");
+        setFileError(
+          "This CSV file could not be read. Choose a different file and try again.",
+        );
       };
       reader.readAsText(file);
+    } else {
+      setCsvReadStatus("ready");
     }
   };
 
@@ -1939,7 +1953,10 @@ export function DatasetStudio({
   };
 
   const runDisabled =
-    running || !planApproved || (assetMode === "upload" && !uploadedFile);
+    running ||
+    !planApproved ||
+    (assetMode === "upload" && !uploadedFile) ||
+    csvReadStatus === "reading";
 
   return (
     <div className="studio-page dataset-studio">
@@ -2019,6 +2036,7 @@ export function DatasetStudio({
           <label
             className="asset-upload-tile"
             data-active={assetMode === "upload"}
+            data-read-status={csvReadStatus}
           >
             <span className="asset-icon">
               <Upload size={19} />
@@ -2027,7 +2045,9 @@ export function DatasetStudio({
               <strong>{uploadedFile ? uploadedFile.name : "Upload a dataset"}</strong>
               <small>
                 {uploadedFile
-                  ? `${(uploadedFile.size / 1_000_000).toFixed(2)} MB · ${fileKind?.toUpperCase()}`
+                  ? assetMode === "upload" && csvReadStatus === "reading"
+                    ? `Reading ${fileKind?.toUpperCase()}…`
+                    : `${(uploadedFile.size / 1_000_000).toFixed(2)} MB · ${fileKind?.toUpperCase()}`
                   : "CSV or JSON · up to 5 MB"}
               </small>
             </span>

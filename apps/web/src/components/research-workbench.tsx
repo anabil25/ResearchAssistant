@@ -18,7 +18,7 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
 import {
   StudioForCapability,
@@ -259,6 +259,9 @@ export function ResearchWorkbench() {
   const [studioRunning, setStudioRunning] = useState(false);
   const [studioError, setStudioError] = useState<string | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const railCloseRef = useRef<HTMLButtonElement | null>(null);
+  const wasNavOpenRef = useRef(false);
 
   const refresh = useCallback(async () => {
     try {
@@ -347,6 +350,16 @@ export function ResearchWorkbench() {
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
   }, []);
+
+  useEffect(() => {
+    if (navOpen) {
+      wasNavOpenRef.current = true;
+      railCloseRef.current?.focus();
+    } else if (wasNavOpenRef.current) {
+      wasNavOpenRef.current = false;
+      mobileMenuTriggerRef.current?.focus();
+    }
+  }, [navOpen]);
 
   const navigate = (next: WorkspaceViewId) => {
     const url = new URL(window.location.href);
@@ -463,6 +476,7 @@ export function ResearchWorkbench() {
           <button
             className="rail-close"
             aria-label="Close navigation"
+            ref={railCloseRef}
             onClick={() => setNavOpen(false)}
           >
             <X size={18} />
@@ -559,6 +573,7 @@ export function ResearchWorkbench() {
               aria-label="Open navigation"
               aria-controls="project-navigation"
               aria-expanded={navOpen}
+              ref={mobileMenuTriggerRef}
               onClick={() => setNavOpen(true)}
             >
               <Menu size={20} />

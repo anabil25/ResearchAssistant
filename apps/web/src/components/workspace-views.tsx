@@ -35,6 +35,10 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
+import {
+  describeUrlPolicyRejection,
+  evaluateExternalUrlPolicy,
+} from "@/lib/url-policy";
 import type {
   ApprovalRecord,
   CapabilityId,
@@ -1105,7 +1109,6 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
   const managedConnectorStatus = managedConnector
     ? connectorStatusInfo(managedConnector)
     : null;
-
   const mutateConnector = (
     connector: ConnectorSetting,
     update: Partial<ConnectorSetting>,
@@ -1430,7 +1433,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 className="connector-management-widget panel"
                 aria-labelledby="connector-manager-title"
               >
-                <aside className="connector-catalog">
+                <div className="connector-catalog">
                   <div className="connector-catalog-heading">
                     <div>
                       <strong>Connector catalog</strong>
@@ -1480,7 +1483,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                       No connectors match this filter.
                     </div>
                   ) : null}
-                </aside>
+                </div>
 
                 {managedConnector && connectorDraft && managedConnectorStatus ? (
                   <form
@@ -1635,13 +1638,37 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                     </div>
 
                     <div className="connector-manager-actions">
-                      <a
-                        href={managedConnector.terms_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Provider terms <ArrowUpRight size={13} />
-                      </a>
+                      {(() => {
+                        // `managedConnector` is narrowed non-null in this scope, so
+                        // recomputing here (rather than reusing the outer nullable
+                        // `managedConnectorTermsPolicy`) guarantees a real policy
+                        // result and removes an otherwise-unreachable null branch.
+                        const termsPolicy = evaluateExternalUrlPolicy(
+                          managedConnector.terms_url,
+                        );
+                        return termsPolicy.allowed ? (
+                          <a
+                            href={termsPolicy.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            data-terms-state="ready"
+                          >
+                            Provider terms <ArrowUpRight size={13} />
+                          </a>
+                        ) : (
+                          <span
+                            className="connector-terms-blocked"
+                            role="status"
+                            data-terms-state="blocked-url"
+                            aria-label={describeUrlPolicyRejection(
+                              termsPolicy.reason,
+                            )}
+                          >
+                            <Lock size={13} aria-hidden="true" />
+                            {describeUrlPolicyRejection(termsPolicy.reason)}
+                          </span>
+                        );
+                      })()}
                       <div>
                         <button
                           type="button"

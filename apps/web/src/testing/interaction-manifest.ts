@@ -39,10 +39,6 @@ export interface UiCoverageContract extends InteractionContract {
   viewports: readonly CoverageViewport[];
   rtlTestIds: readonly string[];
   playwrightTestIds: readonly string[];
-  playwrightStateTestIds: readonly {
-    state: string;
-    testIds: readonly string[];
-  }[];
   screenshotIds: readonly string[];
   classifiedStates: readonly {
     name: string;
@@ -199,7 +195,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits and validates the protocol question.",
     baseline: "functional-uncovered",
     milestone: "M3",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L416-421 — a plain <textarea> with no
+    // `disabled` prop and no async read/write path tied to typing, so
+    // disabled/loading/error are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.literature-protocol", "pw.literature-protocol"],
   },
   {
@@ -239,7 +238,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Requires explicit acknowledgement and sends only the public query.",
     baseline: "functional-uncovered",
     milestone: "M3",
-    states: ["off", "acknowledgement", "on", "unavailable", "error"],
+    // Corrected from a 5-state list to the 3 states this workspace can actually
+    // reach: studio-components.tsx OnlineResearchToggle is a plain, always-enabled
+    // checkbox (no `disabled` prop, no async/error state variable feeding it) whose
+    // "acknowledgement" note is static copy rendered unconditionally next to the
+    // control, not a separate confirmation step. "unavailable" and "error" have no
+    // code path that can ever set them for this control.
+    states: ["off", "acknowledgement", "on"],
     testIds: ["jest.literature-online", "pw.literature-online"],
   },
   {
@@ -319,7 +324,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Finds net-new opportunities through selected governed connectors.",
     baseline: "functional-covered",
     milestone: "M4",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L893-942 — discoveryQuery/discoveryCapability
+    // drive a synchronous, in-memory `Array.filter` over `fundingConnectors`
+    // (no fetch/await in the filter path), so `loading` and `error` are not
+    // reachable for this control. The input is `disabled={!discoverableConnectors.length}`
+    // (L1148), so `disabled` IS reachable and is retained.
+    states: ["ready", "keyboard", "disabled", "success"],
     testIds: ["jest.grant-discovery", "pw.grant-discovery"],
   },
   {
@@ -339,7 +349,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects or imports a canonical notice and amendments.",
     baseline: "functional-uncovered",
     milestone: "M4",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1049-1053 — a plain always-enabled
+    // <input value={opportunityId} onChange={...} /> with no `disabled` prop
+    // and no async read/write path tied to typing, so disabled/loading/error
+    // are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.grant-opportunity", "pw.grant-opportunity"],
   },
   {
@@ -409,7 +423,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits the typed matching need.",
     baseline: "functional-uncovered",
     milestone: "M5",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L1564-1571 — a plain uncontrolled
+    // <textarea> with no `disabled` prop and no async read/write path tied
+    // to typing, so disabled/loading/error are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.matching-need", "pw.matching-need"],
   },
   {
@@ -479,7 +496,19 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Validates a bounded CSV/JSON file client-side, then uploads real bytes through the Library upload API.",
     baseline: "functional-covered",
     milestone: "M6",
-    states: ["empty", "uploading", "quarantined", "validated", "rejected", "error"],
+    // "reading" reflects the observable csvReadStatus state added for the FileReader
+    // readiness fix (studio-components.tsx): the Run action is disabled and a visible
+    // reading indicator is shown while the deferred FileReader.readAsText() is pending,
+    // before "validated"/"error" are known.
+    states: [
+      "empty",
+      "reading",
+      "uploading",
+      "quarantined",
+      "validated",
+      "rejected",
+      "error",
+    ],
     testIds: ["jest.dataset-upload", "pw.dataset-upload"],
   },
   {
@@ -499,7 +528,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Edits a bounded analysis objective.",
     baseline: "functional-uncovered",
     milestone: "M6",
-    states: STANDARD_STATES,
+    // Evidence: studio-components.tsx ~L2061-2066 — a plain <input> with no
+    // `disabled` prop and no async read/write path tied to typing, so
+    // disabled/loading/error are not reachable for this control.
+    states: ["ready", "keyboard", "success"],
     testIds: ["jest.dataset-objective", "pw.dataset-plan"],
   },
   {
@@ -549,7 +581,14 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows an honest, disabled, default-off readiness panel; this workspace never claims Work IQ is configured or enabled.",
     baseline: "functional-covered",
     milestone: "M7",
-    states: ["unconfigured", "admin-consent-required", "user-consent-required", "ready", "unsupported-network"],
+    // Corrected from a 5-state aspirational list to the single state this workspace can
+    // actually reach: studio-components.tsx (~2507-2535) renders the Work IQ toggle as
+    // permanently `checked={false}` + `disabled`, driven by no prop or data path. The
+    // other four states (admin-consent-required/user-consent-required/ready/
+    // unsupported-network) have no code path that can ever set them, matching this
+    // interaction's own `behavior` text above. Declaring them would make the state
+    // contract unsatisfiable by design, not a real coverage gap.
+    states: ["unconfigured"],
     testIds: ["jest.work-iq-readiness", "pw.work-iq-readiness"],
   },
   {
@@ -809,7 +848,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows immutable versions and requires approval before default promotion.",
     baseline: "functional-covered",
     milestone: "M9",
-    states: ["draft", "validating", "canary", "active", "deprecated", "failed"],
+    // Corrected from a 6-state lifecycle list to the single state reachable today:
+    // workspace-views.tsx (~1048-1108, ~1727-1760) renders "Promote to default" and
+    // "Roll back" as hardcoded `disabled` with no backing state machine, and none of
+    // the connector fixtures in registry.py match the apim/mcp/toolbox host patterns
+    // this panel keys off of, so the badge always renders "Not configured". The other
+    // five lifecycle states (draft/validating/canary/active/deprecated/failed) have no
+    // reachable code path in this workspace; declaring them would make the contract
+    // unsatisfiable by design, not a real coverage gap.
+    states: ["unconfigured"],
     testIds: ["jest.connector-versions", "pw.connector-versions"],
   },
   {
@@ -969,6 +1016,15 @@ function classifyState(name: string): CoverageStateKind {
   return "behavior";
 }
 
+// Per-state Playwright coverage is deliberately NOT pre-declared here. It used to be
+// derived as `playwrightStateTestIds`, which blanket-mapped every declared state to
+// every `pw.*` id on the interaction regardless of whether a test actually exercised
+// that state — a false, unverifiable claim. The truthful contract instead lives in
+// e2e/coverage-contract.spec.ts: it AST-scans every `test()` title in e2e/*.spec.ts
+// for `[pw.<interaction-id>:<state>]` tokens and compares the found set against the
+// required cross-product of `interaction.id x interaction.states` computed from
+// this manifest, failing on any missing pair (declared state with no token) or
+// orphaned pair (token whose id/state isn't declared here).
 export const UI_COVERAGE_MANIFEST: readonly UiCoverageContract[] =
   INTERACTION_MANIFEST.map((interaction) => ({
     ...interaction,
@@ -976,10 +1032,6 @@ export const UI_COVERAGE_MANIFEST: readonly UiCoverageContract[] =
     viewports: ALL_VIEWPORTS,
     rtlTestIds: interaction.testIds.filter((id) => id.startsWith("jest.")),
     playwrightTestIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
-    playwrightStateTestIds: interaction.states.map((state) => ({
-      state,
-      testIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
-    })),
     screenshotIds: SURFACE_SCREENSHOTS[interaction.surface],
     classifiedStates: interaction.states.map((name) => ({
       name,

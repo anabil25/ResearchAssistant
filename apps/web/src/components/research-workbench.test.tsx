@@ -448,6 +448,121 @@ describe("ResearchWorkbench", () => {
     );
   });
 
+  it("[pw.mobile-nav:open] moves focus into the drawer's close control when opened", async () => {
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const trigger = screen.getByRole("button", { name: "Open navigation" });
+    trigger.focus();
+    expect(trigger).toHaveFocus();
+
+    await user.click(trigger);
+    const railCloseButton = screen.getAllByRole("button", {
+      name: "Close navigation",
+    })[1];
+    await waitFor(() => expect(railCloseButton).toHaveFocus());
+  });
+
+  it("[pw.mobile-nav:close-button] restores focus to the trigger when closed via the rail close button", async () => {
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const trigger = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(trigger);
+    const railCloseButton = screen.getAllByRole("button", {
+      name: "Close navigation",
+    })[1];
+    await waitFor(() => expect(railCloseButton).toHaveFocus());
+
+    await user.click(railCloseButton);
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Project navigation"),
+      ).toHaveAttribute("data-open", "false"),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
+  it("[pw.mobile-nav:close-scrim] restores focus to the trigger when closed via the scrim", async () => {
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const trigger = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(trigger);
+    const scrim = screen.getAllByRole("button", {
+      name: "Close navigation",
+    })[0];
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Close navigation" })[1],
+      ).toHaveFocus(),
+    );
+
+    await user.click(scrim);
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Project navigation"),
+      ).toHaveAttribute("data-open", "false"),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
+  it("[pw.mobile-nav:close-escape] restores focus to the trigger when closed via Escape", async () => {
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const trigger = screen.getByRole("button", { name: "Open navigation" });
+    await user.click(trigger);
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Close navigation" })[1],
+      ).toHaveFocus(),
+    );
+
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("Project navigation"),
+      ).toHaveAttribute("data-open", "false"),
+    );
+    expect(trigger).toHaveFocus();
+  });
+
+  it("[pw.mobile-nav:tab-order] tabs forward from the close control through the rail navigation links", async () => {
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const railCloseButton = screen.getAllByRole("button", {
+      name: "Close navigation",
+    })[1];
+    await waitFor(() => expect(railCloseButton).toHaveFocus());
+
+    await user.tab();
+    expect(
+      screen.getByRole("button", { name: /overview/i }),
+    ).toHaveFocus();
+  });
+
+  it("[pw.mobile-nav:axe] has no automated accessibility violations while the drawer is open", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    await waitFor(() =>
+      expect(
+        screen.getAllByRole("button", { name: "Close navigation" })[1],
+      ).toHaveFocus(),
+    );
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it("restores URL-addressable views and follows browser history", async () => {
     window.history.replaceState(null, "", "/?view=dataset");
     render(<ResearchWorkbench />);

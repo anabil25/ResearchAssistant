@@ -1019,6 +1019,51 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("[pw.connector-terms:ready] shows an allowlisted connector terms link as an accessible external link", async () => {
+    const pubmed = buildConnector();
+    const data = buildWorkspaceData({ connectors: [pubmed] });
+    const onRefresh = jest.fn().mockResolvedValue(undefined);
+
+    const { container } = render(
+      <SettingsView data={data} onRefresh={onRefresh} />,
+    );
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: /Connectors 1/i }),
+    );
+
+    const termsLink = screen.getByRole("link", { name: /provider terms/i });
+    expect(termsLink).toHaveAttribute("href", pubmed.terms_url);
+    expect(termsLink).toHaveAttribute("data-terms-state", "ready");
+    expect(
+      screen.queryByText(/is not on the approved list/i),
+    ).not.toBeInTheDocument();
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
+  it("[pw.connector-terms:blocked-url] blocks a connector terms link that fails URL policy and shows a visible unavailable state", async () => {
+    const blockedConnector = buildConnector({
+      terms_url: "https://evil.example.com/terms",
+    });
+    const data = buildWorkspaceData({ connectors: [blockedConnector] });
+    const onRefresh = jest.fn().mockResolvedValue(undefined);
+
+    const { container } = render(
+      <SettingsView data={data} onRefresh={onRefresh} />,
+    );
+    await userEvent.setup().click(
+      screen.getByRole("button", { name: /Connectors 1/i }),
+    );
+
+    expect(
+      screen.queryByRole("link", { name: /provider terms/i }),
+    ).not.toBeInTheDocument();
+    const blockedState = screen.getByRole("status", {
+      name: /is not on the approved list/i,
+    });
+    expect(blockedState).toHaveAttribute("data-terms-state", "blocked-url");
+    expect(await axe(container)).toHaveNoViolations();
+  });
+
   it("shows connector test tones, fallback test errors, and update failures", async () => {
     const user = userEvent.setup();
     const onRefresh = jest.fn().mockResolvedValue(undefined);

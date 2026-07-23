@@ -35,7 +35,7 @@ async function runStudioAndCapturePayload(
 }
 
 test.describe("Literature Studio interactions", () => {
-  test("[pw.literature-protocol] [pw.literature-screen] [pw.literature-extract] [pw.literature-synthesize] [pw.literature-audit] Screen/Extract/Synthesize/Audit tabs show distinct content and criteria are editable", async ({
+  test("[pw.literature-protocol] [pw.literature-screen] [pw.literature-extract] [pw.literature-synthesize] [pw.literature-audit] Screen/Extract/Synthesize/Audit tabs show distinct content and criteria are editable [pw.literature.protocol.criteria:ready][pw.literature.protocol.criteria:editing][pw.literature.synthesize.tab:ready][pw.literature.audit.tab:passed]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -65,7 +65,7 @@ test.describe("Literature Studio interactions", () => {
     await expect(page.getByText("Claim & citation audit")).toBeVisible();
   });
 
-  test("[pw.literature-screen] screening decisions change included/excluded counts and the extraction tab", async ({
+  test("[pw.literature-screen] screening decisions change included/excluded counts and the extraction tab [pw.literature.screen.decision:ready][pw.literature.screen.decision:success]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -83,7 +83,7 @@ test.describe("Literature Studio interactions", () => {
     await expect(page.locator(".metric-line")).toContainText("1 excluded");
   });
 
-  test("[pw.literature-extract] extraction cells are editable and export the current version as a CSV download", async ({
+  test("[pw.literature-extract] extraction cells are editable and export the current version as a CSV download [pw.literature.extract.edit-export:ready][pw.literature.extract.edit-export:success]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -112,7 +112,7 @@ test.describe("Literature Studio interactions", () => {
 });
 
 test.describe("Grant Studio interactions", () => {
-  test("[pw.grant-draft] [pw.grant-review] [pw.grant-connectors] [pw.grant-build] section tabs, red-team, source discovery, and connector draft dialog work", async ({
+  test("[pw.grant-draft] [pw.grant-review] [pw.grant-connectors] [pw.grant-build] section tabs, red-team, source discovery, and connector draft dialog work [pw.grant.discovery.sources:ready][pw.grant.editor.tabs:ready][pw.grant.editor.tabs:selected][pw.grant.package.build:ready][pw.grant.package.build:success][pw.grant.review.red-team:ready]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -159,7 +159,7 @@ test.describe("Grant Studio interactions", () => {
     await expect(page.getByText("Draft — needs review")).toBeVisible();
   });
 
-  test("[pw.grant-discovery] [pw.grant-opportunity] [pw.grant-requirements] discovery filters governed connectors and requirement rows open source evidence", async ({
+  test("[pw.grant-discovery] [pw.grant-opportunity] [pw.grant-requirements] discovery filters governed connectors and requirement rows open source evidence [pw.grant.discovery.search:ready][pw.grant.discovery.search:success][pw.grant.opportunity.id:ready][pw.grant.opportunity.id:success][pw.grant.requirements.open:mapped]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -201,7 +201,7 @@ test.describe("Grant Studio interactions", () => {
 });
 
 test.describe("Matching Explorer source selection", () => {
-  test("[pw.matching-sources] controls public/institutional sources, keeps Work IQ disabled, and sends selected sources", async ({
+  test("[pw.matching-sources] controls public/institutional sources, keeps Work IQ disabled, and sends selected sources [pw.matching.need.sources:ready][pw.matching.need.sources:selected][pw.matching.need.sources:unavailable]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -230,7 +230,7 @@ test.describe("Matching Explorer source selection", () => {
 });
 
 test.describe("Matching Explorer interactions", () => {
-  test("[pw.matching-filters] [pw.matching-run] [pw.matching-results] [pw.matching-shortlist] record types and hard filters are sent, and shortlist compare is transparent", async ({
+  test("[pw.matching-filters] [pw.matching-run] [pw.matching-results] [pw.matching-shortlist] record types and hard filters are sent, and shortlist compare is transparent [pw.matching.compare-shortlist:ready][pw.matching.compare-shortlist:success][pw.matching.need.entity-types:selected][pw.matching.need.entity-types:unselected][pw.matching.need.hard-filters:selected][pw.matching.need.hard-filters:unselected][pw.matching.run:ready][pw.matching.run:success][pw.matching.result.select:ready]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -263,7 +263,7 @@ test.describe("Matching Explorer interactions", () => {
 });
 
 test.describe("Dataset Lab interactions", () => {
-  test("[pw.dataset-upload] [pw.dataset-plan] [pw.dataset-profile] uploads a real bounded CSV file and requires plan approval before profiling", async ({
+  test("[pw.dataset-upload] [pw.dataset-plan] [pw.dataset-profile] uploads a real bounded CSV file and requires plan approval before profiling [pw.dataset.upload:uploading][pw.dataset.upload:validated][pw.dataset.profile:ready][pw.dataset.profile:disabled][pw.dataset.profile:success][pw.dataset.plan.approve:approved][pw.dataset.execution:pending-approval][pw.dataset.execution:completed]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -276,6 +276,17 @@ test.describe("Dataset Lab interactions", () => {
       name: "Analyze with Foundry Code Interpreter",
     });
     await expect(runButton).toBeDisabled();
+
+    const objectiveField = page.getByRole("textbox", {
+      name: "Analysis objective",
+    });
+    await expect(objectiveField).toHaveValue(
+      "Profile the pilot outcome dataset and plan a descriptive group comparison.",
+    );
+    await objectiveField.focus();
+    await page.keyboard.press("Control+a");
+    await page.keyboard.type("Keyboard-typed dataset objective.");
+    await expect(objectiveField).toHaveValue("Keyboard-typed dataset objective.");
 
     await page.getByLabel("Upload a dataset file").setInputFiles({
       name: "pilot.csv",
@@ -306,12 +317,13 @@ test.describe("Dataset Lab interactions", () => {
     );
     expect(payload.inputs.filename).toBe("pilot.csv");
     expect(String(payload.inputs.csv_text)).toContain("id,outcome");
+    expect(payload.objective).toBe("Keyboard-typed dataset objective.");
     await expect(page.locator(".schema-row").first()).toBeVisible();
   });
 });
 
 test.describe("Institutional Q&A interactions", () => {
-  test("[pw.institutional-corpora] [pw.institutional-answer] [pw.institutional-evidence] [pw.work-iq-readiness] corpus scopes are sent, citations open an evidence dialog, and Work IQ stays disabled", async ({
+  test("[pw.institutional-corpora] [pw.institutional-answer] [pw.institutional-evidence] [pw.work-iq-readiness] corpus scopes are sent, citations open an evidence dialog, and Work IQ stays disabled [pw.institutional.corpora:selected][pw.institutional.corpora:unselected][pw.institutional.corpora:locked][pw.institutional.work-iq:unconfigured][pw.institutional.question:ready][pw.institutional.question:success][pw.institutional.evidence.open:ready][pw.institutional.evidence.open:open]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -349,7 +361,7 @@ test.describe("Institutional Q&A interactions", () => {
 });
 
 test.describe("Workflow Automation interactions", () => {
-  test("[pw.workflow-viewport] [pw.workflow-graph] [pw.workflow-dry-run] [pw.workflow-activation] zoom, step editing, and activation are wired with real gating", async ({
+  test("[pw.workflow-viewport] [pw.workflow-graph] [pw.workflow-dry-run] [pw.workflow-activation] zoom, step editing, and activation are wired with real gating [pw.workflow.graph.edit:draft][pw.workflow.graph.edit:dirty][pw.workflow.graph.edit:valid][pw.workflow.canvas.zoom:ready][pw.workflow.validate:draft][pw.workflow.validate:passed][pw.workflow.activate:disabled][pw.workflow.activate:ready][pw.workflow.activate:active]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -394,7 +406,7 @@ test.describe("Workflow Automation interactions", () => {
     ).toBeDisabled();
   });
 
-  test("[pw.workflow-catalog] [pw.workflow-run] capability catalog adds an authorized agent to the graph, and run management inspects a real run", async ({
+  test("[pw.workflow-catalog] [pw.workflow-run] capability catalog adds an authorized agent to the graph, and run management inspects a real run [pw.workflow.catalog:ready][pw.workflow.catalog:preview][pw.workflow.run.manage:completed]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -441,7 +453,7 @@ test.describe("Workflow Automation interactions", () => {
 });
 
 test.describe("Library and Settings interactions", () => {
-  test("[pw.library-detail] a library row opens a detail dialog", async ({ page }) => {
+  test("[pw.library-detail] a library row opens a detail dialog [pw.library.item.open:ready]", async ({ page }) => {
     await waitForWorkspace(page);
     await page.getByRole("button", { name: /^Library \d+$/ }).click();
     await page.locator(".library-row:not(.library-head)").first().click();
@@ -451,7 +463,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(dialog).not.toBeVisible();
   });
 
-  test("[pw.integration-readiness] Settings exposes a truthful integration readiness section", async ({
+  test("[pw.integration-readiness] Settings exposes a truthful integration readiness section [pw.settings.integrations.readiness:unconfigured]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -467,7 +479,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(page.getByText(/project-scoped, not per-user/i)).toBeVisible();
   });
 
-  test("[pw.connector-versions] Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion", async ({
+  test("[pw.connector-versions] Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion [pw.settings.connectors.versions:unconfigured]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
