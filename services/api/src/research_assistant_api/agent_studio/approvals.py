@@ -18,15 +18,21 @@ layer) must look up an existing record by that key before creating a new one.
 from __future__ import annotations
 
 import hashlib
+from datetime import datetime, timedelta
 
 from research_assistant_api.agent_studio.models import (
     AgentRole,
     ApprovalKind,
     ApprovalState,
+    DeploymentEnvironment,
     StudioApprovalRecord,
     role_at_least,
     utc_now,
 )
+
+DEFAULT_APPROVAL_VALIDITY = timedelta(days=7)
+"""How long a decided-pending approval remains actionable if no explicit
+``expires_at`` is supplied. An approval is never a blanket, open-ended grant."""
 
 
 class ApprovalError(RuntimeError):
@@ -80,9 +86,15 @@ def build_approval_request(
     evidence_summary: str,
     risk: str,
     requested_role: AgentRole | None = None,
+    content_hash: str | None = None,
+    environment: DeploymentEnvironment | None = None,
+    permissions_policy_ref: str | None = None,
+    destination_policy_ref: str | None = None,
+    expires_at: datetime | None = None,
 ) -> StudioApprovalRecord:
     if kind is ApprovalKind.ADMIN_ESCALATION and requested_role is None:
         raise ApprovalError("Admin escalation requests must specify requested_role.")
+    resolved_expiry = expires_at if expires_at is not None else utc_now() + DEFAULT_APPROVAL_VALIDITY
     return StudioApprovalRecord(
         id=approval_id,
         tenant_id=tenant_id,
@@ -97,6 +109,11 @@ def build_approval_request(
             kind=kind, version_id=version_id, requested_by=requested_by, destination=destination
         ),
         requested_role=requested_role,
+        content_hash=content_hash,
+        environment=environment,
+        permissions_policy_ref=permissions_policy_ref,
+        destination_policy_ref=destination_policy_ref,
+        expires_at=resolved_expiry,
     )
 
 
@@ -110,12 +127,19 @@ def decide_approval(
 ) -> StudioApprovalRecord:
     """Apply a decision to a pending approval, returning a new immutable copy.
 
-    Raises ``ApprovalError`` if the record is not pending, or if
-    ``approver_role`` does not meet the minimum role required to decide this
-    kind of request (append-only: decided records are never re-decided).
+    Raises ``ApprovalError`` if the record is not pending, has already
+    expired, or if ``approver_role`` does not meet the minimum role required
+    to decide this kind of request (append-only: decided records are never
+    re-decided).
     """
     if record.state != ApprovalState.PENDING:
         raise ApprovalError(f"Approval '{record.id}' has already been decided ({record.state.value}).")
+    if record.expires_at is not None and record.expires_at < utc_now():
+        raise ApprovalError(f"Approval '{record.id}' expired at {record.expires_at.isoformat()}.")
+    if approver_id == record.requested_by:
+        raise ApprovalError(
+            f"Approver '{approver_id}' cannot decide an approval they requested themselves (self-approval)."
+        )
     minimum = _decider_minimum_role(record.kind)
     if not role_at_least(approver_role, minimum):
         raise ApprovalError(

@@ -17,12 +17,20 @@ registry (e.g. from a live discovery source) via ``CapabilityRegistry``.
 
 from __future__ import annotations
 
+from datetime import datetime
+
 from research_assistant_api.agent_studio.models import (
     CapabilityBinding,
     CapabilityDescriptor,
+    CapabilityInstance,
     CapabilityOperation,
+    InstanceReadiness,
     OperationClass,
     OperationMaturity,
+)
+
+_LEARN_TOOL_CATALOG_URL = (
+    "https://learn.microsoft.com/azure/ai-foundry/agents/how-to/tools/tool-catalog"
 )
 
 
@@ -36,6 +44,9 @@ def _ga(
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
+    source_url: str = _LEARN_TOOL_CATALOG_URL,
+    source_version: str | None = None,
+    last_verified_at: datetime | None = None,
 ) -> CapabilityOperation:
     return CapabilityOperation(
         name=name,
@@ -43,6 +54,9 @@ def _ga(
         operation_class=operation_class,
         side_effect_destinations=side_effect_destinations,
         requires_approval=requires_approval,
+        source_url=source_url,
+        source_version=source_version,
+        last_verified_at=last_verified_at,
     )
 
 
@@ -53,6 +67,9 @@ def _preview(
     operation_class: OperationClass = OperationClass.READ,
     side_effect_destinations: tuple[str, ...] = (),
     requires_approval: bool = False,
+    source_url: str = _LEARN_TOOL_CATALOG_URL,
+    source_version: str | None = None,
+    last_verified_at: datetime | None = None,
 ) -> CapabilityOperation:
     return CapabilityOperation(
         name=name,
@@ -61,6 +78,9 @@ def _preview(
         side_effect_destinations=side_effect_destinations,
         requires_approval=requires_approval,
         reason=reason,
+        source_url=source_url,
+        source_version=source_version,
+        last_verified_at=last_verified_at,
     )
 
 
@@ -69,10 +89,63 @@ def _unavailable(
     reason: str,
     *,
     operation_class: OperationClass = OperationClass.PRIVILEGED,
+    source_url: str | None = None,
+    source_version: str | None = None,
+    last_verified_at: datetime | None = None,
 ) -> CapabilityOperation:
     return CapabilityOperation(
         name=name,
         maturity=OperationMaturity.UNAVAILABLE,
+        operation_class=operation_class,
+        reason=reason,
+        source_url=source_url,
+        source_version=source_version,
+        last_verified_at=last_verified_at,
+    )
+
+
+def _retired(
+    name: str,
+    reason: str,
+    *,
+    operation_class: OperationClass = OperationClass.PRIVILEGED,
+    source_url: str = _LEARN_TOOL_CATALOG_URL,
+    source_version: str | None = None,
+    last_verified_at: datetime | None = None,
+) -> CapabilityOperation:
+    """An operation the provider has documented as retired/removed.
+
+    Fails closed like ``_unavailable``: ``validate_attachment`` rejects any
+    non-``GA`` maturity, so no special-casing is required beyond seeding the
+    honest ``retired`` value.
+    """
+    return CapabilityOperation(
+        name=name,
+        maturity=OperationMaturity.RETIRED,
+        operation_class=operation_class,
+        reason=reason,
+        source_url=source_url,
+        source_version=source_version,
+        last_verified_at=last_verified_at,
+    )
+
+
+def _unknown(
+    name: str,
+    *,
+    operation_class: OperationClass = OperationClass.PRIVILEGED,
+    reason: str = "Maturity has not yet been verified against official provenance.",
+) -> CapabilityOperation:
+    """An operation whose maturity has not been verified.
+
+    ``unknown`` is deliberately fail-closed and non-attachable — identical
+    treatment to ``unavailable`` — until provenance (``source_url``/
+    ``source_version``/``last_verified_at``) is recorded and the maturity is
+    re-classified as ``ga``/``preview``/``retired``.
+    """
+    return CapabilityOperation(
+        name=name,
+        maturity=OperationMaturity.UNKNOWN,
         operation_class=operation_class,
         reason=reason,
     )
@@ -326,11 +399,20 @@ def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
 
 
 class CapabilityRegistry:
-    """In-memory capability catalog with GA-only attach enforcement."""
+    """In-memory capability catalog with GA-only attach enforcement.
+
+    Also holds the *discovered* ``CapabilityInstance`` set (tenant/project
+    resources such as a specific Azure AI Search index connection). Instances
+    remain governance-adjacent catalog data — they are provider-discovered
+    facts about what a tenant/project actually has available, not part of any
+    agent's manifest — so they live alongside the descriptor catalog rather
+    than in a separate store.
+    """
 
     def __init__(self, descriptors: tuple[CapabilityDescriptor, ...] | None = None) -> None:
         seed = descriptors if descriptors is not None else _seed_descriptors()
         self._descriptors: dict[str, CapabilityDescriptor] = {descriptor.id: descriptor for descriptor in seed}
+        self._instances: dict[str, CapabilityInstance] = {}
 
     def catalog(self) -> tuple[CapabilityDescriptor, ...]:
         return tuple(self._descriptors.values())
@@ -340,6 +422,27 @@ class CapabilityRegistry:
 
     def as_mapping(self) -> dict[str, CapabilityDescriptor]:
         return dict(self._descriptors)
+
+    def register_instance(self, instance: CapabilityInstance) -> CapabilityInstance:
+        """Register (or replace) a discovered capability instance.
+
+        Registration is dynamic-discovery-shaped (callers supply the
+        discovered facts; nothing here fabricates readiness/health), but
+        held in-memory for now — consistent with the rest of the registry,
+        which is itself an in-memory catalog seeded at process start.
+        """
+        self._instances[instance.id] = instance
+        return instance
+
+    def get_instance(self, instance_id: str) -> CapabilityInstance | None:
+        return self._instances.get(instance_id)
+
+    def instances_for(self, *, tenant_id: str, project_id: str | None = None) -> tuple[CapabilityInstance, ...]:
+        return tuple(
+            instance
+            for instance in self._instances.values()
+            if instance.tenant_id == tenant_id and (project_id is None or instance.project_id == project_id)
+        )
 
     def validate_attachment(
         self,
@@ -371,18 +474,46 @@ class CapabilityRegistry:
         descriptor_id: str,
         operation: str,
         attached_by: str,
-        workspace_connection_id: str | None = None,
+        instance_id: str | None = None,
+        connection_ref: str | None = None,
+        policy_ref: str | None = None,
         config: dict[str, object] | None = None,
     ) -> CapabilityBinding:
-        """Validate and construct a ``CapabilityBinding`` for a GA operation."""
+        """Validate and construct a ``CapabilityBinding`` for a GA operation.
+
+        When ``instance_id`` is supplied it must resolve to a registered
+        ``CapabilityInstance`` for the same ``descriptor_id``; the binding
+        pins the instance's ``discovered_provider_version`` so a later
+        instance re-discovery never silently changes an already-attached
+        binding's behavior.
+        """
         self.validate_attachment(descriptor_id=descriptor_id, operation=operation)
         descriptor = self._descriptors[descriptor_id]
+        pinned_provider_version: str | None = None
+        if instance_id is not None:
+            instance = self._instances.get(instance_id)
+            if instance is None:
+                raise CapabilityAttachmentError(f"Capability instance '{instance_id}' is not registered.")
+            if instance.descriptor_id != descriptor_id:
+                raise CapabilityAttachmentError(
+                    f"Capability instance '{instance_id}' belongs to descriptor "
+                    f"'{instance.descriptor_id}', not '{descriptor_id}'."
+                )
+            if instance.readiness == InstanceReadiness.UNAVAILABLE:
+                raise CapabilityAttachmentError(
+                    f"Capability instance '{instance_id}' is unavailable: "
+                    f"{instance.unavailable_reason or 'no reason supplied'}."
+                )
+            pinned_provider_version = instance.discovered_provider_version
         return CapabilityBinding(
             descriptor_id=descriptor_id,
             descriptor_version=descriptor.version,
             operation=operation,
-            workspace_connection_id=workspace_connection_id,
+            instance_id=instance_id,
+            pinned_provider_version=pinned_provider_version,
             config=dict(config or {}),
+            connection_ref=connection_ref,
+            policy_ref=policy_ref,
             attached_by=attached_by,
         )
 

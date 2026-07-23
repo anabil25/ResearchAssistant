@@ -13,12 +13,17 @@ call is permitted, even if ``scopes`` are declared.
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Protocol
+from datetime import timedelta
+from typing import TYPE_CHECKING, Any, Protocol
+from uuid import uuid4
 
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
+    MemoryAuditAction,
+    MemoryAuditRecord,
     MemoryEntry,
     MemoryScopeKind,
+    utc_now,
 )
 from research_assistant_api.config import Settings
 
@@ -28,6 +33,11 @@ if TYPE_CHECKING:
 
 class MemoryPolicyError(RuntimeError):
     pass
+
+
+class MemoryAccessError(MemoryPolicyError):
+    """Raised when an actor lacks the read/write ACL required for a memory
+    inspect/correct/forget/export action on a specific entry."""
 
 
 def validate_memory_scopes(manifest: AgentManifest) -> None:
@@ -47,6 +57,23 @@ def validate_memory_scopes(manifest: AgentManifest) -> None:
             )
 
 
+def _is_active(entry: MemoryEntry) -> bool:
+    """An entry is recallable/exportable only while not forgotten and not expired."""
+    if entry.deleted_at is not None:
+        return False
+    return entry.expires_at is None or entry.expires_at > utc_now()
+
+
+def _can_read(entry: MemoryEntry, actor_id: str) -> bool:
+    """Empty ``read_acl`` means "creator + agent context only"; a non-empty
+    ACL additionally allows the listed principals."""
+    return actor_id == entry.created_by or actor_id in entry.read_acl
+
+
+def _can_write(entry: MemoryEntry, actor_id: str) -> bool:
+    return actor_id == entry.created_by or actor_id in entry.write_acl
+
+
 class MemoryStore(Protocol):
     def append(self, entry: MemoryEntry) -> MemoryEntry: ...
 
@@ -60,6 +87,14 @@ class MemoryStore(Protocol):
         limit: int = 100,
     ) -> tuple[MemoryEntry, ...]: ...
 
+    def get_entry(self, *, tenant_id: str, entry_id: str) -> MemoryEntry | None: ...
+
+    def replace_entry(self, entry: MemoryEntry) -> MemoryEntry: ...
+
+    def record_audit(self, record: MemoryAuditRecord) -> MemoryAuditRecord: ...
+
+    def list_audit(self, *, tenant_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]: ...
+
 
 class InMemoryMemoryStore:
     """Deterministic in-process memory store, used in tests and as the base
@@ -67,10 +102,11 @@ class InMemoryMemoryStore:
     """
 
     def __init__(self) -> None:
-        self._entries: list[MemoryEntry] = []
+        self._entries: dict[str, MemoryEntry] = {}
+        self._audit: list[MemoryAuditRecord] = []
 
     def append(self, entry: MemoryEntry) -> MemoryEntry:
-        self._entries.append(entry)
+        self._entries[entry.id] = entry
         return entry
 
     def list_entries(
@@ -84,7 +120,7 @@ class InMemoryMemoryStore:
     ) -> tuple[MemoryEntry, ...]:
         matches = [
             entry
-            for entry in self._entries
+            for entry in self._entries.values()
             if entry.tenant_id == tenant_id
             and entry.scope_kind == scope_kind
             and entry.scope_id == scope_id
@@ -92,6 +128,25 @@ class InMemoryMemoryStore:
         ]
         matches.sort(key=lambda entry: entry.created_at)
         return tuple(matches[-limit:])
+
+    def get_entry(self, *, tenant_id: str, entry_id: str) -> MemoryEntry | None:
+        entry = self._entries.get(entry_id)
+        if entry is None or entry.tenant_id != tenant_id:
+            return None
+        return entry
+
+    def replace_entry(self, entry: MemoryEntry) -> MemoryEntry:
+        self._entries[entry.id] = entry
+        return entry
+
+    def record_audit(self, record: MemoryAuditRecord) -> MemoryAuditRecord:
+        self._audit.append(record)
+        return record
+
+    def list_audit(self, *, tenant_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
+        matches = [record for record in self._audit if record.tenant_id == tenant_id and record.entry_id == entry_id]
+        matches.sort(key=lambda record: record.created_at)
+        return tuple(matches)
 
 
 class MemoryStoreUnavailableError(MemoryPolicyError):
@@ -107,8 +162,10 @@ class CosmosMemoryStore:
     Persists to a dedicated ``memory`` container in the Agent Studio Cosmos
     database (separate from the ``manifests``/``versions``/``governance``
     containers used by ``CosmosAgentStudioStore``) so memory volume/growth
-    does not affect metadata query performance. Entries are immutable once
-    appended (memory is append-only, never rewritten).
+    does not affect metadata query performance. Entry documents and their
+    governance audit trail (``MemoryAuditRecord``) share the container,
+    disambiguated by a ``documentType`` discriminator, since both are
+    memory-specific data with no natural home in ``AgentStudioStore``.
     """
 
     def __init__(self, endpoint: str, database_name: str, credential: TokenCredential) -> None:
@@ -118,17 +175,20 @@ class CosmosMemoryStore:
         database = client.get_database_client(database_name)
         self._container = database.get_container_client("memory")
 
+    @staticmethod
+    def _entry_document(entry: MemoryEntry) -> dict[str, Any]:
+        return {
+            "id": entry.id,
+            "documentType": "entry",
+            "tenantId": entry.tenant_id,
+            "scopeKind": entry.scope_kind.value,
+            "scopeId": entry.scope_id,
+            "logicalAgentId": entry.logical_agent_id,
+            "payload": entry.model_dump(mode="json"),
+        }
+
     def append(self, entry: MemoryEntry) -> MemoryEntry:
-        self._container.upsert_item(
-            {
-                "id": entry.id,
-                "tenantId": entry.tenant_id,
-                "scopeKind": entry.scope_kind.value,
-                "scopeId": entry.scope_id,
-                "logicalAgentId": entry.logical_agent_id,
-                "payload": entry.model_dump(mode="json"),
-            }
-        )
+        self._container.upsert_item(self._entry_document(entry))
         return entry
 
     def list_entries(
@@ -143,10 +203,11 @@ class CosmosMemoryStore:
         documents = list(
             self._container.query_items(
                 query=(
-                    "SELECT * FROM c WHERE c.tenantId = @tenantId AND c.scopeKind = @scopeKind "
-                    "AND c.scopeId = @scopeId AND c.logicalAgentId = @logicalAgentId"
+                    "SELECT * FROM c WHERE c.documentType = @documentType AND c.tenantId = @tenantId "
+                    "AND c.scopeKind = @scopeKind AND c.scopeId = @scopeId AND c.logicalAgentId = @logicalAgentId"
                 ),
                 parameters=[
+                    {"name": "@documentType", "value": "entry"},
                     {"name": "@tenantId", "value": tenant_id},
                     {"name": "@scopeKind", "value": scope_kind.value},
                     {"name": "@scopeId", "value": scope_id},
@@ -158,6 +219,60 @@ class CosmosMemoryStore:
         entries = [MemoryEntry.model_validate(document["payload"]) for document in documents]
         entries.sort(key=lambda entry: entry.created_at)
         return tuple(entries[-limit:])
+
+    def get_entry(self, *, tenant_id: str, entry_id: str) -> MemoryEntry | None:
+        documents = list(
+            self._container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.documentType = @documentType AND c.tenantId = @tenantId "
+                    "AND c.id = @id"
+                ),
+                parameters=[
+                    {"name": "@documentType", "value": "entry"},
+                    {"name": "@tenantId", "value": tenant_id},
+                    {"name": "@id", "value": entry_id},
+                ],
+                enable_cross_partition_query=True,
+            )
+        )
+        if not documents:
+            return None
+        return MemoryEntry.model_validate(documents[0]["payload"])
+
+    def replace_entry(self, entry: MemoryEntry) -> MemoryEntry:
+        self._container.upsert_item(self._entry_document(entry))
+        return entry
+
+    def record_audit(self, record: MemoryAuditRecord) -> MemoryAuditRecord:
+        self._container.upsert_item(
+            {
+                "id": f"audit::{record.id}",
+                "documentType": "audit",
+                "tenantId": record.tenant_id,
+                "entryId": record.entry_id,
+                "payload": record.model_dump(mode="json"),
+            }
+        )
+        return record
+
+    def list_audit(self, *, tenant_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
+        documents = list(
+            self._container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.documentType = @documentType AND c.tenantId = @tenantId "
+                    "AND c.entryId = @entryId"
+                ),
+                parameters=[
+                    {"name": "@documentType", "value": "audit"},
+                    {"name": "@tenantId", "value": tenant_id},
+                    {"name": "@entryId", "value": entry_id},
+                ],
+                enable_cross_partition_query=True,
+            )
+        )
+        records = [MemoryAuditRecord.model_validate(document["payload"]) for document in documents]
+        records.sort(key=lambda record: record.created_at)
+        return tuple(records)
 
 
 def build_memory_store(settings: Settings) -> MemoryStore:
@@ -183,7 +298,10 @@ def build_memory_store(settings: Settings) -> MemoryStore:
 
 
 class MemoryService:
-    """Facade enforcing manifest validation before any memory access."""
+    """Facade enforcing manifest validation, TTL, and ACL governance before
+    any memory access, and recording an audit trail for every governance
+    action (remember/recall/inspect/correct/forget/export).
+    """
 
     def __init__(self, store: MemoryStore) -> None:
         self._store = store
@@ -198,7 +316,20 @@ class MemoryService:
             raise MemoryPolicyError(
                 f"Manifest '{manifest.logical_agent_id}' does not declare a '{entry.scope_kind.value}' memory scope."
             )
-        return self._store.append(entry)
+        if entry.ttl_days is not None and entry.expires_at is None:
+            entry = entry.model_copy(update={"expires_at": entry.created_at + timedelta(days=entry.ttl_days)})
+        stored = self._store.append(entry)
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=entry.tenant_id,
+                entry_id=entry.id,
+                action=MemoryAuditAction.REMEMBER,
+                actor_id=entry.created_by,
+                detail=f"scope={entry.scope_kind.value}",
+            )
+        )
+        return stored
 
     def recall(
         self,
@@ -207,13 +338,145 @@ class MemoryService:
         tenant_id: str,
         scope_kind: MemoryScopeKind,
         scope_id: str,
+        actor_id: str,
         limit: int = 100,
     ) -> tuple[MemoryEntry, ...]:
         validate_memory_scopes(manifest)
-        return self._store.list_entries(
+        entries = self._store.list_entries(
             tenant_id=tenant_id,
             scope_kind=scope_kind,
             scope_id=scope_id,
             logical_agent_id=manifest.logical_agent_id,
             limit=limit,
         )
+        visible = tuple(entry for entry in entries if _is_active(entry) and _can_read(entry, actor_id))
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                entry_id=f"scope:{scope_kind.value}:{scope_id}",
+                action=MemoryAuditAction.RECALL,
+                actor_id=actor_id,
+                detail=f"count={len(visible)}",
+            )
+        )
+        return visible
+
+    def inspect(self, manifest: AgentManifest, *, tenant_id: str, entry_id: str, actor_id: str) -> MemoryEntry:
+        """Read a single memory entry (governance action, distinct from
+        ordinary ``recall``): raises if it does not exist for this agent, has
+        been forgotten, or the actor lacks read access."""
+        validate_memory_scopes(manifest)
+        entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        if entry.deleted_at is not None:
+            raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten.")
+        if not _can_read(entry, actor_id):
+            raise MemoryAccessError(f"Actor '{actor_id}' does not have read access to memory entry '{entry_id}'.")
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                entry_id=entry_id,
+                action=MemoryAuditAction.INSPECT,
+                actor_id=actor_id,
+            )
+        )
+        return entry
+
+    def correct(
+        self,
+        manifest: AgentManifest,
+        *,
+        tenant_id: str,
+        entry_id: str,
+        actor_id: str,
+        content: str,
+    ) -> MemoryEntry:
+        validate_memory_scopes(manifest)
+        entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        if entry.deleted_at is not None:
+            raise MemoryPolicyError(f"Memory entry '{entry_id}' has been forgotten and cannot be corrected.")
+        if not _can_write(entry, actor_id):
+            raise MemoryAccessError(f"Actor '{actor_id}' does not have write access to memory entry '{entry_id}'.")
+        updated = entry.model_copy(update={"content": content, "provenance": "operator_correction"})
+        self._store.replace_entry(updated)
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                entry_id=entry_id,
+                action=MemoryAuditAction.CORRECT,
+                actor_id=actor_id,
+                detail="content corrected",
+            )
+        )
+        return updated
+
+    def forget(
+        self,
+        manifest: AgentManifest,
+        *,
+        tenant_id: str,
+        entry_id: str,
+        actor_id: str,
+        reason: str = "",
+    ) -> MemoryEntry:
+        validate_memory_scopes(manifest)
+        entry = self._get_owned_entry(manifest, tenant_id=tenant_id, entry_id=entry_id)
+        if not _can_write(entry, actor_id):
+            raise MemoryAccessError(f"Actor '{actor_id}' does not have write access to memory entry '{entry_id}'.")
+        updated = entry.model_copy(update={"deleted_at": utc_now()})
+        self._store.replace_entry(updated)
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                entry_id=entry_id,
+                action=MemoryAuditAction.FORGET,
+                actor_id=actor_id,
+                detail=reason,
+            )
+        )
+        return updated
+
+    def export(
+        self,
+        manifest: AgentManifest,
+        *,
+        tenant_id: str,
+        scope_kind: MemoryScopeKind,
+        scope_id: str,
+        actor_id: str,
+        limit: int = 1000,
+    ) -> tuple[MemoryEntry, ...]:
+        validate_memory_scopes(manifest)
+        entries = self._store.list_entries(
+            tenant_id=tenant_id,
+            scope_kind=scope_kind,
+            scope_id=scope_id,
+            logical_agent_id=manifest.logical_agent_id,
+            limit=limit,
+        )
+        visible = tuple(entry for entry in entries if _is_active(entry) and _can_read(entry, actor_id))
+        self._store.record_audit(
+            MemoryAuditRecord(
+                id=str(uuid4()),
+                tenant_id=tenant_id,
+                entry_id=f"scope:{scope_kind.value}:{scope_id}",
+                action=MemoryAuditAction.EXPORT,
+                actor_id=actor_id,
+                detail=f"count={len(visible)}",
+            )
+        )
+        return visible
+
+    def audit_trail(self, *, tenant_id: str, entry_id: str) -> tuple[MemoryAuditRecord, ...]:
+        """Governance audit history for a single memory entry."""
+        return self._store.list_audit(tenant_id=tenant_id, entry_id=entry_id)
+
+    def _get_owned_entry(self, manifest: AgentManifest, *, tenant_id: str, entry_id: str) -> MemoryEntry:
+        entry = self._store.get_entry(tenant_id=tenant_id, entry_id=entry_id)
+        if entry is None or entry.logical_agent_id != manifest.logical_agent_id:
+            raise MemoryPolicyError(f"Memory entry '{entry_id}' not found for agent '{manifest.logical_agent_id}'.")
+        return entry
+

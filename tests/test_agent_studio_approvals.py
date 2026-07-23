@@ -1,7 +1,11 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
+import research_assistant_api.agent_studio.approvals as approvals_module
 from research_assistant_api.agent_studio.approvals import (
+    DEFAULT_APPROVAL_VALIDITY,
     ApprovalError,
     build_approval_request,
     decide_approval,
@@ -12,16 +16,36 @@ from research_assistant_api.agent_studio.models import (
     AgentRole,
     ApprovalKind,
     ApprovalState,
+    DeploymentEnvironment,
     StudioApprovalRecord,
 )
 
+FIXED_NOW = datetime(2026, 1, 2, 3, 4, 5, tzinfo=UTC)
 
-def test_requires_approval_always_true_for_admin_escalation() -> None:
+
+def _pending_record(
+    *,
+    kind: ApprovalKind = ApprovalKind.RELEASE_PROMOTION,
+    expires_at: datetime | None = None,
+) -> StudioApprovalRecord:
+    return build_approval_request(
+        approval_id="approval-1",
+        tenant_id="tenant-a",
+        version_id="version-1",
+        kind=kind,
+        gated_action="promote_version" if kind is not ApprovalKind.ADMIN_ESCALATION else "grant_role",
+        destination="development",
+        requested_by="requester-1",
+        evidence_summary="All hard gates passed.",
+        risk="medium",
+        requested_role=AgentRole.MAINTAINER if kind is ApprovalKind.ADMIN_ESCALATION else None,
+        expires_at=expires_at,
+    )
+
+
+def test_requires_approval_depends_on_kind_and_actor_role() -> None:
     assert requires_approval(actor_role=AgentRole.OWNER, kind=ApprovalKind.ADMIN_ESCALATION)
     assert requires_approval(actor_role=AgentRole.VIEWER, kind=ApprovalKind.ADMIN_ESCALATION)
-
-
-def test_requires_approval_for_promotion_depends_on_role() -> None:
     assert requires_approval(actor_role=AgentRole.CONTRIBUTOR, kind=ApprovalKind.RELEASE_PROMOTION)
     assert requires_approval(actor_role=AgentRole.VIEWER, kind=ApprovalKind.FORK_PROMOTION)
     assert not requires_approval(actor_role=AgentRole.MAINTAINER, kind=ApprovalKind.RELEASE_PROMOTION)
@@ -30,34 +54,58 @@ def test_requires_approval_for_promotion_depends_on_role() -> None:
 
 def test_idempotency_key_is_deterministic_and_distinguishes_inputs() -> None:
     key_a = idempotency_key(
-        kind=ApprovalKind.RELEASE_PROMOTION, version_id="v1", requested_by="u1", destination="prod"
+        kind=ApprovalKind.RELEASE_PROMOTION,
+        version_id="version-1",
+        requested_by="requester-1",
+        destination="production",
     )
     key_b = idempotency_key(
-        kind=ApprovalKind.RELEASE_PROMOTION, version_id="v1", requested_by="u1", destination="prod"
+        kind=ApprovalKind.RELEASE_PROMOTION,
+        version_id="version-1",
+        requested_by="requester-1",
+        destination="production",
     )
     key_c = idempotency_key(
-        kind=ApprovalKind.RELEASE_PROMOTION, version_id="v2", requested_by="u1", destination="prod"
+        kind=ApprovalKind.FORK_PROMOTION,
+        version_id="version-1",
+        requested_by="requester-1",
+        destination="production",
     )
     assert key_a == key_b
     assert key_a != key_c
 
 
-def test_build_approval_request_sets_tenant_id_and_idempotency_key() -> None:
+def test_build_approval_request_binds_context_and_default_expiry(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals_module, "utc_now", lambda: FIXED_NOW)
+
     record = build_approval_request(
         approval_id="approval-1",
-        tenant_id="demo",
-        version_id="v1",
+        tenant_id="tenant-a",
+        version_id="version-1",
         kind=ApprovalKind.RELEASE_PROMOTION,
         gated_action="promote_version",
-        destination="prod",
-        requested_by="user-1",
-        evidence_summary="All gates passed.",
-        risk="medium",
+        destination="development",
+        requested_by="requester-1",
+        evidence_summary="All hard gates passed.",
+        risk="low",
+        content_hash="manifest-sha",
+        environment=DeploymentEnvironment.DEVELOPMENT,
+        permissions_policy_ref="perm-policy-v1",
+        destination_policy_ref="dest-policy-v1",
     )
-    assert record.tenant_id == "demo"
-    assert record.state == ApprovalState.PENDING
+
+    assert record.tenant_id == "tenant-a"
+    assert record.state is ApprovalState.PENDING
+    assert record.content_hash == "manifest-sha"
+    assert record.environment is DeploymentEnvironment.DEVELOPMENT
+    assert record.permissions_policy_ref == "perm-policy-v1"
+    assert record.destination_policy_ref == "dest-policy-v1"
+    assert record.expires_at == FIXED_NOW + DEFAULT_APPROVAL_VALIDITY
     assert record.idempotency_key == idempotency_key(
-        kind=ApprovalKind.RELEASE_PROMOTION, version_id="v1", requested_by="user-1", destination="prod"
+        kind=ApprovalKind.RELEASE_PROMOTION,
+        version_id="version-1",
+        requested_by="requester-1",
+        destination="development",
     )
 
 
@@ -65,85 +113,140 @@ def test_build_approval_request_admin_escalation_requires_requested_role() -> No
     with pytest.raises(ApprovalError, match="requested_role"):
         build_approval_request(
             approval_id="approval-1",
-            tenant_id="demo",
-            version_id="agent-1",
+            tenant_id="tenant-a",
+            version_id="agent-one",
             kind=ApprovalKind.ADMIN_ESCALATION,
             gated_action="grant_role",
-            destination="agent-1",
-            requested_by="user-1",
+            destination="agent-one",
+            requested_by="requester-1",
             evidence_summary="Needs elevated access.",
             risk="high",
         )
 
 
-def test_build_approval_request_admin_escalation_with_role_succeeds() -> None:
+def test_build_approval_request_admin_escalation_preserves_explicit_expiry() -> None:
+    explicit_expiry = FIXED_NOW + timedelta(hours=12)
+
     record = build_approval_request(
         approval_id="approval-1",
-        tenant_id="demo",
-        version_id="agent-1",
+        tenant_id="tenant-a",
+        version_id="agent-one",
         kind=ApprovalKind.ADMIN_ESCALATION,
         gated_action="grant_role",
-        destination="agent-1",
-        requested_by="user-1",
+        destination="agent-one",
+        requested_by="requester-1",
         evidence_summary="Needs elevated access.",
         risk="high",
         requested_role=AgentRole.MAINTAINER,
-    )
-    assert record.requested_role == AgentRole.MAINTAINER
-
-
-def _pending_record(kind: ApprovalKind = ApprovalKind.RELEASE_PROMOTION) -> StudioApprovalRecord:
-    return build_approval_request(
-        approval_id="approval-1",
-        tenant_id="demo",
-        version_id="v1",
-        kind=kind,
-        gated_action="promote_version",
-        destination="prod",
-        requested_by="user-1",
-        evidence_summary="All gates passed.",
-        risk="medium",
-        requested_role=AgentRole.MAINTAINER if kind is ApprovalKind.ADMIN_ESCALATION else None,
+        expires_at=explicit_expiry,
     )
 
+    assert record.requested_role is AgentRole.MAINTAINER
+    assert record.expires_at == explicit_expiry
 
-def test_decide_approval_approves_when_role_sufficient() -> None:
-    record = _pending_record()
+
+@pytest.mark.parametrize(
+    ("approve", "expected_state", "rationale"),
+    [
+        (True, ApprovalState.APPROVED, "looks good"),
+        (False, ApprovalState.REJECTED, None),
+    ],
+)
+def test_decide_approval_sets_decision_fields(
+    monkeypatch: pytest.MonkeyPatch,
+    approve: bool,
+    expected_state: ApprovalState,
+    rationale: str | None,
+) -> None:
+    decided_at = FIXED_NOW + timedelta(minutes=5)
+    monkeypatch.setattr(approvals_module, "utc_now", lambda: decided_at)
+
     decided = decide_approval(
-        record, approver_id="approver-1", approver_role=AgentRole.MAINTAINER, approve=True, rationale="looks good"
+        _pending_record(),
+        approver_id="approver-1",
+        approver_role=AgentRole.MAINTAINER,
+        approve=approve,
+        rationale=rationale,
     )
-    assert decided.state == ApprovalState.APPROVED
+
+    assert decided.state is expected_state
     assert decided.approver_id == "approver-1"
-    assert decided.rationale == "looks good"
-    assert decided.decided_at is not None
+    assert decided.decided_at == decided_at
+    assert decided.rationale == rationale
 
 
-def test_decide_approval_rejects_when_approve_false() -> None:
-    record = _pending_record()
-    decided = decide_approval(record, approver_id="approver-1", approver_role=AgentRole.OWNER, approve=False)
-    assert decided.state == ApprovalState.REJECTED
+def test_decide_approval_rejects_non_pending_records() -> None:
+    decided = decide_approval(
+        _pending_record(),
+        approver_id="approver-1",
+        approver_role=AgentRole.OWNER,
+        approve=True,
+    )
 
-
-def test_decide_approval_raises_when_already_decided() -> None:
-    record = _pending_record()
-    decided = decide_approval(record, approver_id="approver-1", approver_role=AgentRole.OWNER, approve=True)
     with pytest.raises(ApprovalError, match="already been decided"):
-        decide_approval(decided, approver_id="approver-2", approver_role=AgentRole.OWNER, approve=True)
+        decide_approval(
+            decided,
+            approver_id="approver-2",
+            approver_role=AgentRole.OWNER,
+            approve=False,
+        )
 
 
-def test_decide_approval_raises_when_role_insufficient_for_promotion() -> None:
-    record = _pending_record()
-    with pytest.raises(ApprovalError, match="does not meet the minimum"):
-        decide_approval(record, approver_id="approver-1", approver_role=AgentRole.CONTRIBUTOR, approve=True)
+def test_decide_approval_rejects_expired_pending_records(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(approvals_module, "utc_now", lambda: FIXED_NOW)
+    expired = _pending_record(expires_at=FIXED_NOW - timedelta(seconds=1))
+
+    with pytest.raises(ApprovalError, match="expired at"):
+        decide_approval(
+            expired,
+            approver_id="approver-1",
+            approver_role=AgentRole.OWNER,
+            approve=True,
+        )
 
 
-def test_decide_approval_raises_when_role_insufficient_for_escalation() -> None:
+def test_decide_approval_rejects_self_approval() -> None:
+    """A requester may never decide their own approval, even holding a
+    sufficient role (e.g. an owner requesting their own admin escalation)."""
     record = _pending_record(kind=ApprovalKind.ADMIN_ESCALATION)
+
+    with pytest.raises(ApprovalError, match="self-approval"):
+        decide_approval(
+            record,
+            approver_id=record.requested_by,
+            approver_role=AgentRole.OWNER,
+            approve=True,
+        )
+
+
+@pytest.mark.parametrize(
+    ("kind", "approver_role"),
+    [
+        (ApprovalKind.RELEASE_PROMOTION, AgentRole.CONTRIBUTOR),
+        (ApprovalKind.ADMIN_ESCALATION, AgentRole.MAINTAINER),
+    ],
+)
+def test_decide_approval_enforces_minimum_approver_role(
+    kind: ApprovalKind,
+    approver_role: AgentRole,
+) -> None:
     with pytest.raises(ApprovalError, match="does not meet the minimum"):
-        decide_approval(record, approver_id="approver-1", approver_role=AgentRole.MAINTAINER, approve=True)
+        decide_approval(
+            _pending_record(kind=kind),
+            approver_id="approver-1",
+            approver_role=approver_role,
+            approve=True,
+        )
 
 
-def test_decide_approval_escalation_succeeds_with_owner_role() -> None:
-    record = _pending_record(kind=ApprovalKind.ADMIN_ESCALATION)
-    decided = decide_approval(record, approver_id="approver-1", approver_role=AgentRole.OWNER, approve=True)
-    assert decided.state == ApprovalState.APPROVED
+def test_decide_approval_allows_owner_to_approve_admin_escalation() -> None:
+    decided = decide_approval(
+        _pending_record(kind=ApprovalKind.ADMIN_ESCALATION),
+        approver_id="owner-1",
+        approver_role=AgentRole.OWNER,
+        approve=True,
+        rationale="approved",
+    )
+
+    assert decided.state is ApprovalState.APPROVED
+    assert decided.approver_id == "owner-1"

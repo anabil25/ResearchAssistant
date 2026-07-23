@@ -103,7 +103,9 @@ class AttachCapabilityRequest(BaseModel):
 
     descriptor_id: str
     operation: str
-    workspace_connection_id: str | None = None
+    instance_id: str | None = None
+    connection_ref: str | None = None
+    policy_ref: str | None = None
     config: dict[str, object] = Field(default_factory=dict)
 
 
@@ -114,6 +116,21 @@ class RememberRequest(BaseModel):
     scope_id: str = Field(min_length=1, max_length=200)
     role: str = Field(default="note", max_length=40)
     content: str = Field(min_length=1, max_length=20000)
+    ttl_days: int | None = Field(default=None, ge=1, le=3650)
+    read_acl: tuple[str, ...] = Field(default_factory=tuple)
+    write_acl: tuple[str, ...] = Field(default_factory=tuple)
+
+
+class CorrectMemoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    content: str = Field(min_length=1, max_length=20000)
+
+
+class ForgetMemoryRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    reason: str = Field(default="", max_length=2000)
 
 
 class RegisterToolRequest(BaseModel):

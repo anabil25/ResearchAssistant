@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 from copy import deepcopy
 from datetime import UTC, datetime
 from typing import Any
@@ -12,9 +13,9 @@ from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
     AgentOwnerKind,
+    AgentRelease,
     AgentRole,
     AgentVersion,
-    AgentVersionStatus,
     ApprovalKind,
     ApprovalState,
     DeploymentEnvironment,
@@ -23,6 +24,7 @@ from research_assistant_api.agent_studio.models import (
     LogicalAgentBinding,
     OwnershipGrant,
     ReleaseGateReport,
+    ReleaseStatus,
     RuntimeTarget,
     StudioApprovalRecord,
     ToolRegistration,
@@ -30,6 +32,12 @@ from research_assistant_api.agent_studio.models import (
 )
 from research_assistant_api.agent_studio.store import AgentStudioStoreError
 from research_assistant_api.config import Settings
+
+TENANT = "demo"
+OTHER_TENANT = "other-tenant"
+AGENT_ID = "agent-cosmos-test"
+OTHER_AGENT_ID = "agent-cosmos-other"
+USER_ID = "user-1"
 
 
 class FakeCredential(TokenCredential):
@@ -49,6 +57,7 @@ class FakeContainer:
         self.documents: dict[str, dict[str, Any]] = {}
         self.version = 0
         self.fail_replace_status: int | None = None
+        self.query_calls = 0
 
     def upsert_item(self, item: dict[str, Any]) -> dict[str, Any]:
         self.version += 1
@@ -67,7 +76,8 @@ class FakeContainer:
     ) -> dict[str, Any]:
         if self.fail_replace_status is not None:
             raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
-                status_code=self.fail_replace_status, message="simulated failure"
+                status_code=self.fail_replace_status,
+                message="simulated failure",
             )
         assert self.documents[item]["_etag"] == etag
         return self.upsert_item(body)
@@ -79,6 +89,8 @@ class FakeContainer:
         parameters: list[dict[str, str]],
         enable_cross_partition_query: bool,
     ) -> list[dict[str, Any]]:
+        del query, enable_cross_partition_query
+        self.query_calls += 1
         values = {item["name"]: item["value"] for item in parameters}
         results = []
         for item in self.documents.values():
@@ -120,398 +132,465 @@ def fake_client(monkeypatch: pytest.MonkeyPatch) -> FakeCosmosClient:
 
 
 def _new_store(fake_client: FakeCosmosClient) -> cosmos_store.CosmosAgentStudioStore:
-    return cosmos_store.CosmosAgentStudioStore("https://cosmos.example.test", "agent-studio", FakeCredential())
+    return cosmos_store.CosmosAgentStudioStore(
+        "https://cosmos.example.test",
+        "agent-studio",
+        FakeCredential(),
+    )
 
 
-def _manifest() -> AgentManifest:
+def _manifest(
+    *,
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    project_id: str = "default",
+    display_name: str = "Cosmos Test Agent",
+) -> AgentManifest:
     return AgentManifest(
-        logical_agent_id="agent-cosmos-test",
-        tenant_id="demo",
-        display_name="Cosmos Test Agent",
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        display_name=display_name,
         owner_kind=AgentOwnerKind.USER,
-        owner_id="user-1",
+        owner_id=USER_ID,
     )
 
 
-def test_persistence_label_is_cosmos(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    assert store.persistence == "Azure Cosmos DB"
-
-
-def test_draft_persists_and_reloads_across_store_instances(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    draft = AgentDraft(
-        logical_agent_id="agent-cosmos-test",
-        tenant_id="demo",
-        manifest=_manifest(),
-        updated_by="user-1",
+def _draft(
+    *,
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    project_id: str = "default",
+    etag: str = "etag-1",
+) -> AgentDraft:
+    return AgentDraft(
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        manifest=_manifest(tenant_id=tenant_id, logical_agent_id=logical_agent_id, project_id=project_id),
+        updated_by=USER_ID,
+        etag=etag,
     )
-    first.save_draft(draft)
-
-    second = _new_store(fake_client)
-    reloaded = second.get_draft("demo", "agent-cosmos-test")
-    assert reloaded is not None
-    assert reloaded.manifest.display_name == "Cosmos Test Agent"
-    assert len(second.list_drafts("demo")) == 1
-    assert second.get_draft("other-tenant", "agent-cosmos-test") is None
 
 
-def test_ownership_persists_and_role_for_reloads(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    first.grant_ownership(
-        OwnershipGrant(
-            tenant_id="demo", logical_agent_id="agent-1", principal_id="user-1",
-            role=AgentRole.OWNER,
-            granted_by="admin",
-        )
-    )
-    second = _new_store(fake_client)
-    assert second.role_for("demo", "agent-1", "user-1") == AgentRole.OWNER
-    assert len(second.list_ownership("demo", "agent-1")) == 1
-    # Re-listing must not duplicate already-cached grants.
-    assert len(second.list_ownership("demo", "agent-1")) == 1
-
-
-def _version(**overrides: object) -> AgentVersion:
-    base = dict(
-        id="version-1",
-        logical_agent_id="agent-cosmos-test",
-        tenant_id="demo",
-        sequence=1,
-        manifest=_manifest(),
-        manifest_hash="hash",
-        created_by="user-1",
+def _version(
+    *,
+    sequence: int = 1,
+    version_id: str | None = None,
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+) -> AgentVersion:
+    return AgentVersion(
+        id=version_id or f"version-{sequence}",
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        sequence=sequence,
+        manifest=_manifest(tenant_id=tenant_id, logical_agent_id=logical_agent_id),
+        manifest_hash=f"hash-{sequence}",
+        created_by=USER_ID,
         runtime_target=RuntimeTarget.CUSTOM_HOSTED,
     )
-    base.update(overrides)
-    return AgentVersion(**base)  # type: ignore[arg-type]
 
 
-def test_version_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
+def _release(
+    *,
+    release_id: str = "release-1",
+    version_id: str = "version-1",
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    status: ReleaseStatus = ReleaseStatus.GATED,
+    previous_release_id: str | None = None,
+) -> AgentRelease:
+    return AgentRelease(
+        id=release_id,
+        version_id=version_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        status=status,
+        previous_release_id=previous_release_id,
+        created_by=USER_ID,
+    )
+
+
+def _approval(
+    *,
+    approval_id: str = "approval-1",
+    version_id: str = "version-1",
+    tenant_id: str = TENANT,
+    idempotency_key: str = "key-1",
+    state: ApprovalState = ApprovalState.PENDING,
+) -> StudioApprovalRecord:
+    return StudioApprovalRecord(
+        id=approval_id,
+        version_id=version_id,
+        tenant_id=tenant_id,
+        kind=ApprovalKind.RELEASE_PROMOTION,
+        state=state,
+        gated_action="promote_version",
+        destination="prod",
+        requested_by=USER_ID,
+        evidence_summary="Evidence.",
+        risk="medium",
+        idempotency_key=idempotency_key,
+    )
+
+
+def _deployment(
+    *,
+    deployment_id: str = "deployment-1",
+    logical_agent_id: str = AGENT_ID,
+    tenant_id: str = TENANT,
+    version_id: str = "version-1",
+    trace_ref: str | None = None,
+) -> DeploymentRecord:
+    return DeploymentRecord(
+        id=deployment_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        version_id=version_id,
+        runtime_target=RuntimeTarget.CUSTOM_HOSTED,
+        deployed_by=USER_ID,
+        trace_ref=trace_ref,
+    )
+
+
+def _binding(
+    *,
+    tenant_id: str = TENANT,
+    logical_agent_id: str = AGENT_ID,
+    version_id: str = "version-1",
+) -> LogicalAgentBinding:
+    return LogicalAgentBinding(
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        environment=DeploymentEnvironment.DEVELOPMENT,
+        resolved_version_id=version_id,
+        updated_by=USER_ID,
+    )
+
+
+def _tool_registration(
+    *,
+    registration_id: str = "reg-1",
+    logical_agent_id: str = AGENT_ID,
+    tenant_id: str = TENANT,
+) -> ToolRegistration:
+    return ToolRegistration(
+        id=registration_id,
+        tenant_id=tenant_id,
+        logical_agent_id=logical_agent_id,
+        descriptor_id="foundry.web_search",
+        operation="search",
+        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
+        handler_ref="builtin://web_search",
+        registered_by=USER_ID,
+    )
+
+
+def test_persistence_label_and_drafts_reload_across_instances(fake_client: FakeCosmosClient) -> None:
     first = _new_store(fake_client)
-    first.create_version(_version())
+    draft = _draft()
+
+    assert first.persistence == "Azure Cosmos DB"
+    assert first.save_draft(draft) == draft
 
     second = _new_store(fake_client)
-    assert len(second.list_versions("demo", "agent-cosmos-test")) == 1
-    # Re-listing must not duplicate an already-cached version.
-    assert len(second.list_versions("demo", "agent-cosmos-test")) == 1
-    assert second.get_version("demo", "version-1") is not None
-    assert second.get_version("demo", "missing") is None
+    assert second.get_draft(TENANT, AGENT_ID) == draft
+    assert second.list_drafts(TENANT) == (draft,)
+    assert second.get_draft(OTHER_TENANT, AGENT_ID) is None
+
+
+def test_ownership_role_for_project_scoping_and_dedupe(fake_client: FakeCosmosClient) -> None:
+    first = _new_store(fake_client)
+    grants = (
+        OwnershipGrant(
+            tenant_id=TENANT,
+            logical_agent_id=AGENT_ID,
+            principal_id=USER_ID,
+            role=AgentRole.OWNER,
+            granted_by="admin",
+            project_id="p1",
+        ),
+        OwnershipGrant(
+            tenant_id=TENANT,
+            logical_agent_id=AGENT_ID,
+            principal_id=USER_ID,
+            role=AgentRole.VIEWER,
+            granted_by="admin",
+        ),
+        OwnershipGrant(
+            tenant_id=TENANT,
+            logical_agent_id=AGENT_ID,
+            principal_id="scoped-user",
+            role=AgentRole.CONTRIBUTOR,
+            granted_by="admin",
+            project_id="p1",
+        ),
+    )
+    for grant in grants:
+        first.grant_ownership(grant)
+
+    second = _new_store(fake_client)
+    assert second.role_for(TENANT, AGENT_ID, USER_ID) is AgentRole.OWNER
+    assert second.role_for(TENANT, AGENT_ID, USER_ID, project_id="p1") is AgentRole.OWNER
+    assert second.role_for(TENANT, AGENT_ID, USER_ID, project_id="p2") is AgentRole.VIEWER
+    assert second.role_for(TENANT, AGENT_ID, "scoped-user", project_id="p1") is AgentRole.CONTRIBUTOR
+    assert second.role_for(TENANT, AGENT_ID, "scoped-user", project_id="p2") is None
+    assert len(second.list_ownership(TENANT, AGENT_ID)) == 3
+    assert len(second.list_ownership(TENANT, AGENT_ID)) == 3
+    assert second.role_for(OTHER_TENANT, AGENT_ID, USER_ID) is None
+
+
+def test_allocate_version_is_single_process_atomic_and_persists(fake_client: FakeCosmosClient) -> None:
+    store = _new_store(fake_client)
+
+    def allocate(_index: int) -> AgentVersion:
+        return store.allocate_version(TENANT, AGENT_ID, lambda sequence: _version(sequence=sequence))
+
+    with ThreadPoolExecutor(max_workers=6) as executor:
+        versions = list(executor.map(allocate, range(6)))
+
+    assert sorted(version.sequence for version in versions) == [1, 2, 3, 4, 5, 6]
+
+    reloaded = _new_store(fake_client)
+    assert [version.sequence for version in reloaded.list_versions(TENANT, AGENT_ID)] == [1, 2, 3, 4, 5, 6]
+    assert reloaded.next_sequence(TENANT, AGENT_ID) == 7
+
+
+def test_versions_reload_get_and_list_without_duplicates(fake_client: FakeCosmosClient) -> None:
+    first = _new_store(fake_client)
+    first.create_version(_version(sequence=1, version_id="version-1"))
+    first.create_version(_version(sequence=2, version_id="version-2"))
+
+    second = _new_store(fake_client)
+    assert [version.id for version in second.list_versions(TENANT, AGENT_ID)] == ["version-1", "version-2"]
+    assert len(second.list_versions(TENANT, AGENT_ID)) == 2
 
     third = _new_store(fake_client)
-    assert third.get_version("demo", "version-1") is not None
+    version_queries = fake_client.database.containers["versions"]
+    before = version_queries.query_calls
+    assert third.get_version(TENANT, "version-1") is not None
+    assert version_queries.query_calls == before + 1
+    assert third.get_version(TENANT, "version-1") is not None
+    assert version_queries.query_calls == before + 1
+    assert third.get_version(TENANT, "missing") is None
+    assert third.get_version(OTHER_TENANT, "version-1") is None
 
 
-def test_update_version_status_persists_across_instances(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    first.create_version(_version())
-    first.update_version_status("demo", "version-1", AgentVersionStatus.GATED)
-
-    second = _new_store(fake_client)
-    reloaded = second.get_version("demo", "version-1")
-    assert reloaded is not None
-    assert reloaded.status == AgentVersionStatus.GATED
-
-
-def test_update_version_status_raises_for_missing_version(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    with pytest.raises(AgentStudioStoreError, match="not found"):
-        store.update_version_status("demo", "missing", AgentVersionStatus.GATED)
-
-
-def test_update_version_status_wraps_concurrent_modification(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_version(_version())
-    fake_client.database.containers["versions"].fail_replace_status = 412
-    with pytest.raises(AgentStudioStoreError, match="changed concurrently"):
-        store.update_version_status("demo", "version-1", AgentVersionStatus.GATED)
-
-
-def test_update_version_status_reraises_non_conflict_errors(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_version(_version())
-    fake_client.database.containers["versions"].fail_replace_status = 500
-    with pytest.raises(CosmosHttpResponseError):
-        store.update_version_status("demo", "version-1", AgentVersionStatus.GATED)
-
-
-def test_attach_gate_report_persists_and_raises_for_missing(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_version(_version())
-    updated = store.attach_gate_report("demo", "version-1", "report-1")
-    assert updated.gate_report_id == "report-1"
-    with pytest.raises(AgentStudioStoreError, match="not found"):
-        store.attach_gate_report("demo", "missing", "report-1")
-
-
-def test_attach_gate_report_wraps_concurrent_modification(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_version(_version())
-    fake_client.database.containers["versions"].fail_replace_status = 412
-    with pytest.raises(AgentStudioStoreError, match="changed concurrently"):
-        store.attach_gate_report("demo", "version-1", "report-1")
-
-
-def test_attach_gate_report_reraises_non_conflict_errors(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_version(_version())
-    fake_client.database.containers["versions"].fail_replace_status = 500
-    with pytest.raises(CosmosHttpResponseError):
-        store.attach_gate_report("demo", "version-1", "report-1")
-
-
-def test_lineage_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
+def test_lineage_and_gate_reports_reload_and_cache(fake_client: FakeCosmosClient) -> None:
     first = _new_store(fake_client)
     edge = LineageEdge(
-        tenant_id="demo",
-        child_logical_agent_id="agent-child",
-        child_version_id="v-child",
-        parent_logical_agent_id="agent-parent",
-        parent_version_id="v-parent",
+        tenant_id=TENANT,
+        child_logical_agent_id=AGENT_ID,
+        child_version_id="version-2",
+        parent_logical_agent_id=OTHER_AGENT_ID,
+        parent_version_id="version-1",
     )
-    first.add_lineage_edge(edge)
-
-    second = _new_store(fake_client)
-    assert second.list_lineage("demo", "agent-child") == (edge,)
-    # Re-listing must not duplicate.
-    assert len(second.list_lineage("demo", "agent-child")) == 1
-
-
-def test_gate_report_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
     report = ReleaseGateReport(id="report-1", version_id="version-1", results=())
+
+    first.add_lineage_edge(edge)
     first.save_gate_report(report)
 
     second = _new_store(fake_client)
-    assert second.get_gate_report("report-1") == report
-    assert second.get_gate_report("missing") is None
-    # Second lookup of the same id must hit the local cache, not re-query Cosmos.
-    assert second.get_gate_report("report-1") == report
+    assert second.list_lineage(TENANT, AGENT_ID) == (edge,)
+    assert second.list_lineage(TENANT, AGENT_ID) == (edge,)
+    assert second.list_lineage(OTHER_TENANT, AGENT_ID) == ()
+
+    third = _new_store(fake_client)
+    versions_container = fake_client.database.containers["versions"]
+    before = versions_container.query_calls
+    assert third.get_gate_report("report-1") == report
+    assert versions_container.query_calls == before + 1
+    assert third.get_gate_report("report-1") == report
+    assert versions_container.query_calls == before + 1
+    assert third.get_gate_report("missing") is None
 
 
-def _approval(**overrides: object) -> StudioApprovalRecord:
-    base: dict[str, object] = dict(
-        id="approval-1",
-        version_id="version-1",
-        tenant_id="demo",
-        kind=ApprovalKind.RELEASE_PROMOTION,
-        gated_action="promote_version",
-        destination="prod",
-        requested_by="user-1",
-        evidence_summary="Evidence.",
-        risk="medium",
-        idempotency_key="key-1",
+def test_releases_reload_get_list_latest_and_tenant_isolation(fake_client: FakeCosmosClient) -> None:
+    first = _new_store(fake_client)
+    gated = _release(release_id="release-1")
+    active = _release(
+        release_id="release-2",
+        status=ReleaseStatus.ACTIVE,
+        previous_release_id=gated.id,
     )
-    base.update(overrides)
-    return StudioApprovalRecord(**base)  # type: ignore[arg-type]
-
-
-def test_create_approval_persists_and_is_idempotent(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    created = first.create_approval(_approval())
-    duplicate = first.create_approval(_approval())
-    assert duplicate.id == created.id
-    assert len(first.list_approvals("demo")) == 1
+    other_version = _release(release_id="release-3", version_id="version-2")
+    for release in (gated, active, other_version):
+        first.create_release(release)
 
     second = _new_store(fake_client)
-    assert second.get_approval("demo", "approval-1") is not None
+    assert second.list_releases_for_version(TENANT, "version-1") == (gated, active)
+    assert second.list_releases_for_version(TENANT, "version-1") == (gated, active)
+    assert second.latest_release_for_version(TENANT, "version-1") == active
+    assert second.latest_release_for_version(TENANT, "version-missing") is None
+    assert second.list_releases_for_version(OTHER_TENANT, "version-1") == ()
+
+    third = _new_store(fake_client)
+    versions_container = fake_client.database.containers["versions"]
+    before = versions_container.query_calls
+    assert third.get_release(TENANT, gated.id) == gated
+    assert versions_container.query_calls == before + 1
+    assert third.get_release(TENANT, gated.id) == gated
+    assert versions_container.query_calls == before + 1
+    assert third.get_release(TENANT, "missing") is None
 
 
-def test_save_approval_decision_persists_and_raises_appropriately(fake_client: FakeCosmosClient) -> None:
+def test_get_release_does_not_leak_across_tenants(fake_client: FakeCosmosClient) -> None:
+    store = _new_store(fake_client)
+    release = _release()
+    store.create_release(release)
+
+    reloaded = _new_store(fake_client)
+    assert reloaded.get_release(OTHER_TENANT, release.id) is None
+
+
+def test_approvals_persist_and_decisions_validate_state(fake_client: FakeCosmosClient) -> None:
     first = _new_store(fake_client)
-    first.create_approval(_approval())
-    decided = _approval().model_copy(update={"state": ApprovalState.APPROVED})
-    first.save_approval_decision(decided)
+    pending = _approval()
+    assert first.create_approval(pending) == pending
+    assert first.create_approval(_approval(approval_id="approval-duplicate")) == pending
 
     second = _new_store(fake_client)
-    reloaded = second.get_approval("demo", "approval-1")
-    assert reloaded is not None
-    assert reloaded.state.value == "approved"
+    assert second.get_approval(TENANT, pending.id) == pending
+    assert second.get_approval(OTHER_TENANT, pending.id) is None
+    assert second.list_approvals(TENANT, version_id=pending.version_id) == (pending,)
+    decided = pending.model_copy(update={"state": ApprovalState.APPROVED})
+    assert second.save_approval_decision(decided) == decided
 
+    third = _new_store(fake_client)
+    assert third.get_approval(TENANT, pending.id) == decided
     with pytest.raises(AgentStudioStoreError, match="already been decided"):
-        second.save_approval_decision(decided)
+        third.save_approval_decision(decided)
 
-    fresh_store = _new_store(fake_client)
+    missing = _new_store(fake_client)
     with pytest.raises(AgentStudioStoreError, match="not found"):
-        fresh_store.save_approval_decision(_approval(id="missing-approval"))
+        missing.save_approval_decision(_approval(approval_id="missing-approval"))
 
 
-def test_save_approval_decision_wraps_concurrent_modification(fake_client: FakeCosmosClient) -> None:
+def test_save_approval_decision_wraps_cosmos_conflicts(fake_client: FakeCosmosClient) -> None:
     store = _new_store(fake_client)
     store.create_approval(_approval())
-    fake_client.database.containers["governance"].fail_replace_status = 412
     decided = _approval().model_copy(update={"state": ApprovalState.APPROVED})
+
+    fake_client.database.containers["governance"].fail_replace_status = 412
     with pytest.raises(AgentStudioStoreError, match="decided concurrently"):
         store.save_approval_decision(decided)
 
-
-def test_save_approval_decision_reraises_non_conflict_errors(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_approval(_approval())
     fake_client.database.containers["governance"].fail_replace_status = 500
-    decided = _approval().model_copy(update={"state": ApprovalState.APPROVED})
     with pytest.raises(CosmosHttpResponseError):
         store.save_approval_decision(decided)
 
 
-def _deployment(**overrides: object) -> DeploymentRecord:
-    base: dict[str, object] = dict(
-        id="deployment-1",
-        logical_agent_id="agent-cosmos-test",
-        tenant_id="demo",
-        version_id="version-1",
-        runtime_target=RuntimeTarget.CUSTOM_HOSTED,
-        deployed_by="user-1",
-    )
-    base.update(overrides)
-    return DeploymentRecord(**base)  # type: ignore[arg-type]
-
-
-def test_deployment_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
+def test_deployments_reload_update_and_conflict_handling(fake_client: FakeCosmosClient) -> None:
     first = _new_store(fake_client)
-    first.create_deployment(_deployment())
+    deployment = _deployment()
+    first.create_deployment(deployment)
 
     second = _new_store(fake_client)
-    assert len(second.list_deployments("demo", "agent-cosmos-test")) == 1
-    # Re-listing must not duplicate an already-cached deployment.
-    assert len(second.list_deployments("demo", "agent-cosmos-test")) == 1
-    assert second.get_deployment("demo", "deployment-1") is not None
-    assert second.get_deployment("demo", "missing") is None
+    assert second.list_deployments(TENANT, AGENT_ID) == (deployment,)
+    assert second.list_deployments(TENANT, AGENT_ID) == (deployment,)
 
+    third = _new_store(fake_client)
+    governance = fake_client.database.containers["governance"]
+    before = governance.query_calls
+    assert third.get_deployment(TENANT, deployment.id) == deployment
+    assert governance.query_calls == before + 1
+    assert third.get_deployment(TENANT, deployment.id) == deployment
+    assert governance.query_calls == before + 1
+    assert third.get_deployment(TENANT, "missing") is None
+    assert third.get_deployment(OTHER_TENANT, deployment.id) is None
 
-def test_update_deployment_persists_and_raises_for_missing(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    first.create_deployment(_deployment())
-    updated = first.update_deployment(_deployment().model_copy(update={"trace_ref": "trace-1"}))
-    assert updated.trace_ref == "trace-1"
+    updated = deployment.model_copy(update={"trace_ref": "trace-1"})
+    assert third.update_deployment(updated) == updated
 
-    second = _new_store(fake_client)
-    reloaded = second.get_deployment("demo", "deployment-1")
-    assert reloaded is not None
-
+    fresh = _new_store(fake_client)
+    assert fresh.get_deployment(TENANT, deployment.id) == updated
     with pytest.raises(AgentStudioStoreError, match="not found"):
-        second.update_deployment(_deployment(id="missing-deployment"))
+        fresh.update_deployment(_deployment(deployment_id="missing-deployment"))
 
-
-def test_update_deployment_wraps_concurrent_modification(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_deployment(_deployment())
     fake_client.database.containers["governance"].fail_replace_status = 412
     with pytest.raises(AgentStudioStoreError, match="changed concurrently"):
-        store.update_deployment(_deployment().model_copy(update={"trace_ref": "trace-1"}))
+        fresh.update_deployment(updated)
 
-
-def test_update_deployment_reraises_non_conflict_errors(fake_client: FakeCosmosClient) -> None:
-    store = _new_store(fake_client)
-    store.create_deployment(_deployment())
     fake_client.database.containers["governance"].fail_replace_status = 500
     with pytest.raises(CosmosHttpResponseError):
-        store.update_deployment(_deployment().model_copy(update={"trace_ref": "trace-1"}))
+        fresh.update_deployment(updated)
 
 
-def test_binding_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
+def test_bindings_and_tool_registrations_reload_without_cross_tenant_leakage(
+    fake_client: FakeCosmosClient,
+) -> None:
     first = _new_store(fake_client)
-    binding = LogicalAgentBinding(
-        logical_agent_id="agent-cosmos-test",
-        tenant_id="demo",
-        environment=DeploymentEnvironment.DEVELOPMENT,
-        resolved_version_id="version-1",
-        updated_by="user-1",
-    )
+    binding = _binding()
+    registration = _tool_registration()
+    other_registration = _tool_registration(registration_id="reg-2", logical_agent_id=OTHER_AGENT_ID)
     first.set_binding(binding)
-
-    second = _new_store(fake_client)
-    reloaded = second.get_binding("demo", "agent-cosmos-test", DeploymentEnvironment.DEVELOPMENT)
-    assert reloaded is not None
-    assert reloaded.resolved_version_id == "version-1"
-    assert second.get_binding("demo", "agent-cosmos-test", DeploymentEnvironment.DEVELOPMENT) is not None
-    assert second.get_binding("other-tenant", "agent-cosmos-test", DeploymentEnvironment.DEVELOPMENT) is None
-
-
-def test_tool_registration_persists_and_reloads(fake_client: FakeCosmosClient) -> None:
-    first = _new_store(fake_client)
-    registration = ToolRegistration(
-        id="reg-1",
-        tenant_id="demo",
-        logical_agent_id="agent-cosmos-test",
-        descriptor_id="foundry.web_search",
-        operation="search",
-        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
-        handler_ref="builtin://web_search",
-        registered_by="user-1",
-    )
-    other_registration = ToolRegistration(
-        id="reg-2",
-        tenant_id="demo",
-        logical_agent_id="agent-cosmos-other",
-        descriptor_id="foundry.web_search",
-        operation="search",
-        kind=ToolRegistrationKind.MANAGED_FOUNDRY_NATIVE,
-        handler_ref="builtin://web_search",
-        registered_by="user-1",
-    )
     first.create_tool_registration(registration)
     first.create_tool_registration(other_registration)
 
     second = _new_store(fake_client)
-    reloaded = second.list_tool_registrations("demo", "agent-cosmos-test")
-    assert len(reloaded) == 1
-    assert reloaded[0].id == "reg-1"
-    assert second.list_tool_registrations("other-tenant", "agent-cosmos-test") == ()
+    governance = fake_client.database.containers["governance"]
+    before = governance.query_calls
+    assert second.get_binding(TENANT, AGENT_ID, DeploymentEnvironment.DEVELOPMENT) == binding
+    assert governance.query_calls == before + 1
+    assert second.get_binding(TENANT, AGENT_ID, DeploymentEnvironment.DEVELOPMENT) == binding
+    assert governance.query_calls == before + 1
+    assert second.get_binding(OTHER_TENANT, AGENT_ID, DeploymentEnvironment.DEVELOPMENT) is None
 
-    # Re-querying the same tenant hits documents already hydrated into the
-    # in-memory cache above, exercising the "already cached" loop branch.
-    reloaded_other = second.list_tool_registrations("demo", "agent-cosmos-other")
-    assert len(reloaded_other) == 1
-    assert reloaded_other[0].id == "reg-2"
+    assert second.list_tool_registrations(TENANT, AGENT_ID) == (registration,)
+    assert second.list_tool_registrations(TENANT, OTHER_AGENT_ID) == (other_registration,)
+    assert second.list_tool_registrations(TENANT, AGENT_ID) == (registration,)
+    assert second.list_tool_registrations(OTHER_TENANT, AGENT_ID) == ()
 
 
-def test_build_agent_studio_store_raises_when_cosmos_not_configured() -> None:
-    settings = Settings(cosmos_endpoint=None)
+def test_build_agent_studio_store_factory_and_credentials(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     with pytest.raises(AgentStudioStoreError, match="unavailable"):
-        cosmos_store.build_agent_studio_store(settings)
+        cosmos_store.build_agent_studio_store(Settings(cosmos_endpoint=None))
 
+    managed: dict[str, Any] = {}
 
-def test_build_agent_studio_store_uses_managed_identity_client_id_when_configured(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    class _FakeCosmosClient:
+    class ManagedClient:
         def __init__(self, endpoint: str, credential: Any) -> None:
-            captured["endpoint"] = endpoint
-            captured["credential"] = credential
+            managed["endpoint"] = endpoint
+            managed["credential"] = credential
 
         def get_database_client(self, _name: str) -> FakeDatabase:
             return FakeDatabase()
 
-    monkeypatch.setattr(cosmos_store, "CosmosClient", _FakeCosmosClient)
+    monkeypatch.setattr(cosmos_store, "CosmosClient", ManagedClient)
     monkeypatch.setattr(
-        cosmos_store, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}"
+        cosmos_store,
+        "ManagedIdentityCredential",
+        lambda *, client_id: f"managed:{client_id}",
     )
-    settings = Settings(
-        cosmos_endpoint="https://cosmos.example.test",
-        managed_identity_client_id="client-123",
+    managed_store = cosmos_store.build_agent_studio_store(
+        Settings(
+            cosmos_endpoint="https://cosmos.example.test",
+            managed_identity_client_id="client-123",
+        )
     )
-    store = cosmos_store.build_agent_studio_store(settings)
-    assert isinstance(store, cosmos_store.CosmosAgentStudioStore)
-    assert captured["credential"] == "managed:client-123"
+    assert isinstance(managed_store, cosmos_store.CosmosAgentStudioStore)
+    assert managed == {
+        "endpoint": "https://cosmos.example.test",
+        "credential": "managed:client-123",
+    }
 
+    default: dict[str, Any] = {}
 
-def test_build_agent_studio_store_uses_default_credential_when_no_client_id(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    captured: dict[str, Any] = {}
-
-    class _FakeCosmosClient:
+    class DefaultClient:
         def __init__(self, endpoint: str, credential: Any) -> None:
-            captured["credential"] = credential
+            default["endpoint"] = endpoint
+            default["credential"] = credential
 
         def get_database_client(self, _name: str) -> FakeDatabase:
             return FakeDatabase()
 
-    monkeypatch.setattr(cosmos_store, "CosmosClient", _FakeCosmosClient)
+    monkeypatch.setattr(cosmos_store, "CosmosClient", DefaultClient)
     monkeypatch.setattr(cosmos_store, "DefaultAzureCredential", lambda: "default-credential")
-    settings = Settings(cosmos_endpoint="https://cosmos.example.test")
-    cosmos_store.build_agent_studio_store(settings)
-    assert captured["credential"] == "default-credential"
+    default_store = cosmos_store.build_agent_studio_store(Settings(cosmos_endpoint="https://cosmos.example.test"))
+    assert isinstance(default_store, cosmos_store.CosmosAgentStudioStore)
+    assert default == {
+        "endpoint": "https://cosmos.example.test",
+        "credential": "default-credential",
+    }

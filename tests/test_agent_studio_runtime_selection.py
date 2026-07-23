@@ -1,3 +1,4 @@
+# mypy: disable-error-code=import-untyped
 from __future__ import annotations
 
 from research_assistant_api.agent_studio.capability_registry import default_registry
@@ -20,7 +21,7 @@ def _manifest(**overrides: object) -> AgentManifest:
         "owner_id": "user-1",
     }
     base.update(overrides)
-    return AgentManifest(**base)  # type: ignore[arg-type]
+    return AgentManifest(**base)
 
 
 def test_select_runtime_managed_foundry_when_no_disqualifiers() -> None:

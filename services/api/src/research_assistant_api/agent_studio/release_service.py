@@ -25,15 +25,17 @@ from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
     AgentOwnerKind,
+    AgentRelease,
     AgentRole,
     AgentVersion,
-    AgentVersionStatus,
     AgentVisibility,
     ApprovalKind,
     ApprovalState,
+    DeploymentEnvironment,
     LineageEdge,
     OwnershipGrant,
     ReleaseGateReport,
+    ReleaseStatus,
     StudioApprovalRecord,
     ToolRegistration,
     ToolRegistrationKind,
@@ -197,36 +199,42 @@ class ReleaseService:
         draft = self._store.get_draft(tenant_id, logical_agent_id)
         if draft is None:
             raise ReleaseServiceError(f"Agent '{logical_agent_id}' has no draft to cut.")
-        sequence = self._store.next_sequence(tenant_id, logical_agent_id)
         previous_versions = self._store.list_versions(tenant_id, logical_agent_id)
         parent_version_id = previous_versions[-1].id if previous_versions else None
-        fork_of_version_id = draft.based_on_version_id if sequence == 1 else None
 
         selection = select_runtime(draft.manifest, self._registry.as_mapping())
         capability_versions = {
             binding.descriptor_id: binding.descriptor_version for binding in draft.manifest.capabilities
         }
-        version = AgentVersion(
-            id=str(uuid4()),
-            logical_agent_id=logical_agent_id,
-            tenant_id=tenant_id,
-            sequence=sequence,
-            manifest=draft.manifest,
-            manifest_hash=manifest_hash(draft.manifest),
-            created_by=actor_id,
-            parent_version_id=parent_version_id,
-            fork_of_version_id=fork_of_version_id,
-            runtime_target=selection.target,
-            runtime_selection_reasons=selection.reasons,
-            model_deployment=draft.manifest.model_deployment,
-            capability_versions=capability_versions,
-            package_version=f"{sequence}.0.0",
-            protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
-        )
-        self._store.create_version(version)
 
-        if fork_of_version_id is not None:
-            parent = self._store.get_version(tenant_id, fork_of_version_id)
+        def _build(sequence: int) -> AgentVersion:
+            # Cutting a version freezes the canonical manifest/hash/bundle
+            # content forever; only the pre-reserved ``sequence`` (supplied
+            # atomically by the store) and lineage/fork ids derived from it
+            # vary between the two constructions.
+            fork_of_version_id = draft.based_on_version_id if sequence == 1 else None
+            return AgentVersion(
+                id=str(uuid4()),
+                logical_agent_id=logical_agent_id,
+                tenant_id=tenant_id,
+                sequence=sequence,
+                manifest=draft.manifest,
+                manifest_hash=manifest_hash(draft.manifest),
+                created_by=actor_id,
+                parent_version_id=parent_version_id,
+                fork_of_version_id=fork_of_version_id,
+                runtime_target=selection.target,
+                runtime_selection_reasons=selection.reasons,
+                model_deployment=draft.manifest.model_deployment,
+                capability_versions=capability_versions,
+                package_version=f"{sequence}.0.0",
+                protocol_version=AGENT_STUDIO_PROTOCOL_VERSION,
+            )
+
+        version = self._store.allocate_version(tenant_id, logical_agent_id, _build)
+
+        if version.fork_of_version_id is not None:
+            parent = self._store.get_version(tenant_id, version.fork_of_version_id)
             if parent is not None:
                 self._store.add_lineage_edge(
                     LineageEdge(
@@ -257,11 +265,26 @@ class ReleaseService:
             manifest=version.manifest,
             capability_catalog=self._registry.as_mapping(),
             evidence=evidence,
+            runtime_target=version.runtime_target,
         )
         self._store.save_gate_report(report)
-        self._store.attach_gate_report(tenant_id, version_id, report.id)
-        new_status = AgentVersionStatus.GATED if report.passed else AgentVersionStatus.DRAFT
-        self._store.update_version_status(tenant_id, version_id, new_status)
+        if report.passed:
+            # Only a passing gate run produces a durable ``AgentRelease``
+            # row; a failed attempt leaves the immutable ``ReleaseGateReport``
+            # as the sole audit record and the version stays un-released.
+            previous = self._store.latest_release_for_version(tenant_id, version_id)
+            release = AgentRelease(
+                id=str(uuid4()),
+                version_id=version_id,
+                logical_agent_id=version.logical_agent_id,
+                tenant_id=tenant_id,
+                status=ReleaseStatus.GATED,
+                gate_report_id=report.id,
+                previous_release_id=previous.id if previous is not None else None,
+                created_by=version.created_by,
+                detail="Passed all applicable hard gates.",
+            )
+            self._store.create_release(release)
         return report
 
     # -- Promotion / approvals --------------------------------------------
@@ -276,13 +299,18 @@ class ReleaseService:
         destination: str,
         evidence_summary: str,
         risk: str = "medium",
+        environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+        permissions_policy_ref: str | None = None,
+        destination_policy_ref: str | None = None,
     ) -> StudioApprovalRecord | AgentVersion:
         version = self._store.get_version(tenant_id, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
-        if version.status != AgentVersionStatus.GATED:
+        latest_release = self._store.latest_release_for_version(tenant_id, version_id)
+        if latest_release is None or latest_release.status != ReleaseStatus.GATED:
+            current_status = latest_release.status.value if latest_release is not None else "none"
             raise ReleaseServiceError(
-                f"Version '{version_id}' has status '{version.status.value}'; it must pass all hard gates "
+                f"Version '{version_id}' has release status '{current_status}'; it must pass all hard gates "
                 "(status GATED) before promotion can be requested."
             )
         kind = ApprovalKind.FORK_PROMOTION if version.fork_of_version_id else ApprovalKind.RELEASE_PROMOTION
@@ -297,6 +325,10 @@ class ReleaseService:
                 requested_by=actor_id,
                 evidence_summary=evidence_summary,
                 risk=risk,
+                content_hash=version.manifest_hash,
+                environment=environment,
+                permissions_policy_ref=permissions_policy_ref,
+                destination_policy_ref=destination_policy_ref,
             )
             return self._store.create_approval(record)
         return self._promote(tenant_id, version_id)
@@ -327,8 +359,42 @@ class ReleaseService:
         return decided
 
     def _promote(self, tenant_id: str, version_id: str) -> AgentVersion:
-        self._store.update_version_status(tenant_id, version_id, AgentVersionStatus.APPROVED)
-        return self._store.update_version_status(tenant_id, version_id, AgentVersionStatus.RELEASED)
+        version = self._store.get_version(tenant_id, version_id)
+        if version is None:
+            raise ReleaseServiceError(f"Version '{version_id}' not found.")
+        gated = self._store.latest_release_for_version(tenant_id, version_id)
+        if gated is None:
+            raise ReleaseServiceError(f"Version '{version_id}' has no gated release to promote.")
+        # Each transition is its own append-only record, chained via
+        # ``previous_release_id`` — never an in-place mutation of ``gated``.
+        approved = self._store.create_release(
+            AgentRelease(
+                id=str(uuid4()),
+                version_id=version_id,
+                logical_agent_id=version.logical_agent_id,
+                tenant_id=tenant_id,
+                status=ReleaseStatus.APPROVED,
+                gate_report_id=gated.gate_report_id,
+                previous_release_id=gated.id,
+                created_by=version.created_by,
+                detail="Promotion approved.",
+            )
+        )
+        active = self._store.create_release(
+            AgentRelease(
+                id=str(uuid4()),
+                version_id=version_id,
+                logical_agent_id=version.logical_agent_id,
+                tenant_id=tenant_id,
+                status=ReleaseStatus.ACTIVE,
+                gate_report_id=gated.gate_report_id,
+                previous_release_id=approved.id,
+                created_by=version.created_by,
+                detail="Version activated.",
+            )
+        )
+        _ = active
+        return version
 
     # -- Admin escalation --------------------------------------------------
 

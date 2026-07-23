@@ -9,18 +9,19 @@ from uuid import uuid4
 from research_assistant_api.agent_studio.models import (
     AgentRole,
     AgentVersion,
-    AgentVersionStatus,
     DeploymentEnvironment,
     DeploymentHealth,
     DeploymentRecord,
     HealthStatus,
     LogicalAgentBinding,
+    ReleaseStatus,
+    ResolvedAgentContract,
     role_at_least,
 )
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
-_DEPLOYABLE_STATUSES = frozenset(
-    {AgentVersionStatus.GATED, AgentVersionStatus.APPROVED, AgentVersionStatus.RELEASED}
+_DEPLOYABLE_RELEASE_STATUSES = frozenset(
+    {ReleaseStatus.GATED, ReleaseStatus.APPROVED, ReleaseStatus.ACTIVE}
 )
 
 
@@ -44,17 +45,21 @@ class DeploymentService:
     ) -> DeploymentRecord:
         """Create a development deployment for a version that has passed all hard gates.
 
-        Versions still in ``DRAFT`` (never gated, or gates failed) cannot be
-        deployed even to the development environment.
+        A version with no ``AgentRelease`` record at all (never gated, or
+        gates failed) cannot be deployed even to the development
+        environment; smoke-test failure at deployment time still blocks
+        activation independently (see ``record_health``/router smoke gate).
         """
         if not role_at_least(actor_role, AgentRole.CONTRIBUTOR):
             raise DeploymentServiceError(f"Role '{actor_role.value}' cannot create deployments.")
         version = self._store.get_version(tenant_id, version_id)
         if version is None or version.logical_agent_id != logical_agent_id:
             raise DeploymentServiceError(f"Version '{version_id}' not found for agent '{logical_agent_id}'.")
-        if version.status not in _DEPLOYABLE_STATUSES:
+        latest_release = self._store.latest_release_for_version(tenant_id, version_id)
+        if latest_release is None or latest_release.status not in _DEPLOYABLE_RELEASE_STATUSES:
+            current_status = latest_release.status.value if latest_release is not None else "none"
             raise DeploymentServiceError(
-                f"Version '{version_id}' has status '{version.status.value}'; it must pass all hard gates "
+                f"Version '{version_id}' has release status '{current_status}'; it must pass all hard gates "
                 "before it can be deployed."
             )
         runtime_target = version.runtime_target
@@ -154,9 +159,90 @@ class DeploymentService:
         tenant_id: str,
         logical_agent_id: str,
         environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
-    ) -> AgentVersion | None:
-        """Resolve a stable logical agent ID to the exact release it is bound to."""
+    ) -> ResolvedAgentContract | None:
+        """Resolve a stable logical agent ID to the exact, pinned release contract.
+
+        This is the composition/resolution contract consumed by the future
+        typed workflow compiler/node palette: a published workflow pins the
+        returned ``version_id``/``release_id``/``manifest_hash`` at compose
+        time and execution must read them back verbatim, never silently
+        re-resolving to "whatever is latest now".
+        """
         binding = self._store.get_binding(tenant_id, logical_agent_id, environment)
         if binding is None:
             return None
-        return self._store.get_version(tenant_id, binding.resolved_version_id)
+        version = self._store.get_version(tenant_id, binding.resolved_version_id)
+        if version is None:
+            return None
+        return self._build_contract(tenant_id, version, environment)
+
+    def contract_for_version(
+        self,
+        *,
+        tenant_id: str,
+        version_id: str,
+        environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+    ) -> ResolvedAgentContract | None:
+        """Exact-version contract lookup, independent of any environment binding.
+
+        For the future node palette/compiler to pin a specific, already-known
+        version/release (e.g. re-validating a previously composed workflow
+        node) without depending on "whatever is currently bound" for an
+        environment.
+        """
+        version = self._store.get_version(tenant_id, version_id)
+        if version is None:
+            return None
+        return self._build_contract(tenant_id, version, environment)
+
+    def catalog(
+        self,
+        *,
+        tenant_id: str,
+        environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+    ) -> tuple[ResolvedAgentContract, ...]:
+        """Released-agent catalog for the future node palette/compiler.
+
+        Lists the exact, pinned contract currently bound to ``environment``
+        for every logical agent this tenant has a draft/manifest for.
+        Agents with no environment binding yet are omitted (nothing to pin).
+        """
+        contracts: list[ResolvedAgentContract] = []
+        for draft in self._store.list_drafts(tenant_id):
+            contract = self.resolve(
+                tenant_id=tenant_id,
+                logical_agent_id=draft.logical_agent_id,
+                environment=environment,
+            )
+            if contract is not None:
+                contracts.append(contract)
+        return tuple(contracts)
+
+    def _build_contract(
+        self,
+        tenant_id: str,
+        version: AgentVersion,
+        environment: DeploymentEnvironment,
+    ) -> ResolvedAgentContract | None:
+        if version.runtime_target is None:
+            return None
+        release = self._store.latest_release_for_version(tenant_id, version.id)
+        if release is None:
+            return None
+        return ResolvedAgentContract(
+            logical_agent_id=version.logical_agent_id,
+            tenant_id=tenant_id,
+            environment=environment,
+            version_id=version.id,
+            release_id=release.id,
+            release_status=release.status,
+            manifest_hash=version.manifest_hash,
+            runtime_target=version.runtime_target,
+            capability_versions=dict(version.capability_versions),
+            input_schema_ref=version.manifest.input_schema_ref,
+            output_schema_ref=version.manifest.output_schema_ref,
+            package_version=version.package_version,
+            protocol_version=version.protocol_version,
+        )
+
+

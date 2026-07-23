@@ -25,7 +25,11 @@ from research_assistant_api.agent_studio.deployment_service import (
     DeploymentService,
     DeploymentServiceError,
 )
-from research_assistant_api.agent_studio.memory_service import MemoryPolicyError, MemoryService
+from research_assistant_api.agent_studio.memory_service import (
+    MemoryAccessError,
+    MemoryPolicyError,
+    MemoryService,
+)
 from research_assistant_api.agent_studio.model_discovery import ModelDiscovery, ModelDiscoveryError
 from research_assistant_api.agent_studio.models import (
     AGENT_MANIFEST_SCHEMA_VERSION,
@@ -36,11 +40,14 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     CapabilityBinding,
     CapabilityDescriptor,
+    DeploymentEnvironment,
     DeploymentRecord,
+    MemoryAuditRecord,
     MemoryEntry,
     MemoryScopeKind,
     ModelDeploymentRef,
     ReleaseGateReport,
+    ResolvedAgentContract,
     StudioApprovalRecord,
     ToolRegistration,
 )
@@ -53,9 +60,11 @@ from research_assistant_api.agent_studio.release_service import (
 from research_assistant_api.agent_studio.schemas import (
     ApprovalDecisionRequest,
     AttachCapabilityRequest,
+    CorrectMemoryRequest,
     CreateAgentRequest,
     DeployRequest,
     EscalationRequest,
+    ForgetMemoryRequest,
     ForkRequest,
     HealthUpdateRequest,
     PromotionRequest,
@@ -160,7 +169,9 @@ def attach_capability(request: Request, payload: AttachCapabilityRequest) -> Cap
 
     Rejects preview/unavailable operations with an honest reason rather than
     silently succeeding; the resulting ``CapabilityBinding`` is returned for
-    the caller to merge into a draft manifest via ``PUT .../draft``.
+    the caller to merge into a draft manifest via ``PUT .../draft``. When
+    ``instance_id`` is supplied it must reference a registered, non-unavailable
+    ``CapabilityInstance`` for this descriptor.
     """
     identity = _identity(request)
     try:
@@ -168,7 +179,9 @@ def attach_capability(request: Request, payload: AttachCapabilityRequest) -> Cap
             descriptor_id=payload.descriptor_id,
             operation=payload.operation,
             attached_by=identity.user_id,
-            workspace_connection_id=payload.workspace_connection_id,
+            instance_id=payload.instance_id,
+            connection_ref=payload.connection_ref,
+            policy_ref=payload.policy_ref,
             config=payload.config,
         )
     except CapabilityAttachmentError as exc:
@@ -503,16 +516,74 @@ def rollback(request: Request, logical_agent_id: str, payload: RollbackRequest) 
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/agents/{logical_agent_id}/resolve", response_model=AgentVersion)
-def resolve_logical_agent(request: Request, logical_agent_id: str) -> AgentVersion:
+@router.get("/agents/{logical_agent_id}/resolve", response_model=ResolvedAgentContract)
+def resolve_logical_agent(
+    request: Request,
+    logical_agent_id: str,
+    environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+) -> ResolvedAgentContract:
+    """Composition/resolution contract for the future typed workflow compiler.
+
+    Resolves a stable logical agent ID (within this tenant/workspace and the
+    requested ``environment``) to the exact pinned version/release, its
+    manifest hash, runtime endpoint, typed I/O schema refs, and capability
+    versions. A published workflow must pin this response's ``version_id``/
+    ``release_id``/``manifest_hash`` at compose time; execution must never
+    silently re-resolve to "whatever is latest" later.
+    """
     identity = _identity(request)
-    version = _deployment_service(request).resolve(
+    contract = _deployment_service(request).resolve(
         tenant_id=identity.tenant_id,
         logical_agent_id=logical_agent_id,
+        environment=environment,
     )
-    if version is None:
-        raise _not_found(f"Agent '{logical_agent_id}' has no resolved development deployment.")
-    return version
+    if contract is None:
+        raise _not_found(
+            f"Agent '{logical_agent_id}' has no resolved, released contract for environment "
+            f"'{environment.value}'."
+        )
+    return contract
+
+
+@router.get("/versions/{version_id}/contract", response_model=ResolvedAgentContract)
+def get_exact_version_contract(
+    request: Request,
+    version_id: str,
+    environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+) -> ResolvedAgentContract:
+    """Exact-version contract lookup for the future node palette/compiler.
+
+    Unlike ``/resolve`` (which follows the *current* environment binding for
+    a logical agent), this looks up one already-known ``version_id``
+    directly - for re-validating a previously composed/pinned workflow node
+    without depending on whatever is currently bound to an environment.
+    """
+    identity = _identity(request)
+    contract = _deployment_service(request).contract_for_version(
+        tenant_id=identity.tenant_id,
+        version_id=version_id,
+        environment=environment,
+    )
+    if contract is None:
+        raise _not_found(f"Version '{version_id}' has no released contract.")
+    return contract
+
+
+@router.get("/catalog", response_model=list[ResolvedAgentContract])
+def get_released_agent_catalog(
+    request: Request,
+    environment: DeploymentEnvironment = DeploymentEnvironment.DEVELOPMENT,
+) -> list[ResolvedAgentContract]:
+    """Released-agent catalog for the future node palette/compiler.
+
+    Lists the exact, pinned contract currently bound to ``environment`` for
+    every logical agent this tenant owns a draft for. Agents with no
+    environment binding yet are omitted (there is nothing to pin).
+    """
+    identity = _identity(request)
+    return list(
+        _deployment_service(request).catalog(tenant_id=identity.tenant_id, environment=environment)
+    )
 
 
 @router.post(
@@ -524,7 +595,10 @@ def remember(request: Request, logical_agent_id: str, payload: RememberRequest) 
     """Append a GA-mechanism memory entry (conversation/user/project/private-agent scope).
 
     Rejects non-GA memory mechanisms (e.g. the Foundry native "Memory"
-    preview feature) rather than silently accepting them.
+    preview feature) rather than silently accepting them. Memory is opt-in
+    per the agent's ``MemoryPolicy`` and persistent storage defaults off;
+    entries are governed by TTL, an explicit read/write ACL, and a
+    ``REMEMBER`` provenance audit record.
     """
     identity = _identity(request)
     draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
@@ -538,6 +612,10 @@ def remember(request: Request, logical_agent_id: str, payload: RememberRequest) 
         logical_agent_id=logical_agent_id,
         role=payload.role,
         content=payload.content,
+        created_by=identity.user_id,
+        ttl_days=payload.ttl_days,
+        read_acl=payload.read_acl,
+        write_acl=payload.write_acl,
     )
     try:
         return _memory_service(request).remember(draft.manifest, entry)
@@ -564,8 +642,117 @@ def recall(
                 tenant_id=identity.tenant_id,
                 scope_kind=scope_kind,
                 scope_id=scope_id,
+                actor_id=identity.user_id,
                 limit=limit,
             )
         )
     except MemoryPolicyError as exc:
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/agents/{logical_agent_id}/memory/{entry_id}", response_model=MemoryEntry)
+def inspect_memory_entry(request: Request, logical_agent_id: str, entry_id: str) -> MemoryEntry:
+    """Inspect a single memory entry (GA-mechanism memory governance: inspect)."""
+    identity = _identity(request)
+    draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    try:
+        return _memory_service(request).inspect(
+            draft.manifest,
+            tenant_id=identity.tenant_id,
+            entry_id=entry_id,
+            actor_id=identity.user_id,
+        )
+    except MemoryAccessError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except MemoryPolicyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@router.put("/agents/{logical_agent_id}/memory/{entry_id}", response_model=MemoryEntry)
+def correct_memory_entry(
+    request: Request,
+    logical_agent_id: str,
+    entry_id: str,
+    payload: CorrectMemoryRequest,
+) -> MemoryEntry:
+    """Correct a memory entry's content (GA-mechanism memory governance: correct)."""
+    identity = _identity(request)
+    draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    try:
+        return _memory_service(request).correct(
+            draft.manifest,
+            tenant_id=identity.tenant_id,
+            entry_id=entry_id,
+            actor_id=identity.user_id,
+            content=payload.content,
+        )
+    except MemoryAccessError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except MemoryPolicyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@router.delete("/agents/{logical_agent_id}/memory/{entry_id}", response_model=MemoryEntry)
+def forget_memory_entry(
+    request: Request,
+    logical_agent_id: str,
+    entry_id: str,
+    payload: ForgetMemoryRequest,
+) -> MemoryEntry:
+    """Forget (deletion-audited soft removal of) a memory entry: GA-mechanism memory governance."""
+    identity = _identity(request)
+    draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    try:
+        return _memory_service(request).forget(
+            draft.manifest,
+            tenant_id=identity.tenant_id,
+            entry_id=entry_id,
+            actor_id=identity.user_id,
+            reason=payload.reason,
+        )
+    except MemoryAccessError as exc:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except MemoryPolicyError as exc:
+        raise _not_found(str(exc)) from exc
+
+
+@router.get("/agents/{logical_agent_id}/memory-export", response_model=list[MemoryEntry])
+def export_memory(
+    request: Request,
+    logical_agent_id: str,
+    scope_kind: MemoryScopeKind,
+    scope_id: str,
+) -> list[MemoryEntry]:
+    """Export all readable memory entries for a scope (GA-mechanism memory governance: export)."""
+    identity = _identity(request)
+    draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    try:
+        return list(
+            _memory_service(request).export(
+                draft.manifest,
+                tenant_id=identity.tenant_id,
+                scope_kind=scope_kind,
+                scope_id=scope_id,
+                actor_id=identity.user_id,
+            )
+        )
+    except MemoryPolicyError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
+
+
+@router.get("/agents/{logical_agent_id}/memory/{entry_id}/audit", response_model=list[MemoryAuditRecord])
+def memory_audit_trail(request: Request, logical_agent_id: str, entry_id: str) -> list[MemoryAuditRecord]:
+    """Deletion/provenance audit trail for a single memory entry."""
+    identity = _identity(request)
+    draft = _store(request).get_draft(identity.tenant_id, logical_agent_id)
+    if draft is None:
+        raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+    return list(_memory_service(request).audit_trail(tenant_id=identity.tenant_id, entry_id=entry_id))

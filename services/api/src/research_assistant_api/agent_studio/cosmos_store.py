@@ -10,6 +10,7 @@ deployment health/rollback).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any
 
 from azure.core import MatchConditions
@@ -21,8 +22,9 @@ from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
+    AgentRelease,
+    AgentRole,
     AgentVersion,
-    AgentVersionStatus,
     DeploymentEnvironment,
     DeploymentRecord,
     LineageEdge,
@@ -112,14 +114,47 @@ class CosmosAgentStudioStore(AgentStudioStore):
                 AgentStudioStore.grant_ownership(self, grant)
         return super().list_ownership(tenant_id, logical_agent_id)
 
-    def role_for(self, tenant_id: str, logical_agent_id: str, principal_id: str) -> Any:
+    def role_for(
+        self,
+        tenant_id: str,
+        logical_agent_id: str,
+        principal_id: str,
+        *,
+        project_id: str | None = None,
+    ) -> AgentRole | None:
         self.list_ownership(tenant_id, logical_agent_id)
-        return super().role_for(tenant_id, logical_agent_id, principal_id)
+        return super().role_for(tenant_id, logical_agent_id, principal_id, project_id=project_id)
 
     # -- Versions -------------------------------------------------------
 
     def create_version(self, version: AgentVersion) -> AgentVersion:
         super().create_version(version)
+        self._versions_container.upsert_item(
+            {
+                "id": version.id,
+                "documentType": "version",
+                "tenantId": version.tenant_id,
+                "logicalAgentId": version.logical_agent_id,
+                "payload": version.model_dump(mode="json"),
+            }
+        )
+        return version
+
+    def allocate_version(
+        self,
+        tenant_id: str,
+        logical_agent_id: str,
+        builder: Callable[[int], AgentVersion],
+    ) -> AgentVersion:
+        """Atomic sequence allocation, then write-through to Cosmos.
+
+        Reuses the in-memory lock-guarded allocation for the actual sequence
+        reservation (single-process atomicity), then persists the resulting
+        version the same way ``create_version`` does. Multi-process
+        allocation races are out of scope for this pass — see the Phase 1
+        coordination note on atomic sequence allocation.
+        """
+        version = super().allocate_version(tenant_id, logical_agent_id, builder)
         self._versions_container.upsert_item(
             {
                 "id": version.id,
@@ -150,55 +185,6 @@ class CosmosAgentStudioStore(AgentStudioStore):
         version = AgentVersion.model_validate(document["payload"])
         AgentStudioStore.create_version(self, version)
         return version
-
-    def update_version_status(
-        self,
-        tenant_id: str,
-        version_id: str,
-        status: AgentVersionStatus,
-    ) -> AgentVersion:
-        documents = self._query(self._versions_container, "version", tenant_id)
-        document = next((item for item in documents if item["id"] == version_id), None)
-        if document is None:
-            raise AgentStudioStoreError(f"Version '{version_id}' not found for tenant '{tenant_id}'.")
-        current = AgentVersion.model_validate(document["payload"])
-        updated = current.model_copy(update={"status": status})
-        document["payload"] = updated.model_dump(mode="json")
-        try:
-            self._versions_container.replace_item(
-                item=document["id"],
-                body=document,
-                etag=document.get("_etag"),
-                match_condition=MatchConditions.IfNotModified,
-            )
-        except CosmosHttpResponseError as exc:
-            if exc.status_code != 412:
-                raise
-            raise AgentStudioStoreError(f"Version '{version_id}' status changed concurrently.") from exc
-        self._versions[version_id] = updated
-        return updated
-
-    def attach_gate_report(self, tenant_id: str, version_id: str, gate_report_id: str) -> AgentVersion:
-        documents = self._query(self._versions_container, "version", tenant_id)
-        document = next((item for item in documents if item["id"] == version_id), None)
-        if document is None:
-            raise AgentStudioStoreError(f"Version '{version_id}' not found for tenant '{tenant_id}'.")
-        current = AgentVersion.model_validate(document["payload"])
-        updated = current.model_copy(update={"gate_report_id": gate_report_id})
-        document["payload"] = updated.model_dump(mode="json")
-        try:
-            self._versions_container.replace_item(
-                item=document["id"],
-                body=document,
-                etag=document.get("_etag"),
-                match_condition=MatchConditions.IfNotModified,
-            )
-        except CosmosHttpResponseError as exc:
-            if exc.status_code != 412:
-                raise
-            raise AgentStudioStoreError(f"Version '{version_id}' gate report changed concurrently.") from exc
-        self._versions[version_id] = updated
-        return updated
 
     # -- Lineage --------------------------------------------------------
 
@@ -255,6 +241,62 @@ class CosmosAgentStudioStore(AgentStudioStore):
         report = ReleaseGateReport.model_validate(documents[0]["payload"])
         AgentStudioStore.save_gate_report(self, report)
         return report
+
+    # -- Releases (append-only lifecycle for an immutable version) ---------
+
+    def create_release(self, release: AgentRelease) -> AgentRelease:
+        super().create_release(release)
+        self._versions_container.upsert_item(
+            {
+                "id": f"release::{release.id}",
+                "documentType": "release",
+                "tenantId": release.tenant_id,
+                "versionId": release.version_id,
+                "payload": release.model_dump(mode="json"),
+            }
+        )
+        return release
+
+    def _sync_releases(self, tenant_id: str, version_id: str) -> None:
+        documents = self._query(self._versions_container, "release", tenant_id)
+        for document in documents:
+            release = AgentRelease.model_validate(document["payload"])
+            if release.version_id != version_id:
+                continue
+            if release.id not in self._releases:
+                AgentStudioStore.create_release(self, release)
+
+    def get_release(self, tenant_id: str, release_id: str) -> AgentRelease | None:
+        cached = super().get_release(tenant_id, release_id)
+        if cached is not None:
+            return cached
+        documents = list(
+            self._versions_container.query_items(
+                query=(
+                    "SELECT * FROM c WHERE c.documentType = @documentType "
+                    "AND c.id = @id AND c.tenantId = @tenantId"
+                ),
+                parameters=[
+                    {"name": "@documentType", "value": "release"},
+                    {"name": "@id", "value": f"release::{release_id}"},
+                    {"name": "@tenantId", "value": tenant_id},
+                ],
+                enable_cross_partition_query=True,
+            )
+        )
+        if not documents:
+            return None
+        release = AgentRelease.model_validate(documents[0]["payload"])
+        AgentStudioStore.create_release(self, release)
+        return release
+
+    def list_releases_for_version(self, tenant_id: str, version_id: str) -> tuple[AgentRelease, ...]:
+        self._sync_releases(tenant_id, version_id)
+        return super().list_releases_for_version(tenant_id, version_id)
+
+    def latest_release_for_version(self, tenant_id: str, version_id: str) -> AgentRelease | None:
+        self._sync_releases(tenant_id, version_id)
+        return super().latest_release_for_version(tenant_id, version_id)
 
     # -- Approvals ------------------------------------------------------
 

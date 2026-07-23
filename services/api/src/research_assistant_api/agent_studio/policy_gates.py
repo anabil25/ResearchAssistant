@@ -25,6 +25,7 @@ from research_assistant_api.agent_studio.models import (
     GateStatus,
     OperationMaturity,
     ReleaseGateReport,
+    RuntimeTarget,
 )
 
 _SECRET_PATTERNS: tuple[re.Pattern[str], ...] = (
@@ -63,7 +64,13 @@ def _schema_gate(manifest: AgentManifest) -> GateResult:
     return GateResult(name=GateName.SCHEMA, status=GateStatus.PASSED, detail="Manifest re-validated against schema.")
 
 
-def _build_gate(evidence: GateEvidence) -> GateResult:
+def _build_gate(evidence: GateEvidence, runtime_target: RuntimeTarget | None) -> GateResult:
+    if runtime_target == RuntimeTarget.MANAGED_FOUNDRY:
+        return GateResult(
+            name=GateName.BUILD,
+            status=GateStatus.NOT_APPLICABLE,
+            detail="No separate build step exists for Managed Foundry agents.",
+        )
     if evidence.build_succeeded is None:
         return GateResult(name=GateName.BUILD, status=GateStatus.SKIPPED, detail="No build evidence supplied.")
     if not evidence.build_succeeded:
@@ -106,7 +113,7 @@ def _auth_gate(
             missing.append(f"capability '{instance.descriptor_id}' is not in the capability catalog")
             continue
         for requirement in descriptor.auth_requirements:
-            if requirement.startswith("workspace_connection:") and instance.workspace_connection_id is None:
+            if requirement.startswith("workspace_connection:") and instance.connection_ref is None:
                 missing.append(
                     f"capability '{instance.descriptor_id}' requires a workspace connection but none is attached"
                 )
@@ -186,11 +193,19 @@ def run_gates(
     manifest: AgentManifest,
     capability_catalog: Mapping[str, CapabilityDescriptor],
     evidence: GateEvidence,
+    runtime_target: RuntimeTarget | None = None,
 ) -> ReleaseGateReport:
-    """Run all seven hard gates deterministically and assemble a report."""
+    """Run all seven hard gates deterministically and assemble a report.
+
+    ``runtime_target`` makes the BUILD gate runtime-aware: a Managed Foundry
+    agent has no separate build step, so BUILD is deterministically
+    ``NOT_APPLICABLE`` rather than requiring synthetic build evidence. All
+    other gates (including SMOKE, which still hard-blocks activation on
+    deployment smoke failure) apply uniformly regardless of runtime.
+    """
     results = (
         _schema_gate(manifest),
-        _build_gate(evidence),
+        _build_gate(evidence, runtime_target),
         _test_gate(evidence),
         _auth_gate(manifest, capability_catalog),
         _policy_gate(manifest, capability_catalog),

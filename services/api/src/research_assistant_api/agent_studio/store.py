@@ -11,11 +11,14 @@ higher-level concern, not a store-level default.
 
 from __future__ import annotations
 
+import threading
+from collections.abc import Callable
+
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
+    AgentRelease,
     AgentRole,
     AgentVersion,
-    AgentVersionStatus,
     ApprovalState,
     DeploymentEnvironment,
     DeploymentRecord,
@@ -50,8 +53,11 @@ class AgentStudioStore:
         self._ownership: dict[tuple[str, str], list[OwnershipGrant]] = {}
         self._versions: dict[str, AgentVersion] = {}
         self._versions_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._version_lock = threading.Lock()
         self._lineage: list[LineageEdge] = []
         self._gate_reports: dict[str, ReleaseGateReport] = {}
+        self._releases: dict[str, AgentRelease] = {}
+        self._releases_by_version: dict[str, list[str]] = {}
         self._approvals: dict[str, StudioApprovalRecord] = {}
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
@@ -77,9 +83,31 @@ class AgentStudioStore:
         self._ownership.setdefault((grant.tenant_id, grant.logical_agent_id), []).append(grant)
         return grant
 
-    def role_for(self, tenant_id: str, logical_agent_id: str, principal_id: str) -> AgentRole | None:
+    def role_for(
+        self,
+        tenant_id: str,
+        logical_agent_id: str,
+        principal_id: str,
+        *,
+        project_id: str | None = None,
+    ) -> AgentRole | None:
+        """Resolve ``principal_id``'s effective role on this agent.
+
+        When ``project_id`` is omitted (default), every grant for the
+        principal counts, exactly matching pre-Phase-2 behavior. When a
+        caller opts in by supplying ``project_id``, only grants scoped to
+        that project *or* to no project at all (``OwnershipGrant.project_id
+        is None``, i.e. tenant-wide/legacy) count — a grant scoped to a
+        *different* project is excluded. This lets cross-project isolation
+        be enforced without any change for existing tenant-only call sites.
+        """
         grants = self._ownership.get((tenant_id, logical_agent_id), [])
-        roles = {grant.role for grant in grants if grant.principal_id == principal_id}
+        roles = {
+            grant.role
+            for grant in grants
+            if grant.principal_id == principal_id
+            and (project_id is None or grant.project_id is None or grant.project_id == project_id)
+        }
         if not roles:
             return None
         for candidate in _ROLE_PRECEDENCE:
@@ -93,14 +121,56 @@ class AgentStudioStore:
     # -- Versions -------------------------------------------------------
 
     def next_sequence(self, tenant_id: str, logical_agent_id: str) -> int:
+        """Advisory next-sequence read (e.g. for UI/preview display).
+
+        Not atomic on its own when called separately from persistence — use
+        ``allocate_version`` to actually cut a version, which holds a single
+        lock across sequence computation *and* persistence.
+        """
         return len(self._versions_by_agent.get((tenant_id, logical_agent_id), [])) + 1
 
+    def allocate_version(
+        self,
+        tenant_id: str,
+        logical_agent_id: str,
+        builder: Callable[[int], AgentVersion],
+    ) -> AgentVersion:
+        """Atomically reserve the next sequence number and persist the version.
+
+        ``builder`` is invoked with the reserved sequence *inside* the lock
+        and must return a fully-constructed, immutable ``AgentVersion`` with
+        that exact sequence. This closes the TOCTOU gap a separate
+        ``next_sequence()`` + ``create_version()`` call pair would have: two
+        concurrent cuts for the same agent can never be assigned the same
+        sequence number.
+        """
+        with self._version_lock:
+            sequence = len(self._versions_by_agent.get((tenant_id, logical_agent_id), [])) + 1
+            version = builder(sequence)
+            if version.sequence != sequence:
+                raise AgentStudioStoreError(
+                    f"Builder returned sequence {version.sequence}, expected atomically-reserved {sequence}."
+                )
+            if version.id in self._versions:
+                raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
+            self._versions[version.id] = version
+            self._versions_by_agent.setdefault((tenant_id, logical_agent_id), []).append(version.id)
+            return version
+
     def create_version(self, version: AgentVersion) -> AgentVersion:
-        if version.id in self._versions:
-            raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
-        self._versions[version.id] = version
-        self._versions_by_agent.setdefault((version.tenant_id, version.logical_agent_id), []).append(version.id)
-        return version
+        """Direct persistence path for an already sequence-assigned version.
+
+        Used by tests, by ``CosmosAgentStudioStore`` read-through caching,
+        and by any migration/backfill code that already has a fully formed
+        ``AgentVersion``. Real cut flows should prefer ``allocate_version``
+        for atomic sequence allocation.
+        """
+        with self._version_lock:
+            if version.id in self._versions:
+                raise AgentStudioStoreError(f"Version '{version.id}' already exists; versions are immutable.")
+            self._versions[version.id] = version
+            self._versions_by_agent.setdefault((version.tenant_id, version.logical_agent_id), []).append(version.id)
+            return version
 
     def get_version(self, tenant_id: str, version_id: str) -> AgentVersion | None:
         version = self._versions.get(version_id)
@@ -111,27 +181,6 @@ class AgentStudioStore:
     def list_versions(self, tenant_id: str, logical_agent_id: str) -> tuple[AgentVersion, ...]:
         ids = self._versions_by_agent.get((tenant_id, logical_agent_id), [])
         return tuple(self._versions[version_id] for version_id in ids)
-
-    def update_version_status(
-        self,
-        tenant_id: str,
-        version_id: str,
-        status: AgentVersionStatus,
-    ) -> AgentVersion:
-        version = self.get_version(tenant_id, version_id)
-        if version is None:
-            raise AgentStudioStoreError(f"Version '{version_id}' not found for tenant '{tenant_id}'.")
-        updated = version.model_copy(update={"status": status})
-        self._versions[version_id] = updated
-        return updated
-
-    def attach_gate_report(self, tenant_id: str, version_id: str, gate_report_id: str) -> AgentVersion:
-        version = self.get_version(tenant_id, version_id)
-        if version is None:
-            raise AgentStudioStoreError(f"Version '{version_id}' not found for tenant '{tenant_id}'.")
-        updated = version.model_copy(update={"gate_report_id": gate_report_id})
-        self._versions[version_id] = updated
-        return updated
 
     # -- Lineage --------------------------------------------------------
 
@@ -155,6 +204,36 @@ class AgentStudioStore:
 
     def get_gate_report(self, report_id: str) -> ReleaseGateReport | None:
         return self._gate_reports.get(report_id)
+
+    # -- Releases (append-only lifecycle for an immutable version) ---------
+
+    def create_release(self, release: AgentRelease) -> AgentRelease:
+        """Append a new lifecycle transition for a version.
+
+        Never mutates an existing ``AgentRelease``; every transition
+        (gated/approved/active/deprecated/rolled_back) is a brand-new record
+        chained via ``previous_release_id``.
+        """
+        self._releases[release.id] = release
+        self._releases_by_version.setdefault(release.version_id, []).append(release.id)
+        return release
+
+    def get_release(self, tenant_id: str, release_id: str) -> AgentRelease | None:
+        release = self._releases.get(release_id)
+        if release is None or release.tenant_id != tenant_id:
+            return None
+        return release
+
+    def list_releases_for_version(self, tenant_id: str, version_id: str) -> tuple[AgentRelease, ...]:
+        ids = self._releases_by_version.get(version_id, [])
+        return tuple(release for release in (self._releases[i] for i in ids) if release.tenant_id == tenant_id)
+
+    def latest_release_for_version(self, tenant_id: str, version_id: str) -> AgentRelease | None:
+        """The most recent lifecycle transition for a version, or ``None``
+        if the version has never had a release cut (i.e. it has not yet
+        passed hard gates)."""
+        releases = self.list_releases_for_version(tenant_id, version_id)
+        return releases[-1] if releases else None
 
     # -- Approvals ------------------------------------------------------
 
