@@ -16,10 +16,16 @@ param searchEndpoint string
 param searchIndexName string
 param cosmosEndpoint string
 param cosmosDatabaseName string
+param agentStudioCosmosDatabaseName string
+param agentStudioMetadataContainerName string
+param agentStudioMemoryContainerName string
+param agentStudioAuditContainerName string
+param agentStudioCatalogContainerName string
 param storageAccountName string
 param storageBlobEndpoint string
 param sourceContainerName string
 param artifactContainerName string
+param agentStudioBundleContainerName string
 param documentIntelligenceEndpoint string
 param embeddingDeploymentName string
 param durableTaskEndpoint string
@@ -272,6 +278,30 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'AZURE_STORAGE_ARTIFACT_CONTAINER'
               value: artifactContainerName
+            }
+            {
+              name: 'AZURE_COSMOS_AGENT_STUDIO_DATABASE'
+              value: agentStudioCosmosDatabaseName
+            }
+            {
+              name: 'AZURE_COSMOS_AGENT_STUDIO_METADATA_CONTAINER'
+              value: agentStudioMetadataContainerName
+            }
+            {
+              name: 'AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER'
+              value: agentStudioMemoryContainerName
+            }
+            {
+              name: 'AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER'
+              value: agentStudioAuditContainerName
+            }
+            {
+              name: 'AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER'
+              value: agentStudioCatalogContainerName
+            }
+            {
+              name: 'AZURE_STORAGE_AGENT_STUDIO_BUNDLE_CONTAINER'
+              value: agentStudioBundleContainerName
             }
             {
               name: 'DURABLE_TASK_SCHEDULER_CONNECTION_STRING'

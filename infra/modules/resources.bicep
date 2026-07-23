@@ -300,10 +300,16 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     searchIndexName: search.outputs.indexName
     cosmosEndpoint: cosmos.outputs.endpoint
     cosmosDatabaseName: cosmos.outputs.databaseName
+    agentStudioCosmosDatabaseName: cosmos.outputs.agentStudioDatabaseName
+    agentStudioMetadataContainerName: cosmos.outputs.agentStudioMetadataContainerName
+    agentStudioMemoryContainerName: cosmos.outputs.agentStudioMemoryContainerName
+    agentStudioAuditContainerName: cosmos.outputs.agentStudioAuditContainerName
+    agentStudioCatalogContainerName: cosmos.outputs.agentStudioCatalogContainerName
     storageAccountName: storage.outputs.accountName
     storageBlobEndpoint: storage.outputs.blobEndpoint
     sourceContainerName: storage.outputs.sourcesContainer
     artifactContainerName: storage.outputs.artifactsContainer
+    agentStudioBundleContainerName: storage.outputs.agentStudioBundlesContainer
     documentIntelligenceEndpoint: documentIntelligence.outputs.endpoint
     embeddingDeploymentName: embeddingDeploymentName
     durableTaskEndpoint: durableTask.outputs.endpoint
@@ -419,12 +425,18 @@ output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.accountName
 output AZURE_STORAGE_BLOB_ENDPOINT string = storage.outputs.blobEndpoint
 output AZURE_STORAGE_SOURCE_CONTAINER string = storage.outputs.sourcesContainer
 output AZURE_STORAGE_ARTIFACT_CONTAINER string = storage.outputs.artifactsContainer
+output AZURE_STORAGE_AGENT_STUDIO_BUNDLE_CONTAINER string = storage.outputs.agentStudioBundlesContainer
 output AZURE_SEARCH_ENDPOINT string = search.outputs.endpoint
 output AZURE_SEARCH_SERVICE_NAME string = search.outputs.name
 output AZURE_SEARCH_INDEX_NAME string = search.outputs.indexName
 output AZURE_SEARCH_INDEX_DATA_READER_ROLE_ID string = search.outputs.readerRoleDefinitionId
 output AZURE_COSMOS_ENDPOINT string = cosmos.outputs.endpoint
 output AZURE_COSMOS_DATABASE string = cosmos.outputs.databaseName
+output AZURE_COSMOS_AGENT_STUDIO_DATABASE string = cosmos.outputs.agentStudioDatabaseName
+output AZURE_COSMOS_AGENT_STUDIO_METADATA_CONTAINER string = cosmos.outputs.agentStudioMetadataContainerName
+output AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER string = cosmos.outputs.agentStudioMemoryContainerName
+output AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER string = cosmos.outputs.agentStudioAuditContainerName
+output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = cosmos.outputs.agentStudioCatalogContainerName
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = documentIntelligence.outputs.endpoint
 output AZURE_DURABLE_TASK_ENDPOINT string = durableTask.outputs.endpoint
 output AZURE_DURABLE_TASK_HUB string = durableTask.outputs.taskHubName

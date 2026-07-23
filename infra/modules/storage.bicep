@@ -70,6 +70,17 @@ resource artifacts 'Microsoft.Storage/storageAccounts/blobServices/containers@20
   }
 }
 
+// Governed object storage for Agent Studio's immutable source/release
+// bundles. Name must stay in lockstep with the `agent_studio_bundle_container`
+// default in `services/api/src/research_assistant_api/config.py`.
+resource agentStudioBundles 'Microsoft.Storage/storageAccounts/blobServices/containers@2026-04-01' = {
+  parent: blobService
+  name: 'agent-studio-bundles'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource apiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(account.id, apiPrincipalId, blobDataContributorRoleId)
   scope: account
@@ -105,3 +116,4 @@ output accountName string = account.name
 output blobEndpoint string = account.properties.primaryEndpoints.blob
 output sourcesContainer string = sources.name
 output artifactsContainer string = artifacts.name
+output agentStudioBundlesContainer string = agentStudioBundles.name
