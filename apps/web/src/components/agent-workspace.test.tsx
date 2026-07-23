@@ -535,6 +535,9 @@ describe("BuildTab", () => {
     expect(conflictMessage).toHaveAttribute("data-tone", "conflict");
     expect(conflictMessage).toHaveAttribute("role", "alert");
     expect(screen.queryByText("Draft was modified concurrently")).not.toBeInTheDocument();
+    // The tone must be legible without color: a text badge names it
+    // "Conflict" regardless of background tint.
+    expect(within(conflictMessage).getByText("Conflict")).toBeInTheDocument();
 
     // The conflict is treated as actionable: the draft is refetched so a
     // fresh etag is available for the user's next attempt.
@@ -565,6 +568,7 @@ describe("BuildTab", () => {
     );
     expect(conflictMessage).toHaveAttribute("data-tone", "conflict");
     expect(conflictMessage).toHaveAttribute("role", "alert");
+    expect(within(conflictMessage).getByText("Conflict")).toBeInTheDocument();
   });
 
   it("gives non-error/conflict builder messages a status role, not an alert role", async () => {
@@ -589,6 +593,7 @@ describe("BuildTab", () => {
     );
     expect(successMessage).toHaveAttribute("data-tone", "success");
     expect(successMessage).toHaveAttribute("role", "status");
+    expect(within(successMessage).getByText("Success")).toBeInTheDocument();
   });
 
   it("does nothing when Approve & apply is invoked with no active proposal", () => {
@@ -2380,6 +2385,8 @@ describe("AgentWorkspaceView", () => {
     expect(forgetAgentMemoryScope).toHaveBeenCalledTimes(1);
     expect(forgetAgentMemoryScope).toHaveBeenCalledWith("literature", "conversation");
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    // Non-color-only: success is also named in visible text, not just green.
+    expect(screen.getByText("Success")).toBeInTheDocument();
   });
 
   it("closing the confirmation dialog via the backdrop never calls the Forget API", async () => {
@@ -2495,6 +2502,8 @@ describe("AgentWorkspaceView", () => {
     );
     expect(errorMessage).toHaveAttribute("role", "alert");
     expect(errorMessage).toHaveAttribute("data-tone", "unavailable");
+    // Non-color-only: the tone is also named in visible text.
+    expect(within(errorMessage).getByText("Not available yet")).toBeInTheDocument();
   });
 
   it("has no detectable accessibility violations", async () => {

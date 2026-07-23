@@ -2,6 +2,7 @@ import { render, screen } from "@testing-library/react";
 
 import {
   AsyncStateBanner,
+  ToneBadge,
   classifyAsyncError,
   classifyBuilderMutationError,
 } from "@/components/async-state";
@@ -116,6 +117,28 @@ describe("AsyncStateBanner", () => {
     for (const [kind, title] of kinds) {
       const { unmount } = render(<AsyncStateBanner kind={kind} message="x" />);
       expect(screen.getByText(title)).toBeInTheDocument();
+      unmount();
+    }
+  });
+});
+
+describe("ToneBadge", () => {
+  it("renders a distinct, non-color-only text label and data-tone for every BadgeTone", () => {
+    const tones = [
+      ["success", "Success"],
+      ["unauthorized", "Not authorized"],
+      ["unavailable", "Not available yet"],
+      ["needs_connection", "Needs a connection"],
+      ["needs_approval", "Needs approval"],
+      ["degraded", "Degraded"],
+      ["conflict", "Conflict"],
+      ["error", "Something went wrong"],
+    ] as const;
+    for (const [tone, label] of tones) {
+      const { unmount } = render(<ToneBadge kind={tone} />);
+      const badge = screen.getByText(label);
+      expect(badge).toBeInTheDocument();
+      expect(badge.closest(".tone-badge")).toHaveAttribute("data-tone", tone);
       unmount();
     }
   });

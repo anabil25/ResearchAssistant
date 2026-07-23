@@ -21,6 +21,7 @@ import {
   AsyncStateBanner,
   EmptyBlock,
   LoadingBlock,
+  ToneBadge,
   classifyAsyncError,
   classifyBuilderMutationError,
   type AsyncErrorKind,
@@ -401,6 +402,7 @@ export function BuildTab({ agentId }: { agentId: string }) {
                 : "status"
             }
           >
+            {message.tone ? <ToneBadge kind={message.tone} /> : null}
             {message.text}
           </div>
         ))}
@@ -984,6 +986,7 @@ function MemoryScopePanel({
           data-tone={forgetResult.tone}
           data-scope={forgetResult.scope}
         >
+          <ToneBadge kind={forgetResult.tone} />
           {forgetResult.message}
         </div>
       ) : null}

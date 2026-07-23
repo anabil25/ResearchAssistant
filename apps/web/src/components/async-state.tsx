@@ -3,6 +3,7 @@
 import {
   AlertTriangle,
   Ban,
+  CheckCircle2,
   CircleDashed,
   GitMerge,
   Lock,
@@ -133,6 +134,32 @@ export function AsyncStateBanner({
         </button>
       ) : null}
     </div>
+  );
+}
+
+/** A tone that a `ToneBadge` can render — every `AsyncErrorKind` plus the one non-error tone ("success") used for confirmed, completed actions. */
+export type BadgeTone = AsyncErrorKind | "success";
+
+const SUCCESS_ICON = <CheckCircle2 size={14} />;
+const SUCCESS_TITLE = "Success";
+
+/**
+ * A small icon + text label for `kind`, reusing the same icon/title copy as
+ * `AsyncStateBanner` so every surface describes a tone identically. Exists
+ * so that compact containers which only render plain text today (Builder
+ * chat messages, the Memory Forget result) can carry a real, testable,
+ * non-color signal for their tone instead of relying on background color
+ * alone — a screen reader or color-blind/low-vision researcher must be able
+ * to tell "this succeeded" from "this is a conflict" without perceiving hue.
+ */
+export function ToneBadge({ kind }: { kind: BadgeTone }) {
+  const icon = kind === "success" ? SUCCESS_ICON : ICONS[kind];
+  const title = kind === "success" ? SUCCESS_TITLE : TITLES[kind];
+  return (
+    <span className="tone-badge" data-tone={kind}>
+      {icon}
+      {title}
+    </span>
   );
 }
 
