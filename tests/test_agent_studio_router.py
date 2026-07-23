@@ -57,6 +57,7 @@ from research_assistant_api.agent_studio.models import (
     ReleaseGateReport,
     ReleaseStatus,
     StudioApprovalRecord,
+    utc_now,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
@@ -1096,6 +1097,182 @@ def test_create_agent_maps_release_service_authorization_errors(
         )
     assert response.status_code == 403
     assert response.json()["detail"] == "blocked by test"
+
+
+def test_list_agents_returns_summaries_with_latest_version_and_release_status(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-list-no-version", display_name="No Version Yet")
+    with_version = _create_agent(client, logical_agent_id="agent-list-with-version", display_name="Has Version")
+    version = _cut_version(client, "agent-list-with-version")
+    assert with_version["logical_agent_id"] == "agent-list-with-version"
+    _run_gates(client, version["id"])
+
+    response = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["total"] == 2
+    assert body["limit"] == 50
+    assert body["offset"] == 0
+    by_id = {item["logical_agent_id"]: item for item in body["items"]}
+
+    no_version_summary = by_id["agent-list-no-version"]
+    assert no_version_summary["latest_version_id"] is None
+    assert no_version_summary["latest_version_sequence"] is None
+    assert no_version_summary["latest_release_status"] is None
+    assert no_version_summary["latest_release_environment"] is None
+    assert no_version_summary["owner_kind"] == "user"
+    assert no_version_summary["owner_id"] == "user-1"
+
+    with_version_summary = by_id["agent-list-with-version"]
+    assert with_version_summary["latest_version_id"] == version["id"]
+    assert with_version_summary["latest_version_sequence"] == 1
+    assert with_version_summary["latest_release_status"] == "gated"
+
+
+def test_list_agents_filters_by_owner_kind(client: TestClient) -> None:
+    _create_agent(
+        client,
+        logical_agent_id="agent-filter-system",
+        headers=PLATFORM_OWNER_HEADERS,
+        project_id=PLATFORM_PROJECT_ID,
+        owner_kind="system",
+        display_name="System Filtered",
+    )
+
+    system_only = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": PLATFORM_PROJECT_ID, "owner_kind": "system"},
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert system_only.status_code == 200
+    assert [item["logical_agent_id"] for item in system_only.json()["items"]] == ["agent-filter-system"]
+
+    user_only = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": PLATFORM_PROJECT_ID, "owner_kind": "user"},
+        headers=PLATFORM_OWNER_HEADERS,
+    )
+    assert user_only.status_code == 200
+    assert user_only.json()["items"] == []
+    assert user_only.json()["total"] == 0
+
+
+def test_list_agents_filters_by_display_name_query(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-query-alpha", display_name="Alpha Researcher")
+    _create_agent(client, logical_agent_id="agent-query-beta", display_name="Beta Helper")
+
+    response = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "q": "  ALPHA  "},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    items = response.json()["items"]
+    assert [item["logical_agent_id"] for item in items] == ["agent-query-alpha"]
+
+    no_match = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "q": "does-not-match-anything"},
+        headers=USER_HEADERS,
+    )
+    assert no_match.json()["items"] == []
+
+
+def test_list_agents_paginates_and_orders_by_most_recently_updated_first(client: TestClient) -> None:
+    created_ids = []
+    for suffix in ("c", "a", "b"):
+        _create_agent(client, logical_agent_id=f"agent-page-{suffix}", display_name=f"Page {suffix}")
+        created_ids.append(f"agent-page-{suffix}")
+
+    page_one = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "limit": 2, "offset": 0},
+        headers=USER_HEADERS,
+    )
+    assert page_one.status_code == 200
+    page_one_body = page_one.json()
+    assert page_one_body["total"] == 3
+    assert len(page_one_body["items"]) == 2
+
+    page_two = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "limit": 2, "offset": 2},
+        headers=USER_HEADERS,
+    )
+    assert page_two.status_code == 200
+    page_two_body = page_two.json()
+    assert page_two_body["total"] == 3
+    assert len(page_two_body["items"]) == 1
+
+    all_ids = [item["logical_agent_id"] for item in page_one_body["items"] + page_two_body["items"]]
+    assert set(all_ids) == set(created_ids)
+    # Most-recently-updated first: the last agent created ("b") sorts first,
+    # the first agent created ("c") sorts last.
+    assert all_ids == list(reversed(created_ids))
+
+
+def test_list_agents_tiebreaks_equal_updated_at_by_ascending_logical_agent_id(
+    client: TestClient, store: AgentStudioStore
+) -> None:
+    """Two drafts with an identical ``updated_at`` (e.g. restored from the
+    same backfill/migration batch) must still sort deterministically -- by
+    ascending ``logical_agent_id`` -- rather than depending on incidental
+    store/dict iteration order."""
+    _create_agent(client, logical_agent_id="agent-tie-z", display_name="Tie Z")
+    _create_agent(client, logical_agent_id="agent-tie-a", display_name="Tie A")
+
+    scope = ScopeContext(tenant_id="demo", project_id=DEFAULT_PROJECT_ID)
+    shared_timestamp = utc_now()
+    for logical_agent_id in ("agent-tie-z", "agent-tie-a"):
+        draft = store.get_draft(scope, logical_agent_id)
+        assert draft is not None
+        store.save_draft(scope, draft.model_copy(update={"updated_at": shared_timestamp}))
+
+    response = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    ids = [item["logical_agent_id"] for item in response.json()["items"]]
+    tie_positions = [logical_agent_id for logical_agent_id in ids if logical_agent_id.startswith("agent-tie-")]
+    assert tie_positions == ["agent-tie-a", "agent-tie-z"]
+
+
+def test_list_agents_rejects_invalid_limit_and_offset(client: TestClient) -> None:
+    too_low = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "limit": 0},
+        headers=USER_HEADERS,
+    )
+    assert too_low.status_code == 422
+
+    too_high = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "limit": 201},
+        headers=USER_HEADERS,
+    )
+    assert too_high.status_code == 422
+
+    negative_offset = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID, "offset": -1},
+        headers=USER_HEADERS,
+    )
+    assert negative_offset.status_code == 422
+
+
+def test_list_agents_enforces_project_membership(client: TestClient) -> None:
+    non_member_headers = _project_headers(tenant_id="demo", user_id="outsider", project_ids=(OTHER_PROJECT_ID,))
+    response = client.get(
+        "/v1/agent-studio/agents",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=non_member_headers,
+    )
+    assert response.status_code == 403
 
 
 def test_draft_routes_cover_get_update_and_missing_paths(

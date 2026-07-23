@@ -68,10 +68,12 @@ from research_assistant_api.agent_studio.models import (
     AGENT_MANIFEST_SCHEMA_VERSION,
     AgentDraft,
     AgentDraftView,
+    AgentListResponse,
     AgentManifest,
     AgentOwnerKind,
     AgentRelease,
     AgentRole,
+    AgentSummary,
     AgentVersion,
     AgentWorkspaceView,
     ApprovalKind,
@@ -595,6 +597,84 @@ def create_agent(request: Request, payload: CreateAgentRequest) -> AgentDraft:
         detail={"role": AgentRole.OWNER.value},
     )
     return draft
+
+
+@router.get("/agents", response_model=AgentListResponse)
+def list_agents(
+    request: Request,
+    project_id: str,
+    owner_kind: AgentOwnerKind | None = None,
+    q: str | None = None,
+    limit: int = 50,
+    offset: int = 0,
+) -> AgentListResponse:
+    """Authorized registry listing of agent summaries within one scope.
+
+    Distinct from ``POST /agents`` (create) and from
+    ``/agents/{id}/workspace`` (full single-agent aggregate): this is the
+    read-side registry surface researchers/platform owners use to browse
+    *many* existing agents at once -- draft + latest cut version + latest
+    release status -- with optional ``owner_kind``/``q`` (case-insensitive
+    display-name substring) filters and ``limit``/``offset`` pagination.
+
+    Scoped identically to every other read in this package: ``project_id``
+    selects one ``ScopeContext`` (either a real project or, for a caller
+    who is a platform owner, ``PLATFORM_PROJECT_ID`` to browse system-owned
+    agents). There is no cross-scope merge -- a caller that wants both
+    their project's own agents and the system catalog makes two calls, one
+    per scope, matching every other scope-partitioned read here.
+    """
+    if not 1 <= limit <= 200:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="limit must be between 1 and 200."
+        )
+    if offset < 0:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="offset must be >= 0.")
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    store = _store(request)
+    needle = q.strip().lower() if q else None
+    summaries: list[AgentSummary] = []
+    for draft in store.list_drafts(scope):
+        manifest = draft.manifest
+        if owner_kind is not None and manifest.owner_kind != owner_kind:
+            continue
+        if needle and needle not in manifest.display_name.lower():
+            continue
+        versions = store.list_versions(scope, draft.logical_agent_id)
+        latest_version = versions[-1] if versions else None
+        latest_release = (
+            store.latest_release_for_version(scope, latest_version.id) if latest_version is not None else None
+        )
+        summaries.append(
+            AgentSummary(
+                logical_agent_id=draft.logical_agent_id,
+                owner_kind=manifest.owner_kind,
+                owner_id=manifest.owner_id,
+                tenant_id=draft.tenant_id,
+                project_id=draft.project_id,
+                display_name=manifest.display_name,
+                description=manifest.description,
+                visibility=manifest.visibility,
+                tags=manifest.tags,
+                updated_at=draft.updated_at,
+                updated_by=draft.updated_by,
+                latest_version_id=latest_version.id if latest_version is not None else None,
+                latest_version_sequence=latest_version.sequence if latest_version is not None else None,
+                latest_release_status=latest_release.status if latest_release is not None else None,
+                latest_release_environment=(latest_release.environment if latest_release is not None else None),
+                runtime_target=latest_version.runtime_target if latest_version is not None else None,
+            )
+        )
+    # Stable two-pass sort: tie-break ascending by logical_agent_id first,
+    # then the dominant sort (most-recently-updated first) is applied
+    # stably on top, so equal ``updated_at`` values keep deterministic
+    # agent-id ordering rather than depending on dict/list iteration order.
+    summaries.sort(key=lambda item: item.logical_agent_id)
+    summaries.sort(key=lambda item: item.updated_at, reverse=True)
+    total = len(summaries)
+    page = summaries[offset : offset + limit]
+    return AgentListResponse(items=tuple(page), total=total, limit=limit, offset=offset)
 
 
 @router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraftView)

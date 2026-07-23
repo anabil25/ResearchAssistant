@@ -2140,3 +2140,53 @@ class AgentWorkspaceView(BaseModel):
     deployments: tuple[DeploymentRecord, ...] = Field(default_factory=tuple)
     capability_views: tuple[CapabilityBindingView, ...] = Field(default_factory=tuple)
     resolved_at: datetime = Field(default_factory=utc_now)
+
+
+class AgentSummary(BaseModel):
+    """Read-time summary row for the registry listing surface (``GET /agents``).
+
+    Distinct from ``AgentWorkspaceView`` (the full aggregate for one agent's
+    workspace page, including expanded ``capability_views`` and full
+    deployment history): this is the lightweight per-row shape a paginated
+    registry list returns for *many* agents at once, carrying only the
+    latest-version/latest-release status a list view needs to render --
+    never full manifest/capability detail (fetch ``/agents/{id}/workspace``
+    for that). Always derived read-time from the draft + its latest cut
+    version + that version's latest release within one ``ScopeContext``;
+    never independently persisted.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    logical_agent_id: str
+    owner_kind: AgentOwnerKind
+    owner_id: str
+    tenant_id: str
+    project_id: str
+    display_name: str
+    description: str = ""
+    visibility: AgentVisibility
+    tags: tuple[str, ...] = Field(default_factory=tuple)
+    updated_at: datetime
+    updated_by: str
+    latest_version_id: str | None = None
+    latest_version_sequence: int | None = None
+    latest_release_status: ReleaseStatus | None = None
+    latest_release_environment: DeploymentEnvironment | None = None
+    runtime_target: RuntimeTarget | None = None
+
+
+class AgentListResponse(BaseModel):
+    """Paginated envelope for ``GET /agents``.
+
+    ``total`` is the count of summaries matching the requested filters
+    *before* pagination is applied, so a UI can compute page count /
+    "N of M" without a separate count request.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: tuple[AgentSummary, ...] = Field(default_factory=tuple)
+    total: int = Field(ge=0)
+    limit: int = Field(ge=1, le=200)
+    offset: int = Field(ge=0)
