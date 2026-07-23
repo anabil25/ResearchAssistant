@@ -1,6 +1,7 @@
 "use client";
 
 import hardenReactMarkdown from "harden-react-markdown";
+import { Children, isValidElement } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -50,6 +51,18 @@ function safeCitationUrl(value: string | null | undefined): string | null {
   }
 }
 
+function accessibleText(children: React.ReactNode): string {
+  let text = "";
+  Children.forEach(children, (child) => {
+    if (typeof child === "string" || typeof child === "number") {
+      text += String(child);
+    } else if (isValidElement<{ children?: React.ReactNode }>(child)) {
+      text += accessibleText(child.props.children);
+    }
+  });
+  return text;
+}
+
 export interface ResearchMarkdownProps {
   content: string;
   citations?: Citation[];
@@ -58,6 +71,25 @@ export interface ResearchMarkdownProps {
 }
 
 const researchMarkdownComponents = {
+  a: ({
+    children,
+    href,
+  }: {
+    children?: React.ReactNode;
+    href?: string;
+  }) =>
+    href ? (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+        aria-label={`${accessibleText(children)} (opens in a new tab)`}
+      >
+        {children}
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
   code: ({
     children,
     className,

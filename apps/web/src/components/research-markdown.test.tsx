@@ -1,6 +1,9 @@
 import { render, screen, within } from "@testing-library/react";
 import type { ComponentType, ReactNode } from "react";
 
+type MarkdownRenderer = (props: Record<string, unknown>) => ReactNode;
+let mockCapturedComponents: Record<string, MarkdownRenderer> = {};
+
 jest.mock("harden-react-markdown", () => ({
   __esModule: true,
   default: (MarkdownComponent: ComponentType<Record<string, unknown>>) =>
@@ -39,6 +42,7 @@ jest.mock("react-markdown", () => {
   }) {
     const nodes: ReactNode[] = [];
     const content = String(children);
+    mockCapturedComponents = components;
     const linkMatch = content.match(/\[([^\]]+)\]\(([^)]+)\)/);
     const imageMatch = content.match(/!\[([^\]]*)\]\(([^)]+)\)/);
     const codeBlocks = [...content.matchAll(/```([a-z0-9+#-]*)\n([\s\S]*?)```/gi)];
@@ -46,6 +50,7 @@ jest.mock("react-markdown", () => {
     if (linkMatch) {
       const [, text, href] = linkMatch;
       const allowed =
+        href.startsWith("#") ||
         allowedLinkPrefixes.includes("*") ||
         allowedLinkPrefixes.some((prefix) => href.startsWith(prefix));
 
@@ -352,5 +357,45 @@ Before <script>alert("xss")</script><div>unsafe html</div> After
     expect(
       screen.getByRole("region", { name: "Custom evidence panel" }),
     ).toHaveTextContent("Plain text");
+  });
+
+  it("renders allowed hash links securely and keeps href-less text noninteractive", () => {
+    const { rerender } = render(
+      <ResearchMarkdown content="[Methods](#methods)" />,
+    );
+
+    const hashLink = screen.getByRole("link", {
+      name: "Methods (opens in a new tab)",
+    });
+    expect(hashLink).toHaveAttribute("href", "#methods");
+    expect(hashLink).toHaveAttribute("target", "_blank");
+    expect(hashLink).toHaveAttribute("rel", "noopener noreferrer");
+
+    const anchorRenderer = mockCapturedComponents.a;
+    expect(anchorRenderer).toBeDefined();
+    rerender(
+      <>
+        {anchorRenderer({
+          children: (
+            <>
+              <strong>Formatted methods</strong>
+              {false}
+            </>
+          ),
+          href: "#formatted-methods",
+        })}
+      </>,
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "Formatted methods (opens in a new tab)",
+      }),
+    ).toHaveAttribute("href", "#formatted-methods");
+
+    rerender(<>{anchorRenderer({ children: "Missing destination" })}</>);
+
+    expect(screen.queryByRole("link")).not.toBeInTheDocument();
+    expect(screen.getByText("Missing destination").tagName).toBe("SPAN");
   });
 });
