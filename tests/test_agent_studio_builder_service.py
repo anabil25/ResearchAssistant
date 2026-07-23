@@ -315,6 +315,23 @@ def test_classify_risk_escalations_flags_destination_and_connection_widening_on_
     assert ProposalRiskCategory.DESTINATION in categories
 
 
+def test_classify_risk_escalations_ignores_destination_narrowing_on_reconfigure() -> None:
+    """Independent review finding: a reconfigure that only *removes*
+    destination constraints (no additions) must not be classified as a
+    DESTINATION escalation -- narrowing reachable destinations is never a
+    privilege widening, even though the before/after sets differ."""
+    before_binding = _binding(descriptor_id="descriptor-narrow", operation="op-narrow").model_copy(
+        update={"destination_constraints": ("https://example.test/a", "https://example.test/b")}
+    )
+    after_binding = before_binding.model_copy(update={"destination_constraints": ("https://example.test/a",)})
+    before = _manifest().model_copy(update={"capabilities": (before_binding,)})
+    after = _manifest().model_copy(update={"capabilities": (after_binding,)})
+    capability_changes = diff_capability_bindings(before, after)
+
+    escalations = classify_risk_escalations(before, after, capability_changes)
+    assert not any(e.category is ProposalRiskCategory.DESTINATION for e in escalations)
+
+
 def test_classify_risk_escalations_ignores_detached_capability_and_unrelated_reconfigure_fields() -> None:
     """Branch coverage: a ``DETACHED`` change must fall through the
     ATTACHED/RECONFIGURED classification entirely (no escalation), a
@@ -409,6 +426,40 @@ def test_classify_risk_escalations_ignores_memory_scope_that_stays_disabled() ->
     assert not any(e.category is ProposalRiskCategory.MEMORY_POLICY for e in escalations)
 
 
+def test_classify_risk_escalations_memory_scope_order_is_deterministic_regardless_of_declaration_order() -> None:
+    """Independent review finding: multiple widened memory scopes must
+    always be classified in a fixed, hash-seed-independent order (declared
+    ``MemoryScopeKind`` order), not the arbitrary iteration order of a
+    ``set`` of enum members (which varies across process/PYTHONHASHSEED).
+    Deliberately declares the ``after`` scopes in reverse-of-enum order to
+    prove the emitted escalation order does not simply mirror input order
+    either -- it must always resolve to CONVERSATION, USER, PROJECT,
+    PRIVATE_AGENT."""
+    before = _manifest(memory_policy=MemoryPolicy(scopes=()))
+    after = before.model_copy(
+        update={
+            "memory_policy": MemoryPolicy(
+                scopes=(
+                    MemoryScopeBinding(kind=MemoryScopeKind.PRIVATE_AGENT, enabled=True, persistent=False),
+                    MemoryScopeBinding(kind=MemoryScopeKind.PROJECT, enabled=True, persistent=False),
+                    MemoryScopeBinding(kind=MemoryScopeKind.USER, enabled=True, persistent=False),
+                    MemoryScopeBinding(kind=MemoryScopeKind.CONVERSATION, enabled=True, persistent=False),
+                )
+            )
+        }
+    )
+
+    for _ in range(5):
+        escalations = classify_risk_escalations(before, after, ())
+        memory_escalations = [e for e in escalations if e.category is ProposalRiskCategory.MEMORY_POLICY]
+        assert [e.detail.split("'")[1] for e in memory_escalations] == [
+            "conversation",
+            "user",
+            "project",
+            "private_agent",
+        ]
+
+
 def test_classify_risk_escalations_flags_specialist_policy_widening() -> None:
     before = _manifest(specialist_policy=SpecialistPolicy(delegation_scope=DelegationScope.NONE))
     after = before.model_copy(
@@ -443,6 +494,63 @@ def test_classify_risk_escalations_ignores_specialist_policy_narrowing() -> None
     )
     escalations = classify_risk_escalations(before, after, ())
     assert not any(e.category is ProposalRiskCategory.SPECIALIST_POLICY for e in escalations)
+
+
+def test_classify_risk_escalations_ignores_delegation_scope_narrowing_to_none() -> None:
+    """Independent review finding: narrowing ``delegation_scope`` from
+    ``SPECIALIST_POOL`` to ``NONE`` must not be classified as a widening
+    just because the enum values differ -- ``NONE`` is a strictly lower
+    privilege rank."""
+    before = _manifest(
+        specialist_policy=SpecialistPolicy(
+            delegation_scope=DelegationScope.SPECIALIST_POOL,
+            allowed_specialist_logical_agent_ids=("specialist-1",),
+            max_delegation_depth=1,
+        )
+    )
+    after = before.model_copy(
+        update={
+            "specialist_policy": SpecialistPolicy(
+                delegation_scope=DelegationScope.NONE,
+                allowed_specialist_logical_agent_ids=(),
+                max_delegation_depth=0,
+            )
+        }
+    )
+    escalations = classify_risk_escalations(before, after, ())
+    assert not any(e.category is ProposalRiskCategory.SPECIALIST_POLICY for e in escalations)
+
+
+def test_classify_risk_escalations_flags_delegation_scope_widening_across_ranks() -> None:
+    """The rank-based widening check must still fire for a scope change
+    that jumps two levels (``NONE`` -> ``ANY_RELEASED_AGENT``), and for a
+    single-level jump (``SPECIALIST_POOL`` -> ``ANY_RELEASED_AGENT``) with
+    ids/depth otherwise unchanged."""
+    before = _manifest(specialist_policy=SpecialistPolicy(delegation_scope=DelegationScope.NONE))
+    after = before.model_copy(
+        update={"specialist_policy": SpecialistPolicy(delegation_scope=DelegationScope.ANY_RELEASED_AGENT)}
+    )
+    escalations = classify_risk_escalations(before, after, ())
+    assert any(e.category is ProposalRiskCategory.SPECIALIST_POLICY for e in escalations)
+
+    before2 = _manifest(
+        specialist_policy=SpecialistPolicy(
+            delegation_scope=DelegationScope.SPECIALIST_POOL,
+            allowed_specialist_logical_agent_ids=("specialist-1",),
+            max_delegation_depth=1,
+        )
+    )
+    after2 = before2.model_copy(
+        update={
+            "specialist_policy": SpecialistPolicy(
+                delegation_scope=DelegationScope.ANY_RELEASED_AGENT,
+                allowed_specialist_logical_agent_ids=("specialist-1",),
+                max_delegation_depth=1,
+            )
+        }
+    )
+    escalations2 = classify_risk_escalations(before2, after2, ())
+    assert any(e.category is ProposalRiskCategory.SPECIALIST_POLICY for e in escalations2)
 
 
 def test_classify_risk_escalations_flags_runtime_requirements_change() -> None:

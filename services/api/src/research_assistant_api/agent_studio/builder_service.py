@@ -37,8 +37,10 @@ from research_assistant_api.agent_studio.models import (
     BuilderProvenance,
     CapabilityChangeKind,
     CapabilityChangeSummary,
+    DelegationScope,
     ManifestChangeSummary,
     ManifestFieldChangeKind,
+    MemoryScopeKind,
     ProposalRiskCategory,
     ProposalRiskEscalation,
     SanitizedCapabilityBinding,
@@ -227,6 +229,18 @@ def diff_capability_bindings(
     return tuple(changes)
 
 
+# Ordinal privilege ranking for ``DelegationScope``: strictly increasing with
+# how much delegation authority the scope grants. Used so a scope *change* is
+# only ever classified as a widening (escalation-worthy) when it moves to a
+# strictly higher rank -- e.g. ``SPECIALIST_POOL`` -> ``NONE`` is a narrowing,
+# not a widening, even though the enum values differ.
+_DELEGATION_SCOPE_RANK: dict[DelegationScope, int] = {
+    DelegationScope.NONE: 0,
+    DelegationScope.SPECIALIST_POOL: 1,
+    DelegationScope.ANY_RELEASED_AGENT: 2,
+}
+
+
 def classify_risk_escalations(
     before: AgentManifest,
     after: AgentManifest,
@@ -290,18 +304,20 @@ def classify_risk_escalations(
                 )
             if set(change.before.destination_constraints) != set(change.after.destination_constraints):
                 added = set(change.after.destination_constraints) - set(change.before.destination_constraints)
-                escalations.append(
-                    ProposalRiskEscalation(
-                        category=ProposalRiskCategory.DESTINATION,
-                        detail=(
-                            f"Capability '{change.descriptor_id}.{change.operation}' destination "
-                            f"constraints changed (added: {', '.join(sorted(added)) or 'none'})."
-                        ),
-                        binding_id=change.binding_id,
+                if added:
+                    escalations.append(
+                        ProposalRiskEscalation(
+                            category=ProposalRiskCategory.DESTINATION,
+                            detail=(
+                                f"Capability '{change.descriptor_id}.{change.operation}' destination "
+                                f"constraints changed (added: {', '.join(sorted(added))})."
+                            ),
+                            binding_id=change.binding_id,
+                        )
                     )
-                )
 
-    for scope_kind in {binding.kind for binding in (*before.memory_policy.scopes, *after.memory_policy.scopes)}:
+    present_scope_kinds = {binding.kind for binding in (*before.memory_policy.scopes, *after.memory_policy.scopes)}
+    for scope_kind in (kind for kind in MemoryScopeKind if kind in present_scope_kinds):
         before_scope = before.memory_policy.scope(scope_kind)
         after_scope = after.memory_policy.scope(scope_kind)
         before_enabled = before_scope is not None and before_scope.enabled
@@ -324,7 +340,8 @@ def classify_risk_escalations(
         before_ids = set(before.specialist_policy.allowed_specialist_logical_agent_ids)
         after_ids = set(after.specialist_policy.allowed_specialist_logical_agent_ids)
         widened = (
-            after.specialist_policy.delegation_scope != before.specialist_policy.delegation_scope
+            _DELEGATION_SCOPE_RANK[after.specialist_policy.delegation_scope]
+            > _DELEGATION_SCOPE_RANK[before.specialist_policy.delegation_scope]
             or after.specialist_policy.max_delegation_depth > before.specialist_policy.max_delegation_depth
             or bool(after_ids - before_ids)
         )
