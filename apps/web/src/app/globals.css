@@ -782,6 +782,12 @@ button {
   color: #4a5560;
 }
 
+.agent-capability-discovery-note[data-tone="unavailable"] {
+  display: block;
+  margin-bottom: 6px;
+  color: #88443e;
+}
+
 .status-chip[data-tone="disabled"] {
   color: #606863;
   background: #e8ebe8;

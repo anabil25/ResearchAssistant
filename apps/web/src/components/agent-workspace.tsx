@@ -12,7 +12,7 @@ import {
   Sliders,
   Users,
 } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { StudioForCapability } from "@/components/studio-components";
 import { formatTime } from "@/components/workspace-views";
@@ -33,6 +33,7 @@ import {
   getAgentRelease,
   getAgentReleases,
   getAgentTraces,
+  getCapabilityDiscovery,
   postBuilderMessage,
   runStudio,
   type WorkspaceData,
@@ -41,6 +42,7 @@ import {
   isCapabilityApprovalActive,
   isCapabilityAttachable,
   defaultMemoryView,
+  resolveCapabilityBindingView,
   type AgentBuilderProposal,
   type AgentContractView,
   type AgentDraftView,
@@ -48,6 +50,8 @@ import {
   type AgentHealthSummary,
   type AgentReleaseSummary,
   type AgentTraceSummary,
+  type CapabilityBindingView,
+  type CapabilityDiscovery,
   type CapabilityId,
   type MemoryScope,
   type MemoryView,
@@ -159,6 +163,52 @@ function useAgentContract(agentId: string) {
   }, [agentId]);
 
   return { status, contract, releaseVersion, error };
+}
+
+function defaultDiscovery(): CapabilityDiscovery {
+  return { descriptors: [], instances: [], warnings: [], refreshed_at: null };
+}
+
+/**
+ * The persisted contract only embeds raw `CapabilityBinding` rows (typed
+ * refs, no resolved descriptor/instance) — see the Round 8 correction in
+ * `lib/types.ts`. This hook fetches the separate descriptor/instance
+ * discovery read so bindings can be resolved to `CapabilityBindingView` for
+ * display. A discovery fetch failure never blocks rendering the bindings
+ * themselves: each still shows its pinned descriptor/operation/instance ids,
+ * just without live descriptor/instance enrichment, alongside an explicit
+ * unavailable note.
+ */
+function useCapabilityDiscovery() {
+  const [status, setStatus] = useState<"loading" | "ready" | "error">(
+    "loading",
+  );
+  const [discovery, setDiscovery] = useState<CapabilityDiscovery>(
+    defaultDiscovery(),
+  );
+  const [error, setError] = useState<ReturnType<
+    typeof classifyAsyncError
+  > | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    void getCapabilityDiscovery()
+      .then((next) => {
+        if (cancelled) return;
+        setDiscovery(next);
+        setStatus("ready");
+      })
+      .catch((next: unknown) => {
+        if (cancelled) return;
+        setError(classifyAsyncError(next));
+        setStatus("error");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  return { status, discovery, error };
 }
 
 
@@ -869,6 +919,22 @@ export function AgentWorkspaceView({
     releaseVersion,
     error: contractError,
   } = useAgentContract(agentId);
+  const {
+    status: discoveryStatus,
+    discovery,
+    error: discoveryError,
+  } = useCapabilityDiscovery();
+  const capabilityViews = useMemo<CapabilityBindingView[] | null>(() => {
+    if (!contract.capabilities) return null;
+    return contract.capabilities.map((binding) =>
+      resolveCapabilityBindingView(
+        binding,
+        discovery.descriptors.find((d) => d.id === binding.descriptor.id) ??
+          null,
+        discovery.instances.find((i) => i.id === binding.instance.id) ?? null,
+      ),
+    );
+  }, [contract.capabilities, discovery]);
   const [tab, setTab] = useState<AgentWorkspaceTabId>("build");
   const [advanced, setAdvanced] = useState(false);
 
@@ -1046,9 +1112,15 @@ export function AgentWorkspaceView({
             <div>
               <dt>Capabilities</dt>
               <dd>
-                {contract.capabilities && contract.capabilities.length > 0 ? (
+                {discoveryStatus === "error" && discoveryError ? (
+                  <small className="agent-capability-discovery-note" data-tone="unavailable">
+                    Live descriptor/instance enrichment unavailable
+                    ({discoveryError.message}) — showing pinned bindings only.
+                  </small>
+                ) : null}
+                {capabilityViews && capabilityViews.length > 0 ? (
                   <ul className="agent-capabilities-list">
-                    {contract.capabilities.map((capability) => {
+                    {capabilityViews.map((capability) => {
                       const descriptor = capability.resolved_descriptor;
                       const instance = capability.resolved_instance;
                       const approval = capability.binding.approval;

@@ -630,7 +630,18 @@ export interface AgentContractView {
   memory: MemoryView;
   connections: ConnectionView[] | null;
   specialists: SpecialistView[] | null;
-  capabilities: CapabilityBindingView[] | null;
+  /**
+   * Raw, persisted `CapabilityBinding` rows — never the expanded
+   * `CapabilityBindingView`. Verified against the backend's real
+   * `AgentManifest.capabilities: tuple[CapabilityBinding, ...]` field
+   * (commit `d6df0fe`): the canonical version/resolve/catalog contract
+   * embeds only pinned typed refs, not resolved descriptor/instance data.
+   * Callers that need to render these must resolve each binding against a
+   * separately-fetched descriptor/instance discovery read via
+   * `resolveCapabilityBindingView` — never assume this array arrives
+   * pre-resolved.
+   */
+  capabilities: CapabilityBinding[] | null;
   safety: string | null;
   tests: string | null;
   deployment: string | null;

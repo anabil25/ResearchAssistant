@@ -1,6 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const ALLOWED_PREFIXES = ["api/", "health", "ready"];
+// "v1/" allows the Agent Studio router through: verified against the real
+// backend commit renaming its router prefix to `/v1/agent-studio`, mounted
+// at the FastAPI app root (not nested under the `/api` prefix every other
+// feature router uses) — see the Round 8 history entry in `lib/api.ts`.
+const ALLOWED_PREFIXES = ["api/", "v1/", "health", "ready"];
 const MAX_PROXY_BODY_BYTES = 21_000_000;
 
 class PayloadTooLargeError extends Error {}

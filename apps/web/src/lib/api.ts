@@ -27,13 +27,22 @@ import type {
   WorkspaceSummary,
 } from "@/lib/types";
 
-const API_BASE = "/api/backend/api";
+// The Next.js catch-all backend proxy (`src/app/api/backend/[...path]/route.ts`)
+// forwards anything matching its `ALLOWED_PREFIXES` allowlist straight through
+// to the FastAPI backend root. Pre-existing, non-Agent-Studio features are
+// all mounted under the backend's own `/api` router prefix, hence `API_BASE`
+// below. Agent Studio is mounted at the backend's root under `/v1/agent-studio`
+// (see `AGENT_STUDIO_BASE`) — a distinct prefix, not nested under `/api` — so
+// it gets its own base rather than reusing `API_BASE`.
+const PROXY_BASE = "/api/backend";
+const API_BASE = `${PROXY_BASE}/api`;
+const AGENT_STUDIO_BASE = `${PROXY_BASE}/v1/agent-studio`;
 
 /**
- * Thrown by `apiFetch` for any non-2xx response. Carries the real HTTP
- * status so callers can render a precise, honest state (unauthorized,
- * unavailable/not-yet-implemented, needs-approval, etc.) instead of a single
- * generic error banner. Still an `Error`, so existing
+ * Thrown by `apiFetch`/`backendFetch` for any non-2xx response. Carries the
+ * real HTTP status so callers can render a precise, honest state
+ * (unauthorized, unavailable/not-yet-implemented, needs-approval, etc.)
+ * instead of a single generic error banner. Still an `Error`, so existing
  * `error instanceof Error ? error.message : ...` call sites keep working.
  */
 export class ApiError extends Error {
@@ -46,8 +55,13 @@ export class ApiError extends Error {
   }
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(`${API_BASE}${path}`, {
+/**
+ * Shared fetch/error-handling core for every backend call, regardless of
+ * which base path it's rooted under. `apiFetch` and `agentStudioFetch` are
+ * both thin wrappers over this that only differ in which base they prefix.
+ */
+async function backendFetch<T>(fullPath: string, init?: RequestInit): Promise<T> {
+  const response = await fetch(fullPath, {
     ...init,
     headers: {
       "Content-Type": "application/json",
@@ -68,6 +82,10 @@ async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
     );
   }
   return (await response.json()) as T;
+}
+
+async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
+  return backendFetch<T>(`${API_BASE}${path}`, init);
 }
 
 export interface WorkspaceData {
@@ -267,23 +285,49 @@ export async function uploadLibraryItem(
 //     `AgentContractView`-only) were already addressed in Rounds 4-6 above;
 //     the review appears to have been run against the older `7caafc0`
 //     checkpoint rather than the current HEAD.
+//   Round 8 — the backend genuinely moved its router prefix again, this time
+//     verified directly against the real commit (`d6df0fe`, on the sibling
+//     backend session's branch) rather than taken on the sibling's word
+//     alone: `agent_studio_router = APIRouter(prefix="/v1/agent-studio")`,
+//     mounted at the FastAPI app root with `app.include_router(...)` and no
+//     additional `/api` wrapper — unlike every other feature router, which
+//     bakes its own `/api/...` prefix in. So Round 4's flip to `/api/agent-
+//     studio` is itself now superseded; `agentStudioFetch` targets
+//     `/v1/agent-studio` again, through a *separate* `AGENT_STUDIO_BASE`
+//     (not `API_BASE`, since `/v1/...` isn't nested under `/api/`). The
+//     backend proxy's `ALLOWED_PREFIXES` allowlist gained a matching `"v1/"`
+//     entry. Also verified against `d6df0fe`'s actual Pydantic models: the
+//     persisted `AgentManifest.capabilities` field is `tuple[CapabilityBinding,
+//     ...]` — raw bindings, never the expanded `CapabilityBindingView` — so
+//     `AgentContractView.capabilities` was corrected to match (see
+//     `lib/types.ts`); the UI now resolves each raw binding to a view for
+//     rendering client-side via `resolveCapabilityBindingView`, joined
+//     against a separately-fetched `getCapabilityDiscovery()` read, instead
+//     of assuming the contract embeds pre-resolved views. This round's
+//     backend inspection did *not* find a `/versions/{id}/capability-views`
+//     sidecar endpoint in `d6df0fe`'s router — that claim isn't corroborated
+//     against committed backend source yet, so no client call was added for
+//     it; the existing client-side resolve path covers the same need without
+//     depending on an unconfirmed endpoint. The approval status enum already
+//     matched (`not_required|pending|approved|rejected|expired|revoked`) —
+//     no change needed there.
 //
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`
-// proxy used everywhere else. That's deliberate — when the backend's final
-// OpenAPI lands, only this one function's path prefix (and the generated
-// types layered underneath `lib/types.ts`) should need to change; no
-// consuming component should ever hard-code an Agent Studio path itself.
-// Every function below issues a real request; until the backend ships these
-// routes they will reject with a real error (404/502) that callers must
-// surface as an explicit unavailable state, never a fabricated success.
-// `getWorkspaceData`'s `/agents` read (AgentSetting[]) remains the one
-// legacy exception, used only to build the `source: "legacy_agents_endpoint"`
-// fallback in `lib/agent-catalog.ts`.
+// proxy used everywhere else (just a different sub-path than `apiFetch`).
+// That's deliberate — when the backend's final OpenAPI lands, only this one
+// function's base path (and the generated types layered underneath
+// `lib/types.ts`) should need to change; no consuming component should ever
+// hard-code an Agent Studio path itself. Every function below issues a real
+// request; until the backend ships these routes they will reject with a
+// real error (404/502) that callers must surface as an explicit unavailable
+// state, never a fabricated success. `getWorkspaceData`'s `/agents` read
+// (AgentSetting[]) remains the one legacy exception, used only to build the
+// `source: "legacy_agents_endpoint"` fallback in `lib/agent-catalog.ts`.
 // ---------------------------------------------------------------------------
 
 async function agentStudioFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  return apiFetch<T>(`/agent-studio${path}`, init);
+  return backendFetch<T>(`${AGENT_STUDIO_BASE}${path}`, init);
 }
 
 /** Released-agent catalog/summary — authoritative once this endpoint exists. */

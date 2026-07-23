@@ -22,6 +22,7 @@ import {
   getAgentRelease,
   getAgentReleases,
   getAgentTraces,
+  getCapabilityDiscovery,
   postBuilderMessage,
   runStudio,
   type WorkspaceData,
@@ -50,6 +51,7 @@ jest.mock("@/lib/api", () => {
     getAgentRelease: jest.fn(),
     getAgentReleases: jest.fn(),
     getAgentTraces: jest.fn(),
+    getCapabilityDiscovery: jest.fn(),
     postBuilderMessage: jest.fn(),
     runStudio: jest.fn(),
   };
@@ -247,6 +249,12 @@ function releaseSummary(
 
 beforeEach(() => {
   jest.clearAllMocks();
+  jest.mocked(getCapabilityDiscovery).mockResolvedValue({
+    descriptors: [],
+    instances: [],
+    warnings: [],
+    refreshed_at: null,
+  });
 });
 
 /** Creates a promise plus externally-callable resolve/reject, so tests can
@@ -1321,51 +1329,24 @@ describe("AgentWorkspaceView", () => {
         ],
         capabilities: [
           {
-            binding: {
-              descriptor: { id: "web-search", version: "1.0.0" },
-              operation: "search",
-              instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
-              configuration: null,
-              connection: { ref: "conn-bing" },
-              policy: null,
-              provider_contract_version: "2024-06-01",
-              destination_constraints: ["bing.com"],
-              input_schema_digest: "sha256:in1",
-              output_schema_digest: "sha256:out1",
-              enabled: true,
-              approval: {
-                status: "not_required",
-                record_id: null,
-                scope_hash: null,
-                actor: null,
-                expires_at: null,
-              },
+            descriptor: { id: "web-search", version: "1.0.0" },
+            operation: "search",
+            instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
+            configuration: null,
+            connection: { ref: "conn-bing" },
+            policy: null,
+            provider_contract_version: "2024-06-01",
+            destination_constraints: ["bing.com"],
+            input_schema_digest: "sha256:in1",
+            output_schema_digest: "sha256:out1",
+            enabled: true,
+            approval: {
+              status: "not_required",
+              record_id: null,
+              scope_hash: null,
+              actor: null,
+              expires_at: null,
             },
-            resolved_descriptor: {
-              id: "web-search",
-              version: "1.0.0",
-              family: "web",
-              operation: "search",
-              risk_class: "read",
-              description: "Search the public web.",
-              digest: "sha256:desc1",
-            },
-            resolved_instance: {
-              id: "web-search-instance-1",
-              descriptor_id: "web-search",
-              descriptor_digest: "sha256:desc1",
-              version: "3.2.0",
-              fingerprint: "fp-web-search-1",
-              tenant_id: "tenant-demo",
-              workspace_id: "workspace-demo",
-              maturity: "ga",
-              lifecycle: "active",
-              lifecycle_reason: null,
-              provider: "bing",
-              destination: null,
-              readiness: "ready",
-            },
-            stale_reason: null,
           },
         ],
         public_boundary: {
@@ -1376,6 +1357,38 @@ describe("AgentWorkspaceView", () => {
           approval_required: true,
         },
       },
+    });
+    jest.mocked(getCapabilityDiscovery).mockResolvedValue({
+      descriptors: [
+        {
+          id: "web-search",
+          version: "1.0.0",
+          family: "web",
+          operation: "search",
+          risk_class: "read",
+          description: "Search the public web.",
+          digest: "sha256:desc1",
+        },
+      ],
+      instances: [
+        {
+          id: "web-search-instance-1",
+          descriptor_id: "web-search",
+          descriptor_digest: "sha256:desc1",
+          version: "3.2.0",
+          fingerprint: "fp-web-search-1",
+          tenant_id: "tenant-demo",
+          workspace_id: "workspace-demo",
+          maturity: "ga",
+          lifecycle: "active",
+          lifecycle_reason: null,
+          provider: "bing",
+          destination: null,
+          readiness: "ready",
+        },
+      ],
+      warnings: [],
+      refreshed_at: "2026-01-01T00:00:00Z",
     });
     const data = workspaceData({
       agents: [
@@ -1615,6 +1628,35 @@ describe("AgentWorkspaceView", () => {
     await flush();
   });
 
+  it("ignores a final capability discovery failure that arrives after the workspace view unmounts", async () => {
+    const discoveryCall = deferred<Awaited<ReturnType<typeof getCapabilityDiscovery>>>();
+    jest.mocked(getCapabilityDiscovery).mockReturnValue(discoveryCall.promise);
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "primary",
+          status: "Active",
+          web_access: "none",
+          workflow_steps: [],
+        },
+      ],
+    });
+    const { unmount } = render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    unmount();
+    discoveryCall.reject(new ApiError("capability discovery unavailable", 503));
+    await flush();
+  });
+
   it("renders populated knowledge/tools, alternate connection/specialist/capability shapes, and the deepest model/deployment/tier fallbacks", async () => {
     const user = userEvent.setup();
     jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
@@ -1646,163 +1688,159 @@ describe("AgentWorkspaceView", () => {
           ],
           capabilities: [
             {
-              binding: {
-                descriptor: { id: "analysis-summarize", version: "1.0.0" },
-                operation: "summarize",
-                instance: { id: "analysis-summarize-instance", version: null, fingerprint: "fp-analysis-1" },
-                configuration: null,
-                connection: null,
-                policy: null,
-                provider_contract_version: null,
-                destination_constraints: null,
-                input_schema_digest: null,
-                output_schema_digest: null,
-                enabled: false,
-                approval: {
-                  status: "not_required",
-                  record_id: null,
-                  scope_hash: null,
-                  actor: null,
-                  expires_at: null,
-                },
+              descriptor: { id: "analysis-summarize", version: "1.0.0" },
+              operation: "summarize",
+              instance: { id: "analysis-summarize-instance", version: null, fingerprint: "fp-analysis-1" },
+              configuration: null,
+              connection: null,
+              policy: null,
+              provider_contract_version: null,
+              destination_constraints: null,
+              input_schema_digest: null,
+              output_schema_digest: null,
+              enabled: false,
+              approval: {
+                status: "not_required",
+                record_id: null,
+                scope_hash: null,
+                actor: null,
+                expires_at: null,
               },
-              resolved_descriptor: {
-                id: "analysis-summarize",
-                version: "1.0.0",
-                family: "analysis",
-                operation: "summarize",
-                risk_class: "read",
-                description: "Summarize retrieved evidence.",
-                digest: "sha256:desc2",
-              },
-              resolved_instance: null,
-              stale_reason:
-                "This binding's discovered instance is no longer resolvable — it may have been removed or is unavailable.",
             },
             {
-              binding: {
-                descriptor: { id: "unresolved-descriptor-op", version: "1.0.0" },
-                operation: "unresolved-operation",
-                instance: { id: "unresolved-instance", version: null, fingerprint: "fp-unresolved" },
-                configuration: null,
-                connection: null,
-                policy: null,
-                provider_contract_version: null,
-                destination_constraints: null,
-                input_schema_digest: null,
-                output_schema_digest: null,
-                enabled: true,
-                approval: {
-                  status: "pending",
-                  record_id: "approval-42",
-                  scope_hash: "sha256:scope1",
-                  actor: "reviewer@example.com",
-                  expires_at: null,
-                },
+              descriptor: { id: "unresolved-descriptor-op", version: "1.0.0" },
+              operation: "unresolved-operation",
+              instance: { id: "unresolved-instance", version: null, fingerprint: "fp-unresolved" },
+              configuration: null,
+              connection: null,
+              policy: null,
+              provider_contract_version: null,
+              destination_constraints: null,
+              input_schema_digest: null,
+              output_schema_digest: null,
+              enabled: true,
+              approval: {
+                status: "pending",
+                record_id: "approval-42",
+                scope_hash: "sha256:scope1",
+                actor: "reviewer@example.com",
+                expires_at: null,
               },
-              resolved_descriptor: null,
-              resolved_instance: null,
-              stale_reason:
-                "This binding's capability descriptor is no longer resolvable from the provider catalog.",
             },
             {
-              binding: {
-                descriptor: { id: "analysis-classify", version: "1.0.0" },
-                operation: "classify",
-                instance: { id: "analysis-classify-instance", version: null, fingerprint: "fp-classify-1" },
-                configuration: null,
-                connection: null,
-                policy: null,
-                provider_contract_version: "2.1",
-                destination_constraints: null,
-                input_schema_digest: null,
-                output_schema_digest: null,
-                enabled: true,
-                approval: {
-                  status: "not_required",
-                  record_id: null,
-                  scope_hash: null,
-                  actor: null,
-                  expires_at: null,
-                },
+              descriptor: { id: "analysis-classify", version: "1.0.0" },
+              operation: "classify",
+              instance: { id: "analysis-classify-instance", version: null, fingerprint: "fp-classify-1" },
+              configuration: null,
+              connection: null,
+              policy: null,
+              provider_contract_version: "2.1",
+              destination_constraints: null,
+              input_schema_digest: null,
+              output_schema_digest: null,
+              enabled: true,
+              approval: {
+                status: "not_required",
+                record_id: null,
+                scope_hash: null,
+                actor: null,
+                expires_at: null,
               },
-              resolved_descriptor: {
-                id: "analysis-classify",
-                version: "1.0.0",
-                family: "analysis",
-                operation: "classify",
-                risk_class: "read",
-                description: "Classify retrieved evidence.",
-                digest: "sha256:desc3",
-              },
-              resolved_instance: {
-                id: "analysis-classify-instance",
-                descriptor_id: "analysis-classify",
-                descriptor_digest: "sha256:desc3",
-                version: "2.1.0",
-                fingerprint: "fp-classify-1",
-                tenant_id: "tenant-demo",
-                workspace_id: "workspace-demo",
-                maturity: "ga",
-                lifecycle: "deprecated",
-                lifecycle_reason: "Superseded by analysis-summarize v2; sunset 2026-12-01.",
-                provider: "internal",
-                destination: null,
-                readiness: "ready",
-              },
-              stale_reason: null,
             },
             {
-              binding: {
-                descriptor: { id: "analysis-legacy-extract", version: "1.0.0" },
-                operation: "extract",
-                instance: { id: "analysis-legacy-extract-instance", version: null, fingerprint: "fp-legacy-extract-1" },
-                configuration: null,
-                connection: null,
-                policy: null,
-                provider_contract_version: null,
-                destination_constraints: ["internal-store"],
-                input_schema_digest: null,
-                output_schema_digest: null,
-                enabled: false,
-                approval: {
-                  status: "not_required",
-                  record_id: null,
-                  scope_hash: null,
-                  actor: null,
-                  expires_at: null,
-                },
+              descriptor: { id: "analysis-legacy-extract", version: "1.0.0" },
+              operation: "extract",
+              instance: { id: "analysis-legacy-extract-instance", version: null, fingerprint: "fp-legacy-extract-1" },
+              configuration: null,
+              connection: null,
+              policy: null,
+              provider_contract_version: null,
+              destination_constraints: ["internal-store"],
+              input_schema_digest: null,
+              output_schema_digest: null,
+              enabled: false,
+              approval: {
+                status: "not_required",
+                record_id: null,
+                scope_hash: null,
+                actor: null,
+                expires_at: null,
               },
-              resolved_descriptor: {
-                id: "analysis-legacy-extract",
-                version: "1.0.0",
-                family: "analysis",
-                operation: "extract",
-                risk_class: "read",
-                description: "Legacy structured extraction.",
-                digest: "sha256:desc4",
-              },
-              resolved_instance: {
-                id: "analysis-legacy-extract-instance",
-                descriptor_id: "analysis-legacy-extract",
-                descriptor_digest: "sha256:desc4",
-                version: "1.0.0",
-                fingerprint: "fp-legacy-extract-1",
-                tenant_id: "tenant-demo",
-                workspace_id: "workspace-demo",
-                maturity: "preview",
-                lifecycle: "retired",
-                lifecycle_reason: null,
-                provider: "internal",
-                destination: null,
-                readiness: "unavailable",
-              },
-              stale_reason: null,
             },
           ],
         },
       }),
     );
+    // `analysis-summarize`'s descriptor resolves but its instance doesn't
+    // (simulating a removed/unavailable discovered resource); the
+    // `unresolved-descriptor-op` binding's descriptor never resolves at all
+    // (neither its descriptor nor its instance appear below); the other two
+    // bindings resolve fully against a matching descriptor+instance pair.
+    jest.mocked(getCapabilityDiscovery).mockResolvedValue({
+      descriptors: [
+        {
+          id: "analysis-summarize",
+          version: "1.0.0",
+          family: "analysis",
+          operation: "summarize",
+          risk_class: "read",
+          description: "Summarize retrieved evidence.",
+          digest: "sha256:desc2",
+        },
+        {
+          id: "analysis-classify",
+          version: "1.0.0",
+          family: "analysis",
+          operation: "classify",
+          risk_class: "read",
+          description: "Classify retrieved evidence.",
+          digest: "sha256:desc3",
+        },
+        {
+          id: "analysis-legacy-extract",
+          version: "1.0.0",
+          family: "analysis",
+          operation: "extract",
+          risk_class: "read",
+          description: "Legacy structured extraction.",
+          digest: "sha256:desc4",
+        },
+      ],
+      instances: [
+        {
+          id: "analysis-classify-instance",
+          descriptor_id: "analysis-classify",
+          descriptor_digest: "sha256:desc3",
+          version: "2.1.0",
+          fingerprint: "fp-classify-1",
+          tenant_id: "tenant-demo",
+          workspace_id: "workspace-demo",
+          maturity: "ga",
+          lifecycle: "deprecated",
+          lifecycle_reason: "Superseded by analysis-summarize v2; sunset 2026-12-01.",
+          provider: "internal",
+          destination: null,
+          readiness: "ready",
+        },
+        {
+          id: "analysis-legacy-extract-instance",
+          descriptor_id: "analysis-legacy-extract",
+          descriptor_digest: "sha256:desc4",
+          version: "1.0.0",
+          fingerprint: "fp-legacy-extract-1",
+          tenant_id: "tenant-demo",
+          workspace_id: "workspace-demo",
+          maturity: "preview",
+          lifecycle: "retired",
+          lifecycle_reason: null,
+          provider: "internal",
+          destination: null,
+          readiness: "unavailable",
+        },
+      ],
+      warnings: [],
+      refreshed_at: "2026-01-01T00:00:00Z",
+    });
     const data = workspaceData({
       agents: [
         {
@@ -1883,6 +1921,75 @@ describe("AgentWorkspaceView", () => {
 
     await user.click(screen.getByRole("button", { name: /Advanced/ }));
     expect(screen.getByText(/pinned to the undiscovered tier/)).toBeInTheDocument();
+  });
+
+  it("shows an explicit unavailable note (not a crash or silent gap) when capability discovery fails, while still rendering the pinned bindings", async () => {
+    jest.mocked(getAgentReleases).mockRejectedValue(new ApiError("no releases yet", 404));
+    jest.mocked(getAgentDraft).mockResolvedValue(
+      draftView({
+        contract: {
+          ...emptyContract(),
+          capabilities: [
+            {
+              descriptor: { id: "web-search", version: "1.0.0" },
+              operation: "search",
+              instance: { id: "web-search-instance-1", version: "3.2.0", fingerprint: "fp-web-search-1" },
+              configuration: null,
+              connection: null,
+              policy: null,
+              provider_contract_version: null,
+              destination_constraints: null,
+              input_schema_digest: null,
+              output_schema_digest: null,
+              enabled: true,
+              approval: {
+                status: "not_required",
+                record_id: null,
+                scope_hash: null,
+                actor: null,
+                expires_at: null,
+              },
+            },
+          ],
+        },
+      }),
+    );
+    jest.mocked(getCapabilityDiscovery).mockRejectedValue(
+      new ApiError("capability discovery unavailable", 503),
+    );
+    const data = workspaceData({
+      agents: [
+        {
+          id: "literature",
+          name: "literature-agent",
+          deployment: "",
+          model_tier: "",
+          status: "",
+          web_access: "",
+          workflow_steps: [],
+        },
+      ],
+    });
+    render(
+      <AgentWorkspaceView
+        agentId="literature"
+        data={data}
+        onRefresh={jest.fn()}
+        onBack={jest.fn()}
+      />,
+    );
+    const contract = screen.getByLabelText("Behavioral contract");
+    await waitFor(() =>
+      expect(
+        within(contract).getByText(
+          /Live descriptor\/instance enrichment unavailable/,
+        ),
+      ).toBeInTheDocument(),
+    );
+    // The binding itself still renders — degraded, not hidden — falling back
+    // to its own pinned descriptor/operation ids since nothing resolved.
+    expect(within(contract).getByText("web-search")).toBeInTheDocument();
+    expect(within(contract).getAllByText(/search/).length).toBeGreaterThan(0);
   });
 
   it("expands Advanced to reveal schema, runtime, identity, and the specialist hint including the live deployment id", async () => {
