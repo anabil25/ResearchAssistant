@@ -80,6 +80,16 @@ class Settings(BaseSettings):
         default="agentStudioCatalogV1",
         validation_alias="AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER",
     )
+    agent_studio_attestation_signing_key: str | None = Field(
+        default=None,
+        validation_alias="AGENT_STUDIO_ATTESTATION_SIGNING_KEY",
+        description=(
+            "Shared secret used to HMAC-sign ReleaseAttestation objects. When unset, "
+            "ReleaseAttestation falls back to an unkeyed SHA-256 content digest and reports "
+            "signature_algorithm='sha256-digest' rather than claiming a keyed signature it "
+            "cannot actually provide."
+        ),
+    )
     search_endpoint: str | None = Field(
         default=None,
         validation_alias="AZURE_SEARCH_ENDPOINT",

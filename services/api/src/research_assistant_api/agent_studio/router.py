@@ -21,6 +21,11 @@ from research_assistant_api.agent_studio.approval_consumption import (
     ApprovalConsumptionRequest,
     ApprovalConsumptionResult,
 )
+from research_assistant_api.agent_studio.approval_context import (
+    ApprovalContextRequest,
+    ApprovalContextResolver,
+    ApprovalContextResult,
+)
 from research_assistant_api.agent_studio.approvals import (
     ApprovalError,
     compute_approval_effective_state,
@@ -84,10 +89,16 @@ from research_assistant_api.agent_studio.models import (
     MemoryEntry,
     MemoryScopeKind,
     ModelDeploymentRef,
+    ReleaseAttestation,
     ReleaseGateReport,
     ResolvedAgentContract,
     StudioApprovalRecord,
     ToolRegistrationSpec,
+)
+from research_assistant_api.agent_studio.release_attestation import (
+    ReleaseAttestationOutcome,
+    ReleaseAttestationPort,
+    ReleaseAttestationRequest,
 )
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
@@ -121,6 +132,7 @@ from research_assistant_api.agent_studio.schemas import (
     PromotionRequest,
     RegisterToolRequest,
     RememberRequest,
+    ResolveApprovalContextRequest,
     RevokeApprovalRequest,
     RollbackRequest,
     RunGatesRequest,
@@ -231,6 +243,35 @@ def _idempotency_port(request: Request) -> IdempotencyPort:
     if port is None:
         raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
     return cast(IdempotencyPort, port)
+
+
+def _approval_context_resolver(request: Request) -> ApprovalContextResolver:
+    """Resolve the app-composed ``ApprovalContextResolver`` adapter.
+
+    Defaults to ``StoreBackedApprovalContextResolver`` (backed by this
+    package's own ``AgentStudioStore``) wired at composition root -- there
+    is no external provider dependency for resolving which of this
+    package's own approval records currently authorizes a binding, so a
+    missing port here means the same "metadata persistence unavailable" 503
+    as ``_store``/``_approval_consumption_port``.
+    """
+    resolver = getattr(request.app.state, "agent_studio_approval_context_resolver", None)
+    if resolver is None:
+        raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
+    return cast(ApprovalContextResolver, resolver)
+
+
+def _release_attestation_port(request: Request) -> ReleaseAttestationPort:
+    """Resolve the app-composed ``ReleaseAttestationPort`` adapter.
+
+    Defaults to ``StoreBackedReleaseAttestationPort`` wired at composition
+    root; a missing port here means the same "metadata persistence
+    unavailable" 503 as every other Agent Studio persistence-backed read.
+    """
+    port = getattr(request.app.state, "agent_studio_release_attestation_port", None)
+    if port is None:
+        raise _unavailable("Agent Studio metadata persistence is unavailable (no Cosmos DB configured).")
+    return cast(ReleaseAttestationPort, port)
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
@@ -933,6 +974,59 @@ async def consume_approval_route(
         idempotency_key=payload.idempotency_key,
     )
     return await port.consume_approval(consumption_request)
+
+
+@router.post("/approvals/context", response_model=ApprovalContextResult)
+async def resolve_approval_context_route(
+    request: Request,
+    payload: ResolveApprovalContextRequest,
+) -> ApprovalContextResult:
+    """Resolve the trusted ``approval_id``/``invocation_id`` a runtime caller
+    must pass to ``POST /approvals/{approval_id}/consume``.
+
+    The caller supplies only the plan facts it already knows on its own
+    (release/binding/operation) -- never an ``approval_id`` or
+    ``invocation_id``, both of which are always resolved/minted server-side
+    from this release's own currently-effectively-approved
+    ``CAPABILITY_OPERATION`` approval for the exact destination. This closes
+    the "API never supplies trusted approval_id/invocation_id" gap without
+    creating any new trust dependency: ``consume_approval_route`` still
+    independently revalidates everything regardless of what this route
+    returned. Read-only; performs no durable write and grants no authority
+    by itself.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    resolver = _approval_context_resolver(request)
+    context_request = ApprovalContextRequest(
+        scope=scope,
+        release_id=payload.release_id,
+        binding_id=payload.binding_id,
+        operation_id=payload.operation_id,
+    )
+    return await resolver.resolve_context(context_request)
+
+
+@router.get("/releases/{release_id}/attestation", response_model=ReleaseAttestation)
+async def get_release_attestation_route(
+    request: Request, release_id: str, project_id: str
+) -> ReleaseAttestation:
+    """Return a signed, objective ``ReleaseAttestation`` for one release.
+
+    Derived read-only from the release's own immutable ``ReleaseGateReport``
+    (never re-run, never influenced by advisory evaluations); intended for
+    harness/runtime startup to verify hard release gates passed before
+    trusting a release. Raises 404 if the release does not exist in this
+    scope, or has never had release gates run against it.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    port = _release_attestation_port(request)
+    result = await port.get_attestation(ReleaseAttestationRequest(scope=scope, release_id=release_id))
+    if result.outcome is ReleaseAttestationOutcome.NOT_FOUND:
+        raise _not_found(result.reason or f"Release '{release_id}' has no attestation available.")
+    assert result.attestation is not None  # guaranteed by ATTESTED outcome
+    return result.attestation
 
 
 @router.post(

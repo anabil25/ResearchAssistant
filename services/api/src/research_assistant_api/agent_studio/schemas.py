@@ -108,6 +108,28 @@ class RevokeApprovalRequest(BaseModel):
     reason: str = Field(min_length=1, max_length=4000)
 
 
+class ResolveApprovalContextRequest(BaseModel):
+    """Request body to resolve a trusted ``ApprovalContext`` for an
+    about-to-run capability-operation invocation.
+
+    Carries only the plan's identifying facts (release/binding/operation) --
+    deliberately excludes ``approval_id``/``invocation_id``: a caller can
+    never assert which approval authorizes it or mint its own
+    ``invocation_id``. Both are always resolved and minted server-side by
+    ``ApprovalContextResolver`` from the release's own currently-effective
+    ``CAPABILITY_OPERATION`` approval for this exact binding/operation,
+    closing the gap where a hosted caller had no trusted way to discover
+    either value before calling ``/approvals/{approval_id}/consume``.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    release_id: str = Field(min_length=1, max_length=200)
+    binding_id: str = Field(min_length=1, max_length=200)
+    operation_id: str = Field(min_length=1, max_length=200)
+
+
 class ConsumeCapabilityApprovalRequest(BaseModel):
     """Request body to durably, atomically spend a ``CAPABILITY_OPERATION``
     approval at actual runtime invocation.

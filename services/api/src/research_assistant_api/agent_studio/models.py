@@ -1310,6 +1310,57 @@ class ReleaseGateReport(BaseModel):
         )
 
 
+class ReleaseAttestationStatus(StrEnum):
+    """Whether a ``ReleaseAttestation`` found all objective hard gates passing.
+
+    Derived exclusively from ``ReleaseGateReport.passed`` (schema/build/
+    test/auth/policy/approval/security/smoke/binding) -- a report's
+    ``evaluations`` (advisory) never influence this value, matching the
+    hard-gate/advisory-evaluation boundary enforced everywhere else in this
+    package.
+    """
+
+    ATTESTED = "attested"
+    FAILED = "failed"
+
+
+class ReleaseAttestation(BaseModel):
+    """Signed, objective attestation that hard release gates passed for one
+    exact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a
+    harness/runtime consumer to verify at startup before trusting a release.
+
+    Never re-runs gates and never reflects advisory ``EvaluationRecord``
+    scores -- it is a purely read-derived, reproducible projection of a
+    release's own ``gate_report_id`` and its version's own ``manifest_hash``.
+    ``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==
+    "hmac-sha256"``) over the canonical, finite JSON encoding of every field
+    below when an attestation-signing key is configured; when none is
+    configured, ``signature_algorithm == "sha256-digest"`` and ``signature``
+    is a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-
+    evidence check but explicitly *not* claimed as a keyed signature, so a
+    consumer can distinguish "verified against a shared secret" from "just a
+    content digest" and this package never overstates what it can honestly
+    attest.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    release_id: str
+    version_id: str
+    logical_agent_id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    environment: DeploymentEnvironment
+    manifest_hash: str
+    gate_report_id: str
+    status: ReleaseAttestationStatus
+    gate_results: tuple[GateResult, ...]
+    blocking_gates: tuple[GateName, ...] = Field(default_factory=tuple)
+    attested_at: datetime = Field(default_factory=utc_now)
+    signature_algorithm: str
+    signature: str
+
+
 # --------------------------------------------------------------------------
 # Approvals and admin escalation
 # --------------------------------------------------------------------------

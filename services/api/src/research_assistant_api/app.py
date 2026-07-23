@@ -31,6 +31,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
+from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
 from research_assistant_api.agent_studio.authz import ClaimsGroupMembershipResolver
 from research_assistant_api.agent_studio.builder_service import (
@@ -47,6 +48,7 @@ from research_assistant_api.agent_studio.memory_service import (
     build_memory_store,
 )
 from research_assistant_api.agent_studio.model_discovery import build_model_discovery
+from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
 from research_assistant_api.agent_studio.release_service import ReleaseService
 from research_assistant_api.agent_studio.router import router as agent_studio_router
 from research_assistant_api.agent_studio.store import AgentStudioStoreError
@@ -170,6 +172,8 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_builder_service = None
         application.state.agent_studio_approval_consumption_port = None
         application.state.agent_studio_idempotency_port = None
+        application.state.agent_studio_approval_context_resolver = None
+        application.state.agent_studio_release_attestation_port = None
     else:
         application.state.agent_studio_store = store
         release_service = ReleaseService(store, registry, model_discovery=model_discovery)
@@ -195,6 +199,22 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         # by this same store, with no external provider dependency, so it is
         # production-safe as-is.
         application.state.agent_studio_idempotency_port = StoreBackedIdempotencyPort(store)
+        # Default approval-context resolver: given only the plan facts a
+        # runtime invocation already knows (release/binding/operation), this
+        # resolves the release's own currently-effectively-approved
+        # CAPABILITY_OPERATION approval and mints a fresh invocation_id --
+        # closing the "API never supplies trusted approval_id/invocation_id"
+        # gap without requiring a caller to guess or invent either value.
+        application.state.agent_studio_approval_context_resolver = StoreBackedApprovalContextResolver(store)
+        # Default release-attestation adapter: signs (HMAC-SHA256 when
+        # ``agent_studio_attestation_signing_key`` is configured, otherwise
+        # an honestly-labeled unkeyed SHA-256 digest) a read-derived
+        # projection of a release's own immutable ReleaseGateReport, for
+        # harness/runtime startup to verify hard gates passed before
+        # trusting a release -- advisory evaluations never affect this.
+        application.state.agent_studio_release_attestation_port = StoreBackedReleaseAttestationPort(
+            store, signing_key=settings.agent_studio_attestation_signing_key
+        )
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:

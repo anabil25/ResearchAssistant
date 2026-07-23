@@ -12,6 +12,7 @@ import pytest
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.testclient import TestClient
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
+from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.artifact_bundle_store import InMemoryArtifactBundleStore
 from research_assistant_api.agent_studio.authz import (
     MembershipCheckRequest,
@@ -56,6 +57,7 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
+from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
 from research_assistant_api.agent_studio.release_service import (
     AuthorizationError,
     ReleaseService,
@@ -198,6 +200,15 @@ def _build_app(
     # Mirrors app.py's composition root: the durable idempotency port is
     # only available when backed by real persistence.
     app.state.agent_studio_idempotency_port = StoreBackedIdempotencyPort(store) if store is not None else None
+    # Mirrors app.py's composition root: the approval-context resolver and
+    # release-attestation port are only available when backed by real
+    # persistence.
+    app.state.agent_studio_approval_context_resolver = (
+        StoreBackedApprovalContextResolver(store) if store is not None else None
+    )
+    app.state.agent_studio_release_attestation_port = (
+        StoreBackedReleaseAttestationPort(store) if store is not None else None
+    )
     return app
 
 
@@ -394,6 +405,66 @@ def idempotency_unavailable_client(
     # succeeds here and the 503 must come specifically from
     # ``_idempotency_port``.
     app.state.agent_studio_idempotency_port = None
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def approval_context_unavailable_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> Iterator[TestClient]:
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    # Simulates a composition root where Cosmos-backed persistence exists
+    # but the approval-context resolver itself was not wired -- distinct
+    # from ``unavailable_client``, since ``_store`` succeeds here and the
+    # 503 must come specifically from ``_approval_context_resolver``.
+    app.state.agent_studio_approval_context_resolver = None
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def release_attestation_unavailable_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+) -> Iterator[TestClient]:
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+    )
+    # Simulates a composition root where Cosmos-backed persistence exists
+    # but the release-attestation port itself was not wired -- distinct
+    # from ``unavailable_client``, since ``_store`` succeeds here and the
+    # 503 must come specifically from ``_release_attestation_port``.
+    app.state.agent_studio_release_attestation_port = None
     with TestClient(app) as test_client:
         yield test_client
 
@@ -1854,6 +1925,263 @@ def test_consume_approval_route_returns_503_when_consumption_port_unavailable(
     response = approval_consumption_unavailable_client.post(
         f"/v1/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+# --- approval context resolution & release attestation routes --------------
+
+
+def _setup_gated_release_with_capability_approval(
+    client: TestClient,
+    store: AgentStudioStore,
+    *,
+    logical_agent_id: str,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Like ``_setup_approved_capability_approval`` but additionally runs
+    release gates so a real ``AgentRelease`` (GATED) exists.
+
+    Returns ``(binding, approval, release)`` as decoded JSON /
+    store-serialized bodies.
+    """
+    binding, approval = _setup_approved_capability_approval(client, store, logical_agent_id=logical_agent_id)
+    version_id = approval["version_id"]
+    report = _run_gates(client, version_id, headers=USER_HEADERS, evidence=GATED_EVIDENCE)
+    assert all(
+        result["status"] in {"passed", "not_applicable"} for result in report["results"]
+    ), report
+    release = store.latest_release_for_version(_scope(), version_id)
+    assert release is not None
+    return binding, approval, json.loads(release.model_dump_json())
+
+
+def test_resolve_approval_context_route_resolves_and_can_be_consumed(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    binding, approval, release = _setup_gated_release_with_capability_approval(
+        client, store, logical_agent_id="agent-context-resolve"
+    )
+
+    response = client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(
+            release_id=release["id"],
+            binding_id=binding["binding_id"],
+            operation_id="invoke",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "resolved"
+    assert body["approval_id"] == approval["id"]
+    assert body["invocation_id"] is not None
+    assert body["invocation_id"].startswith("inv-")
+
+    # The resolved context can actually be consumed -- proving there is no
+    # new trust dependency: ``consume_approval_route`` independently
+    # revalidates everything regardless of what ``resolve`` returned.
+    consume_response = client.post(
+        f"/v1/agent-studio/approvals/{body['approval_id']}/consume",
+        json=_consume_body(
+            binding_id=binding["binding_id"],
+            invocation_id=body["invocation_id"],
+            idempotency_key=f"idem-{body['invocation_id']}",
+            release_id=release["id"],
+        ),
+        headers=USER_HEADERS,
+    )
+    assert consume_response.status_code == 200, consume_response.text
+    assert consume_response.json()["outcome"] == "consumed"
+
+
+def test_resolve_approval_context_route_returns_not_approved_before_decision(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    _create_agent(client, logical_agent_id="agent-context-not-approved", headers=USER_HEADERS)
+    attach_response = client.post(
+        "/v1/agent-studio/capabilities/attach",
+        json={
+            "descriptor_id": "foundry.azure_functions",
+            "operation": "invoke",
+            "connection_ref": "conn-azure-functions",
+            "policy_ref": "policy.capability-approval.write-irreversible.v1",
+        },
+        headers=USER_HEADERS,
+    )
+    assert attach_response.status_code == 200, attach_response.text
+    binding = attach_response.json()
+    draft = _get_draft(client, "agent-context-not-approved", headers=USER_HEADERS)
+    draft["manifest"]["capabilities"] = [binding]
+    _update_manifest(client, "agent-context-not-approved", draft["manifest"], headers=USER_HEADERS)
+    version = _cut_version(client, "agent-context-not-approved", headers=USER_HEADERS)
+
+    response = client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(
+            release_id="no-release-yet",
+            binding_id=binding["binding_id"],
+            operation_id="invoke",
+        ),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "not_found"
+    assert body["approval_id"] is None
+    assert body["invocation_id"] is None
+    assert version["id"]  # keep version referenced; no release exists yet
+
+
+def test_resolve_approval_context_route_scopes_by_project_and_tenant(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    binding, _approval, release = _setup_gated_release_with_capability_approval(
+        client, store, logical_agent_id="agent-context-cross-scope"
+    )
+
+    cross_project = client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(
+            OTHER_PROJECT_ID,
+            release_id=release["id"],
+            binding_id=binding["binding_id"],
+            operation_id="invoke",
+        ),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project.status_code == 200, cross_project.text
+    assert cross_project.json()["outcome"] == "not_found"
+
+    cross_tenant = client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(
+            release_id=release["id"],
+            binding_id=binding["binding_id"],
+            operation_id="invoke",
+        ),
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert cross_tenant.status_code == 200, cross_tenant.text
+    assert cross_tenant.json()["outcome"] == "not_found"
+
+
+def test_resolve_approval_context_route_rejects_unknown_fields() -> None:
+    # approval_id/invocation_id/principal_id must never be accepted as
+    # request input -- this is a schema-level contract test, not a route
+    # test, so it does not need a client.
+    from pydantic import ValidationError
+    from research_assistant_api.agent_studio.schemas import ResolveApprovalContextRequest
+
+    forged_payload: dict[str, Any] = {
+        "project_id": DEFAULT_PROJECT_ID,
+        "release_id": "release-1",
+        "binding_id": "binding-1",
+        "operation_id": "invoke",
+        "approval_id": "forged-approval",
+    }
+    with pytest.raises(ValidationError):
+        ResolveApprovalContextRequest(**forged_payload)
+
+
+def test_resolve_approval_context_route_returns_503_when_persistence_unavailable(
+    unavailable_client: TestClient,
+) -> None:
+    response = unavailable_client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(release_id="release-1", binding_id="binding-1", operation_id="invoke"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+def test_resolve_approval_context_route_returns_503_when_resolver_unavailable(
+    approval_context_unavailable_client: TestClient,
+) -> None:
+    response = approval_context_unavailable_client.post(
+        "/v1/agent-studio/approvals/context",
+        json=_body(release_id="release-1", binding_id="binding-1", operation_id="invoke"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+def test_get_release_attestation_route_returns_signed_attestation(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    _binding, _approval, release = _setup_gated_release_with_capability_approval(
+        client, store, logical_agent_id="agent-attestation-happy"
+    )
+
+    response = client.get(
+        f"/v1/agent-studio/releases/{release['id']}/attestation",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["release_id"] == release["id"]
+    assert body["status"] == "attested"
+    assert body["signature_algorithm"] == "sha256-digest"
+    assert body["signature"].startswith("attestation:v1:sha256-digest:")
+
+
+def test_get_release_attestation_route_is_not_found_for_missing_or_ungated_release(
+    client: TestClient,
+) -> None:
+    missing = client.get(
+        "/v1/agent-studio/releases/missing-release/attestation",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+    assert missing.status_code == 404
+
+
+def test_get_release_attestation_route_scopes_by_project_and_tenant(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    _binding, _approval, release = _setup_gated_release_with_capability_approval(
+        client, store, logical_agent_id="agent-attestation-cross-scope"
+    )
+
+    cross_project = client.get(
+        f"/v1/agent-studio/releases/{release['id']}/attestation",
+        params={"project_id": OTHER_PROJECT_ID},
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project.status_code == 404
+
+    cross_tenant = client.get(
+        f"/v1/agent-studio/releases/{release['id']}/attestation",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=OTHER_TENANT_HEADERS,
+    )
+    assert cross_tenant.status_code == 404
+
+
+def test_get_release_attestation_route_returns_503_when_persistence_unavailable(
+    unavailable_client: TestClient,
+) -> None:
+    response = unavailable_client.get(
+        "/v1/agent-studio/releases/release-1/attestation",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+def test_get_release_attestation_route_returns_503_when_port_unavailable(
+    release_attestation_unavailable_client: TestClient,
+) -> None:
+    response = release_attestation_unavailable_client.get(
+        "/v1/agent-studio/releases/release-1/attestation",
+        params={"project_id": DEFAULT_PROJECT_ID},
         headers=USER_HEADERS,
     )
     assert response.status_code == 503
