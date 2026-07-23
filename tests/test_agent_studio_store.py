@@ -23,6 +23,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalConsumptionRecord,
     ApprovalKind,
     ApprovalRevocation,
     ApprovalState,
@@ -232,6 +233,33 @@ def _revocation(
         project_id=project_id,
         actor_id=actor_id,
         reason=reason,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _consumption(
+    *,
+    consumption_id: str = "consumption-1",
+    approval_id: str = "approval-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    principal_id: str = USER_ID,
+    binding_id: str = "binding-1",
+    operation_id: str = "search",
+    invocation_id: str = "invocation-1",
+    idempotency_key: str = "consume-key-1",
+) -> ApprovalConsumptionRecord:
+    return ApprovalConsumptionRecord(
+        id=consumption_id,
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        principal_id=principal_id,
+        binding_id=binding_id,
+        operation_id=operation_id,
+        args_hash="args-hash-1",
+        destination_hash="destination-hash-1",
+        invocation_id=invocation_id,
         idempotency_key=idempotency_key,
     )
 
@@ -643,6 +671,58 @@ def test_create_revocation_is_atomic_for_concurrent_calls() -> None:
     # "decided, guard released" transition for a permanent fact.
     retried = _revocation(revocation_id="revocation-race-retry", idempotency_key="rev-race-key")
     assert store.create_revocation(SCOPE, retried) == results[0]
+
+
+def test_approval_consumption_is_single_use_and_scope_isolated() -> None:
+    store = AgentStudioStore()
+    assert store.get_approval_consumption(SCOPE, "approval-1") is None
+
+    first = _consumption()
+    duplicate = _consumption(consumption_id="consumption-duplicate", idempotency_key="different-key")
+
+    assert store.create_approval_consumption(SCOPE, first) == first
+    # A second attempt against the same approval never wins, even under a
+    # different idempotency key -- the caller must inspect the returned
+    # (winning) record to tell replay apart from exhaustion.
+    assert store.create_approval_consumption(SCOPE, duplicate) == first
+    assert store.get_approval_consumption(SCOPE, "approval-1") == first
+
+    # A consumption for a different approval is independent.
+    other = _consumption(consumption_id="consumption-2", approval_id="approval-2")
+    assert store.create_approval_consumption(SCOPE, other) == other
+    assert store.get_approval_consumption(SCOPE, "approval-1") == first
+    assert store.get_approval_consumption(SCOPE, "approval-2") == other
+
+    # Scope isolation: neither a sibling project nor a sibling tenant can
+    # observe this scope's consumption record.
+    assert store.get_approval_consumption(SAME_TENANT_OTHER_PROJECT_SCOPE, "approval-1") is None
+    assert store.get_approval_consumption(OTHER_TENANT_SAME_PROJECT_SCOPE, "approval-1") is None
+
+    with pytest.raises(AgentStudioStoreError):
+        store.create_approval_consumption(SCOPE, _consumption(project_id=OTHER_PROJECT))
+
+
+def test_create_approval_consumption_is_atomic_for_concurrent_calls() -> None:
+    """Concurrent ``create_approval_consumption`` calls against the same
+    approval must all observe the exact same winning record -- a single-use
+    approval can never be durably consumed twice, even under a race."""
+    store = AgentStudioStore()
+
+    def request(index: int) -> ApprovalConsumptionRecord:
+        candidate = _consumption(consumption_id=f"consumption-race-{index}", idempotency_key=f"race-key-{index}")
+        return store.create_approval_consumption(SCOPE, candidate)
+
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        results = list(executor.map(request, range(8)))
+
+    assert len({record.id for record in results}) == 1
+    assert store.get_approval_consumption(SCOPE, "approval-1") == results[0]
+
+    # Retrying afterwards, even with yet another idempotency key, still
+    # resolves to the original winning consumption -- there is no
+    # "released guard" transition for a single-use approval.
+    retried = _consumption(consumption_id="consumption-race-retry", idempotency_key="race-key-retry")
+    assert store.create_approval_consumption(SCOPE, retried) == results[0]
 
 
 def test_deployments_round_trip_update_and_scope_guards() -> None:

@@ -28,6 +28,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalConsumptionRecord,
     ApprovalKind,
     ApprovalRevocation,
     ApprovalState,
@@ -89,6 +90,9 @@ class AgentStudioStore:
         self._revocation_dedup: dict[str, ApprovalRevocation] = {}
         self._revocations_by_approval: dict[tuple[str, str], list[str]] = {}
         self._revocation_lock = threading.Lock()
+        self._approval_consumptions: dict[str, ApprovalConsumptionRecord] = {}
+        self._approval_consumption_dedup: dict[str, ApprovalConsumptionRecord] = {}
+        self._approval_consumption_lock = threading.Lock()
         self._deployments: dict[str, DeploymentRecord] = {}
         self._deployments_by_agent: dict[tuple[str, str], list[str]] = {}
         self._bindings: dict[tuple[str, str, str], LogicalAgentBinding] = {}
@@ -419,6 +423,54 @@ class AgentStudioStore:
     def list_revocations(self, scope: ScopeContext, approval_id: str) -> tuple[ApprovalRevocation, ...]:
         ids = self._revocations_by_approval.get((scope.scope_key, approval_id), [])
         return tuple(self._revocations[revocation_id] for revocation_id in ids)
+
+    # -- Approval consumption ----------------------------------------------
+
+    @staticmethod
+    def _consumption_dedup_key(scope: ScopeContext, approval_id: str) -> str:
+        """Deterministic single-use guard key for a would-be consumption.
+
+        Keyed by ``(scope, approval_id)`` alone -- *not* including
+        ``idempotency_key`` -- because a capability-operation approval is a
+        single-use resource: exactly one consumption may ever durably win
+        for a given approval, regardless of how many distinct invocations
+        attempt it. Comparing the *winning* record's own
+        ``idempotency_key`` against a later caller's idempotency key (see
+        ``approval_consumption.StoreBackedApprovalConsumptionPort``) is what
+        distinguishes "this is my own retried invocation" (idempotent
+        replay) from "a different invocation already spent this" (denied).
+        """
+        payload = "|".join((scope.scope_key, approval_id))
+        return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+    def create_approval_consumption(
+        self, scope: ScopeContext, record: ApprovalConsumptionRecord
+    ) -> ApprovalConsumptionRecord:
+        """Atomically consume a one-time approval, returning the *winning*
+        record.
+
+        Two concurrent consumption attempts for the same ``(scope,
+        approval_id)`` are guaranteed to observe the exact same winning
+        record -- the existence check and the append happen atomically
+        under a single lock, so this can never durably record two distinct
+        consumptions for one single-use approval. The caller compares the
+        returned record's identity/``idempotency_key`` against its own
+        candidate to determine whether it won, is idempotently replaying,
+        or was denied as exhausted.
+        """
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        dedup_key = self._consumption_dedup_key(scope, record.approval_id)
+        with self._approval_consumption_lock:
+            existing = self._approval_consumption_dedup.get(dedup_key)
+            if existing is not None:
+                return existing
+            self._approval_consumptions[record.id] = record
+            self._approval_consumption_dedup[dedup_key] = record
+            return record
+
+    def get_approval_consumption(self, scope: ScopeContext, approval_id: str) -> ApprovalConsumptionRecord | None:
+        dedup_key = self._consumption_dedup_key(scope, approval_id)
+        return self._approval_consumption_dedup.get(dedup_key)
 
     # -- Deployments ------------------------------------------------------
 

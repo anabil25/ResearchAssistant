@@ -20,6 +20,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalConsumptionRecord,
     ApprovalKind,
     ApprovalRevocation,
     ApprovalState,
@@ -225,6 +226,33 @@ def _revocation(
         project_id=project_id,
         actor_id=actor_id,
         reason=reason,
+        idempotency_key=idempotency_key,
+    )
+
+
+def _consumption(
+    *,
+    consumption_id: str = "consumption-1",
+    approval_id: str = "approval-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    principal_id: str = USER_ID,
+    binding_id: str = "binding-1",
+    operation_id: str = "search",
+    invocation_id: str = "invocation-1",
+    idempotency_key: str = "consume-key-1",
+) -> ApprovalConsumptionRecord:
+    return ApprovalConsumptionRecord(
+        id=consumption_id,
+        approval_id=approval_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        principal_id=principal_id,
+        binding_id=binding_id,
+        operation_id=operation_id,
+        args_hash="args-hash-1",
+        destination_hash="destination-hash-1",
+        invocation_id=invocation_id,
         idempotency_key=idempotency_key,
     )
 
@@ -1398,6 +1426,139 @@ def test_create_revocation_is_race_free_across_concurrent_store_instances(
     retried = _revocation(revocation_id="revocation-race-retry", idempotency_key="rev-race-key")
     reopened_store = _new_store(fake_client_factory)
     assert reopened_store.create_revocation(SCOPE, retried) == results[0]
+
+
+def test_approval_consumptions_create_get_sync_and_scope_isolation(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Approval consumption records round-trip via ``get_approval_consumption``,
+    are visible to a fresh store instance through the Cosmos point read
+    (mirroring how other replicas pick up a consumption they didn't create
+    locally), are single-use per ``(scope, approval)`` regardless of
+    idempotency key, and never leak across a sibling project or tenant."""
+    first = _new_store(fake_client_factory)
+    assert first.get_approval_consumption(SCOPE, "approval-1") is None
+
+    consumption = _consumption()
+    assert first.create_approval_consumption(SCOPE, consumption) == consumption
+
+    # A second attempt against the same approval never wins, even under a
+    # different idempotency key -- single-use, not merely idempotent.
+    duplicate = _consumption(consumption_id="consumption-duplicate", idempotency_key="different-key")
+    assert first.create_approval_consumption(SCOPE, duplicate) == consumption
+
+    # A brand new store instance (no local cache) must read through to
+    # Cosmos rather than seeing no consumption record.
+    reloaded = _new_store(fake_client_factory)
+    assert reloaded.get_approval_consumption(SCOPE, "approval-1") == consumption
+    # A second read on the same (already-populated) local cache must not
+    # re-fetch from Cosmos.
+    assert reloaded.get_approval_consumption(SCOPE, "approval-1") == consumption
+    assert reloaded.get_approval_consumption(SAME_TENANT_OTHER_PROJECT_SCOPE, "approval-1") is None
+    assert reloaded.get_approval_consumption(OTHER_TENANT_SAME_PROJECT_SCOPE, "approval-1") is None
+
+    with pytest.raises(AgentStudioStoreError):
+        reloaded.create_approval_consumption(SCOPE, _consumption(project_id=OTHER_PROJECT))
+
+    container = _metadata_container(fake_client_factory)
+    consumption_documents = [
+        document
+        for document in container.documents.values()
+        if document["scope_key"] == SCOPE.scope_key and document["documentType"] == "approval_consumption"
+    ]
+    assert len(consumption_documents) == 1
+
+
+def test_create_approval_consumption_raises_when_conflict_document_vanishes(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Mirrors the identical defensive branch on ``create_revocation``: a
+    409 on the consumption guard whose winning document can no longer be
+    read back must fail loudly rather than fabricate a result."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_conflict(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_consumption":
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=409, message="conflict: document already exists"
+            )
+        return original_create_item(body)
+
+    container.create_item = _always_conflict  # type: ignore[method-assign]
+
+    with pytest.raises(AgentStudioStoreError, match="could not be read back"):
+        store.create_approval_consumption(SCOPE, _consumption())
+
+
+def test_create_approval_consumption_propagates_non_conflict_errors(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A non-409 failure creating the consumption record must propagate
+    unchanged, exactly like the equivalent revocation-guard branch."""
+    store = _new_store(fake_client_factory)
+    container = _metadata_container(fake_client_factory)
+    original_create_item = container.create_item
+
+    def _always_fail(body: dict[str, Any]) -> dict[str, Any]:
+        if body["documentType"] == "approval_consumption":
+            raise CosmosHttpResponseError(status_code=500, message="simulated service error")  # type: ignore[no-untyped-call]
+        return original_create_item(body)
+
+    container.create_item = _always_fail  # type: ignore[method-assign]
+
+    with pytest.raises(CosmosHttpResponseError):
+        store.create_approval_consumption(SCOPE, _consumption())
+
+
+def test_create_approval_consumption_is_race_free_across_concurrent_store_instances(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Simulate multiple app instances racing to consume the same
+    single-use approval under different idempotency keys (different
+    invocations). Exactly one distinct consumption record must result, and
+    a later retry -- even under yet another idempotency key -- still
+    resolves to the original, permanent consumption."""
+    thread_count = 12
+    results: list[ApprovalConsumptionRecord] = []
+    errors: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _request(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        candidate = _consumption(
+            consumption_id=f"consumption-race-{worker_index}", idempotency_key=f"race-key-{worker_index}"
+        )
+        barrier.wait()
+        try:
+            record = store.create_approval_consumption(SCOPE, candidate)
+        except BaseException as exc:  # capture every failure mode for the assertion below
+            with lock:
+                errors.append(exc)
+            return
+        with lock:
+            results.append(record)
+
+    threads = [threading.Thread(target=_request, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert errors == []
+    assert len(results) == thread_count
+    assert len({record.id for record in results}) == 1, (
+        f"expected exactly one distinct consumption record, got: {sorted({r.id for r in results})}"
+    )
+
+    final_store = _new_store(fake_client_factory)
+    assert final_store.get_approval_consumption(SCOPE, "approval-1") == results[0]
+
+    retried = _consumption(consumption_id="consumption-race-retry", idempotency_key="race-key-retry")
+    reopened_store = _new_store(fake_client_factory)
+    assert reopened_store.create_approval_consumption(SCOPE, retried) == results[0]
 
 
 def test_deployments_create_list_get_update_and_scope_guards(

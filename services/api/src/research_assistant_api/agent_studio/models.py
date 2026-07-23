@@ -1435,6 +1435,73 @@ class ApprovalRecordView(BaseModel):
     revocations: tuple[ApprovalRevocation, ...] = Field(default_factory=tuple)
 
 
+class ApprovalConsumptionOutcome(StrEnum):
+    """Outcome of a single ``approval_consumption.consume_approval`` call.
+
+    ``CONSUMED``: this call is the first, and only, successful spend of a
+    one-time capability-operation approval.
+    ``ALREADY_CONSUMED``: an idempotent replay — a *prior* call with the
+    exact same ``idempotency_key`` already consumed this approval; the
+    original durable record is returned rather than re-executing or
+    re-recording anything.
+    ``DENIED``: the approval does not currently authorize this invocation at
+    all (not found, wrong kind, not effectively ``APPROVED``, or its pinned
+    version/binding/operation/instance/policy does not match this
+    invocation) — fails closed before any consumption is attempted.
+    ``EXHAUSTED``: the approval is a single-use grant and a *different*
+    invocation (a different ``idempotency_key``) already consumed it; this
+    invocation is denied even though the approval itself remains
+    effectively approved.
+    """
+
+    CONSUMED = "consumed"
+    ALREADY_CONSUMED = "already_consumed"
+    DENIED = "denied"
+    EXHAUSTED = "exhausted"
+
+
+class ApprovalConsumptionRecord(BaseModel):
+    """Durable, append-only record that a ``CAPABILITY_OPERATION``
+    ``StudioApprovalRecord`` was actually spent by one specific runtime
+    invocation.
+
+    Deciding an approval (``ApprovalState``/``ApprovalEffectiveState``) only
+    establishes that it is *currently valid to act on*; it says nothing
+    about whether any invocation has *already used* it. A
+    capability-operation approval defaults to one-time: the first
+    ``AgentStudioStore.create_approval_consumption`` call for a given
+    ``(scope, approval_id)`` durably wins, and every later call either
+    reconciles idempotently (same ``idempotency_key`` — the same invocation
+    retrying, e.g. after a network blip) or is denied (a different key — a
+    distinct invocation trying to reuse an already-spent, single-use grant).
+    This record is the audit trail of exactly *what* was consumed: the
+    acting principal, the exact binding/instance/operation/version it was
+    exercised against, hashes of the actual call arguments and destination,
+    and the policy/release/invocation identifiers in force at the time — so
+    a later audit can distinguish one legitimate consumption from any
+    attempted replay. Never mutated once created.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str
+    approval_id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    principal_id: str = Field(min_length=1, max_length=200)
+    binding_id: str = Field(min_length=1, max_length=200)
+    instance_fingerprint: str | None = None
+    operation_id: str = Field(min_length=1, max_length=200)
+    operation_version: str | None = None
+    args_hash: str = Field(min_length=1)
+    destination_hash: str = Field(min_length=1)
+    policy_ref: str | None = None
+    release_id: str | None = None
+    invocation_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str
+    consumed_at: datetime = Field(default_factory=utc_now)
+
+
 # --------------------------------------------------------------------------
 # Development deployments, health, rollback, logical ID resolution
 # --------------------------------------------------------------------------

@@ -44,6 +44,7 @@ from research_assistant_api.agent_studio.models import (
     AgentRelease,
     AgentRole,
     AgentVersion,
+    ApprovalConsumptionRecord,
     ApprovalRevocation,
     BuilderProposal,
     BuilderProposalState,
@@ -651,6 +652,69 @@ class CosmosAgentStudioStore(AgentStudioStore):
     def list_revocations(self, scope: ScopeContext, approval_id: str) -> tuple[ApprovalRevocation, ...]:
         self._sync_revocations(scope, approval_id)
         return super().list_revocations(scope, approval_id)
+
+    # -- Approval consumption ----------------------------------------------
+
+    @staticmethod
+    def _consumption_id(approval_id: str) -> str:
+        """Deterministic Cosmos document id for an approval's single-use
+        consumption guard -- keyed by ``approval_id`` alone (not a random
+        record id), so ``create_item`` itself is the atomic create-if-absent
+        primitive: a second concurrent writer for the same approval always
+        gets Cosmos's own 409 conflict rather than a client-side race."""
+        return f"approval_consumption::{approval_id}"
+
+    def create_approval_consumption(
+        self, scope: ScopeContext, record: ApprovalConsumptionRecord
+    ) -> ApprovalConsumptionRecord:
+        """Append-only, single-use consumption write via a Cosmos-native
+        create-if-absent guard document, identical in spirit to
+        ``create_revocation``/``create_approval`` -- except the guard is
+        keyed by ``approval_id`` alone (never released, never superseded):
+        whichever consumption attempt's ``create_item`` call wins durably
+        owns this approval's single use forever.
+        """
+        self._require_scope_match(scope, record.tenant_id, record.project_id)
+        document_id = self._consumption_id(record.approval_id)
+        payload = record.model_dump(mode="json")
+        try:
+            self._container.create_item(
+                {
+                    "id": document_id,
+                    "documentType": "approval_consumption",
+                    "scope_key": scope.scope_key,
+                    "payload": payload,
+                }
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            document = self._read(scope.scope_key, document_id)
+            if document is None:
+                raise AgentStudioStoreError(
+                    f"Approval consumption guard for approval '{record.approval_id}' conflicted but the "
+                    "winning record could not be read back."
+                ) from exc
+            winner = ApprovalConsumptionRecord.model_validate(document["payload"])
+            dedup_key = self._consumption_dedup_key(scope, winner.approval_id)
+            self._approval_consumptions[winner.id] = winner
+            self._approval_consumption_dedup[dedup_key] = winner
+            return winner
+        AgentStudioStore.create_approval_consumption(self, scope, record)
+        return record
+
+    def get_approval_consumption(self, scope: ScopeContext, approval_id: str) -> ApprovalConsumptionRecord | None:
+        cached = super().get_approval_consumption(scope, approval_id)
+        if cached is not None:
+            return cached
+        document = self._read(scope.scope_key, self._consumption_id(approval_id))
+        if document is None:
+            return None
+        record = ApprovalConsumptionRecord.model_validate(document["payload"])
+        dedup_key = self._consumption_dedup_key(scope, record.approval_id)
+        self._approval_consumptions[record.id] = record
+        self._approval_consumption_dedup[dedup_key] = record
+        return record
 
     # -- Deployments ------------------------------------------------------
 
