@@ -46,6 +46,10 @@ export function adaptLegacyCapabilityRef(
         {
           name: ref.operation,
           maturity: ref.maturity,
+          // Legacy refs carry no real lifecycle signal at all; default to the
+          // backend's own `OperationLifecycle` default (`active`) rather than
+          // inventing an unverifiable non-active state.
+          lifecycle: "active",
           operation_class: "read",
           side_effect_destinations: [],
           requires_approval: false,

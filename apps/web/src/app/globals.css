@@ -764,7 +764,8 @@ button {
   border-color: #ebcbc7;
 }
 
-.agent-capability-lifecycle-warning[data-tone="unavailable"] {
+.agent-capability-lifecycle-warning[data-tone="unavailable"],
+.agent-capability-lifecycle-warning[data-tone="deprecated"] {
   display: block;
   margin-top: 2px;
   color: #7b551d;

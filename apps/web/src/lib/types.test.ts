@@ -2,17 +2,19 @@
  * Direct unit tests for the pure reconciliation helpers in `lib/types.ts`.
  * These field shapes are verified field-for-field against the backend's real
  * committed Pydantic models (`agent_studio/models.py`, most recently commit
- * `a23b73e` on top of `d6df0fe`): `CapabilityBinding` (flat pinned refs, no
+ * `5dab8b7` on top of `a23b73e`): `CapabilityBinding` (flat pinned refs, no
  * `enabled`/approval, plus `descriptor_digest`/`instance_fingerprint`/
  * `input_schema_digest`/`output_schema_digest`/`config_hash`),
- * `CapabilityDescriptor`/`CapabilityOperation` (five-value `maturity`, no
- * separate lifecycle; per-operation I/O schema digests), `CapabilityInstance`
- * (three-value `readiness`, tenant/project scope, `instance_fingerprint`),
- * and `StudioApprovalRecord` (version-scoped approval, never per-binding).
+ * `CapabilityDescriptor`/`CapabilityOperation` (three-value `maturity` +
+ * independent three-value `lifecycle`; per-operation I/O schema digests),
+ * `CapabilityInstance` (three-value `readiness`, tenant/project scope,
+ * `instance_fingerprint`), and `StudioApprovalRecord` (version-scoped
+ * approval, never per-binding).
  * These are exercised indirectly through component tests too, but are
  * covered here directly against every branch: stale descriptor version,
- * missing operation, unavailable instance, unknown maturity, expired
- * version-level approval, instance-fingerprint reconfiguration drift, and
+ * missing operation, unavailable instance, unknown maturity, every
+ * maturity/lifecycle attachability combination, expired version-level
+ * approval, instance-fingerprint reconfiguration drift, and
  * expanded-vs-canonical reads.
  */
 import {
@@ -33,6 +35,7 @@ function operation(overrides: Partial<CapabilityOperation> = {}): CapabilityOper
   return {
     name: "search",
     maturity: "ga",
+    lifecycle: "active",
     operation_class: "read",
     side_effect_destinations: [],
     requires_approval: false,
@@ -141,9 +144,39 @@ describe("isCapabilityAttachable", () => {
     ).toBe(false);
   });
 
-  it("is false for preview, unavailable, and retired maturity — only ga ever attaches", () => {
-    for (const maturity of ["preview", "unavailable", "retired"] as const) {
-      expect(isCapabilityAttachable(operation({ maturity }), null)).toBe(false);
+  it("is false for preview maturity — only ga ever attaches", () => {
+    expect(isCapabilityAttachable(operation({ maturity: "preview" }), null)).toBe(false);
+  });
+
+  it("is true for a ga+active operation that needs no discovered instance", () => {
+    expect(
+      isCapabilityAttachable(operation({ maturity: "ga", lifecycle: "active" }), null),
+    ).toBe(true);
+  });
+
+  it("is false for a ga operation that is deprecated or retired — lifecycle gates independently of maturity", () => {
+    for (const lifecycle of ["deprecated", "retired"] as const) {
+      expect(
+        isCapabilityAttachable(operation({ maturity: "ga", lifecycle }), null),
+      ).toBe(false);
+    }
+  });
+
+  it("is false for every combination except exactly ga+active — no false-green attachable", () => {
+    const nonAttachable: Array<
+      [operation: "ga" | "preview" | "unknown", lifecycle: "active" | "deprecated" | "retired"]
+    > = [
+      ["preview", "active"],
+      ["unknown", "active"],
+      ["ga", "deprecated"],
+      ["ga", "retired"],
+      ["preview", "deprecated"],
+      ["preview", "retired"],
+      ["unknown", "deprecated"],
+      ["unknown", "retired"],
+    ];
+    for (const [maturity, lifecycle] of nonAttachable) {
+      expect(isCapabilityAttachable(operation({ maturity, lifecycle }), null)).toBe(false);
     }
   });
 
@@ -151,7 +184,7 @@ describe("isCapabilityAttachable", () => {
     expect(isCapabilityAttachable(operation({ maturity: "ga" }), null)).toBe(true);
   });
 
-  it("is false for a ga operation whose required instance is not ready (degraded/unavailable)", () => {
+  it("is false for a ga+active operation whose required instance is not ready (degraded/unavailable)", () => {
     expect(
       isCapabilityAttachable(operation(), instance({ readiness: "degraded" })),
     ).toBe(false);
@@ -160,10 +193,19 @@ describe("isCapabilityAttachable", () => {
     ).toBe(false);
   });
 
-  it("is true for a ga operation with a ready required instance", () => {
+  it("is true for a ga+active operation with a ready required instance", () => {
     expect(
       isCapabilityAttachable(operation(), instance({ readiness: "ready" })),
     ).toBe(true);
+  });
+
+  it("is false for a ga+deprecated operation even with a ready required instance", () => {
+    expect(
+      isCapabilityAttachable(
+        operation({ lifecycle: "deprecated" }),
+        instance({ readiness: "ready" }),
+      ),
+    ).toBe(false);
   });
 });
 

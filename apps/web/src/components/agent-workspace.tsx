@@ -1267,6 +1267,12 @@ export function AgentWorkspaceView({
                       const operation = capability.resolved_operation;
                       const instance = capability.resolved_instance;
                       const maturity = operation?.maturity ?? "unknown";
+                      // `lifecycle` is independent of `maturity` (verified against
+                      // the backend's real `OperationLifecycle` enum, commit
+                      // `5dab8b7`): a `ga` operation can still be `deprecated`/
+                      // `retired`, so it needs its own chip/warning rather than
+                      // being folded into the maturity display.
+                      const lifecycle = operation?.lifecycle ?? "active";
                       const destinations = operation?.side_effect_destinations ?? [];
                       return (
                         <li
@@ -1287,6 +1293,11 @@ export function AgentWorkspaceView({
                           <span className="status-chip" data-tone={maturity}>
                             {maturity}
                           </span>
+                          {lifecycle !== "active" ? (
+                            <span className="status-chip" data-tone={lifecycle}>
+                              {lifecycle}
+                            </span>
+                          ) : null}
                           <small>
                             {operation?.requires_approval
                               ? "Requires approval"
@@ -1304,12 +1315,12 @@ export function AgentWorkspaceView({
                               Destinations: {destinations.join(", ")}
                             </small>
                           ) : null}
-                          {maturity === "retired" || maturity === "unavailable" ? (
+                          {lifecycle === "retired" || lifecycle === "deprecated" ? (
                             <small
                               className="agent-capability-lifecycle-warning"
-                              data-tone={maturity}
+                              data-tone={lifecycle}
                             >
-                              {maturity === "retired" ? "Retired" : "Unavailable"}
+                              {lifecycle === "retired" ? "Retired" : "Deprecated"}
                               {operation?.reason
                                 ? `: ${operation.reason}`
                                 : " — no reason provided."}

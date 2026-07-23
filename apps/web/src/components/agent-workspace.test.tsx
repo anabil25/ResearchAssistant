@@ -1518,6 +1518,7 @@ describe("AgentWorkspaceView", () => {
             {
               name: "search",
               maturity: "ga",
+              lifecycle: "active",
               operation_class: "read",
               side_effect_destinations: ["bing.com"],
               requires_approval: false,
@@ -1948,9 +1949,13 @@ describe("AgentWorkspaceView", () => {
     // `unresolved-descriptor-op` binding's descriptor never resolves at all
     // (neither its descriptor nor its instance appear below); the other two
     // bindings resolve fully against a matching descriptor+operation+instance
-    // — one `retired` (with a reason) requiring approval, one `unavailable`
-    // (no reason) — demonstrating operation `maturity` is a single five-value
-    // enum, never split into a separate lifecycle field.
+    // — both `ga` maturity but on the independent `lifecycle` axis: one
+    // `retired` (with a reason) requiring approval, one `deprecated`
+    // (no reason) — demonstrating operation `maturity` and `lifecycle` are
+    // two separate fields (verified against the backend's real
+    // `OperationMaturity`/`OperationLifecycle` enums, commit `5dab8b7`), so a
+    // `ga` operation can still be permanently non-attachable via lifecycle
+    // alone.
     jest.mocked(getCapabilityDiscovery).mockResolvedValue({
       descriptors: [
         {
@@ -1963,6 +1968,7 @@ describe("AgentWorkspaceView", () => {
             {
               name: "summarize",
               maturity: "ga",
+              lifecycle: "active",
               operation_class: "read",
               side_effect_destinations: [],
               requires_approval: false,
@@ -1988,7 +1994,8 @@ describe("AgentWorkspaceView", () => {
           operations: [
             {
               name: "classify",
-              maturity: "retired",
+              maturity: "ga",
+              lifecycle: "retired",
               operation_class: "read",
               side_effect_destinations: [],
               requires_approval: true,
@@ -2014,7 +2021,8 @@ describe("AgentWorkspaceView", () => {
           operations: [
             {
               name: "extract",
-              maturity: "unavailable",
+              maturity: "ga",
+              lifecycle: "deprecated",
               operation_class: "read",
               side_effect_destinations: ["internal-store"],
               requires_approval: false,
@@ -2041,6 +2049,7 @@ describe("AgentWorkspaceView", () => {
             {
               name: "quick_scan",
               maturity: "ga",
+              lifecycle: "active",
               operation_class: "read",
               side_effect_destinations: [],
               requires_approval: false,
@@ -2154,7 +2163,8 @@ describe("AgentWorkspaceView", () => {
       ),
     ).toBeInTheDocument();
     // GA operation with no pinned instance (`instance_id: null`): attachable
-    // on maturity alone, and renders with no "· instance …" fragment at all.
+    // on maturity+lifecycle alone, and renders with no "· instance …"
+    // fragment at all.
     const quickScanItem = within(contract)
       .getByText(/quick_scan/)
       .closest("li");
@@ -2162,19 +2172,21 @@ describe("AgentWorkspaceView", () => {
     expect(quickScanItem).toHaveAttribute("data-stale", "false");
     expect(quickScanItem?.textContent).not.toMatch(/· instance/);
     expect(within(contract).getByText("Quick scan")).toBeInTheDocument();
-    // Maturity is a single five-value enum on the operation, never split into
-    // a separate lifecycle field: a `retired` operation carries a surfaced
-    // reason, an `unavailable` operation can have no reason provided at all.
+    // `maturity` and `lifecycle` are two independent fields on the operation
+    // (verified against the backend's real `OperationMaturity`/
+    // `OperationLifecycle` enums, commit `5dab8b7`): a `ga`-maturity
+    // operation can still be permanently non-attachable via a `retired` (with
+    // a surfaced reason) or `deprecated` (no reason provided) lifecycle.
     expect(within(contract).getAllByText("ga").length).toBeGreaterThanOrEqual(2);
     expect(within(contract).getByText("retired")).toBeInTheDocument();
-    expect(within(contract).getAllByText("unavailable").length).toBeGreaterThan(0);
+    expect(within(contract).getByText("deprecated")).toBeInTheDocument();
     expect(
       within(contract).getByText(
         /Retired: Superseded by analysis-summarize v2; sunset 2026-12-01\./,
       ),
     ).toBeInTheDocument();
     expect(
-      within(contract).getByText(/Unavailable — no reason provided\./),
+      within(contract).getByText(/Deprecated — no reason provided\./),
     ).toBeInTheDocument();
     expect(
       within(contract).getAllByText("Not available yet.").length,

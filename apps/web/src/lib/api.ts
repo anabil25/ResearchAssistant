@@ -352,7 +352,10 @@ export async function uploadLibraryItem(
 //     `agent-workspace.tsx` and their tests were corrected to this verified
 //     shape; `isCapabilityAttachable` now takes `(operation, instance)` and
 //     checks `maturity === "ga"` plus instance readiness only when an
-//     instance is actually pinned.
+//     instance is actually pinned. (This maturity/lifecycle finding was
+//     itself later superseded — see Round 12 below: the backend genuinely
+//     added the split afterward, and this round's "no lifecycle field at
+//     all" claim no longer describes current backend source.)
 //
 //   Round 10 — the sibling asked to "rename or strengthen isCapabilityAttachable"
 //     to require a `BindabilityDecision.bindable === true` from a
@@ -418,6 +421,39 @@ export async function uploadLibraryItem(
 //     follow-up) is likewise removed — the namespace is now reachable via
 //     the existing generic `"api/"` prefix, and leaving the old entry in
 //     place would keep open a route nothing serves.
+//
+//
+//   Round 12 — the sibling asked to implement a capability two-axis
+//     maturity/lifecycle model, citing the contract as "stable in backend
+//     since `5dab8b7`". Rather than trusting that at face value (per this
+//     round's own Round-9 experience of a paraphrase not matching real
+//     source), the committed Pydantic models were read directly again at
+//     `5dab8b7` (`agent_studio/models.py`). Finding: the claim is TRUE and
+//     supersedes Round 9 — the backend genuinely evolved between `d6df0fe`
+//     and `5dab8b7` to add the split. `OperationMaturity` is now exactly
+//     three values (`ga|preview|unknown`, not five — `retired`/`unavailable`
+//     are gone from this enum). A new, fully independent `OperationLifecycle`
+//     enum (`active|deprecated|retired`) was added as a separate field on
+//     `CapabilityOperation` (defaulting to `active`), alongside `maturity`.
+//     `CapabilityOperation.is_bindable` (`maturity == GA and lifecycle ==
+//     ACTIVE`) is a plain `@property`, not a `@computed_field`, so it is
+//     never serialized on the wire — `isCapabilityAttachable` in
+//     `lib/types.ts` was updated to independently derive the same rule
+//     client-side (an explicitly-documented preliminary/display-only
+//     derivation, not a backend mirror), now requiring BOTH `maturity ===
+//     "ga"` AND `lifecycle === "active"` before falling through to the
+//     existing conservative instance-readiness check. `CapabilityOperation`,
+//     `legacy-capability-adapter.ts` (which defaults the synthetic
+//     lifecycle to `active`, matching the backend's own default, since a
+//     legacy ref carries no real lifecycle signal), and `agent-workspace.tsx`
+//     (a distinct lifecycle chip/warning alongside the existing maturity
+//     chip, so a `ga`+`deprecated`/`retired` operation is never visually
+//     indistinguishable from a `ga`+`active` one) were all updated to match,
+//     with tests covering the full maturity×lifecycle matrix and explicitly
+//     asserting no false-positive "attachable" outside `ga`+`active`. Per
+//     explicit instruction, the route/OpenAPI integration itself was NOT
+//     touched in this round — that remains frozen pending the backend's
+//     final generated contract.
 //
 // `agentStudioFetch` is the single choke point for this namespace: every
 // Agent Studio read/write goes through it, through the same `/api/backend`

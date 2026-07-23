@@ -123,25 +123,38 @@ export type AgentRegistryLifecycle =
 
 /**
  * Capability *operation* maturity — verified field-for-field against the
- * backend's real `OperationMaturity` enum (commit `d6df0fe`,
- * `agent_studio/models.py`). This is a single five-value enum, not split
- * into a separate "lifecycle": `retired` and `unavailable` ARE maturity
- * states, not a distinct lifecycle dimension. Only `ga` is ever attachable —
- * see `isCapabilityAttachable`. `unknown` is the fail-closed default when a
- * discovery source didn't report a maturity tier and must never be treated
- * as safe-to-attach, identically to `unavailable`.
+ * backend's real `OperationMaturity` enum (`agent_studio/models.py`, commit
+ * `5dab8b7`, superseding the `d6df0fe`-era single five-value enum this file
+ * previously mirrored). `OperationMaturity` is now exactly three values —
+ * `ga`/`preview`/`unknown` — with `retired` and a distinct `deprecated` state
+ * moved to the independent `OperationLifecycle` axis (see
+ * `CapabilityOperationLifecycle` below). `unknown` is the fail-closed default
+ * when a discovery source didn't report a maturity tier and must never be
+ * treated as safe-to-attach.
  *
- * A prior round of this file split this into `maturity`/`CapabilityLifecycle`
- * per an unverified cross-session correction; that split has been reverted
- * after directly inspecting the committed Pydantic source, which has no
- * `lifecycle` field on `CapabilityOperation` at all.
+ * An earlier round of this file attempted this same maturity/lifecycle split
+ * speculatively, then reverted it after inspecting `d6df0fe`, which genuinely
+ * had no `lifecycle` field. The backend has since (independently, and
+ * verified again directly against `5dab8b7`'s committed Pydantic source
+ * rather than taken on a paraphrase) added the split for real. `is_bindable`
+ * on the backend's `CapabilityOperation` is a plain `@property`, not a
+ * `@computed_field`, so it is never present on the wire — see
+ * `isCapabilityAttachable` for this UI's own preliminary/display-only
+ * derivation from `maturity`+`lifecycle`, not a mirror of that backend
+ * property.
  */
-export type CapabilityMaturity =
-  | "ga"
-  | "preview"
-  | "unavailable"
-  | "retired"
-  | "unknown";
+export type CapabilityMaturity = "ga" | "preview" | "unknown";
+
+/**
+ * Capability *operation* lifecycle — the independent axis from `maturity`,
+ * verified against the backend's real `OperationLifecycle` enum (commit
+ * `5dab8b7`). A `ga`-maturity operation can still be `deprecated` (still
+ * works, scheduled for removal) or `retired` (withdrawn); either makes it
+ * permanently non-attachable regardless of maturity. Defaults to `active`
+ * on the backend model, matching this UI's legacy-adapter fallback (see
+ * `lib/legacy-capability-adapter.ts`).
+ */
+export type CapabilityOperationLifecycle = "active" | "deprecated" | "retired";
 
 /**
  * Deterministic side-effect classification for a capability operation —
@@ -160,23 +173,29 @@ export type CapabilityOperationClass =
 
 /**
  * A single operation on a capability descriptor — verified against the
- * backend's real `CapabilityOperation` model. `maturity`/`operation_class`/
- * `requires_approval` are all operation-level, not descriptor-level: two
- * operations on the same descriptor can have entirely different maturity
- * and risk profiles. `source_url`/`source_version`/`last_verified_at` are
- * the provenance trail for the maturity claim. `input_schema_digest`/
- * `output_schema_digest` are operation-level (verified against backend
- * commit `a23b73e`, which added these directly to `CapabilityOperation`)
- * because a single descriptor's operations can have distinct I/O shapes;
- * a `CapabilityBinding` copies both digests at attach time (see below).
+ * backend's real `CapabilityOperation` model. `maturity`/`lifecycle`/
+ * `operation_class`/`requires_approval` are all operation-level, not
+ * descriptor-level: two operations on the same descriptor can have entirely
+ * different maturity, lifecycle, and risk profiles. `maturity` and
+ * `lifecycle` are two independent fields on the real backend model (commit
+ * `5dab8b7`) — a `ga` operation can still be `deprecated` or `retired`, and
+ * neither axis implies the other. `source_url`/`source_version`/
+ * `last_verified_at` are the provenance trail for the maturity claim.
+ * `input_schema_digest`/`output_schema_digest` are operation-level (verified
+ * against backend commit `a23b73e`, which added these directly to
+ * `CapabilityOperation`) because a single descriptor's operations can have
+ * distinct I/O shapes; a `CapabilityBinding` copies both digests at attach
+ * time (see below).
  */
 export interface CapabilityOperation {
   name: string;
   maturity: CapabilityMaturity;
+  /** Independent of `maturity` — see `CapabilityOperationLifecycle`. Backend default is `active`. */
+  lifecycle: CapabilityOperationLifecycle;
   operation_class: CapabilityOperationClass;
   side_effect_destinations: string[];
   requires_approval: boolean;
-  /** Surfaced when maturity isn't `ga` (e.g. why an operation is `preview`/`retired`/`unavailable`). */
+  /** Surfaced when maturity isn't `ga` or lifecycle isn't `active` (e.g. why an operation is `preview`/`deprecated`/`retired`). */
   reason: string | null;
   source_url: string | null;
   source_version: string | null;
@@ -189,9 +208,9 @@ export interface CapabilityOperation {
  * Provider-declared capability *catalog/governance* entry — verified
  * field-for-field against the backend's real `CapabilityDescriptor` model.
  * Fetched from `GET /agent-studio/capabilities/descriptors`. `operations` is
- * the honest, per-operation maturity surface: `preview`/`retired`/
- * `unavailable`/`unknown` operations remain visible (with `reason`) but are
- * rejected at attach time. `version` is the descriptor's own catalog
+ * the honest, per-operation maturity/lifecycle surface: `preview`/`unknown`
+ * maturity and `deprecated`/`retired` lifecycle operations remain visible
+ * (with `reason`) but are rejected at attach time. `version` is the descriptor's own catalog
  * version, pinned by any `CapabilityBinding` that attaches it, so a later
  * catalog update never silently changes an already-released agent's
  * behavior. There is deliberately no descriptor-level `digest` field on this
@@ -333,13 +352,23 @@ export interface CapabilityDiscovery {
 }
 
 /**
- * Only a `ga`-maturity operation is ever attachable — verified against the
- * backend's explicit docstring ("Only GA is ever attachable") on
- * `OperationMaturity`. `preview`/`unavailable`/`retired`/`unknown` are always
- * non-attachable — fail-closed rather than assuming availability. When the
- * operation requires a discovered instance (`binding.instance_id` is set),
- * that instance must additionally be `ready`; operations that need no
- * instance pass `instance = null` and are gated on maturity alone.
+ * An operation is only attachable when BOTH independent axes clear: `ga`
+ * maturity AND `active` lifecycle — verified against the backend's real
+ * (non-serialized) `CapabilityOperation.is_bindable` property (commit
+ * `5dab8b7`): `return self.maturity == OperationMaturity.GA and
+ * self.lifecycle == OperationLifecycle.ACTIVE`. Because `is_bindable` is a
+ * plain `@property`, not a `@computed_field`, it never appears on the wire —
+ * this function is this UI's own preliminary/display-only derivation of that
+ * same rule from the two raw fields, not a mirror of a backend-computed
+ * value. `preview`/`unknown` maturity and `deprecated`/`retired` lifecycle
+ * are always non-attachable — fail-closed rather than assuming availability;
+ * a `ga`+`deprecated` or `ga`+`retired` operation must never read as
+ * attachable just because its maturity is `ga`. When the operation requires
+ * a discovered instance (`binding.instance_id` is set), that instance must
+ * additionally be `ready` — this extra instance-readiness check is this UI's
+ * own conservative display policy (not a backend mirror, since no direct
+ * attach action exists yet); operations that need no instance pass
+ * `instance = null` and are gated on maturity+lifecycle alone.
  * Non-attachable operations/instances still surface via
  * `CapabilityBindingView` for display — attachability only gates *new*
  * bindings, it doesn't hide existing ones.
@@ -350,6 +379,7 @@ export function isCapabilityAttachable(
 ): boolean {
   if (!operation) return false;
   if (operation.maturity !== "ga") return false;
+  if (operation.lifecycle !== "active") return false;
   if (!instance) return true;
   return instance.readiness === "ready";
 }

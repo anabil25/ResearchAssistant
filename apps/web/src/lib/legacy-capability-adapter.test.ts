@@ -42,6 +42,7 @@ describe("adaptLegacyCapabilityRef", () => {
         {
           name: "search",
           maturity: "ga",
+          lifecycle: "active",
           operation_class: "read",
           side_effect_destinations: [],
           requires_approval: false,
