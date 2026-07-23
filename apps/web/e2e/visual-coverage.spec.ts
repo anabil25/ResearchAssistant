@@ -1,10 +1,13 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test, type Page, type TestInfo } from "@playwright/test";
+import type { Page, TestInfo } from "@playwright/test";
 
 import {
   CORE_SCREENSHOT_CONTRACTS,
   STATE_SCREENSHOT_IDS,
 } from "../src/testing/interaction-manifest";
+import { expect, test } from "./fixtures";
+
+test.setTimeout(120_000);
 
 async function capture(page: Page, testInfo: TestInfo, id: string) {
   const filename = `${id}-${testInfo.project.name}.png`;
@@ -20,8 +23,9 @@ async function expectAccessible(page: Page) {
   expect(results.violations).toEqual([]);
 }
 
-test("[pw.visual-states] captures core, empty, loading, and error states", async ({
+test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] captures core and critical states", async ({
   page,
+  releaseDiagnostics,
 }, testInfo) => {
   for (const contract of CORE_SCREENSHOT_CONTRACTS) {
     await page.goto(contract.route);
@@ -32,6 +36,7 @@ test("[pw.visual-states] captures core, empty, loading, and error states", async
     await expect(
       page.getByRole("heading", { name: contract.heading, level: 1 }),
     ).toBeVisible();
+    await expectAccessible(page);
     await capture(page, testInfo, contract.id);
   }
 
@@ -60,6 +65,9 @@ test("[pw.visual-states] captures core, empty, loading, and error states", async
       });
     },
   );
+  releaseDiagnostics.expectConsoleError(
+    /status of 503 \(Service Unavailable\)/,
+  );
 
   const runButton = page.getByRole("button", {
     name: "Search & screen evidence",
@@ -74,6 +82,23 @@ test("[pw.visual-states] captures core, empty, loading, and error states", async
   await expect(page.locator(".error-banner[role='alert']")).toContainText(
     "The bounded literature service is unavailable.",
   );
+  await expect(runButton).toBeEnabled();
   await expectAccessible(page);
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[2]);
+
+  await page.goto("/?view=institutional_qa");
+  await expect(page.locator(".workbench-shell")).toHaveAttribute(
+    "data-workspace-ready",
+    "true",
+  );
+  await expect(
+    page.getByRole("checkbox", { name: /legal hold/i }),
+  ).toBeDisabled();
+  await expect(
+    page.getByRole("checkbox", {
+      name: /enable work iq readiness signals/i,
+    }),
+  ).toBeDisabled();
+  await expectAccessible(page);
+  await capture(page, testInfo, STATE_SCREENSHOT_IDS[3]);
 });

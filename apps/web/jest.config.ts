@@ -9,6 +9,7 @@ const config: Config = {
   clearMocks: true,
   collectCoverageFrom: [
     "src/**/*.{ts,tsx}",
+    // Generated OpenAPI declarations and the type-only domain contract have no runtime behavior.
     "!src/lib/generated-api.ts",
     "!src/lib/types.ts",
   ],

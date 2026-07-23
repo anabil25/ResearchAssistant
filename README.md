@@ -142,7 +142,7 @@ chunk is accepted.
 ```powershell
 uv run ruff check packages services agents scripts tests
 uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
-uv run pytest -q --cov --cov-report=term-missing --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
+uv run pytest -q --cov --cov-report=term-missing --cov-report=html:coverage/python/html --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
 uv run pip-audit
 az bicep build --file infra\main.bicep --stdout
 
@@ -153,10 +153,14 @@ npm audit --audit-level=moderate
 ```
 
 The Python and Jest coverage commands enforce 100% line and branch coverage;
-Jest also enforces 100% statements and functions. The Playwright configuration
-starts both backend services and the Next.js app, retains behavioral and WCAG
-assertions, and writes desktop, tablet, and mobile screenshots for the core,
-loading, empty, and error states under `apps/web/test-results`.
+Jest also enforces 100% statements and functions. Python writes retained HTML,
+JSON, and XML reports; Jest writes HTML/lcov, JSON, and Cobertura reports. The
+Playwright configuration starts both backend services and the Next.js app,
+retains behavioral and WCAG assertions, fails on unexpected browser console or
+request errors, and machine-validates every manifest Playwright ID against an
+executable test title. It writes 42 desktop, tablet, and mobile screenshots for
+core, loading, empty, error, and authorization states under
+`apps/web/test-results`.
 
 ## Azure deployment
 

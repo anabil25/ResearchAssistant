@@ -54,6 +54,16 @@ describe("V3 interaction manifest", () => {
       expect(
         interaction.rtlTestIds.length + interaction.playwrightTestIds.length,
       ).toBe(interaction.testIds.length);
+      expect(interaction.playwrightTestIds.length).toBeGreaterThan(0);
+      expect(
+        interaction.playwrightStateTestIds.every(
+          ({ testIds }) =>
+            testIds.length > 0 &&
+            testIds.every((testId) =>
+              interaction.playwrightTestIds.includes(testId),
+            ),
+        ),
+      ).toBe(true);
       expect(
         interaction.rtlTestIds.every((id) => id.startsWith("jest.")),
       ).toBe(true);

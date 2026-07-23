@@ -612,14 +612,16 @@ button {
   cursor: pointer;
 }
 
-.primary-button {
+.primary-button,
+button.fui-Button.primary-button {
   color: #f7fbf6;
   background: var(--forest);
   border: 1px solid var(--forest);
   box-shadow: 0 7px 18px rgb(23 58 42 / 17%);
 }
 
-.primary-button:hover:not(:disabled) {
+.primary-button:hover:not(:disabled),
+button.fui-Button.primary-button:hover:not(:disabled) {
   background: var(--forest-2);
 }
 
@@ -646,7 +648,8 @@ button {
   opacity: 1;
 }
 
-.primary-button:disabled {
+.primary-button:disabled,
+button.fui-Button.primary-button:disabled {
   color: #ffffff;
   background: #41564a;
   border-color: #41564a;

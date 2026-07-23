@@ -37,7 +37,7 @@ pythonpath = [".", "agents"]
 [tool.coverage.run]
 branch = true
 relative_files = true
-source_dirs = [
+source = [
     "packages/research_core/src/research_assistant_core",
     "packages/research_connectors/src/research_assistant_connectors",
     "services/api/src/research_assistant_api",

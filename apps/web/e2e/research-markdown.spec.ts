@@ -1,7 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
 
-test("renders structured agent Markdown without executable or exfiltration sinks", async ({
+import { expect, test } from "./fixtures";
+
+test("[pw.literature-run] renders structured agent Markdown without executable or exfiltration sinks", async ({
   page,
 }) => {
   const content = [

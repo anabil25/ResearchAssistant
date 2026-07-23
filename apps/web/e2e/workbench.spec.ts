@@ -1,7 +1,8 @@
 import path from "node:path";
 
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
+
+import { expect, test } from "./fixtures";
 
 async function waitForWorkspace(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -27,7 +28,7 @@ async function runStudioWorkflow(
   expect(response.status(), responseBody).toBe(200);
 }
 
-test("overview presents six purpose-built research studios", async ({ page }) => {
+test("[pw.distinct-studios] overview presents six purpose-built research studios", async ({ page }) => {
   await waitForWorkspace(page);
 
   await expect(
@@ -38,7 +39,7 @@ test("overview presents six purpose-built research studios", async ({ page }) =>
   await expect(page.getByText("Governance is product state")).toBeVisible();
 });
 
-test("keyboard opens the literature protocol workspace", async ({ page }) => {
+test("[pw.literature-open] [pw.literature-protocol] keyboard opens the literature protocol workspace", async ({ page }) => {
   await waitForWorkspace(page);
   const literature = page.getByRole("button", {
     name: /literature review synthesis/i,
@@ -56,7 +57,7 @@ test("keyboard opens the literature protocol workspace", async ({ page }) => {
   await expect(page.getByText("No screening run yet")).toBeVisible();
 });
 
-test("workspace routes survive direct links and browser history", async ({
+test("[pw.route-state] workspace routes survive direct links and browser history", async ({
   page,
 }) => {
   await page.goto("/?view=dataset");
@@ -124,7 +125,7 @@ test("visible workbench text never renders below twelve pixels", async ({
   }
 });
 
-test("interactive targets meet desktop and mobile size floors", async ({
+test("[pw.mobile-navigation] interactive targets meet desktop and mobile size floors", async ({
   page,
 }) => {
   const undersizedButtons = async (minimum: number) =>
@@ -162,7 +163,7 @@ test("interactive targets meet desktop and mobile size floors", async ({
   expect(await undersizedButtons(44)).toEqual([]);
 });
 
-test("every studio exposes a distinct workflow and artifact surface", async ({
+test("[pw.distinct-studios] every studio exposes a distinct workflow and artifact surface", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -186,7 +187,7 @@ test("every studio exposes a distinct workflow and artifact surface", async ({
   }
 });
 
-test("literature workflow returns screening, extraction, and resolved evidence", async ({
+test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literature workflow returns screening, extraction, and resolved evidence", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -207,7 +208,7 @@ test("literature workflow returns screening, extraction, and resolved evidence",
   await expect(page.getByText(/research-run-/).first()).toBeVisible();
 });
 
-test("Library, Runs, and connector settings contain operational data", async ({
+test("[pw.operational-surfaces] [pw.run-detail] [pw.connector-test] Library, Runs, and connector settings contain operational data", async ({
   page,
 }) => {
   await waitForWorkspace(page);
@@ -239,7 +240,7 @@ test("Library, Runs, and connector settings contain operational data", async ({
   await expect(page.getByText("Assigned specialists").first()).toBeVisible();
 });
 
-test("Library ingestion creates a governed item and durable run", async ({
+test("[pw.library-ingest] Library ingestion creates a governed item and durable run", async ({
   page,
 }) => {
   const title = `New reproducibility protocol ${Date.now()}`;
@@ -277,7 +278,10 @@ test("Library ingestion creates a governed item and durable run", async ({
   await expect(page.getByText(title, { exact: true })).toBeVisible();
 });
 
-test("BFF rejects oversized uploads before API processing", async ({ page }) => {
+test("[pw.library-oversize] BFF rejects oversized uploads before API processing", async ({
+  page,
+  releaseDiagnostics,
+}) => {
   await waitForWorkspace(page);
   await page.getByRole("button", { name: /^Library \d+$/ }).click();
   await page.getByRole("button", { name: "Ingest source" }).click();
@@ -292,6 +296,9 @@ test("BFF rejects oversized uploads before API processing", async ({ page }) => 
     mimeType: "text/plain",
     buffer: Buffer.alloc(21_000_000, "A"),
   });
+  releaseDiagnostics.expectConsoleError(
+    /status of 413 \(Payload Too Large\)/,
+  );
   await dialog.getByRole("button", { name: "Start ingestion" }).click();
 
   await expect(dialog.getByRole("alert")).toContainText(
@@ -299,7 +306,7 @@ test("BFF rejects oversized uploads before API processing", async ({ page }) => 
   );
 });
 
-test("mobile navigation opens, closes, and preserves the selected view", async ({
+test("[pw.mobile-navigation] mobile navigation opens, closes, and preserves the selected view", async ({
   page,
 }) => {
   await page.setViewportSize({ width: 390, height: 844 });

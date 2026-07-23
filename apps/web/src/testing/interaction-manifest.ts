@@ -39,6 +39,10 @@ export interface UiCoverageContract extends InteractionContract {
   viewports: readonly CoverageViewport[];
   rtlTestIds: readonly string[];
   playwrightTestIds: readonly string[];
+  playwrightStateTestIds: readonly {
+    state: string;
+    testIds: readonly string[];
+  }[];
   screenshotIds: readonly string[];
   classifiedStates: readonly {
     name: string;
@@ -883,6 +887,7 @@ export const STATE_SCREENSHOT_IDS = [
   "visual.state.empty",
   "visual.state.loading",
   "visual.state.error",
+  "visual.state.authorization",
 ] as const;
 
 const SURFACE_ROUTES: Readonly<Record<string, string>> = {
@@ -904,7 +909,10 @@ const SURFACE_SCREENSHOTS: Readonly<Record<string, readonly string[]>> = {
   Approvals: ["visual.core.runs"],
   Dataset: ["visual.core.dataset"],
   Grant: ["visual.core.grant"],
-  Institutional: ["visual.core.institutional"],
+  Institutional: [
+    "visual.core.institutional",
+    "visual.state.authorization",
+  ],
   Library: ["visual.core.library"],
   Literature: [
     "visual.core.literature",
@@ -968,6 +976,10 @@ export const UI_COVERAGE_MANIFEST: readonly UiCoverageContract[] =
     viewports: ALL_VIEWPORTS,
     rtlTestIds: interaction.testIds.filter((id) => id.startsWith("jest.")),
     playwrightTestIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
+    playwrightStateTestIds: interaction.states.map((state) => ({
+      state,
+      testIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
+    })),
     screenshotIds: SURFACE_SCREENSHOTS[interaction.surface],
     classifiedStates: interaction.states.map((name) => ({
       name,

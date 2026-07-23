@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "./fixtures";
 
 async function waitForWorkspace(page: import("@playwright/test").Page) {
   await page.goto("/");
@@ -35,7 +35,7 @@ async function runStudioAndCapturePayload(
 }
 
 test.describe("Literature Studio interactions", () => {
-  test("Screen/Extract/Synthesize/Audit tabs show distinct content and criteria are editable", async ({
+  test("[pw.literature-protocol] [pw.literature-screen] [pw.literature-extract] [pw.literature-synthesize] [pw.literature-audit] Screen/Extract/Synthesize/Audit tabs show distinct content and criteria are editable", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -65,7 +65,7 @@ test.describe("Literature Studio interactions", () => {
     await expect(page.getByText("Claim & citation audit")).toBeVisible();
   });
 
-  test("screening decisions change included/excluded counts and the extraction tab", async ({
+  test("[pw.literature-screen] screening decisions change included/excluded counts and the extraction tab", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -83,7 +83,7 @@ test.describe("Literature Studio interactions", () => {
     await expect(page.locator(".metric-line")).toContainText("1 excluded");
   });
 
-  test("extraction cells are editable and export the current version as a CSV download", async ({
+  test("[pw.literature-extract] extraction cells are editable and export the current version as a CSV download", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -112,7 +112,7 @@ test.describe("Literature Studio interactions", () => {
 });
 
 test.describe("Grant Studio interactions", () => {
-  test("section tabs, red-team, source discovery, and connector draft dialog work", async ({
+  test("[pw.grant-draft] [pw.grant-review] [pw.grant-connectors] [pw.grant-build] section tabs, red-team, source discovery, and connector draft dialog work", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -159,7 +159,7 @@ test.describe("Grant Studio interactions", () => {
     await expect(page.getByText("Draft — needs review")).toBeVisible();
   });
 
-  test("discovery filters governed connectors and requirement rows open source evidence", async ({
+  test("[pw.grant-discovery] [pw.grant-opportunity] [pw.grant-requirements] discovery filters governed connectors and requirement rows open source evidence", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -201,7 +201,7 @@ test.describe("Grant Studio interactions", () => {
 });
 
 test.describe("Matching Explorer source selection", () => {
-  test("controls public/institutional sources, keeps Work IQ disabled, and sends selected sources", async ({
+  test("[pw.matching-sources] controls public/institutional sources, keeps Work IQ disabled, and sends selected sources", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -230,7 +230,7 @@ test.describe("Matching Explorer source selection", () => {
 });
 
 test.describe("Matching Explorer interactions", () => {
-  test("record types and hard filters are sent, and shortlist compare is transparent", async ({
+  test("[pw.matching-filters] [pw.matching-run] [pw.matching-results] [pw.matching-shortlist] record types and hard filters are sent, and shortlist compare is transparent", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -263,7 +263,7 @@ test.describe("Matching Explorer interactions", () => {
 });
 
 test.describe("Dataset Lab interactions", () => {
-  test("uploads a real bounded CSV file and requires plan approval before profiling", async ({
+  test("[pw.dataset-upload] [pw.dataset-plan] [pw.dataset-profile] uploads a real bounded CSV file and requires plan approval before profiling", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -311,7 +311,7 @@ test.describe("Dataset Lab interactions", () => {
 });
 
 test.describe("Institutional Q&A interactions", () => {
-  test("corpus scopes are sent, citations open an evidence dialog, and Work IQ stays disabled", async ({
+  test("[pw.institutional-corpora] [pw.institutional-answer] [pw.institutional-evidence] [pw.work-iq-readiness] corpus scopes are sent, citations open an evidence dialog, and Work IQ stays disabled", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -349,7 +349,7 @@ test.describe("Institutional Q&A interactions", () => {
 });
 
 test.describe("Workflow Automation interactions", () => {
-  test("zoom, step editing, and activation are wired with real gating", async ({
+  test("[pw.workflow-viewport] [pw.workflow-graph] [pw.workflow-dry-run] [pw.workflow-activation] zoom, step editing, and activation are wired with real gating", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -394,7 +394,7 @@ test.describe("Workflow Automation interactions", () => {
     ).toBeDisabled();
   });
 
-  test("capability catalog adds an authorized agent to the graph, and run management inspects a real run", async ({
+  test("[pw.workflow-catalog] [pw.workflow-run] capability catalog adds an authorized agent to the graph, and run management inspects a real run", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -441,7 +441,7 @@ test.describe("Workflow Automation interactions", () => {
 });
 
 test.describe("Library and Settings interactions", () => {
-  test("a library row opens a detail dialog", async ({ page }) => {
+  test("[pw.library-detail] a library row opens a detail dialog", async ({ page }) => {
     await waitForWorkspace(page);
     await page.getByRole("button", { name: /^Library \d+$/ }).click();
     await page.locator(".library-row:not(.library-head)").first().click();
@@ -451,7 +451,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(dialog).not.toBeVisible();
   });
 
-  test("Settings exposes a truthful integration readiness section", async ({
+  test("[pw.integration-readiness] Settings exposes a truthful integration readiness section", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -467,7 +467,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(page.getByText(/project-scoped, not per-user/i)).toBeVisible();
   });
 
-  test("Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion", async ({
+  test("[pw.connector-versions] Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion", async ({
     page,
   }) => {
     await waitForWorkspace(page);
