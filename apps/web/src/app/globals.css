@@ -4394,6 +4394,19 @@ button {
   font-weight: 750;
 }
 
+.connector-terms-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #88443e;
+  background: #f7dfdc;
+  border: 1px solid #ebcbc7;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-size: var(--font-size-caption);
+  font-weight: 750;
+}
+
 .empty-connector-search,
 .empty-connector-manager {
   padding: 18px;

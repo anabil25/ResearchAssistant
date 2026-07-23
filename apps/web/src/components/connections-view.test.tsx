@@ -418,12 +418,52 @@ describe("ConnectionsView connector manager actions", () => {
         onRefresh={jest.fn()}
       />,
     );
-    expect(
-      screen.getByRole("link", { name: /Provider terms/ }),
-    ).toHaveAttribute(
+    const link = screen.getByRole("link", { name: /Provider terms/ });
+    expect(link).toHaveAttribute(
       "href",
       "https://www.ncbi.nlm.nih.gov/home/about/policies/",
     );
+    expect(link).toHaveAttribute("data-terms-state", "ready");
+  });
+
+  it("fails closed on an unapproved terms URL instead of rendering a raw anchor", () => {
+    render(
+      <ConnectionsView
+        data={workspaceData([
+          connector({ id: "pubmed", terms_url: "https://evil.example.com/terms" }),
+        ])}
+        onRefresh={jest.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("link", { name: /Provider terms/ }),
+    ).not.toBeInTheDocument();
+    const blocked = screen.getByRole("status", {
+      name: "This link targets a host that is not on the approved list.",
+    });
+    expect(blocked).toHaveAttribute("data-terms-state", "blocked-url");
+  });
+
+  it("fails closed on a non-https terms URL", () => {
+    render(
+      <ConnectionsView
+        data={workspaceData([
+          connector({
+            id: "pubmed",
+            terms_url: "http://www.ncbi.nlm.nih.gov/home/about/policies/",
+          }),
+        ])}
+        onRefresh={jest.fn()}
+      />,
+    );
+    expect(
+      screen.queryByRole("link", { name: /Provider terms/ }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("status", {
+        name: "Only secure (https) links can be opened.",
+      }),
+    ).toBeInTheDocument();
   });
 
   it("shows the gateway readiness card as registered when a matching connector exists", () => {

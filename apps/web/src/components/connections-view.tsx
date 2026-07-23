@@ -7,6 +7,7 @@ import {
   CircleDashed,
   FileText,
   Globe2,
+  Lock,
   Search,
   Users,
   X,
@@ -17,6 +18,10 @@ import { testConnector, updateConnector, type WorkspaceData } from "@/lib/api";
 import type { ConnectorSetting } from "@/lib/types";
 import { formatTime, statusLabel } from "@/components/workspace-views";
 import { EmptyBlock, LoadingBlock } from "@/components/async-state";
+import {
+  describeUrlPolicyRejection,
+  evaluateExternalUrlPolicy,
+} from "@/lib/url-policy";
 
 const CONNECTOR_SPECIALISTS = [
   "literature",
@@ -486,13 +491,37 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
               </div>
 
               <div className="connector-manager-actions">
-                <a
-                  href={managedConnector.terms_url}
-                  target="_blank"
-                  rel="noreferrer"
-                >
-                  Provider terms <ArrowUpRight size={13} />
-                </a>
+                {(() => {
+                  // `managedConnector` is narrowed non-null in this scope, so
+                  // evaluating the policy here (rather than hoisting it above)
+                  // guarantees a real decision and avoids an unreachable null
+                  // branch.
+                  const termsPolicy = evaluateExternalUrlPolicy(
+                    managedConnector.terms_url,
+                  );
+                  return termsPolicy.allowed ? (
+                    <a
+                      href={termsPolicy.url}
+                      target="_blank"
+                      rel="noreferrer"
+                      data-terms-state="ready"
+                    >
+                      Provider terms <ArrowUpRight size={13} />
+                    </a>
+                  ) : (
+                    <span
+                      className="connector-terms-blocked"
+                      role="status"
+                      data-terms-state="blocked-url"
+                      aria-label={describeUrlPolicyRejection(
+                        termsPolicy.reason,
+                      )}
+                    >
+                      <Lock size={13} aria-hidden="true" />
+                      {describeUrlPolicyRejection(termsPolicy.reason)}
+                    </span>
+                  );
+                })()}
                 <div>
                   <button
                     type="button"

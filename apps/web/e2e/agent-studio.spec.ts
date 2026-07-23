@@ -434,6 +434,45 @@ test.describe("Connections", () => {
       page.getByRole("button", { name: "Test connection" }),
     ).toBeEnabled({ timeout: 10_000 });
   });
+
+  test("renders a real, allowlisted provider-terms link as a ready clickable anchor", async ({
+    page,
+  }) => {
+    await openConnections(page);
+    await page.locator(".connector-card").first().click();
+    const termsLink = page.getByRole("link", { name: /Provider terms/ });
+    await expect(termsLink).toBeVisible();
+    await expect(termsLink).toHaveAttribute("data-terms-state", "ready");
+    const href = await termsLink.getAttribute("href");
+    expect(href).toMatch(/^https:\/\//);
+  });
+
+  test("fails closed on an unapproved connector terms URL instead of exposing a raw anchor", async ({
+    page,
+  }) => {
+    // The real backend's connector data is always allowlisted, so this one
+    // deterministic edge case (an unapproved host slipping through) is
+    // reproduced by rewriting the real `/connectors` response in place,
+    // matching the `research-markdown.spec.ts` real-route-rewrite pattern.
+    await page.route("**/api/connectors", async (route) => {
+      const response = await route.fetch();
+      const body = (await response.json()) as Array<Record<string, unknown>>;
+      if (body.length > 0) {
+        body[0] = { ...body[0], terms_url: "https://evil.example.com/terms" };
+      }
+      await route.fulfill({ response, json: body });
+    });
+    await openConnections(page);
+    await page.locator(".connector-card").first().click();
+    await expect(
+      page.getByRole("link", { name: /Provider terms/ }),
+    ).not.toBeVisible();
+    const blocked = page.getByRole("status", {
+      name: "This link targets a host that is not on the approved list.",
+    });
+    await expect(blocked).toBeVisible();
+    await expect(blocked).toHaveAttribute("data-terms-state", "blocked-url");
+  });
 });
 
 test.describe("Agent Studio accessibility and responsive layout", () => {
