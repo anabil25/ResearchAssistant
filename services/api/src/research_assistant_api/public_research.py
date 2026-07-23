@@ -72,8 +72,8 @@ async def _retrieve_one(
     return {
         "source": result.source.value,
         "status": "ready",
-        "terms_url": result.terms_url,
-        "retrieved_from": result.retrieved_from,
+        "terms_url": str(result.terms_url),
+        "retrieved_from": str(result.retrieved_from),
         "warnings": result.warnings,
         "records": result.records,
     }

@@ -406,6 +406,7 @@ def connector_connection_payload(
             "authType": "ProjectManagedIdentity",
             "category": "RemoteTool",
             "target": target,
+            "audience": audience.rstrip("/"),
             "metadata": {
                 "type": "generic_mcp",
                 "audience": audience.rstrip("/"),

@@ -1964,6 +1964,7 @@ export function DatasetStudio({
                   filename: uploadedFile.name,
                   estimated_bytes: uploadedFile.size,
                   compute_adapter_configured: true,
+                  analysis_approved: planApproved,
                   ...(csvText ? { csv_text: csvText } : {}),
                 }
               : assetMode === "large"
@@ -1971,11 +1972,13 @@ export function DatasetStudio({
                     filename: "clinical-events-archive.parquet",
                     estimated_bytes: 1_200_000_000_000,
                     compute_adapter_configured: true,
+                    analysis_approved: planApproved,
                   }
                 : {
                     filename: "pilot-outcomes.csv",
                     estimated_bytes: 4_000_000,
                     compute_adapter_configured: true,
+                    analysis_approved: planApproved,
                   };
           void onRun("dataset", objective, { inputs });
         }}

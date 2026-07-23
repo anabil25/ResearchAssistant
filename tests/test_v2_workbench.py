@@ -422,6 +422,7 @@ def test_inline_computed_dataset_does_not_default_to_scale_out(
             "inputs": {
                 "filename": "inline.csv",
                 "csv_text": "group,score\ncontrol,10\nintervention,12\n",
+                "analysis_approved": True,
             },
         },
     )
@@ -433,6 +434,24 @@ def test_inline_computed_dataset_does_not_default_to_scale_out(
     assert result["run"]["status"] == "completed"
     assert result["compute_proposal"]["estimated_bytes"] == 0
     assert result["compute_proposal"]["approval_required"] is False
+
+
+def test_inline_dataset_analysis_requires_explicit_approval(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": "Analyze the supplied dataset.",
+            "inputs": {
+                "filename": "inline.csv",
+                "csv_text": "group,score\ncontrol,10\n",
+            },
+        },
+    )
+
+    assert response.status_code == 422
+    assert "approval" in response.json()["detail"].lower()
 
 
 def test_automation_graph_is_hashed_and_invalid_cycles_are_blocked(

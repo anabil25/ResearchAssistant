@@ -166,6 +166,7 @@ def test_connector_toolbox_connection_uses_project_identity() -> None:
             "authType": "ProjectManagedIdentity",
             "category": "RemoteTool",
             "target": "https://gateway.example/mcp",
+            "audience": "https://management.azure.com",
             "metadata": {
                 "type": "generic_mcp",
                 "audience": "https://management.azure.com",

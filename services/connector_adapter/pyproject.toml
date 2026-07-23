@@ -9,7 +9,7 @@ requires-python = ">=3.12"
 dependencies = [
     "fastapi>=0.120,<1",
     "httpx>=0.28,<1",
-    "pyjwt[crypto]==2.10.1",
+    "pyjwt[crypto]==2.13.0",
     "research-assistant-connectors",
     "research-assistant-core",
     "uvicorn[standard]>=0.38,<1",
