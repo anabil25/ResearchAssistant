@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from .contracts import ApprovalPolicy, AuthMode, Idempotency, Risk
+from .contracts import ApprovalPolicy, AuthMode, Idempotency, OperationClass
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,7 +41,7 @@ class SearchConfig:
 @dataclass(frozen=True, slots=True)
 class FunctionPolicy:
     name: str
-    risk: Risk = Risk.EXTERNAL_SIDE_EFFECT
+    operation_class: OperationClass = OperationClass.PRIVILEGED
     approval_policy: ApprovalPolicy = ApprovalPolicy.REQUIRED
     idempotency: Idempotency = Idempotency.NONE
 
@@ -69,7 +69,7 @@ class BlobConfig:
 @dataclass(frozen=True, slots=True)
 class MCPToolPolicy:
     name: str
-    risk: Risk = Risk.EXTERNAL_SIDE_EFFECT
+    operation_class: OperationClass = OperationClass.PRIVILEGED
     approval_policy: ApprovalPolicy = ApprovalPolicy.REQUIRED
     idempotency: Idempotency = Idempotency.NONE
 
@@ -97,7 +97,7 @@ class OpenAPIConfig:
 @dataclass(frozen=True, slots=True)
 class OpenAPIOperationPolicy:
     operation_id: str
-    risk: Risk
+    operation_class: OperationClass
     approval_policy: ApprovalPolicy
     idempotency: Idempotency | None = None
 

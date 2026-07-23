@@ -12,21 +12,22 @@ from .config import OpenAPIConfig, OpenAPIOperationPolicy
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     ProviderValidationError,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -175,73 +176,89 @@ class OpenAPIProvider:
                 )
         return tuple(discovered)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
                 "openapi.invoke",
+                "1.0.0",
                 Maturity.GA,
                 {"type": "object"},
                 {},
-                Risk.EXTERNAL_SIDE_EFFECT,
+                OperationClass.PRIVILEGED,
                 ApprovalPolicy.REQUIRED,
+                side_effect_destinations=(self._config.base_url or "unconfigured:openapi-endpoint",),
                 docs=DOCS,
             )
             return (
-                CapabilityDescriptor(
-                    PROVIDER_ID,
-                    "openapi.configuration",
-                    "openapi",
-                    "api",
-                    "OpenAPI endpoint",
-                    validation.readiness,
-                    False,
-                    (self._config.auth.mode,),
-                    "configured tenant",
-                    "configured base URL",
-                    (operation,),
-                    DOCS,
-                    ("No OpenAPI document was loaded.",),
+                capability_instance(
+                    provider_id=PROVIDER_ID,
+                    instance_id="openapi.configuration",
+                    family="openapi",
+                    resource_kind="api",
+                    name="OpenAPI endpoint",
+                    readiness=validation.readiness,
+                    auth_modes=(self._config.auth.mode,),
+                    tenant_boundary="configured tenant",
+                    data_boundary="configured base URL",
+                    operations=(operation,),
+                    provenance=DOCS,
+                    status_evidence=("No OpenAPI document was loaded.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
             )
         policies = {policy.operation_id: policy for policy in self._config.operation_policies}
         capabilities = []
         for operation_id, method, path, schema in self._operations(context):
+            default_class = (
+                OperationClass.READ
+                if method in {"GET", "HEAD"}
+                else OperationClass.WRITE_IRREVERSIBLE
+            )
             policy = policies.get(
                 operation_id,
-                OpenAPIOperationPolicy(operation_id, Risk.EXTERNAL_SIDE_EFFECT, ApprovalPolicy.REQUIRED),
+                OpenAPIOperationPolicy(
+                    operation_id,
+                    default_class,
+                    ApprovalPolicy.NEVER
+                    if default_class is OperationClass.READ
+                    else ApprovalPolicy.REQUIRED,
+                ),
             )
             idempotency = policy.idempotency
             if idempotency is None:
                 idempotency = Idempotency.INHERENT if method in {"GET", "HEAD", "PUT", "DELETE"} else Idempotency.NONE
             capabilities.append(
-                CapabilityDescriptor(
-                    PROVIDER_ID,
-                    stable_resource_id("openapi.operation", operation_id),
-                    "openapi",
-                    "api_operation",
-                    operation_id,
-                    Readiness.READY,
-                    True,
-                    (AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
-                    "configured tenant",
-                    "configured base URL; document server values are not invocation authority",
-                    (
+                capability_instance(
+                    provider_id=PROVIDER_ID,
+                    instance_id=stable_resource_id("openapi.operation", operation_id),
+                    family="openapi",
+                    resource_kind="api_operation",
+                    name=operation_id,
+                    readiness=Readiness.READY,
+                    auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
+                    tenant_boundary="configured tenant",
+                    data_boundary="configured base URL; document server values are not invocation authority",
+                    operations=(
                         OperationDescriptor(
                             operation_id,
+                            "1.0.0",
                             Maturity.GA,
                             schema,
                             {},
-                            policy.risk,
+                            policy.operation_class,
                             policy.approval_policy,
+                            side_effect_destinations=()
+                            if policy.operation_class
+                            in {OperationClass.PURE, OperationClass.READ}
+                            else (self._config.base_url or "unconfigured:openapi-endpoint",),
                             idempotency=idempotency,
                             docs=DOCS,
                         ),
                     ),
-                    DOCS,
-                    ("operationId found in a validated OpenAPI 3.x document.",),
-                    metadata={"method": method, "path": path, "source": "untrusted_openapi_document"},
+                    provenance=DOCS,
+                    status_evidence=("operationId found in a validated OpenAPI 3.x document.",),
+                    configuration={"method": method, "path": path, "source": "untrusted_openapi_document"},
                 )
             )
         return tuple(capabilities)
@@ -266,15 +283,15 @@ class OpenAPIProvider:
         return rendered
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
             provider_id=PROVIDER_ID,
             tenant_id=self._config.tenant_id,
         )
-        method = str(capability.metadata["method"])
-        path = self._render_path(str(capability.metadata["path"]), request.arguments.get("path", {}))
+        method = str(instance.configuration["method"])
+        path = self._render_path(str(instance.configuration["path"]), request.arguments.get("path", {}))
         headers = auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
         if request.idempotency_key and operation.idempotency is not Idempotency.NONE:
             headers["Idempotency-Key"] = request.idempotency_key
@@ -298,14 +315,14 @@ class OpenAPIProvider:
         output: Any = json_object(response, provider_id=PROVIDER_ID) if "json" in content_type else response.text
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             output,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

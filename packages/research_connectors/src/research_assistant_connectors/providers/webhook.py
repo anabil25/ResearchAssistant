@@ -11,19 +11,21 @@ from .contracts import (
     ApprovalPolicy,
     AuthMode,
     CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
     plain_json,
 )
@@ -37,11 +39,13 @@ class WebhookProvider:
         self._config = config
         operation = OperationDescriptor(
             config.operation_id,
+            "1.0.0",
             Maturity.GA,
             {"type": "object"},
             {},
-            Risk.EXTERNAL_SIDE_EFFECT,
+            OperationClass.PRIVILEGED,
             ApprovalPolicy.REQUIRED,
+            side_effect_destinations=(config.destination_url or "unconfigured:webhook-destination",),
             idempotency=Idempotency.REQUIRED,
             docs=DOCS,
         )
@@ -54,20 +58,13 @@ class WebhookProvider:
             DOCS,
             (
                 CapabilityDescriptor(
-                    PROVIDER_ID,
-                    f"webhook.{config.operation_id}",
-                    "webhook",
-                    "fixed_webhook",
-                    config.operation_id,
-                    Readiness.MISCONFIGURED,
-                    False,
-                    (config.auth.mode,),
-                    "configured tenant",
-                    "single configured destination URL",
-                    (operation,),
-                    DOCS,
-                    ("Configuration has not yet been validated.",),
-                    unavailable_reason="Webhook configuration has not yet been validated",
+                    descriptor_id=f"webhook.{config.operation_id}",
+                    family="webhook",
+                    resource_kind="fixed_webhook",
+                    name=config.operation_id,
+                    auth_modes=(config.auth.mode,),
+                    operations=(operation,),
+                    provenance=DOCS,
                 ),
             ),
         )
@@ -96,25 +93,25 @@ class WebhookProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
-        operation = self._descriptor.capabilities[0].operations[0]
+        operation = self._descriptor.capability_descriptors[0].operations[0]
         reason = None if validation.readiness is Readiness.READY else "; ".join(validation.reasons)
         return (
-            CapabilityDescriptor(
-                PROVIDER_ID,
-                f"webhook.{self._config.operation_id}",
-                "webhook",
-                "fixed_webhook",
-                self._config.operation_id,
-                validation.readiness,
-                validation.readiness is Readiness.READY,
-                (self._config.auth.mode,) + ((AuthMode.SIGNATURE,) if self._config.signing_algorithm else ()),
-                "configured tenant",
-                "single configured destination URL",
-                (operation,),
-                DOCS,
-                ("Fixed destination and credential abstraction validated.",),
+            capability_instance(
+                provider_id=PROVIDER_ID,
+                instance_id=f"webhook.{self._config.operation_id}",
+                family="webhook",
+                resource_kind="fixed_webhook",
+                name=self._config.operation_id,
+                readiness=validation.readiness,
+                auth_modes=(self._config.auth.mode,)
+                + ((AuthMode.SIGNATURE,) if self._config.signing_algorithm else ()),
+                tenant_boundary="configured tenant",
+                data_boundary="single configured destination URL",
+                operations=(operation,),
+                provenance=DOCS,
+                status_evidence=("Fixed destination and credential abstraction validated.",),
                 unavailable_reason=reason,
             ),
         )
@@ -136,7 +133,7 @@ class WebhookProvider:
         return HealthReport(Readiness.READY, (f"Health request returned HTTP {response.status_code}.",))
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
@@ -165,14 +162,14 @@ class WebhookProvider:
         output: Any = response.json() if "json" in content_type else response.text
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             output,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

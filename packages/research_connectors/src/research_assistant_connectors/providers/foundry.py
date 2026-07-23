@@ -10,21 +10,22 @@ from .config import FoundryConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     ProviderError,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -63,21 +64,27 @@ def _operation(
     operation_id: str,
     *,
     maturity: Maturity = Maturity.GA,
-    risk: Risk = Risk.READ,
+    operation_class: OperationClass = OperationClass.READ,
+    approval_policy: ApprovalPolicy = ApprovalPolicy.NEVER,
+    side_effect_destinations: tuple[str, ...] = (),
     input_schema: dict[str, Any] = OBJECT_SCHEMA,
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id=operation_id,
+        version="1.0.0",
         maturity=maturity,
         input_schema=input_schema,
         output_schema=OBJECT_SCHEMA,
-        risk=risk,
-        approval_policy=ApprovalPolicy.REQUIRED if risk is not Risk.READ else ApprovalPolicy.NEVER,
-        idempotency=Idempotency.OPTIONAL if risk is not Risk.READ else Idempotency.INHERENT,
+        operation_class=operation_class,
+        approval_policy=approval_policy,
+        side_effect_destinations=side_effect_destinations,
+        idempotency=Idempotency.OPTIONAL
+        if operation_class is OperationClass.PRIVILEGED
+        else Idempotency.INHERENT,
         least_privilege_scopes=("https://ai.azure.com/.default",),
         least_privilege_roles=(
             ("Foundry Agent Consumer",)
-            if risk is Risk.EXECUTE
+            if operation_class is OperationClass.PRIVILEGED
             else ("Reader",)
         ),
         docs=DOCS,
@@ -96,15 +103,14 @@ def _capability(
     metadata: Mapping[str, Any] | None = None,
     auth_modes: tuple[AuthMode, ...] = (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
     data_boundary: str = "configured Foundry project endpoint",
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
+) -> CapabilityInstance:
+    return capability_instance(
         provider_id=PROVIDER_ID,
-        capability_id=capability_id,
+        instance_id=capability_id,
         family="microsoft_foundry",
         resource_kind=resource_kind,
         name=name,
         readiness=readiness,
-        attachable=readiness is Readiness.READY and operation.maturity is Maturity.GA,
         auth_modes=auth_modes,
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary=data_boundary,
@@ -112,18 +118,24 @@ def _capability(
         provenance=DOCS,
         status_evidence=evidence,
         unavailable_reason=reason,
-        metadata=metadata or {},
+        configuration=metadata or {},
     )
 
 
 class FoundryProvider:
     def __init__(self, config: FoundryConfig) -> None:
         self._config = config
-        memory = _capability(
+        self._memory = _capability(
             "foundry.memory.preview",
             "Foundry Memory",
             "memory",
-            _operation("foundry.memory.use", maturity=Maturity.PREVIEW, risk=Risk.WRITE),
+            _operation(
+                "foundry.memory.use",
+                maturity=Maturity.PREVIEW,
+                operation_class=OperationClass.WRITE_IRREVERSIBLE,
+                approval_policy=ApprovalPolicy.REQUIRED,
+                side_effect_destinations=(config.endpoint or "unconfigured:foundry-project",),
+            ),
             Readiness.UNAVAILABLE,
             evidence=("Service status: preview; provider policy blocks attachment.",),
             reason="Foundry Memory is preview and is not attachable",
@@ -135,7 +147,7 @@ class FoundryProvider:
             description="Project-scoped Foundry deployments, agents, connections, and Responses operations.",
             auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
             provenance=DOCS,
-            capabilities=(memory,),
+            capability_descriptors=(self._memory.descriptor,),
         )
 
     @property
@@ -168,8 +180,8 @@ class FoundryProvider:
             return ValidationReport(Readiness.MISCONFIGURED, ("No Foundry discovery path is configured.",))
         return ValidationReport(Readiness.READY)
 
-    def _unavailable(self, readiness: Readiness, reason: str) -> tuple[CapabilityDescriptor, ...]:
-        capabilities = [self._descriptor.capabilities[0]]
+    def _unavailable(self, readiness: Readiness, reason: str) -> tuple[CapabilityInstance, ...]:
+        capabilities = [self._memory]
         paths = {
             "models": self._config.models_path,
             "deployments": self._config.deployments_path,
@@ -195,7 +207,10 @@ class FoundryProvider:
                     "foundry.responses",
                     "Foundry Responses",
                     "conversation",
-                    _operation("foundry.responses.create", risk=Risk.EXECUTE),
+                    _operation(
+                        "foundry.responses.create",
+                        operation_class=OperationClass.PRIVILEGED,
+                    ),
                     readiness,
                     evidence=("No successful project discovery is available.",),
                     reason=reason,
@@ -203,7 +218,7 @@ class FoundryProvider:
             )
         return tuple(capabilities)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             return self._unavailable(validation.readiness, "; ".join(validation.reasons))
@@ -216,7 +231,7 @@ class FoundryProvider:
             "connections": self._config.connections_path,
             "vector_stores": self._config.vector_stores_path,
         }
-        capabilities: list[CapabilityDescriptor] = [self._descriptor.capabilities[0]]
+        capabilities: list[CapabilityInstance] = [self._memory]
         successful = 0
         deployment_ids: set[str] = set()
         for kind, path in paths.items():
@@ -297,7 +312,7 @@ class FoundryProvider:
                             resource_reason = "No model deployment was discovered for File Search"
                         operation = _operation(
                             "foundry.file_search.query",
-                            risk=Risk.EXECUTE,
+                            operation_class=OperationClass.PRIVILEGED,
                             input_schema=model_schema,
                         )
                         resource_kind = "project_knowledge"
@@ -340,7 +355,7 @@ class FoundryProvider:
                     "conversation",
                     _operation(
                         "foundry.responses.create",
-                        risk=Risk.EXECUTE,
+                        operation_class=OperationClass.PRIVILEGED,
                         input_schema=responses_schema,
                     ),
                     ready,
@@ -359,7 +374,7 @@ class FoundryProvider:
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
         capabilities = self.discover(context)
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             capabilities,
             request,
             context,
@@ -381,7 +396,7 @@ class FoundryProvider:
             method = "POST"
             tool: dict[str, Any] = {
                 "type": "file_search",
-                "vector_store_ids": [str(capability.metadata["resource_id"])],
+                "vector_store_ids": [str(instance.configuration["resource_id"])],
             }
             if "max_num_results" in request.arguments:
                 tool["max_num_results"] = request.arguments["max_num_results"]
@@ -414,14 +429,14 @@ class FoundryProvider:
         output = json_object(response, provider_id=PROVIDER_ID)
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             output,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

@@ -23,7 +23,7 @@ from research_assistant_connectors.providers import (
     OpenAPIConfig,
     OpenAPIOperationPolicy,
     OpenAPIProvider,
-    Risk,
+    OperationClass,
     WebhookConfig,
     WebhookProvider,
 )
@@ -175,7 +175,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                 tool_policies=(
                     MCPToolPolicy(
                         "echo",
-                        Risk.READ,
+                        OperationClass.READ,
                         ApprovalPolicy.NEVER,
                         Idempotency.NONE,
                     ),
@@ -185,7 +185,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         mcp_capability = mcp.discover(context)[0]
         mcp_result = mcp.invoke(
             InvocationRequest(
-                mcp_capability.capability_id,
+                mcp_capability.instance_id,
                 "mcp.tools.call",
                 {"value": "network"},
             ),
@@ -200,7 +200,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
                 operation_policies=(
                     OpenAPIOperationPolicy(
                         "ping",
-                        Risk.READ,
+                        OperationClass.READ,
                         ApprovalPolicy.NEVER,
                     ),
                 ),
@@ -208,7 +208,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         )
         openapi_capability = openapi.discover(context)[0]
         openapi_result = openapi.invoke(
-            InvocationRequest(openapi_capability.capability_id, "ping", {}),
+            InvocationRequest(openapi_capability.instance_id, "ping", {}),
             context,
         )
 
@@ -223,11 +223,11 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         webhook_capability = webhook.discover(context)[0]
         approved = replace(
             context,
-            approved_capability_ids=frozenset({webhook_capability.capability_id}),
+            approved_instance_ids=frozenset({webhook_capability.instance_id}),
         )
         webhook_result = webhook.invoke(
             InvocationRequest(
-                webhook_capability.capability_id,
+                webhook_capability.instance_id,
                 "publish",
                 {"value": "network"},
                 "local-event",
@@ -249,7 +249,7 @@ def test_loopback_mcp_openapi_webhook_and_github_protocols() -> None:
         )
         github_result = github.invoke(
             InvocationRequest(
-                github_capability.capability_id,
+                github_capability.instance_id,
                 "github.repository.get",
                 {},
             ),

@@ -22,10 +22,10 @@
             "title": "Arguments",
             "type": "object"
           },
-          "capability_id": {
+          "instance_id": {
             "maxLength": 512,
             "minLength": 1,
-            "title": "Capability Id",
+            "title": "Instance Id",
             "type": "string"
           },
           "operation_id": {
@@ -36,7 +36,7 @@
           }
         },
         "required": [
-          "capability_id",
+          "instance_id",
           "operation_id"
         ],
         "title": "ProviderInvokePayload",

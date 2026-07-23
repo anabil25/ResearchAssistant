@@ -34,11 +34,11 @@ from research_assistant_connectors.providers import (
     OpenAPIConfig,
     OpenAPIOperationPolicy,
     OpenAPIProvider,
+    OperationClass,
     PolicyError,
     ProviderValidationError,
     RateLimitError,
     Readiness,
-    Risk,
     SearchConfig,
     UpstreamError,
     WebhookConfig,
@@ -126,33 +126,42 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
     provider = FoundryProvider(config)
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
-    assert provider.descriptor.capabilities[0].operations[0].maturity is Maturity.PREVIEW
-    assert provider.descriptor.capabilities[0].attachable is False
+    assert (
+        provider.descriptor.capability_descriptors[0].operations[0].maturity
+        is Maturity.PREVIEW
+    )
     assert provider.health(ctx).readiness is Readiness.READY
-    responses = next(item for item in capabilities if item.capability_id == "foundry.responses")
-    approved = replace(ctx, approved_capability_ids=frozenset({responses.capability_id}))
+    responses = next(item for item in capabilities if item.instance_id == "foundry.responses")
+    responses_operation = responses.descriptor.operations[0]
+    assert responses_operation.operation_class is OperationClass.PRIVILEGED
+    assert responses_operation.approval_policy is ApprovalPolicy.NEVER
+    assert responses_operation.side_effect_destinations == ()
     result = provider.invoke(
         InvocationRequest(
-            responses.capability_id,
+            responses.instance_id,
             "foundry.responses.create",
             {"model": "deployment-1", "input": "Summarize", "conversation": "conversation-1"},
             "request-1",
         ),
-        approved,
+        ctx,
     )
     assert result.output["status"] == "completed"
     assert result.audit_metadata["attempts"] == 1
-    models = next(item for item in capabilities if item.capability_id == "foundry.models.inventory")
-    listed = provider.invoke(InvocationRequest(models.capability_id, "foundry.models.list", {}), ctx)
+    models = next(item for item in capabilities if item.instance_id == "foundry.models.inventory")
+    listed = provider.invoke(InvocationRequest(models.instance_id, "foundry.models.list", {}), ctx)
     assert listed.output["models"][0]["id"] == "model-1"
-    knowledge = next(item for item in capabilities if item.resource_kind == "project_knowledge")
+    knowledge = next(
+        item
+        for item in capabilities
+        if item.descriptor.resource_kind == "project_knowledge"
+    )
     knowledge_context = replace(
         ctx,
-        approved_capability_ids=frozenset({knowledge.capability_id}),
+        approved_instance_ids=frozenset({knowledge.instance_id}),
     )
     provider.invoke(
         InvocationRequest(
-            knowledge.capability_id,
+            knowledge.instance_id,
             "foundry.file_search.query",
             {
                 "model": "deployment-1",
@@ -165,7 +174,7 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
     )
     provider.invoke(
         InvocationRequest(
-            knowledge.capability_id,
+            knowledge.instance_id,
             "foundry.file_search.query",
             {"model": "deployment-1", "input": "Find more evidence"},
             "request-2b",
@@ -190,17 +199,17 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
     with pytest.raises(ProviderValidationError, match="declared values"):
         provider.invoke(
             InvocationRequest(
-                responses.capability_id,
+                responses.instance_id,
                 "foundry.responses.create",
                 {"model": "unknown", "input": "Unsafe"},
                 "request-unknown-model",
             ),
-            approved,
+            ctx,
         )
     with pytest.raises(ProviderValidationError, match="unsupported"):
         provider.invoke(
             InvocationRequest(
-                responses.capability_id,
+                responses.instance_id,
                 "foundry.responses.create",
                 {
                     "model": "deployment-1",
@@ -209,7 +218,7 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
                 },
                 "request-3",
             ),
-            approved,
+            ctx,
         )
     assert ("POST", "/project/responses") in calls
 
@@ -233,14 +242,17 @@ def test_foundry_missing_configuration_tenant_auth_and_degraded_discovery() -> N
     )
     degraded = partial.discover(ctx)
     assert (
-        next(item for item in degraded if item.capability_id == "foundry.models.inventory").readiness
+        next(item for item in degraded if item.instance_id == "foundry.models.inventory").readiness
         is Readiness.DEGRADED
     )
     assert (
-        next(item for item in degraded if item.capability_id == "foundry.agents.inventory").readiness
+        next(item for item in degraded if item.instance_id == "foundry.agents.inventory").readiness
         is Readiness.MISCONFIGURED
     )
-    assert next(item for item in degraded if item.capability_id == "foundry.responses").readiness is Readiness.DEGRADED
+    assert (
+        next(item for item in degraded if item.instance_id == "foundry.responses").readiness
+        is Readiness.DEGRADED
+    )
 
 
 def test_search_discovers_indexes_retries_and_queries_documents() -> None:
@@ -263,7 +275,11 @@ def test_search_discovers_indexes_retries_and_queries_documents() -> None:
     capabilities = provider.discover(ctx)
     assert len(capabilities) == 1
     result = provider.invoke(
-        InvocationRequest(capabilities[0].capability_id, "search.documents.query", {"search": "evidence", "top": 2}),
+        InvocationRequest(
+            capabilities[0].instance_id,
+            "search.documents.query",
+            {"search": "evidence", "top": 2},
+        ),
         ctx,
     )
     assert result.output["value"][0]["id"] == "1"
@@ -313,7 +329,7 @@ def test_functions_admin_discovery_policy_and_json_and_text_invocation() -> None
         function_policies=(
             FunctionPolicy(
                 "SafeRead",
-                Risk.READ,
+                OperationClass.READ,
                 ApprovalPolicy.NEVER,
                 Idempotency.REQUIRED,
             ),
@@ -323,7 +339,12 @@ def test_functions_admin_discovery_policy_and_json_and_text_invocation() -> None
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     assert [item.name for item in capabilities] == ["SafeRead"]
-    request = InvocationRequest(capabilities[0].capability_id, "functions.http.invoke", {"query": "x"}, "key")
+    request = InvocationRequest(
+        capabilities[0].instance_id,
+        "functions.http.invoke",
+        {"query": "x"},
+        "key",
+    )
     assert provider.invoke(request, ctx).output["ok"] is True
     assert provider.invoke(request, ctx).output == "ok"
     assert provider.health(ctx).readiness is Readiness.READY
@@ -374,9 +395,9 @@ def test_functions_validation_and_default_restrictive_policy() -> None:
         )
     )
     capability = provider.discover(ctx)[0]
-    assert capability.operations[0].risk is Risk.EXTERNAL_SIDE_EFFECT
+    assert capability.descriptor.operations[0].operation_class is OperationClass.PRIVILEGED
     with pytest.raises(PolicyError):
-        provider.invoke(InvocationRequest(capability.capability_id, "functions.http.invoke", {}), ctx)
+        provider.invoke(InvocationRequest(capability.instance_id, "functions.http.invoke", {}), ctx)
 
 
 def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
@@ -400,20 +421,30 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
     provider = AzureBlobProvider(BlobConfig("https://account.blob.core.windows.net", "tenant"))
     ctx = make_context(handler)
     capability = provider.discover(ctx)[0]
+    put_operation = next(
+        operation
+        for operation in capability.descriptor.operations
+        if operation.operation_id == "blob.put"
+    )
+    assert put_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
+    assert put_operation.approval_policy is ApprovalPolicy.REQUIRED
+    assert put_operation.side_effect_destinations == (
+        "https://account.blob.core.windows.net/research",
+    )
     listed = provider.invoke(
-        InvocationRequest(capability.capability_id, "blob.blobs.list", {"prefix": "folder/"}),
+        InvocationRequest(capability.instance_id, "blob.blobs.list", {"prefix": "folder/"}),
         ctx,
     )
     assert listed.output["blobs"] == ("folder/a.txt",)
     fetched = provider.invoke(
-        InvocationRequest(capability.capability_id, "blob.get", {"blob": "folder/a.txt"}),
+        InvocationRequest(capability.instance_id, "blob.get", {"blob": "folder/a.txt"}),
         ctx,
     )
     assert base64.b64decode(fetched.output["content_base64"]) == b"blob-data"
-    approved = replace(ctx, approved_capability_ids=frozenset({capability.capability_id}))
+    approved = replace(ctx, approved_instance_ids=frozenset({capability.instance_id}))
     written = provider.invoke(
         InvocationRequest(
-            capability.capability_id,
+            capability.instance_id,
             "blob.put",
             {"blob": "folder/a.txt", "content_base64": base64.b64encode(b"new").decode(), "content_type": "text/plain"},
         ),
@@ -434,11 +465,11 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
     shared_capability = shared.discover(shared_context)[0]
     shared_approved = replace(
         shared_context,
-        approved_capability_ids=frozenset({shared_capability.capability_id}),
+        approved_instance_ids=frozenset({shared_capability.instance_id}),
     )
     shared.invoke(
         InvocationRequest(
-            shared_capability.capability_id,
+            shared_capability.instance_id,
             "blob.put",
             {"blob": "signed.txt", "content_base64": "YQ==", "content_type": "text/plain"},
         ),
@@ -473,10 +504,14 @@ def test_blob_validation_xml_path_and_content_failures() -> None:
     provider = AzureBlobProvider(BlobConfig("https://blob.test", "tenant"))
     valid_ctx = make_context(handler)
     capability = provider.discover(valid_ctx)[0]
-    approved = replace(valid_ctx, approved_capability_ids=frozenset({capability.capability_id}))
+    approved = replace(valid_ctx, approved_instance_ids=frozenset({capability.instance_id}))
     with pytest.raises(ProviderValidationError, match="invalid"):
         provider.invoke(
-            InvocationRequest(capability.capability_id, "blob.put", {"blob": "a", "content_base64": "***"}),
+            InvocationRequest(
+                capability.instance_id,
+                "blob.put",
+                {"blob": "a", "content_base64": "***"},
+            ),
             approved,
         )
 
@@ -532,12 +567,12 @@ def test_mcp_protocol_session_untrusted_annotations_and_tool_call() -> None:
     provider = MCPStreamableHTTPProvider(MCPConfig("https://mcp.test", "tenant"))
     ctx = make_context(handler)
     capability = provider.discover(ctx)[0]
-    assert capability.operations[0].risk is Risk.EXTERNAL_SIDE_EFFECT
-    assert capability.metadata["untrusted_tool_metadata"]["annotations"]["readOnlyHint"] is True
-    assert tuple(capability.operations[0].input_schema["required"]) == ("value",)
-    approved = replace(ctx, approved_capability_ids=frozenset({capability.capability_id}))
+    assert capability.descriptor.operations[0].operation_class is OperationClass.PRIVILEGED
+    assert capability.configuration["untrusted_tool_metadata"]["annotations"]["readOnlyHint"] is True
+    assert tuple(capability.descriptor.operations[0].input_schema["required"]) == ("value",)
+    approved = replace(ctx, approved_instance_ids=frozenset({capability.instance_id}))
     result = provider.invoke(
-        InvocationRequest(capability.capability_id, "mcp.tools.call", {"value": "x"}, "idempotency"),
+        InvocationRequest(capability.instance_id, "mcp.tools.call", {"value": "x"}, "idempotency"),
         approved,
     )
     assert result.output["content"][0]["text"] == "done"
@@ -612,16 +647,25 @@ def test_openapi_discovery_fixed_destination_policy_and_invocation() -> None:
         "https://api.test/v1",
         "tenant",
         document=document,
-        operation_policies=(OpenAPIOperationPolicy("getPet", Risk.READ, ApprovalPolicy.NEVER),),
+        operation_policies=(
+            OpenAPIOperationPolicy(
+                "getPet",
+                OperationClass.READ,
+                ApprovalPolicy.NEVER,
+            ),
+        ),
     )
     provider = OpenAPIProvider(config)
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     assert {item.name for item in capabilities} == {"getPet", "updatePet"}
     get_cap = next(item for item in capabilities if item.name == "getPet")
+    assert get_cap.descriptor.operations[0].operation_class is OperationClass.READ
+    assert get_cap.descriptor.operations[0].approval_policy is ApprovalPolicy.NEVER
+    assert get_cap.descriptor.operations[0].side_effect_destinations == ()
     result = provider.invoke(
         InvocationRequest(
-            get_cap.capability_id,
+            get_cap.instance_id,
             "getPet",
             {"path": {"petId": "a/b"}, "query": {"expand": "owner"}},
         ),
@@ -631,9 +675,17 @@ def test_openapi_discovery_fixed_destination_policy_and_invocation() -> None:
     assert requests[-1].url.host == "api.test"
     assert b"a%2Fb" in requests[-1].url.raw_path
     update = next(item for item in capabilities if item.name == "updatePet")
+    update_operation = update.descriptor.operations[0]
+    assert update_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
+    assert update_operation.approval_policy is ApprovalPolicy.REQUIRED
+    assert update_operation.side_effect_destinations == ("https://api.test/v1",)
     with pytest.raises(PolicyError):
         provider.invoke(
-            InvocationRequest(update.capability_id, "updatePet", {"path": {"petId": "1"}, "body": {}}),
+            InvocationRequest(
+                update.instance_id,
+                "updatePet",
+                {"path": {"petId": "1"}, "body": {}},
+            ),
             ctx,
         )
     assert provider.health(ctx).readiness is Readiness.READY
@@ -699,11 +751,11 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
     ctx = make_context(handler)
     capability = provider.discover(ctx)[0]
     assert provider.health(ctx).readiness is Readiness.READY
-    approved = replace(ctx, approved_capability_ids=frozenset({capability.capability_id}))
+    approved = replace(ctx, approved_instance_ids=frozenset({capability.instance_id}))
     with pytest.raises(PolicyError, match="idempotency"):
-        provider.invoke(InvocationRequest(capability.capability_id, "publish", {"event": "x"}), approved)
+        provider.invoke(InvocationRequest(capability.instance_id, "publish", {"event": "x"}), approved)
     result = provider.invoke(
-        InvocationRequest(capability.capability_id, "publish", {"event": "x"}, "event-1"),
+        InvocationRequest(capability.instance_id, "publish", {"event": "x"}, "event-1"),
         approved,
     )
     assert result.output["accepted"] is True
@@ -747,17 +799,35 @@ def test_github_dynamic_repositories_read_write_rate_and_consent() -> None:
     capabilities = provider.discover(ctx)
     assert len(capabilities) == 2
     read = next(item for item in capabilities if item.name.endswith("read"))
-    assert provider.invoke(InvocationRequest(read.capability_id, "github.repository.get", {}), ctx).status_code == 200
+    assert (
+        provider.invoke(
+            InvocationRequest(read.instance_id, "github.repository.get", {}),
+            ctx,
+        ).status_code
+        == 200
+    )
     write = next(item for item in capabilities if item.name.endswith("issues-write"))
-    approved = replace(ctx, approved_capability_ids=frozenset({write.capability_id}))
+    assert all(
+        operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
+        and operation.approval_policy is ApprovalPolicy.REQUIRED
+        and operation.side_effect_destinations
+        == ("https://api.github.test/repos/acme/research/issues",)
+        for operation in write.descriptor.operations
+    )
+    approved = replace(ctx, approved_instance_ids=frozenset({write.instance_id}))
     created = provider.invoke(
-        InvocationRequest(write.capability_id, "github.issues.create", {"title": "Issue"}, "issue-1"),
+        InvocationRequest(
+            write.instance_id,
+            "github.issues.create",
+            {"title": "Issue"},
+            "issue-1",
+        ),
         approved,
     )
     assert created.status_code == 201
     comment = provider.invoke(
         InvocationRequest(
-            write.capability_id,
+            write.instance_id,
             "github.issue_comments.create",
             {"issue_number": 1, "body": "Comment"},
             "comment-1",
@@ -813,30 +883,61 @@ def test_graph_sites_drives_items_ga_operations_and_work_iq_preview() -> None:
     ctx = make_context(handler)
     capabilities = provider.discover(ctx)
     preview = capabilities[0]
-    assert preview.capability_id == "graph.work_iq.preview"
-    assert preview.attachable is False
-    assert preview.operations[0].maturity is Maturity.PREVIEW
-    site = next(item for item in capabilities if item.resource_kind == "sharepoint_site")
-    assert provider.invoke(InvocationRequest(site.capability_id, "graph.site.get", {}), ctx).output["id"] == "resource"
-    item = next(item for item in capabilities if item.resource_kind == "drive_item")
-    assert provider.invoke(InvocationRequest(item.capability_id, "graph.item.get", {}), ctx).status_code == 200
+    assert preview.instance_id == "graph.work_iq.preview"
+    assert preview.attachable_operation_ids == ()
+    assert preview.descriptor.operations[0].maturity is Maturity.PREVIEW
+    site = next(
+        item
+        for item in capabilities
+        if item.descriptor.resource_kind == "sharepoint_site"
+    )
+    assert (
+        provider.invoke(
+            InvocationRequest(site.instance_id, "graph.site.get", {}),
+            ctx,
+        ).output["id"]
+        == "resource"
+    )
+    item = next(
+        item
+        for item in capabilities
+        if item.descriptor.resource_kind == "drive_item"
+    )
+    assert (
+        provider.invoke(
+            InvocationRequest(item.instance_id, "graph.item.get", {}),
+            ctx,
+        ).status_code
+        == 200
+    )
     drive = next(
         item
         for item in capabilities
-        if item.resource_kind == "drive" and item.operations[0].operation_id == "graph.drive.children.list"
+        if item.descriptor.resource_kind == "drive"
+        and item.descriptor.operations[0].operation_id == "graph.drive.children.list"
     )
     assert (
-        provider.invoke(InvocationRequest(drive.capability_id, "graph.drive.children.list", {}), ctx).status_code == 200
+        provider.invoke(
+            InvocationRequest(drive.instance_id, "graph.drive.children.list", {}),
+            ctx,
+        ).status_code
+        == 200
     )
     write = next(
         item
         for item in capabilities
-        if item.resource_kind == "drive" and item.operations[0].operation_id == "graph.drive.content.put"
+        if item.descriptor.resource_kind == "drive"
+        and item.descriptor.operations[0].operation_id == "graph.drive.content.put"
     )
-    approved = replace(ctx, approved_capability_ids=frozenset({write.capability_id}))
+    graph_write = write.descriptor.operations[0]
+    assert graph_write.operation_class is OperationClass.WRITE_IRREVERSIBLE
+    assert graph_write.side_effect_destinations == (
+        "https://graph.microsoft.test/v1.0/drives/drive-1/root",
+    )
+    approved = replace(ctx, approved_instance_ids=frozenset({write.instance_id}))
     result = provider.invoke(
         InvocationRequest(
-            write.capability_id,
+            write.instance_id,
             "graph.drive.content.put",
             {"path": "folder/paper.txt", "content_base64": base64.b64encode(b"paper").decode()},
         ),
@@ -864,15 +965,22 @@ def test_graph_validation_no_item_discovery_and_write_validation() -> None:
     assert wrong.validate(ctx).readiness is Readiness.UNAUTHORIZED
     provider = MicrosoftGraphProvider(GraphConfig("https://graph.test/v1.0", "tenant", discover_items=False))
     capabilities = provider.discover(ctx)
-    assert not any(item.resource_kind == "drive_item" for item in capabilities)
-    write = next(item for item in capabilities if item.operations[0].operation_id == "graph.drive.content.put")
-    approved = replace(ctx, approved_capability_ids=frozenset({write.capability_id}))
+    assert not any(
+        item.descriptor.resource_kind == "drive_item"
+        for item in capabilities
+    )
+    write = next(
+        item
+        for item in capabilities
+        if item.descriptor.operations[0].operation_id == "graph.drive.content.put"
+    )
+    approved = replace(ctx, approved_instance_ids=frozenset({write.instance_id}))
     for arguments, message in (
         ({"path": "../bad", "content_base64": "YQ=="}, "safe relative"),
         ({"path": "good", "content_base64": "***"}, "invalid"),
     ):
         with pytest.raises(ProviderValidationError, match=message):
             provider.invoke(
-                InvocationRequest(write.capability_id, "graph.drive.content.put", arguments),
+                InvocationRequest(write.instance_id, "graph.drive.content.put", arguments),
                 approved,
             )

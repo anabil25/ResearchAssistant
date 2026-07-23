@@ -9,20 +9,21 @@ from .config import SearchConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -52,25 +53,25 @@ def _search_capability(
     reason: str | None,
     evidence: tuple[str, ...],
     index_name: str | None = None,
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
+) -> CapabilityInstance:
+    return capability_instance(
         provider_id=PROVIDER_ID,
-        capability_id=capability_id,
+        instance_id=capability_id,
         family="azure_ai_search",
         resource_kind="search_index",
         name=name,
         readiness=readiness,
-        attachable=readiness is Readiness.READY,
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured Search service and discovered index",
         operations=(
             OperationDescriptor(
                 operation_id="search.documents.query",
+                version="1.0.0",
                 maturity=Maturity.GA,
                 input_schema=SEARCH_INPUT,
                 output_schema={"type": "object"},
-                risk=Risk.READ,
+                operation_class=OperationClass.READ,
                 approval_policy=ApprovalPolicy.NEVER,
                 idempotency=Idempotency.INHERENT,
                 least_privilege_scopes=("https://search.azure.com/.default",),
@@ -81,7 +82,7 @@ def _search_capability(
         provenance=DOCS,
         status_evidence=evidence,
         unavailable_reason=reason,
-        metadata={"index_name": index_name} if index_name else {},
+        configuration={"index_name": index_name} if index_name else {},
     )
 
 
@@ -117,7 +118,7 @@ class AzureAISearchProvider:
             return ValidationReport(Readiness.UNAUTHORIZED, (str(exc),))
         return ValidationReport(Readiness.READY)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             return (
@@ -164,14 +165,14 @@ class AzureAISearchProvider:
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
             provider_id=PROVIDER_ID,
             tenant_id=self._config.tenant_id,
         )
-        index_name = capability.metadata["index_name"]
+        index_name = instance.configuration["index_name"]
         endpoint = require_endpoint(self._config.endpoint)
         response, attempts = send(
             context,
@@ -188,14 +189,14 @@ class AzureAISearchProvider:
         )
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             json_object(response, provider_id=PROVIDER_ID),
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

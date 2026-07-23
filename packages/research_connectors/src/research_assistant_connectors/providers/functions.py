@@ -9,7 +9,7 @@ from ._http import auth_headers, collection, json_object, require_endpoint, safe
 from .config import FunctionPolicy, FunctionsConfig
 from .contracts import (
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
@@ -22,6 +22,7 @@ from .contracts import (
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -38,26 +39,28 @@ def _function_capability(
     readiness: Readiness,
     reason: str | None,
     evidence: tuple[str, ...],
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
+    destination: str,
+) -> CapabilityInstance:
+    return capability_instance(
         provider_id=PROVIDER_ID,
-        capability_id=stable_resource_id("functions.http", name),
+        instance_id=stable_resource_id("functions.http", name),
         family="azure_functions",
         resource_kind="http_function",
         name=name,
         readiness=readiness,
-        attachable=readiness is Readiness.READY,
         auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.API_KEY),
         tenant_boundary="configured Microsoft Entra tenant",
         data_boundary="configured Function App endpoint",
         operations=(
             OperationDescriptor(
                 operation_id="functions.http.invoke",
+                version="1.0.0",
                 maturity=Maturity.GA,
                 input_schema={"type": "object"},
                 output_schema={},
-                risk=policy.risk,
+                operation_class=policy.operation_class,
                 approval_policy=policy.approval_policy,
+                side_effect_destinations=(destination or "unconfigured:function-app",),
                 idempotency=policy.idempotency,
                 least_privilege_scopes=("Function App application scope",),
                 docs=DOCS,
@@ -66,7 +69,7 @@ def _function_capability(
         provenance=DOCS,
         status_evidence=evidence,
         unavailable_reason=reason,
-        metadata={"function_name": name},
+        configuration={"function_name": name},
     )
 
 
@@ -116,7 +119,7 @@ class AzureFunctionsProvider:
     def _discovery_headers(self, context: InvocationContext) -> dict[str, str]:
         return auth_headers(self._config.discovery_auth or self._config.auth, context, provider_id=PROVIDER_ID)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         policies = self._policies()
         if validation.readiness is not Readiness.READY:
@@ -127,6 +130,7 @@ class AzureFunctionsProvider:
                     validation.readiness,
                     "; ".join(validation.reasons),
                     ("No discovery request was sent.",),
+                    self._config.endpoint or "unconfigured:function-app",
                 )
                 for name, policy in policies.items()
             )
@@ -140,7 +144,7 @@ class AzureFunctionsProvider:
             consent_on_forbidden=self._config.discovery_style == "arm",
         )
         items = collection(json_object(response, provider_id=PROVIDER_ID))
-        discovered: list[CapabilityDescriptor] = []
+        discovered: list[CapabilityInstance] = []
         for item in items:
             raw_name = str(item.get("name") or item.get("id") or "")
             name = raw_name.rsplit("/", 1)[-1] if self._config.discovery_style == "arm" else raw_name
@@ -157,6 +161,7 @@ class AzureFunctionsProvider:
                     Readiness.READY,
                     None,
                     (f"Function returned by successful {self._config.discovery_style} discovery.",),
+                    self._config.endpoint or "unconfigured:function-app",
                 )
             )
         return tuple(discovered)
@@ -168,14 +173,14 @@ class AzureFunctionsProvider:
         return HealthReport(readiness, (f"{len(capabilities)} function(s) discovered.",))
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
             provider_id=PROVIDER_ID,
             tenant_id=self._config.tenant_id,
         )
-        name = str(capability.metadata["function_name"])
+        name = str(instance.configuration["function_name"])
         path = self._config.invoke_path_template.format(name=name)
         headers = auth_headers(self._config.auth, context, provider_id=PROVIDER_ID)
         if request.idempotency_key and operation.idempotency is not Idempotency.NONE:
@@ -197,14 +202,14 @@ class AzureFunctionsProvider:
         output: Any = json_object(response, provider_id=PROVIDER_ID) if "json" in content_type else response.text
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             output,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

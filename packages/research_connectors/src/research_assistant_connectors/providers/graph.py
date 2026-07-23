@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import base64
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -12,21 +13,22 @@ from .config import GraphConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     ProviderValidationError,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -38,10 +40,11 @@ DOCS = (
 
 SITE_GET = OperationDescriptor(
     "graph.site.get",
+    "1.0.0",
     Maturity.GA,
     {"type": "object", "additionalProperties": False},
     {"type": "object"},
-    Risk.READ,
+    OperationClass.READ,
     ApprovalPolicy.NEVER,
     idempotency=Idempotency.INHERENT,
     least_privilege_scopes=("Sites.Read.All (delegated)",),
@@ -50,10 +53,11 @@ SITE_GET = OperationDescriptor(
 )
 DRIVE_LIST = OperationDescriptor(
     "graph.drive.children.list",
+    "1.0.0",
     Maturity.GA,
     {"type": "object", "additionalProperties": False},
     {"type": "object"},
-    Risk.READ,
+    OperationClass.READ,
     ApprovalPolicy.NEVER,
     idempotency=Idempotency.INHERENT,
     least_privilege_scopes=("Files.Read (delegated)",),
@@ -62,10 +66,11 @@ DRIVE_LIST = OperationDescriptor(
 )
 ITEM_GET = OperationDescriptor(
     "graph.item.get",
+    "1.0.0",
     Maturity.GA,
     {"type": "object", "additionalProperties": False},
     {"type": "object"},
-    Risk.READ,
+    OperationClass.READ,
     ApprovalPolicy.NEVER,
     idempotency=Idempotency.INHERENT,
     least_privilege_scopes=("Files.Read (delegated)",),
@@ -74,6 +79,7 @@ ITEM_GET = OperationDescriptor(
 )
 CONTENT_PUT = OperationDescriptor(
     "graph.drive.content.put",
+    "1.0.0",
     Maturity.GA,
     {
         "type": "object",
@@ -82,7 +88,7 @@ CONTENT_PUT = OperationDescriptor(
         "additionalProperties": False,
     },
     {"type": "object"},
-    Risk.WRITE,
+    OperationClass.WRITE_IRREVERSIBLE,
     ApprovalPolicy.REQUIRED,
     idempotency=Idempotency.INHERENT,
     least_privilege_scopes=("Files.ReadWrite (delegated)",),
@@ -91,10 +97,11 @@ CONTENT_PUT = OperationDescriptor(
 )
 WORK_IQ = OperationDescriptor(
     "graph.work_iq.query",
+    "1.0.0",
     Maturity.PREVIEW,
     {"type": "object"},
     {"type": "object"},
-    Risk.READ,
+    OperationClass.READ,
     ApprovalPolicy.NEVER,
     docs=("https://learn.microsoft.com/microsoft-365/copilot/extensibility/work-iq/api-overview",),
 )
@@ -107,42 +114,53 @@ def _capability(
     operations: tuple[OperationDescriptor, ...],
     *,
     metadata: Mapping[str, Any],
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        PROVIDER_ID,
-        capability_id,
-        "microsoft_graph",
-        resource_kind,
-        name,
-        Readiness.READY,
-        True,
-        (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
-        "configured Microsoft Entra tenant",
-        "discovered Graph site/drive/item",
-        operations,
-        DOCS,
-        ("Resource returned by a successful Microsoft Graph v1.0 request.",),
-        metadata=metadata,
+    endpoint: str,
+) -> CapabilityInstance:
+    drive_id = metadata.get("drive_id")
+    bound_operations = tuple(
+        replace(
+            operation,
+            side_effect_destinations=(
+                f"{endpoint.rstrip('/')}/drives/{quote(str(drive_id), safe='')}/root",
+            ),
+        )
+        if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
+        else operation
+        for operation in operations
+    )
+    return capability_instance(
+        provider_id=PROVIDER_ID,
+        instance_id=capability_id,
+        family="microsoft_graph",
+        resource_kind=resource_kind,
+        name=name,
+        readiness=Readiness.READY,
+        auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
+        tenant_boundary="configured Microsoft Entra tenant",
+        data_boundary="discovered Graph site/drive/item",
+        operations=bound_operations,
+        provenance=DOCS,
+        status_evidence=("Resource returned by a successful Microsoft Graph v1.0 request.",),
+        configuration=metadata,
     )
 
 
 class MicrosoftGraphProvider:
     def __init__(self, config: GraphConfig) -> None:
         self._config = config
-        work_iq = CapabilityDescriptor(
-            PROVIDER_ID,
-            "graph.work_iq.preview",
-            "microsoft_graph",
-            "work_iq",
-            "Work IQ",
-            Readiness.UNAVAILABLE,
-            False,
-            (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
-            "configured Microsoft Entra tenant",
-            "preview service",
-            (WORK_IQ,),
-            WORK_IQ.docs,
-            ("Service status: preview; provider policy blocks attachment.",),
+        self._work_iq = capability_instance(
+            provider_id=PROVIDER_ID,
+            instance_id="graph.work_iq.preview",
+            family="microsoft_graph",
+            resource_kind="work_iq",
+            name="Work IQ",
+            readiness=Readiness.UNAVAILABLE,
+            auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
+            tenant_boundary="configured Microsoft Entra tenant",
+            data_boundary="preview service",
+            operations=(WORK_IQ,),
+            provenance=WORK_IQ.docs,
+            status_evidence=("Service status: preview; provider policy blocks attachment.",),
             unavailable_reason="Work IQ is preview and is not attachable",
         )
         self._descriptor = ProviderDescriptor(
@@ -152,7 +170,7 @@ class MicrosoftGraphProvider:
             "Discovers SharePoint sites, drives, and items through Microsoft Graph v1.0.",
             (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY),
             DOCS,
-            (work_iq,),
+            (self._work_iq.descriptor,),
         )
 
     @property
@@ -187,30 +205,29 @@ class MicrosoftGraphProvider:
         )
         return json_object(response, provider_id=PROVIDER_ID)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             operation = SITE_GET
             return (
-                self._descriptor.capabilities[0],
-                CapabilityDescriptor(
-                    PROVIDER_ID,
-                    "graph.configuration",
-                    "microsoft_graph",
-                    "tenant",
-                    "Microsoft Graph configuration",
-                    validation.readiness,
-                    False,
-                    (self._config.auth.mode,),
-                    "configured Microsoft Entra tenant",
-                    "Microsoft Graph v1.0",
-                    (operation,),
-                    DOCS,
-                    ("No Microsoft Graph discovery request was sent.",),
+                self._work_iq,
+                capability_instance(
+                    provider_id=PROVIDER_ID,
+                    instance_id="graph.configuration",
+                    family="microsoft_graph",
+                    resource_kind="tenant",
+                    name="Microsoft Graph configuration",
+                    readiness=validation.readiness,
+                    auth_modes=(self._config.auth.mode,),
+                    tenant_boundary="configured Microsoft Entra tenant",
+                    data_boundary="Microsoft Graph v1.0",
+                    operations=(operation,),
+                    provenance=DOCS,
+                    status_evidence=("No Microsoft Graph discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
             )
-        capabilities: list[CapabilityDescriptor] = [self._descriptor.capabilities[0]]
+        capabilities: list[CapabilityInstance] = [self._work_iq]
         sites = collection(self._get(self._config.sites_path, context))
         for site in sites:
             site_id = str(site.get("id") or "")
@@ -223,6 +240,7 @@ class MicrosoftGraphProvider:
                     "sharepoint_site",
                     (SITE_GET,),
                     metadata={"site_id": site_id},
+                    endpoint=require_endpoint(self._config.endpoint),
                 )
             )
             drives = collection(self._get(f"/sites/{quote(site_id, safe='')}/drives", context))
@@ -238,6 +256,7 @@ class MicrosoftGraphProvider:
                             "drive",
                             (DRIVE_LIST,),
                             metadata={"drive_id": drive_id},
+                            endpoint=require_endpoint(self._config.endpoint),
                         ),
                         _capability(
                             stable_resource_id("graph.drive.write", drive_id),
@@ -245,6 +264,7 @@ class MicrosoftGraphProvider:
                             "drive",
                             (CONTENT_PUT,),
                             metadata={"drive_id": drive_id},
+                            endpoint=require_endpoint(self._config.endpoint),
                         ),
                     )
                 )
@@ -261,6 +281,7 @@ class MicrosoftGraphProvider:
                                 "drive_item",
                                 (ITEM_GET,),
                                 metadata={"drive_id": drive_id, "item_id": item_id},
+                                endpoint=require_endpoint(self._config.endpoint),
                             )
                         )
         return tuple(capabilities)
@@ -278,7 +299,7 @@ class MicrosoftGraphProvider:
         return quote(path, safe="/")
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
@@ -288,17 +309,17 @@ class MicrosoftGraphProvider:
         method = "GET"
         content: bytes | None = None
         if operation.operation_id == "graph.site.get":
-            path = f"/sites/{quote(str(capability.metadata['site_id']), safe='')}"
+            path = f"/sites/{quote(str(instance.configuration['site_id']), safe='')}"
         elif operation.operation_id == "graph.drive.children.list":
-            path = f"/drives/{quote(str(capability.metadata['drive_id']), safe='')}/root/children"
+            path = f"/drives/{quote(str(instance.configuration['drive_id']), safe='')}/root/children"
         elif operation.operation_id == "graph.item.get":
             path = (
-                f"/drives/{quote(str(capability.metadata['drive_id']), safe='')}"
-                f"/items/{quote(str(capability.metadata['item_id']), safe='')}"
+                f"/drives/{quote(str(instance.configuration['drive_id']), safe='')}"
+                f"/items/{quote(str(instance.configuration['item_id']), safe='')}"
             )
         else:
             method = "PUT"
-            drive_id = quote(str(capability.metadata["drive_id"]), safe="")
+            drive_id = quote(str(instance.configuration["drive_id"]), safe="")
             drive_path = self._safe_drive_path(str(request.arguments["path"]))
             path = f"/drives/{drive_id}/root:/{drive_path}:/content"
             try:
@@ -319,14 +340,14 @@ class MicrosoftGraphProvider:
         )
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             json_object(response, provider_id=PROVIDER_ID),
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

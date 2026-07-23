@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import FrozenInstanceError, replace
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -13,7 +14,9 @@ from research_assistant_connectors.providers import (
     AuthConfig,
     AuthMode,
     BlobConfig,
+    CapabilityBinding,
     CapabilityDescriptor,
+    CapabilityInstance,
     FoundryConfig,
     FunctionPolicy,
     FunctionsConfig,
@@ -28,6 +31,7 @@ from research_assistant_connectors.providers import (
     NeedsConsentError,
     OpenAPIConfig,
     OpenAPIOperationPolicy,
+    OperationClass,
     OperationDescriptor,
     PolicyError,
     ProviderDescriptor,
@@ -38,12 +42,13 @@ from research_assistant_connectors.providers import (
     ProviderValidationError,
     RateLimitError,
     Readiness,
-    Risk,
     SearchConfig,
+    ToolRegistration,
     UnauthorizedError,
     UnavailableError,
     UpstreamError,
     WebhookConfig,
+    capability_instance_fingerprint,
 )
 from research_assistant_connectors.providers._http import (
     _retry_after,
@@ -56,7 +61,12 @@ from research_assistant_connectors.providers._http import (
     signing_credential,
     stable_resource_id,
 )
-from research_assistant_connectors.providers.contracts import audit_metadata, find_operation, validate_json
+from research_assistant_connectors.providers.contracts import (
+    audit_metadata,
+    find_operation,
+    validate_binding,
+    validate_json,
+)
 
 
 class Credential:
@@ -116,6 +126,7 @@ def operation(
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id,
+        "1.0.0",
         maturity,
         {
             "type": "object",
@@ -124,7 +135,7 @@ def operation(
             "additionalProperties": False,
         },
         {"type": "object"},
-        Risk.READ,
+        OperationClass.READ,
         approval,
         idempotency=idempotency,
     )
@@ -133,50 +144,148 @@ def operation(
 def capability(
     *,
     readiness: Readiness = Readiness.READY,
-    attachable: bool = True,
     op: OperationDescriptor | None = None,
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        "provider",
-        "capability",
+) -> CapabilityInstance:
+    descriptor = CapabilityDescriptor(
+        "descriptor",
         "family",
         "resource",
-        "Capability",
-        readiness,
-        attachable,
+        "Capability type",
         (AuthMode.NONE,),
-        "tenant",
-        "resource",
         (op or operation(),),
         ("https://example.test/docs",),
+        metadata={"nested": {"items": [1, 2]}},
+    )
+    return CapabilityInstance(
+        "provider",
+        "capability",
+        descriptor,
+        "Capability",
+        readiness,
+        "tenant",
+        "resource",
+        {"nested": {"items": [1, 2]}},
         ("tested",),
         unavailable_reason=None if readiness is Readiness.READY else "not ready",
-        metadata={"nested": {"items": [1, 2]}},
     )
 
 
 def test_descriptor_contracts_are_deeply_immutable_and_validate_invariants() -> None:
-    descriptor = capability()
+    instance = capability()
+    descriptor = instance.descriptor
     assert descriptor.metadata["nested"]["items"] == (1, 2)
+    assert instance.configuration["nested"]["items"] == (1, 2)
     with pytest.raises(TypeError):
         descriptor.metadata["new"] = "value"  # type: ignore[index]
+    with pytest.raises(TypeError):
+        instance.configuration["new"] = "value"  # type: ignore[index]
     with pytest.raises(FrozenInstanceError):
         descriptor.name = "changed"  # type: ignore[misc]
-    with pytest.raises(ValueError, match="Only ready GA"):
-        capability(op=operation(maturity=Maturity.PREVIEW))
+    preview = capability(op=operation(maturity=Maturity.PREVIEW))
+    assert preview.attachable_operation_ids == ()
+    assert preview.attachable_operation_ids == ()
+    assert capability().attachable_operation_ids == ("operation",)
     with pytest.raises(ValueError, match="unavailable reason"):
-        replace(descriptor, readiness=Readiness.DEGRADED, attachable=False)
-    with pytest.raises(ValueError, match="Ready capabilities"):
-        replace(descriptor, unavailable_reason="bad")
-    with pytest.raises(ValueError, match="Capability identifiers"):
-        replace(descriptor, capability_id="")
-    with pytest.raises(ValueError, match="Operation identifiers"):
+        replace(instance, readiness=Readiness.DEGRADED)
+    with pytest.raises(ValueError, match="Ready capability"):
+        replace(instance, unavailable_reason="bad")
+    with pytest.raises(ValueError, match="instance identity"):
+        replace(instance, instance_id="")
+    with pytest.raises(ValueError, match="descriptor identity"):
+        replace(descriptor, descriptor_id="")
+    with pytest.raises(ValueError, match="identifiers, versions"):
         replace(operation(), timeout_seconds=0)
+    with pytest.raises(ValueError, match="identifiers, versions"):
+        replace(operation(), version="")
+    with pytest.raises(ValueError, match="cannot be empty"):
+        replace(operation(), side_effect_destinations=("",))
+    with pytest.raises(ValueError, match="must be unique"):
+        replace(operation(), side_effect_destinations=("destination", "destination"))
+    with pytest.raises(ValueError, match="string object keys"):
+        replace(descriptor, metadata={1: "bad"})  # type: ignore[dict-item]
+    with pytest.raises(ValueError, match="non-JSON"):
+        replace(descriptor, metadata={"bad": object()})
+    with pytest.raises(ValueError, match="finite JSON"):
+        replace(descriptor, metadata={"bad": float("nan")})
+    assert replace(descriptor, metadata={"finite": 1.5}).metadata["finite"] == 1.5
+    with pytest.raises(ValueError, match="non-JSON"):
+        replace(operation(), input_schema={"bad": object()})
+    with pytest.raises(ValueError, match="non-JSON"):
+        replace(instance, configuration={"bad": object()})
     with pytest.raises(ValueError, match="Provider identity"):
         ProviderDescriptor("", "family", "", "description", (), ())
-    with pytest.raises(ValueError, match="Provider capabilities"):
-        ProviderDescriptor("other", "family", "Name", "description", (), ("https://docs",), (descriptor,))
     assert ProviderDescriptor("provider", "family", "Name", "description", (), ("https://docs",), (descriptor,))
+
+
+def test_binding_and_runtime_registration_are_separate_and_ga_pinned() -> None:
+    instance = capability()
+    binding = CapabilityBinding(
+        "binding",
+        "agent",
+        instance.instance_id,
+        instance.descriptor.descriptor_id,
+        "operation",
+        "1.0.0",
+        capability_instance_fingerprint(instance),
+        {"fixed": True},
+    )
+    assert validate_binding(instance, binding).operation_id == "operation"
+    assert binding.configuration["fixed"] is True
+    with pytest.raises(TypeError):
+        binding.configuration["fixed"] = False  # type: ignore[index]
+    for changed, message in (
+        (replace(binding, instance_id="other"), "different instance"),
+        (replace(binding, descriptor_id="other"), "different descriptor"),
+        (replace(binding, operation_id="other"), "not declared"),
+        (replace(binding, operation_version="2.0.0"), "not declared"),
+        (replace(binding, instance_fingerprint="0" * 64), "changed instance"),
+    ):
+        with pytest.raises(ValueError, match=message):
+            validate_binding(instance, changed)
+    with pytest.raises(ValueError, match="ready instance"):
+        validate_binding(capability(readiness=Readiness.DEGRADED), binding)
+    preview = capability(op=operation(maturity=Maturity.PREVIEW))
+    preview_binding = replace(
+        binding,
+        descriptor_id=preview.descriptor.descriptor_id,
+        instance_fingerprint=capability_instance_fingerprint(preview),
+    )
+    with pytest.raises(ValueError, match="Only GA"):
+        validate_binding(preview, preview_binding)
+    with pytest.raises(ValueError, match="identifiers"):
+        replace(binding, binding_id="")
+    with pytest.raises(ValueError, match="lowercase SHA-256"):
+        replace(binding, instance_fingerprint="x" * 64)
+    with pytest.raises(ValueError, match="non-JSON"):
+        replace(binding, configuration={"bad": object()})
+
+    changed_destination = replace(
+        instance,
+        descriptor=replace(
+            instance.descriptor,
+            operations=(
+                replace(
+                    instance.descriptor.operations[0],
+                    side_effect_destinations=("https://changed.test",),
+                ),
+            ),
+        ),
+    )
+    assert capability_instance_fingerprint(changed_destination) != binding.instance_fingerprint
+
+    def handler(
+        arguments: Mapping[str, Any],
+        context: InvocationContext,
+    ) -> InvocationResult:
+        assert context.tenant_id == "tenant"
+        return InvocationResult("provider", "capability", "operation", 200, arguments, {})
+
+    registration = ToolRegistration("registration", binding, handler)
+    assert registration.handler({"ok": True}, context()).output["ok"] is True
+    with pytest.raises(ValueError, match="identity"):
+        replace(registration, registration_id="")
+    with pytest.raises(ValueError, match="callable"):
+        ToolRegistration("registration", binding, object())  # type: ignore[arg-type]
 
 
 def test_invocation_contracts_and_json_schema_validation() -> None:
@@ -184,7 +293,7 @@ def test_invocation_contracts_and_json_schema_validation() -> None:
     assert request.arguments["value"] == "ok"
     with pytest.raises(TypeError):
         request.arguments["value"] = "changed"  # type: ignore[index]
-    with pytest.raises(ValueError, match="Capability and operation"):
+    with pytest.raises(ValueError, match="instance and operation"):
         InvocationRequest("", "operation", {})
     with pytest.raises(ValueError, match="Idempotency keys"):
         InvocationRequest("capability", "operation", {}, "bad key")
@@ -229,18 +338,18 @@ def test_invocation_contracts_and_json_schema_validation() -> None:
 def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation() -> None:
     ctx = context()
     request = InvocationRequest("capability", "operation", {"value": "ok"})
-    cap, op = find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="tenant")
-    assert cap.capability_id == "capability"
+    instance, op = find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="tenant")
+    assert instance.instance_id == "capability"
     assert op.operation_id == "operation"
     with pytest.raises(PolicyError, match="tenant"):
         find_operation((capability(),), request, ctx, provider_id="provider", tenant_id="other")
     with pytest.raises(UnavailableError, match="not present"):
         find_operation(
-            (capability(),), replace(request, capability_id="missing"), ctx, provider_id="provider", tenant_id=None
+            (capability(),), replace(request, instance_id="missing"), ctx, provider_id="provider", tenant_id=None
         )
     with pytest.raises(UnavailableError, match="not ready"):
         find_operation(
-            (capability(readiness=Readiness.DEGRADED, attachable=False),),
+            (capability(readiness=Readiness.DEGRADED),),
             request,
             ctx,
             provider_id="provider",
@@ -249,6 +358,14 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
     with pytest.raises(ProviderValidationError, match="not declared"):
         find_operation(
             (capability(),), replace(request, operation_id="missing"), ctx, provider_id="provider", tenant_id=None
+        )
+    with pytest.raises(UnavailableError, match="Only GA"):
+        find_operation(
+            (capability(op=operation(maturity=Maturity.PREVIEW)),),
+            request,
+            ctx,
+            provider_id="provider",
+            tenant_id=None,
         )
     approval_cap = capability(op=operation(approval=ApprovalPolicy.REQUIRED))
     with pytest.raises(PolicyError, match="approval"):
@@ -264,7 +381,7 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
             provider_id="provider",
             tenant_id=None,
         )
-    approved = replace(ctx, approved_capability_ids=frozenset({"capability"}))
+    approved = replace(ctx, approved_instance_ids=frozenset({"capability"}))
     find_operation(
         (required,),
         replace(request, idempotency_key="key"),
@@ -275,7 +392,7 @@ def test_policy_gate_covers_tenant_readiness_approval_idempotency_and_validation
     audit = audit_metadata(
         ctx,
         provider_id="provider",
-        capability_id="capability",
+        instance_id="capability",
         operation_id="operation",
         attempts=2,
         response=httpx.Response(
@@ -494,5 +611,8 @@ def test_factory_and_registry_cover_every_configuration_type() -> None:
         ProviderEnvironment("test", "other", configs)
     discovered = registry.discover_all(context())
     assert set(discovered) == set(registry.providers)
-    assert FunctionPolicy("f").risk is Risk.EXTERNAL_SIDE_EFFECT
-    assert OpenAPIOperationPolicy("op", Risk.READ, ApprovalPolicy.NEVER).operation_id == "op"
+    assert FunctionPolicy("f").operation_class is OperationClass.PRIVILEGED
+    assert (
+        OpenAPIOperationPolicy("op", OperationClass.READ, ApprovalPolicy.NEVER).operation_id
+        == "op"
+    )

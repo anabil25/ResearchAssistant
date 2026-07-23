@@ -13,21 +13,22 @@ from .config import MCPConfig, MCPToolPolicy
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     Readiness,
-    Risk,
     UnauthorizedError,
     UpstreamError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -57,33 +58,35 @@ def _tool_capability(
     policy: MCPToolPolicy,
     *,
     metadata: Mapping[str, Any],
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        PROVIDER_ID,
-        stable_resource_id("mcp.tool", name),
-        "mcp",
-        "mcp_tool",
-        name,
-        Readiness.READY,
-        True,
-        (AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
-        "configured tenant",
-        "configured MCP endpoint",
-        (
+    destination: str,
+) -> CapabilityInstance:
+    return capability_instance(
+        provider_id=PROVIDER_ID,
+        instance_id=stable_resource_id("mcp.tool", name),
+        family="mcp",
+        resource_kind="mcp_tool",
+        name=name,
+        readiness=Readiness.READY,
+        auth_modes=(AuthMode.NONE, AuthMode.OAUTH, AuthMode.API_KEY),
+        tenant_boundary="configured tenant",
+        data_boundary="configured MCP endpoint",
+        operations=(
             OperationDescriptor(
                 "mcp.tools.call",
+                "1.0.0",
                 Maturity.GA,
                 schema,
                 {},
-                policy.risk,
+                policy.operation_class,
                 policy.approval_policy,
+                side_effect_destinations=(destination,),
                 idempotency=policy.idempotency,
                 docs=DOCS,
             ),
         ),
-        DOCS,
-        ("Tool returned by a protocol-valid tools/list response.",),
-        metadata={"tool_name": name, "untrusted_tool_metadata": metadata},
+        provenance=DOCS,
+        status_evidence=("Tool returned by a protocol-valid tools/list response.",),
+        configuration={"tool_name": name, "untrusted_tool_metadata": metadata},
     )
 
 
@@ -231,33 +234,34 @@ class MCPStreamableHTTPProvider:
             raise UpstreamError("MCP initialized notification was not accepted", provider_id=PROVIDER_ID)
         self._initialized.add(session_key)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             operation = OperationDescriptor(
                 "mcp.tools.call",
+                "1.0.0",
                 Maturity.GA,
                 {"type": "object"},
                 {},
-                Risk.EXTERNAL_SIDE_EFFECT,
+                OperationClass.PRIVILEGED,
                 ApprovalPolicy.REQUIRED,
+                side_effect_destinations=(self._config.endpoint or "unconfigured:mcp-endpoint",),
                 docs=DOCS,
             )
             return (
-                CapabilityDescriptor(
-                    PROVIDER_ID,
-                    "mcp.configuration",
-                    "mcp",
-                    "mcp_endpoint",
-                    "MCP endpoint",
-                    validation.readiness,
-                    False,
-                    (self._config.auth.mode,),
-                    "configured tenant",
-                    "configured MCP endpoint",
-                    (operation,),
-                    DOCS,
-                    ("No MCP initialization request was sent.",),
+                capability_instance(
+                    provider_id=PROVIDER_ID,
+                    instance_id="mcp.configuration",
+                    family="mcp",
+                    resource_kind="mcp_endpoint",
+                    name="MCP endpoint",
+                    readiness=validation.readiness,
+                    auth_modes=(self._config.auth.mode,),
+                    tenant_boundary="configured tenant",
+                    data_boundary="configured MCP endpoint",
+                    operations=(operation,),
+                    provenance=DOCS,
+                    status_evidence=("No MCP initialization request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
             )
@@ -284,6 +288,7 @@ class MCPStreamableHTTPProvider:
                         "description": str(tool.get("description", ""))[:1000],
                         "annotations": tool.get("annotations"),
                     },
+                    destination=self._config.endpoint or "unconfigured:mcp-endpoint",
                 )
             )
         return tuple(capabilities)
@@ -297,14 +302,14 @@ class MCPStreamableHTTPProvider:
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
             provider_id=PROVIDER_ID,
             tenant_id=self._config.tenant_id,
         )
-        tool_name = str(capability.metadata["tool_name"])
+        tool_name = str(instance.configuration["tool_name"])
         result, attempts, response = self._rpc(
             "tools/call",
             {"name": tool_name, "arguments": dict(request.arguments)},
@@ -315,14 +320,14 @@ class MCPStreamableHTTPProvider:
             raise UpstreamError("MCP tool reported an execution error", provider_id=PROVIDER_ID)
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             200,
             result,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

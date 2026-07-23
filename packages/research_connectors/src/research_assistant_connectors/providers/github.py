@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import Any
 from urllib.parse import quote
 
@@ -11,21 +12,22 @@ from .config import GitHubConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     Readiness,
-    Risk,
     UnauthorizedError,
     UpstreamError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -38,7 +40,7 @@ DOCS = (
 
 def _operation(
     operation_id: str,
-    risk: Risk,
+    operation_class: OperationClass,
     schema: dict[str, Any],
     *,
     permissions: tuple[str, ...],
@@ -46,11 +48,14 @@ def _operation(
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id,
+        "1.0.0",
         Maturity.GA,
         schema,
         {},
-        risk,
-        ApprovalPolicy.NEVER if risk is Risk.READ else ApprovalPolicy.REQUIRED,
+        operation_class,
+        ApprovalPolicy.NEVER
+        if operation_class is OperationClass.READ
+        else ApprovalPolicy.REQUIRED,
         idempotency=idempotency,
         least_privilege_scopes=permissions,
         least_privilege_roles=permissions,
@@ -61,14 +66,14 @@ def _operation(
 READ_OPERATIONS = (
     _operation(
         "github.repository.get",
-        Risk.READ,
+        OperationClass.READ,
         {"type": "object", "additionalProperties": False},
         permissions=("Metadata: read",),
         idempotency=Idempotency.INHERENT,
     ),
     _operation(
         "github.issues.list",
-        Risk.READ,
+        OperationClass.READ,
         {
             "type": "object",
             "properties": {"state": {"type": "string", "enum": ["open", "closed", "all"]}},
@@ -80,7 +85,7 @@ READ_OPERATIONS = (
 )
 CREATE_ISSUE = _operation(
     "github.issues.create",
-    Risk.WRITE,
+    OperationClass.WRITE_IRREVERSIBLE,
     {
         "type": "object",
         "required": ["title"],
@@ -92,7 +97,7 @@ CREATE_ISSUE = _operation(
 )
 CREATE_COMMENT = _operation(
     "github.issue_comments.create",
-    Risk.WRITE,
+    OperationClass.WRITE_IRREVERSIBLE,
     {
         "type": "object",
         "required": ["issue_number", "body"],
@@ -104,22 +109,33 @@ CREATE_COMMENT = _operation(
 )
 
 
-def _repo_capability(full_name: str, suffix: str, operations: tuple[OperationDescriptor, ...]) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        PROVIDER_ID,
-        stable_resource_id(f"github.repository.{suffix}", full_name),
-        "github",
-        "repository",
-        f"{full_name} {suffix}",
-        Readiness.READY,
-        True,
-        (AuthMode.OAUTH, AuthMode.GITHUB_APP),
-        "configured organization/account and application installation",
-        f"repository {full_name}",
-        operations,
-        DOCS,
-        ("Repository returned by an authenticated GitHub REST discovery request.",),
-        metadata={"full_name": full_name},
+def _repo_capability(
+    full_name: str,
+    suffix: str,
+    operations: tuple[OperationDescriptor, ...],
+    endpoint: str,
+) -> CapabilityInstance:
+    destination = f"{endpoint.rstrip('/')}/repos/{full_name}/issues"
+    bound_operations = tuple(
+        replace(operation, side_effect_destinations=(destination,))
+        if operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
+        else operation
+        for operation in operations
+    )
+    return capability_instance(
+        provider_id=PROVIDER_ID,
+        instance_id=stable_resource_id(f"github.repository.{suffix}", full_name),
+        family="github",
+        resource_kind="repository",
+        name=f"{full_name} {suffix}",
+        readiness=Readiness.READY,
+        auth_modes=(AuthMode.OAUTH, AuthMode.GITHUB_APP),
+        tenant_boundary="configured organization/account and application installation",
+        data_boundary=f"repository {full_name}",
+        operations=bound_operations,
+        provenance=DOCS,
+        status_evidence=("Repository returned by an authenticated GitHub REST discovery request.",),
+        configuration={"full_name": full_name},
     )
 
 
@@ -165,25 +181,24 @@ class GitHubProvider:
         )
         return headers
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             operation = READ_OPERATIONS[0]
             return (
-                CapabilityDescriptor(
-                    PROVIDER_ID,
-                    "github.configuration",
-                    "github",
-                    "account",
-                    "GitHub configuration",
-                    validation.readiness,
-                    False,
-                    (self._config.auth.mode,),
-                    "configured account",
-                    "configured GitHub endpoint",
-                    (operation,),
-                    DOCS,
-                    ("No repository discovery request was sent.",),
+                capability_instance(
+                    provider_id=PROVIDER_ID,
+                    instance_id="github.configuration",
+                    family="github",
+                    resource_kind="account",
+                    name="GitHub configuration",
+                    readiness=validation.readiness,
+                    auth_modes=(self._config.auth.mode,),
+                    tenant_boundary="configured account",
+                    data_boundary="configured GitHub endpoint",
+                    operations=(operation,),
+                    provenance=DOCS,
+                    status_evidence=("No repository discovery request was sent.",),
                     unavailable_reason="; ".join(validation.reasons),
                 ),
             )
@@ -204,7 +219,7 @@ class GitHubProvider:
             raise UpstreamError("GitHub returned invalid JSON", provider_id=PROVIDER_ID) from exc
         if not isinstance(payload, list):
             raise UpstreamError("GitHub repository discovery returned a non-array payload", provider_id=PROVIDER_ID)
-        capabilities: list[CapabilityDescriptor] = []
+        capabilities: list[CapabilityInstance] = []
         for item in payload:
             if not isinstance(item, Mapping):
                 continue
@@ -213,8 +228,18 @@ class GitHubProvider:
                 continue
             capabilities.extend(
                 (
-                    _repo_capability(full_name, "read", READ_OPERATIONS),
-                    _repo_capability(full_name, "issues-write", (CREATE_ISSUE, CREATE_COMMENT)),
+                    _repo_capability(
+                        full_name,
+                        "read",
+                        READ_OPERATIONS,
+                        require_endpoint(self._config.endpoint),
+                    ),
+                    _repo_capability(
+                        full_name,
+                        "issues-write",
+                        (CREATE_ISSUE, CREATE_COMMENT),
+                        require_endpoint(self._config.endpoint),
+                    ),
                 )
             )
         return tuple(capabilities)
@@ -228,14 +253,14 @@ class GitHubProvider:
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
             provider_id=PROVIDER_ID,
             tenant_id=self._config.tenant_id,
         )
-        full_name = str(capability.metadata["full_name"])
+        full_name = str(instance.configuration["full_name"])
         owner, repo = (quote(part, safe="") for part in full_name.split("/", 1))
         method = "GET"
         params: Mapping[str, Any] | None = None
@@ -267,14 +292,14 @@ class GitHubProvider:
         )
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             json_object(response, provider_id=PROVIDER_ID),
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

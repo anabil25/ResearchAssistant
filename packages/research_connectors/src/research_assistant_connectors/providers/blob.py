@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 from datetime import UTC, datetime
 from email.utils import format_datetime
 from typing import Any
@@ -23,21 +24,22 @@ from .config import BlobConfig
 from .contracts import (
     ApprovalPolicy,
     AuthMode,
-    CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     Idempotency,
     InvocationContext,
     InvocationRequest,
     InvocationResult,
     Maturity,
+    OperationClass,
     OperationDescriptor,
     ProviderDescriptor,
     ProviderValidationError,
     Readiness,
-    Risk,
     UnauthorizedError,
     ValidationReport,
     audit_metadata,
+    capability_instance,
     find_operation,
 )
 
@@ -49,19 +51,25 @@ DOCS = (
 
 
 def _operation(
-    operation_id: str, risk: Risk, input_schema: dict[str, Any], idempotency: Idempotency
+    operation_id: str,
+    operation_class: OperationClass,
+    input_schema: dict[str, Any],
+    idempotency: Idempotency,
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id,
+        "1.0.0",
         Maturity.GA,
         input_schema,
         {},
-        risk,
-        ApprovalPolicy.REQUIRED if risk is Risk.WRITE else ApprovalPolicy.NEVER,
+        operation_class,
+        ApprovalPolicy.REQUIRED
+        if operation_class is OperationClass.WRITE_IRREVERSIBLE
+        else ApprovalPolicy.NEVER,
         idempotency=idempotency,
         least_privilege_scopes=("https://storage.azure.com/.default",),
         least_privilege_roles=("Storage Blob Data Reader",)
-        if risk is Risk.READ
+        if operation_class is OperationClass.READ
         else ("Storage Blob Data Contributor",),
         docs=DOCS,
     )
@@ -69,7 +77,7 @@ def _operation(
 
 LIST = _operation(
     "blob.blobs.list",
-    Risk.READ,
+    OperationClass.READ,
     {
         "type": "object",
         "properties": {"prefix": {"type": "string"}},
@@ -79,13 +87,13 @@ LIST = _operation(
 )
 GET = _operation(
     "blob.get",
-    Risk.READ,
+    OperationClass.READ,
     {"type": "object", "required": ["blob"], "properties": {"blob": {"type": "string"}}, "additionalProperties": False},
     Idempotency.INHERENT,
 )
 PUT = _operation(
     "blob.put",
-    Risk.WRITE,
+    OperationClass.WRITE_IRREVERSIBLE,
     {
         "type": "object",
         "required": ["blob", "content_base64"],
@@ -105,23 +113,32 @@ def _container_capability(
     readiness: Readiness,
     reason: str | None,
     evidence: tuple[str, ...],
-) -> CapabilityDescriptor:
-    return CapabilityDescriptor(
-        PROVIDER_ID,
-        stable_resource_id("blob.container", name),
-        "azure_storage",
-        "blob_container",
-        name,
-        readiness,
-        readiness is Readiness.READY,
-        (AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.SHARED_KEY),
-        "configured Microsoft Entra tenant",
-        "configured storage account and discovered container",
-        (LIST, GET, PUT),
-        DOCS,
-        evidence,
+    endpoint: str,
+) -> CapabilityInstance:
+    return capability_instance(
+        provider_id=PROVIDER_ID,
+        instance_id=stable_resource_id("blob.container", name),
+        family="azure_storage",
+        resource_kind="blob_container",
+        name=name,
+        readiness=readiness,
+        auth_modes=(AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.SHARED_KEY),
+        tenant_boundary="configured Microsoft Entra tenant",
+        data_boundary="configured storage account and discovered container",
+        operations=(
+            LIST,
+            GET,
+            replace(
+                PUT,
+                side_effect_destinations=(
+                    f"{endpoint.rstrip('/')}/{quote(name, safe='')}",
+                ),
+            ),
+        ),
+        provenance=DOCS,
+        status_evidence=evidence,
         unavailable_reason=reason,
-        metadata={"container": name},
+        configuration={"container": name},
     )
 
 
@@ -192,7 +209,7 @@ class AzureBlobProvider:
             raise ProviderValidationError("Storage returned invalid XML", provider_id=PROVIDER_ID) from exc
         return tuple(element.text for element in root.findall(f".//{tag}") if element.text)
 
-    def discover(self, context: InvocationContext) -> tuple[CapabilityDescriptor, ...]:
+    def discover(self, context: InvocationContext) -> tuple[CapabilityInstance, ...]:
         validation = self.validate(context)
         if validation.readiness is not Readiness.READY:
             return (
@@ -201,6 +218,7 @@ class AzureBlobProvider:
                     validation.readiness,
                     "; ".join(validation.reasons),
                     ("No container discovery request was sent.",),
+                    self._config.endpoint or "unconfigured:blob-endpoint",
                 ),
             )
         endpoint = require_endpoint(self._config.endpoint)
@@ -222,6 +240,7 @@ class AzureBlobProvider:
                 Readiness.READY,
                 None,
                 ("Container returned by successful Blob service discovery.",),
+                endpoint,
             )
             for name in self._xml_names(response.content, "Container/Name")
         )
@@ -241,7 +260,7 @@ class AzureBlobProvider:
         return f"/{quote(container, safe='')}/{quote(blob, safe='/')}"
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:
-        capability, operation = find_operation(
+        instance, operation = find_operation(
             self.discover(context),
             request,
             context,
@@ -249,7 +268,7 @@ class AzureBlobProvider:
             tenant_id=self._config.tenant_id,
         )
         endpoint = require_endpoint(self._config.endpoint)
-        container = str(capability.metadata["container"])
+        container = str(instance.configuration["container"])
         params: dict[str, Any] | None = None
         content: bytes | None = None
         method = "GET"
@@ -304,14 +323,14 @@ class AzureBlobProvider:
             output = {"etag": response.headers.get("etag"), "version_id": response.headers.get("x-ms-version-id")}
         return InvocationResult(
             PROVIDER_ID,
-            capability.capability_id,
+            instance.instance_id,
             operation.operation_id,
             response.status_code,
             output,
             audit_metadata(
                 context,
                 provider_id=PROVIDER_ID,
-                capability_id=capability.capability_id,
+                instance_id=instance.instance_id,
                 operation_id=operation.operation_id,
                 attempts=attempts,
                 response=response,

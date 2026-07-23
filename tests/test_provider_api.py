@@ -29,7 +29,7 @@ def context(handler: Any, *, approved: frozenset[str] = frozenset()) -> Invocati
     return InvocationContext(
         tenant_id="tenant",
         principal_id="principal",
-        approved_capability_ids=approved,
+        approved_instance_ids=approved,
         credential=None,
         transport=httpx.Client(transport=httpx.MockTransport(handler)),
         correlation_id="correlation",
@@ -62,7 +62,7 @@ def client() -> Iterator[TestClient]:
     capability = provider.discover(base_context)[0]
     approved_context = replace(
         base_context,
-        approved_capability_ids=frozenset({capability.capability_id}),
+        approved_instance_ids=frozenset({capability.instance_id}),
     )
     app.state.provider_service = ProviderService(
         ProviderRegistry((provider,)),
@@ -82,22 +82,29 @@ def test_provider_api_catalog_discovery_validation_health_and_invocation(
     discovery = client.get("/v1/providers/webhook/capabilities")
     validation = client.get("/v1/providers/webhook/validation")
     health = client.get("/v1/providers/webhook/health")
-    capability = discovery.json()["capabilities"][0]
+    descriptor = discovery.json()["descriptors"][0]
+    instance = discovery.json()["instances"][0]
     invoked = client.post(
         "/v1/providers/webhook/invoke",
         headers={"Idempotency-Key": "event-1"},
         json={
-            "capability_id": capability["capability_id"],
+            "instance_id": instance["instance_id"],
             "operation_id": "publish",
             "arguments": {"event": "updated"},
         },
     )
 
-    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v1"
+    assert catalog.json()["schema_version"] == "research-assistant.integration-provider.v2"
     assert catalog.json()["providers"][0]["provider_id"] == "webhook"
-    assert capability["attachable"] is True
-    assert capability["operations"][0]["maturity"] == "ga"
-    assert capability["operations"][0]["risk"] == "external_side_effect"
+    assert instance["attachable_operation_ids"] == ["publish"]
+    assert len(instance["instance_fingerprint"]) == 64
+    assert descriptor["operations"][0]["maturity"] == "ga"
+    assert descriptor["operations"][0]["version"] == "1.0.0"
+    assert descriptor["operations"][0]["operation_class"] == "privileged"
+    assert descriptor["operations"][0]["approval_policy"] == "required"
+    assert descriptor["operations"][0]["side_effect_destinations"] == [
+        "https://hooks.test/events"
+    ]
     assert validation.json()["readiness"] == "ready"
     assert health.json()["readiness"] == "ready"
     assert invoked.status_code == 200
@@ -134,10 +141,10 @@ def test_provider_api_rejects_unknown_runtime_and_model_supplied_approval(
     injected_approval = client.post(
         "/v1/providers/webhook/invoke",
         json={
-            "capability_id": "webhook.publish",
+            "instance_id": "webhook.publish",
             "operation_id": "publish",
             "arguments": {},
-            "approved_capability_ids": ["webhook.publish"],
+            "approved_instance_ids": ["webhook.publish"],
         },
     )
     original = app.state.provider_service

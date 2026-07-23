@@ -137,7 +137,7 @@ def test_live_provider_discovery_and_health() -> None:
         context = InvocationContext(
             tenant_id=tenant_id,
             principal_id="provider-integration-test",
-            approved_capability_ids=frozenset(),
+            approved_instance_ids=frozenset(),
             credential=LiveCredential(
                 os.getenv("PROVIDER_INTEGRATION_TOKEN"),
                 os.getenv("PROVIDER_INTEGRATION_SECRET"),

@@ -10,6 +10,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 from research_assistant_connectors.providers import (
     CapabilityDescriptor,
+    CapabilityInstance,
     HealthReport,
     InvocationContext,
     InvocationRequest,
@@ -19,6 +20,7 @@ from research_assistant_connectors.providers import (
     ProviderError,
     ProviderRegistry,
     ValidationReport,
+    capability_instance_fingerprint,
 )
 from research_assistant_connectors.providers.contracts import plain_json
 
@@ -28,7 +30,7 @@ ProviderContextFactory = Callable[[str, Request], InvocationContext]
 class ProviderInvokePayload(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    capability_id: str = Field(min_length=1, max_length=512)
+    instance_id: str = Field(min_length=1, max_length=512)
     operation_id: str = Field(min_length=1, max_length=512)
     arguments: dict[str, Any] = Field(default_factory=dict)
 
@@ -36,11 +38,13 @@ class ProviderInvokePayload(BaseModel):
 def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
     return {
         "operation_id": operation.operation_id,
+        "version": operation.version,
         "maturity": operation.maturity.value,
         "input_schema": plain_json(operation.input_schema),
         "output_schema": plain_json(operation.output_schema),
-        "risk": operation.risk.value,
+        "operation_class": operation.operation_class.value,
         "approval_policy": operation.approval_policy.value,
+        "side_effect_destinations": list(operation.side_effect_destinations),
         "timeout_seconds": operation.timeout_seconds,
         "max_retries": operation.max_retries,
         "idempotency": operation.idempotency.value,
@@ -53,23 +57,33 @@ def _operation_json(operation: OperationDescriptor) -> dict[str, Any]:
 
 def _capability_json(capability: CapabilityDescriptor) -> dict[str, Any]:
     return {
-        "provider_id": capability.provider_id,
-        "capability_id": capability.capability_id,
+        "descriptor_id": capability.descriptor_id,
         "family": capability.family,
         "resource_kind": capability.resource_kind,
         "name": capability.name,
-        "readiness": capability.readiness.value,
-        "attachable": capability.attachable,
         "auth_modes": [mode.value for mode in capability.auth_modes],
-        "tenant_boundary": capability.tenant_boundary,
-        "data_boundary": capability.data_boundary,
         "operations": [_operation_json(operation) for operation in capability.operations],
         "provenance": list(capability.provenance),
-        "status_evidence": list(capability.status_evidence),
         "observability": list(capability.observability),
         "audit": list(capability.audit),
-        "unavailable_reason": capability.unavailable_reason,
         "metadata": plain_json(capability.metadata),
+    }
+
+
+def _instance_json(instance: CapabilityInstance) -> dict[str, Any]:
+    return {
+        "provider_id": instance.provider_id,
+        "instance_id": instance.instance_id,
+        "descriptor_id": instance.descriptor.descriptor_id,
+        "instance_fingerprint": capability_instance_fingerprint(instance),
+        "name": instance.name,
+        "readiness": instance.readiness.value,
+        "attachable_operation_ids": list(instance.attachable_operation_ids),
+        "tenant_boundary": instance.tenant_boundary,
+        "data_boundary": instance.data_boundary,
+        "configuration": plain_json(instance.configuration),
+        "status_evidence": list(instance.status_evidence),
+        "unavailable_reason": instance.unavailable_reason,
     }
 
 
@@ -81,7 +95,10 @@ def _provider_json(provider: ProviderDescriptor) -> dict[str, Any]:
         "description": provider.description,
         "auth_modes": [mode.value for mode in provider.auth_modes],
         "provenance": list(provider.provenance),
-        "capabilities": [_capability_json(capability) for capability in provider.capabilities],
+        "capability_descriptors": [
+            _capability_json(capability)
+            for capability in provider.capability_descriptors
+        ],
     }
 
 
@@ -94,7 +111,7 @@ def _report_json(report: ValidationReport | HealthReport) -> dict[str, Any]:
 def _result_json(result: InvocationResult) -> dict[str, Any]:
     return {
         "provider_id": result.provider_id,
-        "capability_id": result.capability_id,
+        "instance_id": result.instance_id,
         "operation_id": result.operation_id,
         "status_code": result.status_code,
         "output": plain_json(result.output),
@@ -113,7 +130,7 @@ class ProviderService:
 
     def catalog(self) -> dict[str, Any]:
         return {
-            "schema_version": "research-assistant.integration-provider.v1",
+            "schema_version": "research-assistant.integration-provider.v2",
             "providers": [
                 _provider_json(provider.descriptor)
                 for provider in self._registry.providers.values()
@@ -138,11 +155,18 @@ class ProviderService:
 
     def discover(self, provider_id: str, request: Request) -> dict[str, Any]:
         provider, context = self._provider_context(provider_id, request)
+        instances = provider.discover(context)
+        descriptors = {
+            instance.descriptor.descriptor_id: instance.descriptor
+            for instance in instances
+        }
         return {
             "provider_id": provider_id,
-            "capabilities": [
-                _capability_json(capability) for capability in provider.discover(context)
+            "descriptors": [
+                _capability_json(descriptor)
+                for descriptor in descriptors.values()
             ],
+            "instances": [_instance_json(instance) for instance in instances],
         }
 
     def validate(self, provider_id: str, request: Request) -> dict[str, Any]:
@@ -163,7 +187,7 @@ class ProviderService:
         provider, context = self._provider_context(provider_id, request)
         result = provider.invoke(
             InvocationRequest(
-                capability_id=payload.capability_id,
+                instance_id=payload.instance_id,
                 operation_id=payload.operation_id,
                 arguments=payload.arguments,
                 idempotency_key=idempotency_key,
@@ -239,7 +263,7 @@ def provider_error_response(error: ProviderError) -> JSONResponse:
             "code": error.code,
             "message": str(error),
             "provider_id": error.provider_id,
-            "capability_id": error.capability_id,
+            "instance_id": error.instance_id,
         }
     }
     headers = (

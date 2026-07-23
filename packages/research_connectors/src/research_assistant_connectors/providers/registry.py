@@ -19,7 +19,7 @@ from .config import (
     SearchConfig,
     WebhookConfig,
 )
-from .contracts import CapabilityDescriptor, InvocationContext, Provider
+from .contracts import CapabilityInstance, InvocationContext, Provider
 from .foundry import FoundryProvider
 from .functions import AzureFunctionsProvider
 from .github import GitHubProvider
@@ -75,7 +75,7 @@ class ProviderRegistry:
         except KeyError as exc:
             raise KeyError(f"Unknown provider: {provider_id}") from exc
 
-    def discover_all(self, context: InvocationContext) -> MappingProxyType[str, tuple[CapabilityDescriptor, ...]]:
+    def discover_all(self, context: InvocationContext) -> MappingProxyType[str, tuple[CapabilityInstance, ...]]:
         return MappingProxyType(
             {provider_id: provider.discover(context) for provider_id, provider in self._providers.items()}
         )
