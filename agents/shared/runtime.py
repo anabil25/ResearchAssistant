@@ -8,6 +8,7 @@ from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[
 from .capabilities import ProviderContractAdapter
 from .contracts import AgentManifest
 from .factory import get_factory
+from .idempotency import IdempotencyStore
 from .profiles import get_manifest
 from .settings import HarnessSettings
 
@@ -18,11 +19,13 @@ def build_agent(
     client: Any | None = None,
     settings: HarnessSettings | None = None,
     provider_adapter: ProviderContractAdapter | None = None,
+    idempotency_store: IdempotencyStore | None = None,
 ) -> Agent:
     return get_factory(profile_id).build(
         client=client,
         settings=settings,
         provider_adapter=provider_adapter,
+        idempotency_store=idempotency_store,
     )
 
 
@@ -30,8 +33,15 @@ def run_profile(
     profile_id: str,
     *,
     provider_adapter: ProviderContractAdapter | None = None,
+    idempotency_store: IdempotencyStore | None = None,
 ) -> None:
-    ResponsesHostServer(build_agent(profile_id, provider_adapter=provider_adapter)).run()
+    ResponsesHostServer(
+        build_agent(
+            profile_id,
+            provider_adapter=provider_adapter,
+            idempotency_store=idempotency_store,
+        )
+    ).run()
 
 
 def describe_profile(profile_id: str) -> AgentManifest:

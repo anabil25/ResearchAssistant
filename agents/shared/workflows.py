@@ -50,6 +50,7 @@ from .errors import (
     InvocationError,
     error_from_exception,
 )
+from .idempotency import IdempotencyStore
 from .invocation import RetryingResponsesInvoker
 from .profiles import get_manifest
 from .settings import HarnessSettings
@@ -147,6 +148,9 @@ def build_coordinator_workflow(
     *,
     router: CoordinatorRouter | None = None,
     specialist_policy: SpecialistPolicy | None = None,
+    idempotency_store: IdempotencyStore | None = None,
+    release_id: str | None = None,
+    allow_test_idempotency_store: bool = False,
 ) -> Workflow:
     coordinator = get_manifest("coordinator")
     effective_policy = specialist_policy or coordinator.specialist_policy
@@ -162,7 +166,12 @@ def build_coordinator_workflow(
     registry = CapabilityRegistry()
     registry.add_descriptor(delegate)
     registry.register_tool(registration)
-    capability_executor = CapabilityExecutor(registry)
+    capability_executor = CapabilityExecutor(
+        registry,
+        idempotency_store=idempotency_store,
+        release_id=release_id,
+        allow_test_idempotency_store=allow_test_idempotency_store,
+    )
 
     @executor(id="validate_request")
     async def validate_request(

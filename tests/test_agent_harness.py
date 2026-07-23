@@ -5,7 +5,7 @@ import importlib
 import inspect
 import json
 import time
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -90,7 +90,13 @@ from shared.errors import (
     DeadlineExceededError,
     DestinationDeniedError,
     HarnessError,
+    IdempotencyConcurrencyError,
+    IdempotencyInProgressError,
+    IdempotencyReconciliationRequiredError,
+    IdempotencyReplayDeniedError,
     IdempotencyRequiredError,
+    IdempotencyResultMismatchError,
+    IdempotencyStoreUnavailableError,
     InvocationError,
     IsolationError,
     RetryableInvocationError,
@@ -99,6 +105,19 @@ from shared.errors import (
     error_response,
 )
 from shared.factory import GovernedAgentFactory, get_factory
+from shared.idempotency import (
+    ClaimDisposition,
+    CompletedReplayMode,
+    IdempotencyClaim,
+    IdempotencyKey,
+    IdempotencyPolicy,
+    IdempotencyRecord,
+    IdempotencyState,
+    InMemoryIdempotencyBackend,
+    InMemoryIdempotencyStore,
+    canonical_idempotency_digest,
+    idempotency_contract_schema_digest,
+)
 from shared.invocation import HostedAgentReply, HostedInvocationPolicy, RetryingResponsesInvoker
 from shared.local_harness import LocalHarness, LocalInvocation
 from shared.middleware import (
@@ -1405,6 +1424,1064 @@ async def test_capability_executor_timeout_and_cancellation() -> None:
         )
 
 
+def _external_capability(
+    *,
+    operation: OperationClass = OperationClass.WRITE_REVERSIBLE,
+    replay: CompletedReplayMode = CompletedReplayMode.DENY,
+    timeout_seconds: float = 30,
+) -> CapabilityDescriptor:
+    return CapabilityDescriptor(
+        id="write.external",
+        operation=operation,
+        required_scopes=frozenset({"write"}),
+        allowed_destinations=("destination-a", "destination-b"),
+        side_effect_destinations=("destination-a", "destination-b"),
+        approval=ApprovalMode.REQUIRED,
+        timeout_seconds=timeout_seconds,
+        idempotency=IdempotencyMode.REQUIRED,
+        idempotency_policy=IdempotencyPolicy(
+            lease_seconds=max(60, timeout_seconds),
+            completed_replay=replay,
+        ),
+        retry=RetryPolicy(max_attempts=3, delays_seconds=(0, 0)),
+    )
+
+
+def _external_registry(
+    capability: CapabilityDescriptor,
+    handler: Any,
+    *,
+    project_id: str = "project-a",
+) -> tuple[CapabilityRegistry, CapabilityBinding]:
+    registry = CapabilityRegistry()
+    registry.add_descriptor(capability)
+    binding = _binding(capability.id).model_copy(update={"project_scope": project_id})
+    registry.register_tool(
+        ToolRegistration(
+            binding=binding,
+            tool_name="external",
+            handler=handler,
+            current_instance_fingerprint=binding.instance_ref.fingerprint,
+        )
+    )
+    return registry, binding
+
+
+def _external_context(**updates: Any) -> InvocationContext:
+    values: dict[str, Any] = {
+        "tenant_id": "tenant-a",
+        "principal_id": "actor-a",
+        "scopes": frozenset({"write"}),
+        "destination": "destination-a",
+        "approved_capabilities": frozenset({"write.external"}),
+        "idempotency_key": "caller-key",
+        "operation_fingerprint": "a" * 64,
+    }
+    values.update(updates)
+    return InvocationContext.model_validate(values)
+
+
+def _durable_key(
+    binding: CapabilityBinding,
+    context: InvocationContext,
+) -> IdempotencyKey:
+    assert context.destination is not None
+    assert context.idempotency_key is not None
+    assert context.operation_fingerprint is not None
+    return IdempotencyKey(
+        tenant_id=context.tenant_id,
+        project_id=binding.project_scope,
+        binding_digest=canonical_digest(binding.model_dump(mode="json")),
+        operation_id=binding.operation_ref.id,
+        destination=context.destination,
+        caller_key=context.idempotency_key,
+        argument_hash=context.operation_fingerprint,
+    )
+
+
+def test_idempotency_contracts_are_canonical_and_fail_closed() -> None:
+    key = IdempotencyKey(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        binding_digest="a" * 64,
+        operation_id="provider.write",
+        destination="destination-a",
+        caller_key="caller-key",
+        argument_hash="b" * 64,
+    )
+    assert key.digest == canonical_idempotency_digest(key.model_dump(mode="json"))
+    assert len(idempotency_contract_schema_digest()) == 64
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    claimed = IdempotencyRecord(
+        key=key,
+        state=IdempotencyState.CLAIMED,
+        version="1",
+        claim_token_hash="c" * 64,
+        lease_expires_at=now + timedelta(seconds=60),
+        actor_id="actor-a",
+        release_id=f"sha256:{'d' * 64}",
+        claimed_at=now,
+    )
+    assert IdempotencyClaim(
+        disposition=ClaimDisposition.ACQUIRED,
+        record=claimed,
+        claim_token="e" * 32,
+    ).claim_token
+    with pytest.raises(ValidationError, match="only acquired"):
+        IdempotencyClaim(
+            disposition=ClaimDisposition.IN_PROGRESS,
+            record=claimed,
+            claim_token="e" * 32,
+        )
+    with pytest.raises(ValidationError, match="cannot have started"):
+        claimed.model_copy(update={"started_at": now}).model_validate(
+            {**claimed.model_dump(), "started_at": now}
+        )
+    with pytest.raises(ValidationError, match="require started_at"):
+        IdempotencyRecord.model_validate(
+            {**claimed.model_dump(), "state": IdempotencyState.IN_PROGRESS}
+        )
+    with pytest.raises(ValidationError, match="result provenance"):
+        IdempotencyRecord.model_validate(
+            {**claimed.model_dump(), "state": IdempotencyState.COMPLETED}
+        )
+    with pytest.raises(ValidationError, match="deterministic reconciliation"):
+        IdempotencyRecord.model_validate(
+            {**claimed.model_dump(), "state": IdempotencyState.FAILED}
+        )
+    with pytest.raises(ValidationError, match="marked started"):
+        IdempotencyRecord.model_validate(
+            {**claimed.model_dump(), "irreversible_started": True}
+        )
+    with pytest.raises(ValidationError, match="lease must cover"):
+        CapabilityDescriptor(
+            id="write.short-lease",
+            operation=OperationClass.WRITE_REVERSIBLE,
+            side_effect_destinations=("destination-a",),
+            approval=ApprovalMode.REQUIRED,
+            timeout_seconds=61,
+            idempotency=IdempotencyMode.REQUIRED,
+            idempotency_policy=IdempotencyPolicy(lease_seconds=60),
+        )
+    with pytest.raises(ValidationError, match="cannot replay"):
+        _external_capability(
+            operation=OperationClass.WRITE_IRREVERSIBLE,
+            replay=CompletedReplayMode.RETURN_RESULT,
+        )
+    with pytest.raises(ValueError, match="release_id"):
+        CapabilityExecutor(CapabilityRegistry(), release_id="mutable")
+
+
+@pytest.mark.asyncio
+async def test_in_memory_store_models_cross_instance_claims_and_transitions() -> None:
+    now = [datetime(2026, 7, 24, tzinfo=UTC)]
+    backend = InMemoryIdempotencyBackend()
+    first = InMemoryIdempotencyStore(backend, clock=lambda: now[0])
+    second = InMemoryIdempotencyStore(backend, clock=lambda: now[0])
+    context = _external_context()
+    _, binding = _external_registry(_external_capability(), lambda payload: payload)
+    key = _durable_key(binding, context)
+    release_id = f"sha256:{'a' * 64}"
+    claims = await asyncio.gather(
+        first.claim(key, actor_id="actor-a", release_id=release_id, lease_seconds=60),
+        second.claim(key, actor_id="actor-a", release_id=release_id, lease_seconds=60),
+    )
+    acquired = next(claim for claim in claims if claim.disposition == ClaimDisposition.ACQUIRED)
+    assert {claim.disposition for claim in claims} == {
+        ClaimDisposition.ACQUIRED,
+        ClaimDisposition.IN_PROGRESS,
+    }
+    assert acquired.claim_token is not None
+    with pytest.raises(IdempotencyConcurrencyError):
+        await first.mark_in_progress(
+            key,
+            claim_token=acquired.claim_token,
+            expected_version="wrong",
+            irreversible=False,
+        )
+    started = await first.mark_in_progress(
+        key,
+        claim_token=acquired.claim_token,
+        expected_version=acquired.record.version,
+        irreversible=False,
+    )
+    assert started.state == IdempotencyState.IN_PROGRESS
+    assert (await second.claim(key, actor_id="actor-a", release_id=release_id, lease_seconds=60)).disposition == (
+        ClaimDisposition.IN_PROGRESS
+    )
+    with pytest.raises(IdempotencyResultMismatchError):
+        await first.complete(
+            key,
+            claim_token=acquired.claim_token,
+            expected_version=started.version,
+            result={"value": 1},
+            result_hash="f" * 64,
+        )
+    result = {"value": 1}
+    completed = await first.complete(
+        key,
+        claim_token=acquired.claim_token,
+        expected_version=started.version,
+        result=result,
+        result_hash=canonical_idempotency_digest(result),
+    )
+    assert completed.state == IdempotencyState.COMPLETED
+    assert completed.result_ref is not None
+    assert await second.load_result(completed.result_ref) == result
+    assert (await second.claim(key, actor_id="actor-b", release_id=release_id, lease_seconds=60)).disposition == (
+        ClaimDisposition.COMPLETED
+    )
+    assert first.record_for(key) == completed
+
+    failed_key = key.model_copy(update={"caller_key": "failed"})
+    failed_claim = await first.claim(
+        failed_key,
+        actor_id="actor-a",
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert failed_claim.claim_token is not None
+    failed = await first.fail(
+        failed_key,
+        claim_token=failed_claim.claim_token,
+        expected_version=failed_claim.record.version,
+        failure_code="handler_failed",
+    )
+    assert failed.reconciliation_required is True
+    assert (
+        await second.claim(
+            failed_key,
+            actor_id="actor-a",
+            release_id=release_id,
+            lease_seconds=60,
+        )
+    ).disposition == ClaimDisposition.RECONCILIATION_REQUIRED
+    with pytest.raises(IdempotencyConcurrencyError):
+        await first.fail(
+            failed_key,
+            claim_token=failed_claim.claim_token,
+            expected_version=failed_claim.record.version,
+            failure_code="again",
+        )
+
+    stale_key = key.model_copy(update={"caller_key": "stale"})
+    await first.claim(stale_key, actor_id="actor-a", release_id=release_id, lease_seconds=10)
+    now[0] += timedelta(seconds=11)
+    stale = await second.claim(
+        stale_key,
+        actor_id="actor-a",
+        release_id=release_id,
+        lease_seconds=10,
+    )
+    assert stale.disposition == ClaimDisposition.RECONCILIATION_REQUIRED
+    assert await first.load_result("memory://missing") is None
+
+
+@pytest.mark.asyncio
+async def test_durable_executor_serializes_replicas_and_isolates_keys() -> None:
+    calls: list[dict[str, Any]] = []
+    entered = asyncio.Event()
+    release = asyncio.Event()
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        calls.append(payload)
+        entered.set()
+        await release.wait()
+        return {"value": payload["value"]}
+
+    capability = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
+    registry, _ = _external_registry(capability, handler)
+    backend = InMemoryIdempotencyBackend()
+    first = CapabilityExecutor(
+        registry,
+        idempotency_store=InMemoryIdempotencyStore(backend),
+        release_id=f"sha256:{'1' * 64}",
+        allow_test_idempotency_store=True,
+    )
+    second = CapabilityExecutor(
+        registry,
+        idempotency_store=InMemoryIdempotencyStore(backend),
+        release_id=f"sha256:{'1' * 64}",
+        allow_test_idempotency_store=True,
+    )
+    context = _external_context()
+    first_task = asyncio.create_task(first.invoke(capability.id, {"value": 1}, context))
+    await entered.wait()
+    with pytest.raises(IdempotencyInProgressError) as captured:
+        await second.invoke(capability.id, {"value": 1}, context)
+    assert captured.value.retryable is True
+    release.set()
+    assert await first_task == {"value": 1}
+    assert await second.invoke(capability.id, {"value": 999}, context) == {"value": 1}
+    assert len(calls) == 1
+
+    other_tenant = context.model_copy(update={"tenant_id": "tenant-b"})
+    assert await second.invoke(capability.id, {"value": 2}, other_tenant) == {"value": 2}
+    other_argument = context.model_copy(update={"operation_fingerprint": "b" * 64})
+    assert await second.invoke(capability.id, {"value": 3}, other_argument) == {"value": 3}
+    other_destination = context.model_copy(update={"destination": "destination-b"})
+    assert await second.invoke(capability.id, {"value": 4}, other_destination) == {"value": 4}
+    project_registry, _ = _external_registry(capability, handler, project_id="project-b")
+    project_executor = CapabilityExecutor(
+        project_registry,
+        idempotency_store=InMemoryIdempotencyStore(backend),
+        release_id=f"sha256:{'1' * 64}",
+        allow_test_idempotency_store=True,
+    )
+    assert await project_executor.invoke(capability.id, {"value": 5}, context) == {"value": 5}
+    assert len(calls) == 5
+
+
+@pytest.mark.asyncio
+async def test_durable_executor_replay_policies_and_result_integrity() -> None:
+    calls = 0
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return payload
+
+    context = _external_context()
+    release_id = f"sha256:{'2' * 64}"
+    denied = _external_capability()
+    denied_registry, _ = _external_registry(denied, handler)
+    denied_executor = CapabilityExecutor(
+        denied_registry,
+        idempotency_store=InMemoryIdempotencyStore(),
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    assert await denied_executor.invoke(denied.id, {"value": "denied"}, context) == {
+        "value": "denied"
+    }
+    with pytest.raises(IdempotencyReplayDeniedError):
+        await denied_executor.invoke(denied.id, {"value": "duplicate"}, context)
+
+    referenced = _external_capability(replay=CompletedReplayMode.RETURN_REFERENCE)
+    referenced_registry, _ = _external_registry(referenced, handler)
+    referenced_executor = CapabilityExecutor(
+        referenced_registry,
+        idempotency_store=InMemoryIdempotencyStore(),
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    assert await referenced_executor.invoke(referenced.id, {"value": "reference"}, context) == {
+        "value": "reference"
+    }
+    reference = await referenced_executor.invoke(referenced.id, {"value": "duplicate"}, context)
+    assert reference["idempotency"]["result_ref"].startswith("memory://")
+
+    replayed = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
+    replayed_registry, binding = _external_registry(replayed, handler)
+    replay_store = InMemoryIdempotencyStore()
+    replay_executor = CapabilityExecutor(
+        replayed_registry,
+        idempotency_store=replay_store,
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    assert await replay_executor.invoke(replayed.id, {"value": "original"}, context) == {
+        "value": "original"
+    }
+    record = replay_store.record_for(_durable_key(binding, context))
+    assert record is not None and record.result_ref is not None
+    replay_store.replace_result(record.result_ref, {"value": "tampered"})
+    with pytest.raises(IdempotencyResultMismatchError):
+        await replay_executor.invoke(replayed.id, {"value": "duplicate"}, context)
+    assert calls == 3
+
+
+@pytest.mark.asyncio
+async def test_external_execution_requires_durable_available_store_and_release() -> None:
+    handler_calls = 0
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal handler_calls
+        handler_calls += 1
+        return payload
+
+    capability = _external_capability()
+    registry, _ = _external_registry(capability, handler)
+    context = _external_context()
+    with pytest.raises(IdempotencyStoreUnavailableError):
+        await CapabilityExecutor(registry).invoke(capability.id, {}, context)
+    with pytest.raises(IdempotencyStoreUnavailableError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            release_id=f"sha256:{'3' * 64}",
+        ).invoke(capability.id, {}, context)
+    with pytest.raises(IdempotencyStoreUnavailableError, match="release provenance"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class UnavailableStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            raise RuntimeError("unavailable")
+
+    with pytest.raises(IdempotencyStoreUnavailableError, match="claim"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=UnavailableStore(),
+            release_id=f"sha256:{'3' * 64}",
+        ).invoke(capability.id, {}, context)
+
+    class StartUnavailableStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise RuntimeError("unavailable")
+
+    with pytest.raises(IdempotencyStoreUnavailableError, match="start"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=StartUnavailableStore(),
+            release_id=f"sha256:{'3' * 64}",
+        ).invoke(capability.id, {}, context)
+    assert handler_calls == 0
+
+
+@pytest.mark.asyncio
+async def test_durable_provider_failures_are_structured_before_or_after_effect() -> None:
+    context = _external_context()
+    release_id = f"sha256:{'6' * 64}"
+    capability = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
+
+    class ClaimConflictStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            raise IdempotencyConcurrencyError("claim conflict")
+
+    registry, _ = _external_registry(capability, lambda payload: payload)
+    with pytest.raises(IdempotencyConcurrencyError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=ClaimConflictStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+    class MissingTokenStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            acquired = await super().claim(*args, **kwargs)
+            return IdempotencyClaim.model_construct(
+                disposition=ClaimDisposition.ACQUIRED,
+                record=acquired.record,
+                claim_token=None,
+            )
+
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="ownership token"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=MissingTokenStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+    class StartConflictStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise IdempotencyConcurrencyError("start conflict")
+
+    with pytest.raises(IdempotencyConcurrencyError):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=StartConflictStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+    timeout_capability = _external_capability(timeout_seconds=0.001)
+
+    async def slow(_payload: dict[str, Any]) -> dict[str, Any]:
+        await asyncio.sleep(0.1)
+        return {}
+
+    timeout_registry, _ = _external_registry(timeout_capability, slow)
+    with pytest.raises(DeadlineExceededError):
+        await CapabilityExecutor(
+            timeout_registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(timeout_capability.id, {}, context)
+
+    generic_registry, _ = _external_registry(
+        capability,
+        lambda _payload: (_ for _ in ()).throw(ValueError("secret")),
+    )
+    with pytest.raises(InvocationError) as invocation:
+        await CapabilityExecutor(
+            generic_registry,
+            idempotency_store=InMemoryIdempotencyStore(),
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+    assert invocation.value.context["exception"] == "ValueError"
+
+    class FailureCommitStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise RuntimeError("failure commit unavailable")
+
+    failure_registry, _ = _external_registry(
+        capability,
+        lambda _payload: (_ for _ in ()).throw(ContractError("rejected")),
+    )
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="could not be durably recorded"):
+        await CapabilityExecutor(
+            failure_registry,
+            idempotency_store=FailureCommitStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+    class WrongCompletionStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def complete(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            completed = await super().complete(*args, **kwargs)
+            return completed.model_copy(update={"result_hash": "f" * 64})
+
+    with pytest.raises(IdempotencyResultMismatchError, match="completion record"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=WrongCompletionStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+
+@pytest.mark.asyncio
+async def test_executor_revalidates_every_durable_store_response() -> None:
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    release_id = f"sha256:{'9' * 64}"
+    capability = _external_capability()
+    registry, binding = _external_registry(capability, lambda payload: payload)
+    context = _external_context()
+
+    class NonClaimStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            return cast(IdempotencyClaim, {})
+
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="claim contract"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=NonClaimStore(),
+            release_id=release_id,
+            utcnow=lambda: now,
+        ).invoke(capability.id, {}, context)
+
+    class InvalidRecordStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            claim = await super().claim(*args, **kwargs)
+            return claim.model_copy(update={"record": {}})
+
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="record contract"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InvalidRecordStore(clock=lambda: now),
+            release_id=release_id,
+            utcnow=lambda: now,
+        ).invoke(capability.id, {}, context)
+
+    class ClaimMutationStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(
+            self,
+            disposition: ClaimDisposition,
+            updates: dict[str, Any],
+            *,
+            token: str | None | object = ...,
+        ) -> None:
+            super().__init__(clock=lambda: now)
+            self.disposition = disposition
+            self.updates = updates
+            self.token = token
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            claim = await super().claim(*args, **kwargs)
+            token = claim.claim_token if self.token is ... else cast(str | None, self.token)
+            return claim.model_copy(
+                update={
+                    "disposition": self.disposition,
+                    "record": claim.record.model_copy(update=self.updates),
+                    "claim_token": token,
+                }
+            )
+
+    wrong_key = _durable_key(binding, context).model_copy(update={"tenant_id": "tenant-b"})
+    cases = (
+        ClaimMutationStore(cast(ClaimDisposition, "invalid"), {}),
+        ClaimMutationStore(ClaimDisposition.ACQUIRED, {"key": wrong_key}),
+        ClaimMutationStore(ClaimDisposition.COMPLETED, {}, token=None),
+        ClaimMutationStore(
+            ClaimDisposition.ACQUIRED,
+            {"lease_expires_at": now - timedelta(seconds=1)},
+        ),
+        ClaimMutationStore(
+            ClaimDisposition.RECONCILIATION_REQUIRED,
+            {},
+            token=None,
+        ),
+        ClaimMutationStore(ClaimDisposition.ACQUIRED, {"actor_id": "actor-b"}),
+        ClaimMutationStore(
+            ClaimDisposition.ACQUIRED,
+            {"lease_expires_at": now.replace(tzinfo=None)},
+        ),
+        ClaimMutationStore(ClaimDisposition.ACQUIRED, {"claim_token_hash": "f" * 64}),
+        ClaimMutationStore(ClaimDisposition.IN_PROGRESS, {}),
+    )
+    for store in cases:
+        with pytest.raises(IdempotencyReconciliationRequiredError):
+            await CapabilityExecutor(
+                registry,
+                idempotency_store=store,
+                release_id=release_id,
+                utcnow=lambda: now,
+            ).invoke(capability.id, {}, context)
+
+    class StartMutationStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(self, updates: dict[str, Any]) -> None:
+            super().__init__(clock=lambda: now)
+            self.updates = updates
+
+        async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            started = await super().mark_in_progress(*args, **kwargs)
+            return started.model_copy(update=self.updates)
+
+    class InvalidStartStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def mark_in_progress(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            await super().mark_in_progress(*args, **kwargs)
+            return cast(IdempotencyRecord, {})
+
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="transition contract"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=InvalidStartStore(clock=lambda: now),
+            release_id=release_id,
+            utcnow=lambda: now,
+        ).invoke(capability.id, {}, context)
+
+    for start_updates in (
+        {"actor_id": "actor-b"},
+        {"lease_expires_at": now - timedelta(seconds=1)},
+        {"reconciliation_required": True},
+    ):
+        with pytest.raises(IdempotencyReconciliationRequiredError):
+            await CapabilityExecutor(
+                registry,
+                idempotency_store=StartMutationStore(start_updates),
+                release_id=release_id,
+                utcnow=lambda: now,
+            ).invoke(capability.id, {}, context)
+
+    class CompletionMutationStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(self, updates: dict[str, Any]) -> None:
+            super().__init__(clock=lambda: now)
+            self.updates = updates
+
+        async def complete(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            completed = await super().complete(*args, **kwargs)
+            return completed.model_copy(update=self.updates)
+
+    for completion_updates in (
+        {"release_id": f"sha256:{'0' * 64}"},
+        {"completed_at": None},
+        {"result_ref": None},
+    ):
+        with pytest.raises(IdempotencyReconciliationRequiredError):
+            await CapabilityExecutor(
+                registry,
+                idempotency_store=CompletionMutationStore(completion_updates),
+                release_id=release_id,
+                utcnow=lambda: now,
+            ).invoke(capability.id, {}, context)
+
+    class FailureMutationStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(self, updates: dict[str, Any]) -> None:
+            super().__init__(clock=lambda: now)
+            self.updates = updates
+
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            failed = await super().fail(*args, **kwargs)
+            return failed.model_copy(update=self.updates)
+
+    class InvalidFailureStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            await super().fail(*args, **kwargs)
+            return cast(IdempotencyRecord, {})
+
+    failure_registry, _ = _external_registry(
+        capability,
+        lambda _payload: (_ for _ in ()).throw(ContractError("rejected")),
+    )
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="could not be durably recorded"):
+        await CapabilityExecutor(
+            failure_registry,
+            idempotency_store=InvalidFailureStore(clock=lambda: now),
+            release_id=release_id,
+            utcnow=lambda: now,
+        ).invoke(capability.id, {}, context)
+    for failure_updates in (
+        {"reconciliation_required": False},
+        {"failure_code": "wrong"},
+        {"started_at": now + timedelta(seconds=1)},
+        {"irreversible_started": True},
+    ):
+        with pytest.raises(IdempotencyReconciliationRequiredError, match="could not be durably recorded"):
+            await CapabilityExecutor(
+                failure_registry,
+                idempotency_store=FailureMutationStore(failure_updates),
+                release_id=release_id,
+                utcnow=lambda: now,
+            ).invoke(capability.id, {}, context)
+
+
+@pytest.mark.asyncio
+async def test_durable_replay_rejects_corrupt_or_unavailable_results() -> None:
+    context = _external_context()
+    release_id = f"sha256:{'7' * 64}"
+    capability = _external_capability(replay=CompletedReplayMode.RETURN_RESULT)
+    registry, binding = _external_registry(capability, lambda payload: payload)
+    key = _durable_key(binding, context)
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    malformed = IdempotencyRecord.model_construct(
+        key=key,
+        state=IdempotencyState.COMPLETED,
+        version="3",
+        claim_token_hash="a" * 64,
+        lease_expires_at=now,
+        actor_id="actor-a",
+        release_id=release_id,
+        claimed_at=now,
+        started_at=now,
+        completed_at=now,
+        irreversible_started=False,
+        result_hash=None,
+        result_ref=None,
+        failure_code=None,
+        reconciliation_required=False,
+    )
+
+    class MalformedCompletedStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def claim(self, *args: Any, **kwargs: Any) -> IdempotencyClaim:
+            return IdempotencyClaim.model_construct(
+                disposition=ClaimDisposition.COMPLETED,
+                record=malformed,
+                claim_token=None,
+            )
+
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="state invariants"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=MalformedCompletedStore(),
+            release_id=release_id,
+        ).invoke(capability.id, {}, context)
+
+    irreversible_store = InMemoryIdempotencyStore()
+    irreversible_claim = await irreversible_store.claim(
+        key,
+        actor_id=context.principal_id,
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert irreversible_claim.claim_token is not None
+    irreversible_started = await irreversible_store.mark_in_progress(
+        key,
+        claim_token=irreversible_claim.claim_token,
+        expected_version=irreversible_claim.record.version,
+        irreversible=True,
+    )
+    irreversible_result = {"value": "must-not-replay"}
+    await irreversible_store.complete(
+        key,
+        claim_token=irreversible_claim.claim_token,
+        expected_version=irreversible_started.version,
+        result=irreversible_result,
+        result_hash=canonical_idempotency_digest(irreversible_result),
+    )
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="irreversible"):
+        await CapabilityExecutor(
+            registry,
+            idempotency_store=irreversible_store,
+            release_id=release_id,
+            allow_test_idempotency_store=True,
+        ).invoke(capability.id, {}, context)
+
+    class ResultStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        def __init__(self, *, structured: bool) -> None:
+            super().__init__()
+            self.structured = structured
+
+        async def load_result(self, result_ref: str) -> dict[str, Any] | None:
+            if self.structured:
+                raise IdempotencyConcurrencyError("lookup conflict")
+            raise RuntimeError("lookup unavailable")
+
+    for structured, error_type in (
+        (True, IdempotencyConcurrencyError),
+        (False, IdempotencyStoreUnavailableError),
+    ):
+        store = ResultStore(structured=structured)
+        executor = CapabilityExecutor(
+            registry,
+            idempotency_store=store,
+            release_id=release_id,
+        )
+        assert await executor.invoke(capability.id, {"value": 1}, context) == {"value": 1}
+        with pytest.raises(error_type):
+            await executor.invoke(capability.id, {"value": 2}, context)
+
+
+@pytest.mark.asyncio
+async def test_in_memory_store_rejects_invalid_state_transitions() -> None:
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    backend = InMemoryIdempotencyBackend()
+    store = InMemoryIdempotencyStore(backend, clock=lambda: now)
+    context = _external_context()
+    _, binding = _external_registry(_external_capability(), lambda payload: payload)
+    release_id = f"sha256:{'8' * 64}"
+
+    mark_key = _durable_key(binding, context.model_copy(update={"idempotency_key": "mark"}))
+    mark_claim = await store.claim(
+        mark_key,
+        actor_id="actor-a",
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert mark_claim.claim_token is not None
+    backend.records[mark_key.digest] = mark_claim.record.model_copy(
+        update={"state": IdempotencyState.IN_PROGRESS, "started_at": now}
+    )
+    with pytest.raises(IdempotencyConcurrencyError, match="no longer claimable"):
+        await store.mark_in_progress(
+            mark_key,
+            claim_token=mark_claim.claim_token,
+            expected_version=mark_claim.record.version,
+            irreversible=False,
+        )
+
+    complete_key = _durable_key(
+        binding,
+        context.model_copy(update={"idempotency_key": "complete"}),
+    )
+    complete_claim = await store.claim(
+        complete_key,
+        actor_id="actor-a",
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert complete_claim.claim_token is not None
+    with pytest.raises(IdempotencyConcurrencyError, match="not in progress"):
+        await store.complete(
+            complete_key,
+            claim_token=complete_claim.claim_token,
+            expected_version=complete_claim.record.version,
+            result={},
+            result_hash=canonical_idempotency_digest({}),
+        )
+
+    fail_key = _durable_key(binding, context.model_copy(update={"idempotency_key": "fail"}))
+    fail_claim = await store.claim(
+        fail_key,
+        actor_id="actor-a",
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert fail_claim.claim_token is not None
+    backend.records[fail_key.digest] = fail_claim.record.model_copy(
+        update={
+            "state": IdempotencyState.COMPLETED,
+            "started_at": now,
+            "completed_at": now,
+            "result_hash": "a" * 64,
+            "result_ref": "memory://completed",
+        }
+    )
+    with pytest.raises(IdempotencyConcurrencyError, match="transition to failed"):
+        await store.fail(
+            fail_key,
+            claim_token=fail_claim.claim_token,
+            expected_version=fail_claim.record.version,
+            failure_code="late",
+        )
+
+
+@pytest.mark.asyncio
+async def test_external_failure_cancellation_and_uncertain_commit_never_replay() -> None:
+    context = _external_context()
+    release_id = f"sha256:{'4' * 64}"
+    retry_calls = 0
+
+    async def retryable(_payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal retry_calls
+        retry_calls += 1
+        raise RetryableInvocationError("uncertain write")
+
+    irreversible = _external_capability(operation=OperationClass.WRITE_IRREVERSIBLE)
+    retry_registry, _ = _external_registry(irreversible, retryable)
+    retry_store = InMemoryIdempotencyStore()
+    retry_executor = CapabilityExecutor(
+        retry_registry,
+        idempotency_store=retry_store,
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    with pytest.raises(RetryableInvocationError):
+        await retry_executor.invoke(irreversible.id, {}, context)
+    assert retry_calls == 1
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await retry_executor.invoke(irreversible.id, {}, context)
+    assert retry_calls == 1
+
+    entered = asyncio.Event()
+
+    async def cancelled(_payload: dict[str, Any]) -> dict[str, Any]:
+        entered.set()
+        await asyncio.Event().wait()
+        return {}
+
+    cancelled_registry, _ = _external_registry(_external_capability(), cancelled)
+    cancelled_store = InMemoryIdempotencyStore()
+    cancelled_executor = CapabilityExecutor(
+        cancelled_registry,
+        idempotency_store=cancelled_store,
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    task = asyncio.create_task(
+        cancelled_executor.invoke("write.external", {}, context.model_copy(update={"idempotency_key": "cancelled"}))
+    )
+    await entered.wait()
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    cancelled_record = next(iter(cancelled_store._backend.records.values()))
+    assert cancelled_record.state == IdempotencyState.FAILED
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await cancelled_executor.invoke(
+            "write.external",
+            {},
+            context.model_copy(update={"idempotency_key": "cancelled"}),
+        )
+
+    class CancellationFailureStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def fail(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise RuntimeError("cannot persist cancellation")
+
+    entered.clear()
+    cancellation_failure_executor = CapabilityExecutor(
+        cancelled_registry,
+        idempotency_store=CancellationFailureStore(),
+        release_id=release_id,
+    )
+    failed_cancellation = asyncio.create_task(
+        cancellation_failure_executor.invoke(
+            "write.external",
+            {},
+            context.model_copy(update={"idempotency_key": "cancel-failure"}),
+        )
+    )
+    await entered.wait()
+    failed_cancellation.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await failed_cancellation
+
+    class CompleteUnavailableStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+        async def complete(self, *args: Any, **kwargs: Any) -> IdempotencyRecord:
+            raise RuntimeError("commit unavailable")
+
+    complete_registry, _ = _external_registry(_external_capability(), handler=lambda payload: payload)
+    with pytest.raises(IdempotencyReconciliationRequiredError, match="commit is uncertain"):
+        await CapabilityExecutor(
+            complete_registry,
+            idempotency_store=CompleteUnavailableStore(),
+            release_id=release_id,
+        ).invoke("write.external", {}, context.model_copy(update={"idempotency_key": "commit"}))
+
+
+@pytest.mark.asyncio
+async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit() -> None:
+    now = [datetime(2026, 7, 24, tzinfo=UTC)]
+    backend = InMemoryIdempotencyBackend()
+    store = InMemoryIdempotencyStore(backend, clock=lambda: now[0])
+    capability = _external_capability(operation=OperationClass.WRITE_IRREVERSIBLE)
+    calls = 0
+
+    async def handler(payload: dict[str, Any]) -> dict[str, Any]:
+        nonlocal calls
+        calls += 1
+        return payload
+
+    registry, binding = _external_registry(capability, handler)
+    context = _external_context()
+    key = _durable_key(binding, context)
+    release_id = f"sha256:{'5' * 64}"
+    claim = await store.claim(
+        key,
+        actor_id=context.principal_id,
+        release_id=release_id,
+        lease_seconds=60,
+    )
+    assert claim.claim_token is not None
+    started = await store.mark_in_progress(
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        irreversible=True,
+    )
+    assert started.irreversible_started is True
+    executor = CapabilityExecutor(
+        registry,
+        idempotency_store=InMemoryIdempotencyStore(backend, clock=lambda: now[0]),
+        release_id=release_id,
+        allow_test_idempotency_store=True,
+    )
+    with pytest.raises(IdempotencyInProgressError):
+        await executor.invoke(capability.id, {}, context)
+    now[0] += timedelta(seconds=61)
+    with pytest.raises(IdempotencyReconciliationRequiredError):
+        await executor.invoke(capability.id, {}, context)
+    assert calls == 0
+
+    local = LocalHarness(
+        get_manifest("literature"),
+        lambda _request: _evidence_response(),
+        idempotency_store=store,
+    )
+    local_executor = local.capability_executor(registry)
+    assert isinstance(local_executor, CapabilityExecutor)
+
+
 @pytest.mark.asyncio
 async def test_conversation_and_long_term_memory_enforce_tenant_boundary() -> None:
     store = InMemoryConversationStore()
@@ -1523,6 +2600,10 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert release.capability_versions == (("dataset.compute", "1.0.0"),)
     assert release.toolbox_versions == (("foundry.toolbox.code_interpreter", "1.0.0"),)
     assert len(release.contract_schema_digest) == 64
+    assert release.idempotency_contract_schema_digest == idempotency_contract_schema_digest()
+    assert release.dependency_risks[0].package == "agent-framework-foundry-hosting"
+    assert release.dependency_risks[0].maturity == "beta"
+    assert release.dependency_risks[0].version == "1.0.0b260721"
     assert release.provider_contracts == (
         (
             "microsoft-foundry-toolbox",
@@ -1574,6 +2655,14 @@ def test_release_metadata_is_immutable_and_deterministic(
             model_deployment=manifest.model_policy.deployment_name,
             registrations=unattested,
         )
+    versions["agent-framework-foundry-hosting"] = "1.0.0"
+    with pytest.raises(ConfigurationError, match="reviewed beta package pin"):
+        build_release_metadata(
+            manifest,
+            model_deployment=manifest.model_policy.deployment_name,
+            registrations=registrations,
+        )
+    versions["agent-framework-foundry-hosting"] = "1.0.0b260721"
 
     root = tmp_path / "bundle"
     root.mkdir()
@@ -1610,7 +2699,25 @@ def test_factory_requires_current_provider_attestation() -> None:
     assert prepared.manifest is factory.manifest
     assert all(registration.runtime_attested for registration in prepared.registrations)
     assert adapter.handler_resolutions == len(factory.manifest.capability_bindings)
-    assert factory.readiness(settings, provider_adapter=adapter)["ready"] is True
+    assert factory.readiness(settings, provider_adapter=adapter)["ready"] is False
+
+    class DurableStore(InMemoryIdempotencyStore):
+        is_durable = True
+
+    assert (
+        factory.readiness(
+            settings,
+            provider_adapter=adapter,
+            idempotency_store=DurableStore(),
+        )["ready"]
+        is True
+    )
+    with pytest.raises(ConfigurationError, match="app-owned durable idempotency store"):
+        factory.build(
+            client=_FakeChatClient(),
+            settings=settings,
+            provider_adapter=adapter,
+        )
 
     binding = factory.manifest.capability_bindings[0]
     key = (binding.instance_ref.provider_id, binding.instance_ref.instance_id)
@@ -1643,6 +2750,7 @@ def test_governed_factory_builds_typed_hosted_agent(
     assert agent.default_options["response_format"] is LiteratureResponse
     assert agent.context_providers == []
     assert factory.capabilities() == ()
+    assert factory.readiness(literature_settings)["ready"] is True
     assert get_factory("dataset").manifest.id == "dataset"
 
     marker = object()
@@ -1752,6 +2860,7 @@ def test_runtime_adapter_builds_describes_and_runs_host(
             "client": "client",
             "settings": None,
             "provider_adapter": None,
+            "idempotency_store": None,
         },
     )
     assert runtime.describe_profile("grant").id == "grant"
@@ -1814,6 +2923,11 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
         dataset_factory.readiness(
             _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
             provider_adapter=dataset_adapter,
+            idempotency_store=type(
+                "DurableStore",
+                (InMemoryIdempotencyStore,),
+                {"is_durable": True},
+            )(),
         )["ready"]
         is True
     )
@@ -2619,9 +3733,18 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         side_effect_destinations=("toolbox.example",),
         approval=ApprovalMode.REQUIRED,
         idempotency=IdempotencyMode.REQUIRED,
+        idempotency_policy=IdempotencyPolicy(
+            completed_replay=CompletedReplayMode.RETURN_RESULT,
+        ),
     )
     write_registration, _ = _runtime_registration(_binding(write_capability.id))
-    write_middleware = GovernedFunctionMiddleware(write_capability, write_registration)
+    write_middleware = GovernedFunctionMiddleware(
+        write_capability,
+        write_registration,
+        idempotency_store=InMemoryIdempotencyStore(),
+        release_id=f"sha256:{'a' * 64}",
+        allow_test_idempotency_store=True,
+    )
     write_governance = InvocationContext(
         tenant_id="tenant-a",
         principal_id="principal-a",
@@ -2660,6 +3783,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     manifest = get_manifest("literature")
     harness = LocalHarness(manifest, lambda _request: _evidence_response())
     assert harness.readiness()["input_contract"] == "LiteratureRequestV2"
+    assert harness.readiness()["idempotency_store_configured"] is True
     result = await harness.invoke(LocalInvocation(manifest_id="literature", payload=_request()))
     assert result.ok is True
     wrong = await harness.invoke(LocalInvocation(manifest_id="grant", payload=_request()))
@@ -2686,6 +3810,31 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
 
     with pytest.raises(asyncio.CancelledError):
         await LocalHarness(manifest, cancelled).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
+
+    dataset = get_manifest("dataset")
+    dataset_registrations = (
+        GovernedAgentFactory(dataset)
+        .prepare(
+            _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
+            provider_adapter=_ManifestProviderAdapter(dataset.capability_bindings),
+        )
+        .registrations
+    )
+    local_dataset = LocalHarness(
+        dataset,
+        lambda _request: ResearchResponse(summary="not executed"),
+        registrations=dataset_registrations,
+    )
+    assert local_dataset.readiness()["ready"] is False
+    assert (
+        LocalHarness(
+            dataset,
+            lambda _request: ResearchResponse(summary="not executed"),
+            registrations=dataset_registrations,
+            idempotency_store=InMemoryIdempotencyStore(),
+        ).readiness()["ready"]
+        is True
+    )
 
 
 def test_router_uses_caller_sensitivity_and_allowlisted_targets() -> None:
@@ -3028,6 +4177,8 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
                 if module.MANIFEST.capability_bindings
                 else None
             ),
+            idempotency_store=InMemoryIdempotencyStore(),
+            allow_test_idempotency_store=True,
         )
         server = ResponsesHostServer(agent)
         assert server is not None
@@ -3083,6 +4234,8 @@ def test_all_nine_agent_specific_factories_are_first_class(
                     toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
                 ),
                 provider_adapter=provider_adapter,
+                idempotency_store=InMemoryIdempotencyStore(),
+                allow_test_idempotency_store=True,
             ).name
             == module.MANIFEST.name
         )
@@ -3109,4 +4262,17 @@ def test_all_nine_agent_specific_factories_are_first_class(
     )
     assert isinstance(coordinator_agent, WorkflowAgent)
     assert coordinator_agent.name == coordinator.MANIFEST.name
+    coordinator_calls: list[Any] = []
+
+    class CoordinatorHost:
+        def __init__(self, agent: Any) -> None:
+            coordinator_calls.append(agent)
+
+        def run(self) -> None:
+            coordinator_calls.append("run")
+
+    monkeypatch.setattr(coordinator, "build_agent", lambda: "coordinator-agent")
+    monkeypatch.setattr(coordinator, "ResponsesHostServer", CoordinatorHost)
+    coordinator.run()
+    assert coordinator_calls == ["coordinator-agent", "run"]
     assert set(ids) == {manifest.id for manifest in list_manifests()}

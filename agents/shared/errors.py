@@ -67,6 +67,32 @@ class IdempotencyRequiredError(HarnessError):
     code = "idempotency_required"
 
 
+class IdempotencyStoreUnavailableError(HarnessError):
+    code = "idempotency_store_unavailable"
+
+
+class IdempotencyInProgressError(HarnessError):
+    code = "idempotency_in_progress"
+    retryable = True
+
+
+class IdempotencyReconciliationRequiredError(HarnessError):
+    code = "idempotency_reconciliation_required"
+
+
+class IdempotencyReplayDeniedError(HarnessError):
+    code = "idempotency_replay_denied"
+
+
+class IdempotencyResultMismatchError(HarnessError):
+    code = "idempotency_result_mismatch"
+
+
+class IdempotencyConcurrencyError(HarnessError):
+    code = "idempotency_concurrency_conflict"
+    retryable = True
+
+
 class InvocationError(HarnessError):
     code = "invocation_failed"
 

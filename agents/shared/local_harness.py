@@ -6,7 +6,13 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from .capabilities import ToolRegistration
+from .capabilities import (
+    CapabilityExecutor,
+    CapabilityRegistry,
+    OperationClass,
+    ToolRegistration,
+)
+from .catalog import capabilities_for_manifest
 from .contracts import (
     AgentContractBinding,
     AgentManifest,
@@ -16,6 +22,7 @@ from .contracts import (
     resolve_authorized_evidence,
 )
 from .errors import ContractError, ErrorDetail, error_from_exception
+from .idempotency import IdempotencyStore
 from .release import build_release_metadata
 
 LocalRunner = Callable[
@@ -46,24 +53,48 @@ class LocalHarness:
         runner: LocalRunner,
         *,
         registrations: tuple[ToolRegistration, ...] = (),
+        idempotency_store: IdempotencyStore | None = None,
     ) -> None:
         self.manifest = manifest
         self._contracts: AgentContractBinding = bind_contracts(manifest)
         self._runner = runner
+        self._idempotency_store = idempotency_store
+        self._requires_idempotency_store = any(
+            capability.operation
+            in {
+                OperationClass.WRITE_REVERSIBLE,
+                OperationClass.WRITE_IRREVERSIBLE,
+                OperationClass.PRIVILEGED,
+            }
+            for capability in capabilities_for_manifest(manifest)
+        )
         self.release = build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
             registrations=registrations,
         )
 
+    def capability_executor(self, registry: CapabilityRegistry) -> CapabilityExecutor:
+        return CapabilityExecutor(
+            registry,
+            idempotency_store=self._idempotency_store,
+            release_id=self.release.release_id,
+            allow_test_idempotency_store=True,
+        )
+
     def readiness(self) -> dict[str, Any]:
+        idempotency_ready = (
+            not self._requires_idempotency_store
+            or self._idempotency_store is not None
+        )
         return {
-            "ready": True,
+            "ready": idempotency_ready,
             "agent": self.manifest.name,
             "manifest_digest": self.release.manifest_digest,
             "release_id": self.release.release_id,
             "input_contract": self.manifest.input_contract,
             "output_contract": self.manifest.output_contract,
+            "idempotency_store_configured": idempotency_ready,
         }
 
     async def invoke(self, invocation: LocalInvocation) -> LocalResult:

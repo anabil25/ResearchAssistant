@@ -4,12 +4,24 @@ import importlib.metadata
 import os
 from datetime import UTC, datetime
 from pathlib import Path
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 from .capabilities import ToolRegistration
 from .contracts import AgentManifest, canonical_digest
 from .errors import ConfigurationError
+from .idempotency import idempotency_contract_schema_digest
+
+
+class DependencyRisk(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    package: str
+    version: str
+    maturity: Literal["beta"]
+    feature: str
+    risk: str
 
 
 class ReleaseMetadata(BaseModel):
@@ -38,12 +50,14 @@ class ReleaseMetadata(BaseModel):
     runtime_kind: str
     built_at: datetime
     dependencies: tuple[tuple[str, str], ...]
+    dependency_risks: tuple[DependencyRisk, ...]
     capability_versions: tuple[tuple[str, str], ...]
     toolbox_versions: tuple[tuple[str, str], ...]
     knowledge_versions: tuple[tuple[str, str], ...]
     protocol: str = "responses"
     protocol_version: str = "2.0.0"
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     provider_contracts: tuple[tuple[str, str], ...]
 
 
@@ -103,9 +117,30 @@ def build_release_metadata(
         except importlib.metadata.PackageNotFoundError:
             version = "not-installed"
         dependencies.append((package, version))
+    dependency_versions = dict(dependencies)
+    hosting_version = dependency_versions["agent-framework-foundry-hosting"]
+    if hosting_version != "1.0.0b260721":
+        raise ConfigurationError(
+            "Hosted Agent serving requires the reviewed beta package pin",
+            context={
+                "package": "agent-framework-foundry-hosting",
+                "expected": "1.0.0b260721",
+                "actual": hosting_version,
+            },
+        )
+    dependency_risks = (
+        DependencyRisk(
+            package="agent-framework-foundry-hosting",
+            version=hosting_version,
+            maturity="beta",
+            feature="direct-code Hosted Agent Responses server",
+            risk="Beta hosting APIs may change before general availability.",
+        ),
+    )
     revision = source_revision or os.getenv("GIT_COMMIT_SHA") or "local"
     manifest_hash = manifest_digest(manifest)
     contract_schema_hash = canonical_digest(AgentManifest.model_json_schema())
+    idempotency_schema_hash = idempotency_contract_schema_digest()
     bundle_hash = source_bundle_hash or source_bundle_digest()
     capability_versions = tuple(
         sorted((binding.descriptor_ref.id, binding.descriptor_ref.version) for binding in manifest.capability_bindings)
@@ -146,12 +181,14 @@ def build_release_metadata(
         "model_version": manifest.model_policy.pinned_model_version,
         "runtime_kind": manifest.runtime_requirements.selected_runtime,
         "dependencies": dependencies,
+        "dependency_risks": [risk.model_dump(mode="json") for risk in dependency_risks],
         "capability_versions": capability_versions,
         "toolbox_versions": toolbox_versions,
         "knowledge_versions": knowledge_versions,
         "protocol": "responses",
         "protocol_version": "2.0.0",
         "contract_schema_digest": contract_schema_hash,
+        "idempotency_contract_schema_digest": idempotency_schema_hash,
         "provider_contracts": provider_contracts,
     }
     return ReleaseMetadata(
@@ -172,9 +209,11 @@ def build_release_metadata(
         runtime_kind=manifest.runtime_requirements.selected_runtime,
         built_at=built_at or datetime.now(UTC),
         dependencies=tuple(dependencies),
+        dependency_risks=dependency_risks,
         capability_versions=capability_versions,
         toolbox_versions=toolbox_versions,
         knowledge_versions=knowledge_versions,
         contract_schema_digest=contract_schema_hash,
+        idempotency_contract_schema_digest=idempotency_schema_hash,
         provider_contracts=provider_contracts,
     )

@@ -39,6 +39,7 @@ from .contracts import (
     resolve_authorized_evidence,
 )
 from .errors import AuthorizationError, ConfigurationError, ContractError
+from .idempotency import IdempotencyStore
 from .settings import HarnessSettings
 
 _GOVERNANCE_CONTEXT_KEY = "governance_context"
@@ -264,6 +265,9 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         registrations: ToolRegistration | tuple[ToolRegistration, ...],
         *,
         allowed_connector_sources: frozenset[str] = frozenset(),
+        idempotency_store: IdempotencyStore | None = None,
+        release_id: str | None = None,
+        allow_test_idempotency_store: bool = False,
     ) -> None:
         self._capability = capability
         self._allowed_connector_sources = allowed_connector_sources
@@ -287,7 +291,12 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
                     context={"capability": capability.id},
                 )
             registry.register_tool(registration)
-        self._executor = CapabilityExecutor(registry)
+        self._executor = CapabilityExecutor(
+            registry,
+            idempotency_store=idempotency_store,
+            release_id=release_id,
+            allow_test_idempotency_store=allow_test_idempotency_store,
+        )
 
     async def process(
         self,
@@ -486,6 +495,10 @@ def middleware_for_manifest(
     settings: HarnessSettings | None,
     capabilities: tuple[CapabilityDescriptor, ...],
     registrations: tuple[ToolRegistration, ...],
+    *,
+    idempotency_store: IdempotencyStore | None = None,
+    release_id: str | None = None,
+    allow_test_idempotency_store: bool = False,
 ) -> list[AgentMiddleware | FunctionMiddleware]:
     middleware: list[AgentMiddleware | FunctionMiddleware] = [ContractMiddleware(manifest, settings)]
     if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
@@ -510,6 +523,9 @@ def middleware_for_manifest(
                 capability,
                 attached[capability.id],
                 allowed_connector_sources=frozenset(manifest.connector_sources),
+                idempotency_store=idempotency_store,
+                release_id=release_id,
+                allow_test_idempotency_store=allow_test_idempotency_store,
             )
             for capability in capabilities
         )

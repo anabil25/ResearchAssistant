@@ -23,9 +23,25 @@ from .errors import (
     DeadlineExceededError,
     DestinationDeniedError,
     HarnessError,
+    IdempotencyInProgressError,
+    IdempotencyReconciliationRequiredError,
+    IdempotencyReplayDeniedError,
     IdempotencyRequiredError,
+    IdempotencyResultMismatchError,
+    IdempotencyStoreUnavailableError,
     InvocationError,
     StaleCapabilityBindingError,
+)
+from .idempotency import (
+    ClaimDisposition,
+    CompletedReplayMode,
+    IdempotencyClaim,
+    IdempotencyKey,
+    IdempotencyPolicy,
+    IdempotencyRecord,
+    IdempotencyState,
+    IdempotencyStore,
+    canonical_idempotency_digest,
 )
 
 CapabilityHandler = Callable[[dict[str, Any]], dict[str, Any] | Awaitable[dict[str, Any]]]
@@ -83,6 +99,7 @@ class CapabilityDescriptor(BaseModel):
     approval: ApprovalMode = ApprovalMode.NEVER
     timeout_seconds: float = Field(default=30, gt=0, le=600)
     idempotency: IdempotencyMode = IdempotencyMode.NONE
+    idempotency_policy: IdempotencyPolicy = IdempotencyPolicy()
     retry: RetryPolicy = RetryPolicy()
     redact_fields: frozenset[str] = frozenset()
 
@@ -99,6 +116,13 @@ class CapabilityDescriptor(BaseModel):
                 raise ValueError("side-effecting capabilities require idempotency")
             if not self.side_effect_destinations:
                 raise ValueError("side-effecting capabilities require explicit destinations")
+            if self.idempotency_policy.lease_seconds < self.timeout_seconds:
+                raise ValueError("durable idempotency lease must cover the handler timeout")
+            if (
+                self.operation == OperationClass.WRITE_IRREVERSIBLE
+                and self.idempotency_policy.completed_replay != CompletedReplayMode.DENY
+            ):
+                raise ValueError("irreversible capabilities cannot replay completed operations")
         return self
 
 
@@ -556,14 +580,28 @@ class CapabilityExecutor:
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         monotonic: Callable[[], float] = time.monotonic,
         max_cached_results: int = 1024,
+        idempotency_store: IdempotencyStore | None = None,
+        release_id: str | None = None,
+        allow_test_idempotency_store: bool = False,
+        utcnow: Callable[[], datetime] = lambda: datetime.now(UTC),
     ) -> None:
         if max_cached_results < 1:
             raise ValueError("max_cached_results must be at least 1")
+        if release_id is not None and (
+            len(release_id) != 71
+            or not release_id.startswith("sha256:")
+            or any(character not in "0123456789abcdef" for character in release_id[7:])
+        ):
+            raise ValueError("release_id must be a canonical SHA-256 release identity")
         self._registry = registry
         self._policy = policy or CapabilityPolicy()
         self._sleep = sleep
         self._monotonic = monotonic
         self._max_cached_results = max_cached_results
+        self._idempotency_store = idempotency_store
+        self._release_id = release_id
+        self._allow_test_idempotency_store = allow_test_idempotency_store
+        self._utcnow = utcnow
         self._results: OrderedDict[tuple[str, str, str, str, str], dict[str, Any]] = OrderedDict()
         self._locks: WeakValueDictionary[tuple[str, str, str, str, str], asyncio.Lock] = WeakValueDictionary()
 
@@ -603,6 +641,13 @@ class CapabilityExecutor:
         context: InvocationContext,
     ) -> dict[str, Any]:
         self._policy.authorize(capability, context)
+        if self._has_external_effect(capability):
+            return await self._invoke_durable(
+                capability,
+                registration,
+                payload,
+                context,
+            )
         cache_key = self._cache_key(capability, context)
         if cache_key is None:
             return await self._attempt(
@@ -626,6 +671,439 @@ class CapabilityExecutor:
             while len(self._results) > self._max_cached_results:
                 self._results.popitem(last=False)
             return result
+
+    @staticmethod
+    def _has_external_effect(capability: CapabilityDescriptor) -> bool:
+        return capability.operation in {
+            OperationClass.WRITE_REVERSIBLE,
+            OperationClass.WRITE_IRREVERSIBLE,
+            OperationClass.PRIVILEGED,
+        }
+
+    async def _invoke_durable(
+        self,
+        capability: CapabilityDescriptor,
+        registration: ToolRegistration,
+        payload: dict[str, Any],
+        context: InvocationContext,
+    ) -> dict[str, Any]:
+        store = self._idempotency_store
+        if store is None or (
+            not getattr(store, "is_durable", False) and not self._allow_test_idempotency_store
+        ):
+            raise IdempotencyStoreUnavailableError(
+                "Externally consequential capabilities require an app-owned durable idempotency store",
+                context={"capability": capability.id},
+            )
+        if self._release_id is None:
+            raise IdempotencyStoreUnavailableError(
+                "Durable idempotency requires immutable release provenance",
+                context={"capability": capability.id},
+            )
+        caller_key = cast(str, context.idempotency_key)
+        argument_hash = cast(str, context.operation_fingerprint)
+        destination = cast(str, context.destination)
+        key = IdempotencyKey(
+            tenant_id=context.tenant_id,
+            project_id=registration.binding.project_scope,
+            binding_digest=_canonical_digest(registration.binding.model_dump(mode="json")),
+            operation_id=registration.binding.operation_ref.id,
+            destination=destination,
+            caller_key=caller_key,
+            argument_hash=argument_hash,
+        )
+        try:
+            claim = await store.claim(
+                key,
+                actor_id=context.principal_id,
+                release_id=self._release_id,
+                lease_seconds=capability.idempotency_policy.lease_seconds,
+            )
+        except HarnessError:
+            raise
+        except Exception as exc:
+            raise IdempotencyStoreUnavailableError(
+                "Durable idempotency claim failed closed",
+                context={"capability": capability.id},
+            ) from exc
+        self._validate_claim(capability, key, claim, context)
+        if claim.disposition == ClaimDisposition.IN_PROGRESS:
+            raise IdempotencyInProgressError(
+                "An equivalent external operation is already in progress",
+                context={
+                    "capability": capability.id,
+                    "lease_expires_at": claim.record.lease_expires_at.isoformat(),
+                },
+            )
+        if claim.disposition == ClaimDisposition.RECONCILIATION_REQUIRED:
+            raise IdempotencyReconciliationRequiredError(
+                "Prior external operation state requires deterministic reconciliation",
+                context={
+                    "capability": capability.id,
+                    "state": claim.record.state,
+                },
+            )
+        if claim.disposition == ClaimDisposition.COMPLETED:
+            return await self._replay_completed(capability, store, claim.record)
+        claim_token = cast(str, claim.claim_token)
+        try:
+            started = await store.mark_in_progress(
+                key,
+                claim_token=claim_token,
+                expected_version=claim.record.version,
+                irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+            )
+        except HarnessError:
+            raise
+        except Exception as exc:
+            raise IdempotencyStoreUnavailableError(
+                "Durable idempotency start transition failed closed",
+                context={"capability": capability.id},
+            ) from exc
+        self._validate_transition(
+            capability,
+            claim.record,
+            started,
+            expected_state="in_progress",
+            irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+        )
+        try:
+            timeout = self._remaining_timeout(capability, context)
+            async with asyncio.timeout(timeout):
+                result = await self._invoke_handler(registration.handler, payload)
+        except TimeoutError as exc:
+            timeout_error = DeadlineExceededError(
+                "Capability invocation exceeded its deadline",
+                context={"capability": capability.id},
+            )
+            await self._fail_durable(store, started, claim_token, timeout_error.code)
+            raise timeout_error from exc
+        except asyncio.CancelledError:
+            await asyncio.shield(
+                self._fail_durable(
+                    store,
+                    started,
+                    claim_token,
+                    "cancelled",
+                    suppress_store_error=True,
+                )
+            )
+            raise
+        except HarnessError as exc:
+            await self._fail_durable(store, started, claim_token, exc.code)
+            raise
+        except Exception as exc:
+            invocation_error = InvocationError(
+                "Capability handler failed",
+                context={"capability": capability.id, "exception": type(exc).__name__},
+            )
+            await self._fail_durable(store, started, claim_token, invocation_error.code)
+            raise invocation_error from exc
+        result_hash = canonical_idempotency_digest(result)
+        try:
+            completed = await store.complete(
+                key,
+                claim_token=claim_token,
+                expected_version=started.version,
+                result=result,
+                result_hash=result_hash,
+            )
+        except Exception as exc:
+            raise IdempotencyReconciliationRequiredError(
+                "External operation completed but durable result commit is uncertain",
+                context={"capability": capability.id},
+            ) from exc
+        self._validate_transition(
+            capability,
+            started,
+            completed,
+            expected_state="completed",
+        )
+        if completed.result_hash != result_hash:
+            raise IdempotencyResultMismatchError(
+                "Durable completion record does not match the handler result",
+                context={"capability": capability.id},
+            )
+        return result
+
+    def _validate_claim(
+        self,
+        capability: CapabilityDescriptor,
+        key: IdempotencyKey,
+        claim: IdempotencyClaim,
+        context: InvocationContext,
+    ) -> None:
+        if not isinstance(claim, IdempotencyClaim) or not isinstance(
+            claim.disposition,
+            ClaimDisposition,
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable store returned an invalid claim contract",
+                context={"capability": capability.id},
+            )
+        record = claim.record
+        if not isinstance(record, IdempotencyRecord):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable store returned an invalid record contract",
+                context={"capability": capability.id},
+            )
+        if record.key != key:
+            raise IdempotencyReconciliationRequiredError(
+                "Durable claim returned a record for another operation",
+                context={"capability": capability.id},
+            )
+        expected_states = {
+            ClaimDisposition.ACQUIRED: {"claimed"},
+            ClaimDisposition.IN_PROGRESS: {"claimed", "in_progress"},
+            ClaimDisposition.COMPLETED: {"completed"},
+            ClaimDisposition.RECONCILIATION_REQUIRED: {"claimed", "in_progress", "failed"},
+        }
+        if record.state not in expected_states[claim.disposition]:
+            raise IdempotencyReconciliationRequiredError(
+                "Durable claim disposition does not match its persisted state",
+                context={"capability": capability.id},
+            )
+        if not self._state_is_consistent(
+            record,
+            irreversible=capability.operation == OperationClass.WRITE_IRREVERSIBLE,
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable claim record violates its state invariants",
+                context={"capability": capability.id},
+            )
+        active_lease = self._lease_is_active(record)
+        if claim.disposition in {ClaimDisposition.ACQUIRED, ClaimDisposition.IN_PROGRESS} and not active_lease:
+            raise IdempotencyReconciliationRequiredError(
+                "Durable claim lease expired before execution",
+                context={"capability": capability.id},
+            )
+        if (
+            claim.disposition == ClaimDisposition.RECONCILIATION_REQUIRED
+            and record.state != "failed"
+            and active_lease
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable reconciliation disposition is inconsistent with its lease",
+                context={"capability": capability.id},
+            )
+        if claim.disposition == ClaimDisposition.ACQUIRED and (
+            record.actor_id != context.principal_id or record.release_id != self._release_id
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable claim provenance does not match the current actor and release",
+                context={"capability": capability.id},
+            )
+        if claim.disposition == ClaimDisposition.ACQUIRED:
+            if (
+                claim.claim_token is None
+                or hashlib.sha256(claim.claim_token.encode("utf-8")).hexdigest()
+                != record.claim_token_hash
+            ):
+                raise IdempotencyReconciliationRequiredError(
+                    "Durable claim ownership token does not match the persisted record",
+                    context={"capability": capability.id},
+                )
+        elif claim.claim_token is not None:
+            raise IdempotencyReconciliationRequiredError(
+                "Non-acquired durable claim returned an ownership token",
+                context={"capability": capability.id},
+            )
+
+    def _validate_transition(
+        self,
+        capability: CapabilityDescriptor,
+        previous: IdempotencyRecord,
+        current: IdempotencyRecord,
+        *,
+        expected_state: str,
+        irreversible: bool | None = None,
+    ) -> None:
+        if not isinstance(previous, IdempotencyRecord) or not isinstance(
+            current,
+            IdempotencyRecord,
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable store returned an invalid transition contract",
+                context={"capability": capability.id},
+            )
+        if (
+            current.key != previous.key
+            or current.state != expected_state
+            or current.version == previous.version
+            or current.claim_token_hash != previous.claim_token_hash
+            or current.actor_id != previous.actor_id
+            or current.release_id != previous.release_id
+            or current.claimed_at != previous.claimed_at
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable idempotency transition failed provenance validation",
+                context={"capability": capability.id},
+            )
+        if expected_state == "in_progress" and (
+            current.started_at is None
+            or not self._lease_is_active(current)
+            or current.lease_expires_at != previous.lease_expires_at
+            or current.irreversible_started != irreversible
+            or current.reconciliation_required
+            or current.completed_at is not None
+            or current.result_hash is not None
+            or current.result_ref is not None
+            or current.failure_code is not None
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable start transition is not safe to execute",
+                context={"capability": capability.id},
+            )
+        if expected_state == "completed" and (
+            current.started_at != previous.started_at
+            or current.irreversible_started != previous.irreversible_started
+            or current.completed_at is None
+            or current.result_hash is None
+            or current.result_ref is None
+            or current.failure_code is not None
+            or current.reconciliation_required
+        ):
+            raise IdempotencyReconciliationRequiredError(
+                "Durable completion transition is missing execution provenance",
+                context={"capability": capability.id},
+            )
+
+    def _lease_is_active(self, record: IdempotencyRecord) -> bool:
+        try:
+            return record.lease_expires_at > self._utcnow()
+        except TypeError:
+            return False
+
+    @staticmethod
+    def _state_is_consistent(
+        record: IdempotencyRecord,
+        *,
+        irreversible: bool,
+    ) -> bool:
+        if record.state == IdempotencyState.CLAIMED:
+            return (
+                record.started_at is None
+                and record.completed_at is None
+                and not record.irreversible_started
+                and record.result_hash is None
+                and record.result_ref is None
+                and record.failure_code is None
+                and not record.reconciliation_required
+            )
+        if record.state == IdempotencyState.IN_PROGRESS:
+            return (
+                record.started_at is not None
+                and record.completed_at is None
+                and record.irreversible_started == irreversible
+                and record.result_hash is None
+                and record.result_ref is None
+                and record.failure_code is None
+                and not record.reconciliation_required
+            )
+        if record.state == IdempotencyState.COMPLETED:
+            return (
+                record.started_at is not None
+                and record.completed_at is not None
+                and record.result_hash is not None
+                and record.result_ref is not None
+                and record.failure_code is None
+                and not record.reconciliation_required
+            )
+        return (
+            record.state == IdempotencyState.FAILED
+            and record.failure_code is not None
+            and record.completed_at is None
+            and record.result_hash is None
+            and record.result_ref is None
+            and record.reconciliation_required
+        )
+
+    async def _replay_completed(
+        self,
+        capability: CapabilityDescriptor,
+        store: IdempotencyStore,
+        record: IdempotencyRecord,
+    ) -> dict[str, Any]:
+        if record.irreversible_started:
+            raise IdempotencyReconciliationRequiredError(
+                "Persisted irreversible operations cannot be replayed",
+                context={"capability": capability.id},
+            )
+        result_ref = cast(str, record.result_ref)
+        result_hash = cast(str, record.result_hash)
+        replay = capability.idempotency_policy.completed_replay
+        if replay == CompletedReplayMode.DENY:
+            raise IdempotencyReplayDeniedError(
+                "Completed external operation replay is denied by policy",
+                context={
+                    "capability": capability.id,
+                    "result_ref": result_ref,
+                },
+            )
+        if replay == CompletedReplayMode.RETURN_REFERENCE:
+            return {
+                "idempotency": {
+                    "result_ref": result_ref,
+                    "result_hash": result_hash,
+                }
+            }
+        try:
+            result = await store.load_result(result_ref)
+        except HarnessError:
+            raise
+        except Exception as exc:
+            raise IdempotencyStoreUnavailableError(
+                "Durable idempotency result lookup failed closed",
+                context={"capability": capability.id},
+            ) from exc
+        if result is None or canonical_idempotency_digest(result) != result_hash:
+            raise IdempotencyResultMismatchError(
+                "Replayed result does not match durable result provenance",
+                context={"capability": capability.id},
+            )
+        return result
+
+    @staticmethod
+    async def _fail_durable(
+        store: IdempotencyStore,
+        started: IdempotencyRecord,
+        claim_token: str,
+        failure_code: str,
+        *,
+        suppress_store_error: bool = False,
+    ) -> None:
+        try:
+            failed = await store.fail(
+                started.key,
+                claim_token=claim_token,
+                expected_version=started.version,
+                failure_code=failure_code,
+            )
+            if not isinstance(failed, IdempotencyRecord) or (
+                failed.key != started.key
+                or failed.state != "failed"
+                or failed.version == started.version
+                or failed.claim_token_hash != started.claim_token_hash
+                or failed.actor_id != started.actor_id
+                or failed.release_id != started.release_id
+                or failed.claimed_at != started.claimed_at
+                or failed.started_at != started.started_at
+                or failed.irreversible_started != started.irreversible_started
+                or failed.completed_at is not None
+                or failed.result_hash is not None
+                or failed.result_ref is not None
+                or failed.failure_code != failure_code
+                or not failed.reconciliation_required
+            ):
+                raise IdempotencyReconciliationRequiredError(
+                    "Durable failure transition failed provenance validation"
+                )
+        except Exception as exc:
+            if suppress_store_error:
+                return
+            raise IdempotencyReconciliationRequiredError(
+                "External operation failure could not be durably recorded"
+            ) from exc
 
     def _cache_key(
         self,
