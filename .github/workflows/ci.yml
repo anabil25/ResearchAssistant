@@ -31,7 +31,7 @@ jobs:
       - name: Lint and type-check Python
         run: |
           uv run ruff check packages services agents scripts tests
-          uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
+          uv run mypy --linecount-report coverage/python/mypy-domain
 
       - name: Enforce 100% Python line and branch coverage
         id: python_coverage

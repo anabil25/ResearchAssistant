@@ -13,6 +13,9 @@ from scripts.check_suppression_contract import (
     census,
     compare_inventory,
     missing_reason_policy,
+    mypy_module_name,
+    mypy_paths,
+    mypy_roots,
     parse_javascript_comment,
     parse_python_comment,
     validate_inventory,
@@ -205,6 +208,38 @@ def test_validate_inventory_rejects_coverage_gate_and_domain_drift(tmp_path: Pat
     assert "unclassified coverage exclusion: src/package/module.py:1:unexpected" in errors
 
 
+def test_validate_inventory_rejects_mypy_domain_drift(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["mypyConfig"]["files"] = ["tests"]
+    inventory["mypyConfig"]["mypy_path"] = []
+    inventory["reportedMypyModules"] = []
+
+    errors = validate_inventory(tmp_path, inventory, [])
+
+    assert "configured mypy roots differ from the packaging-derived domain" in errors
+    assert "configured mypy search paths differ from packaging-derived import roots" in errors
+    assert "mypy report module set differs from the packaging-derived Python domain" in errors
+
+
+def test_mypy_domain_derives_roots_paths_and_modules_from_packaging() -> None:
+    tracked = [
+        "packages/core/src/example/__init__.py",
+        "packages/core/src/example/service.py",
+        "agents/shared/runtime.py",
+        "scripts/check.py",
+        "tests/test_check.py",
+    ]
+    source_roots = ["packages/core/src/example", "agents/shared"]
+
+    assert mypy_roots(tracked, source_roots) == ["agents", "packages", "scripts", "tests"]
+    assert mypy_paths(source_roots) == ["agents", "packages/core/src"]
+    assert mypy_module_name(
+        "packages/core/src/example/service.py",
+        mypy_paths(source_roots),
+    ) == "example.service"
+    assert mypy_module_name("agents/shared/runtime.py", mypy_paths(source_roots)) == "shared.runtime"
+
+
 def test_validate_inventory_requires_load_bearing_links(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     record = _suppression_record()
@@ -331,10 +366,23 @@ def _minimal_inventory() -> dict[str, Any]:
             "json": {"output": "coverage.json", "pretty_print": True},
             "xml": {"output": "coverage.xml"},
         },
+        "mypyConfig": {
+            "strict": True,
+            "warn_unused_ignores": True,
+            "explicit_package_bases": True,
+            "files": ["src"],
+            "mypy_path": ["src"],
+            "exclude": [],
+        },
         "discoveredSourceRoots": ["src/package"],
+        "discoveredMypyRoots": ["src"],
+        "discoveredMypyPaths": ["src"],
         "sourceFiles": ["src/package/module.py"],
         "reportedCoverageFiles": ["src/package/module.py"],
         "moduleNames": ["package.module"],
+        "mypyFiles": ["src/package/module.py"],
+        "mypyModuleNames": ["package.module"],
+        "reportedMypyModules": ["package.module"],
         "productionFiles": [],
         "sourceSuppressions": [],
         "missingReasonPolicy": {

@@ -395,6 +395,75 @@ def coverage_configuration(root: Path) -> dict[str, Any]:
     }
 
 
+def mypy_configuration(root: Path) -> dict[str, Any]:
+    config = tomllib.loads((root / "pyproject.toml").read_text(encoding="utf-8"))
+    mypy = (config.get("tool") or {}).get("mypy")
+    if not mypy:
+        raise ValueError("[tool.mypy] configuration is missing")
+    return {
+        "strict": mypy.get("strict"),
+        "warn_unused_ignores": mypy.get("warn_unused_ignores"),
+        "explicit_package_bases": mypy.get("explicit_package_bases"),
+        "files": mypy.get("files"),
+        "mypy_path": mypy.get("mypy_path"),
+        "exclude": mypy.get("exclude", []),
+    }
+
+
+def mypy_roots(paths: list[str], source_roots: list[str]) -> list[str]:
+    roots = {PurePosixPath(source_root).parts[0] for source_root in source_roots}
+    for tooling_root in ("scripts", "tests"):
+        if _tracked_python_under(paths, tooling_root):
+            roots.add(tooling_root)
+    return sorted(roots)
+
+
+def mypy_paths(source_roots: list[str]) -> list[str]:
+    paths: set[str] = set()
+    for source_root in source_roots:
+        parts = PurePosixPath(source_root).parts
+        if "src" in parts:
+            src_index = parts.index("src")
+            paths.add(PurePosixPath(*parts[: src_index + 1]).as_posix())
+        else:
+            paths.add(PurePosixPath(source_root).parent.as_posix())
+    return sorted(paths)
+
+
+def mypy_file_inventory(paths: list[str], roots: list[str]) -> list[str]:
+    return sorted(
+        {
+            path
+            for root in roots
+            for path in _tracked_python_under(paths, root)
+        }
+    )
+
+
+def mypy_module_name(path: str, search_paths: list[str]) -> str:
+    file_path = PurePosixPath(path)
+    matching = [
+        PurePosixPath(search_path)
+        for search_path in search_paths
+        if file_path.is_relative_to(PurePosixPath(search_path))
+    ]
+    relative = file_path.relative_to(max(matching, key=lambda item: len(item.parts))) if matching else file_path
+    parts = list(relative.parts)
+    stem = PurePosixPath(parts.pop()).stem
+    if stem != "__init__":
+        parts.append(stem)
+    return ".".join(parts)
+
+
+def reported_mypy_modules(report_path: Path) -> list[str]:
+    modules: list[str] = []
+    for line in report_path.read_text(encoding="utf-8").splitlines():
+        fields = line.split()
+        if fields and fields[-1] != "total":
+            modules.append(fields[-1])
+    return sorted(modules)
+
+
 def structural_exclusions(root: Path, files: Iterable[str]) -> list[StructuralExclusion]:
     exclusions: list[StructuralExclusion] = []
     for path in files:
@@ -607,6 +676,7 @@ def missing_reason_policy(
 def build_inventory(
     root: Path,
     coverage_json: Path,
+    mypy_report: Path,
     previous: dict[str, Any] | None = None,
     *,
     integration_refresh: bool = False,
@@ -617,6 +687,12 @@ def build_inventory(
     config = coverage_configuration(root)
     discovered_roots = discover_source_roots(root, paths)
     source_files, modules = module_inventory(paths, discovered_roots)
+    discovered_mypy_roots = mypy_roots(paths, discovered_roots)
+    discovered_mypy_paths = mypy_paths(discovered_roots)
+    mypy_files = mypy_file_inventory(paths, discovered_mypy_roots)
+    mypy_modules = sorted(
+        mypy_module_name(path, discovered_mypy_paths) for path in mypy_files
+    )
     structural = structural_exclusions(root, source_files)
     excluded_lines, unknown = report_exclusions(root, coverage_json, structural)
     coverage_report = json.loads(coverage_json.read_text(encoding="utf-8"))
@@ -629,9 +705,15 @@ def build_inventory(
     inventory = {
         "schemaVersion": SCHEMA_VERSION,
         "coverageConfig": config,
+        "mypyConfig": mypy_configuration(root),
         "discoveredSourceRoots": discovered_roots,
+        "discoveredMypyRoots": discovered_mypy_roots,
+        "discoveredMypyPaths": discovered_mypy_paths,
         "sourceFiles": source_files,
         "moduleNames": modules,
+        "mypyFiles": mypy_files,
+        "mypyModuleNames": mypy_modules,
+        "reportedMypyModules": reported_mypy_modules(mypy_report),
         "reportedCoverageFiles": reported_files,
         "productionFiles": [
             {"path": path, "evidence": labels} for path, labels in production.items()
@@ -744,6 +826,20 @@ def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]
         errors.append("coverage JSON file set differs from the packaging-derived source file set")
     errors.extend(f"unclassified coverage exclusion: {item}" for item in unknown)
 
+    mypy = inventory["mypyConfig"]
+    if mypy["strict"] is not True:
+        errors.append("mypy strict mode must remain enabled")
+    if mypy["warn_unused_ignores"] is not True:
+        errors.append("mypy warn_unused_ignores must remain enabled")
+    if mypy["explicit_package_bases"] is not True:
+        errors.append("mypy explicit_package_bases must remain enabled")
+    if sorted(mypy["files"] or []) != inventory["discoveredMypyRoots"]:
+        errors.append("configured mypy roots differ from the packaging-derived domain")
+    if sorted(mypy["mypy_path"] or []) != inventory["discoveredMypyPaths"]:
+        errors.append("configured mypy search paths differ from packaging-derived import roots")
+    if inventory["mypyModuleNames"] != inventory["reportedMypyModules"]:
+        errors.append("mypy report module set differs from the packaging-derived Python domain")
+
     forbidden_javascript = {
         "eslint-disable",
         "ts-ignore",
@@ -829,6 +925,8 @@ def census(inventory: dict[str, Any]) -> dict[str, Any]:
         "coverageStructuralRoots": len(inventory["coverageStructuralExclusions"]),
         "coverageSourceRoots": len(inventory["discoveredSourceRoots"]),
         "coverageModules": len(inventory["moduleNames"]),
+        "mypyFiles": len(inventory["mypyFiles"]),
+        "mypyModules": len(inventory["mypyModuleNames"]),
     }
 
 
@@ -908,6 +1006,11 @@ def main() -> int:
         type=Path,
         default=Path("coverage/python/suppression-contract-report.json"),
     )
+    parser.add_argument(
+        "--mypy-report",
+        type=Path,
+        default=Path("coverage/python/mypy-domain/linecount.txt"),
+    )
     parser.add_argument("--write-baseline", action="store_true")
     parser.add_argument("--integration-refresh", action="store_true")
     parser.add_argument("--previous-baseline-ref", default="HEAD")
@@ -918,6 +1021,7 @@ def main() -> int:
     coverage_json = (
         args.coverage_json if args.coverage_json.is_absolute() else root / args.coverage_json
     )
+    mypy_report = args.mypy_report if args.mypy_report.is_absolute() else root / args.mypy_report
     report_path = args.report if args.report.is_absolute() else root / args.report
     previous = _load_json(baseline_path) if baseline_path.exists() else None
 
@@ -932,6 +1036,7 @@ def main() -> int:
         inventory, unknown = build_inventory(
             root,
             coverage_json,
+            mypy_report,
             previous,
             integration_refresh=args.integration_refresh,
         )
