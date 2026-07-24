@@ -200,10 +200,10 @@ OTHER_TENANT_HEADERS = _project_headers(
 
 #: An identity carrying the runtime-internal service role
 #: (``HOSTED_RUNTIME_SERVICE_ROLE``) required by the durable idempotency
-#: control-plane routes, in addition to normal project membership (a
-#: hosted-agent runtime still resolves an authorized project scope exactly
-#: like any other caller; the role only proves it is a service caller, not
-#: a substitute for project membership).
+#: and approval-consumption control-plane routes, in addition to normal
+#: project membership (a hosted-agent runtime still resolves an authorized
+#: project scope exactly like any other caller; the role only proves it is
+#: a service caller, not a substitute for project membership).
 SERVICE_HEADERS = _project_headers(
     tenant_id="demo",
     user_id="hosted-runtime-service",
@@ -2901,7 +2901,7 @@ def test_consume_approval_route_consumes_once_then_reconciles_then_exhausts(
     first = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert first.status_code == 200, first.text
     first_body = first.json()
@@ -2909,14 +2909,14 @@ def test_consume_approval_route_consumes_once_then_reconciles_then_exhausts(
     assert first_body["record"] is not None
     assert first_body["record"]["binding_id"] == binding["binding_id"]
     assert first_body["record"]["invocation_id"] == "invocation-1"
-    assert first_body["record"]["principal_id"] == "user-1"
+    assert first_body["record"]["principal_id"] == "hosted-runtime-service"
 
     # Same invocation retrying (identical idempotency_key) reconciles to the
     # original durable record rather than re-consuming or being denied.
     retry = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert retry.status_code == 200, retry.text
     retry_body = retry.json()
@@ -2932,7 +2932,7 @@ def test_consume_approval_route_consumes_once_then_reconciles_then_exhausts(
             invocation_id="invocation-2",
             idempotency_key="idem-2",
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert reused.status_code == 200, reused.text
     reused_body = reused.json()
@@ -2990,7 +2990,7 @@ def test_consume_approval_route_denies_when_not_approved_or_binding_mismatch(
     still_pending = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert still_pending.status_code == 200, still_pending.text
     still_pending_body = still_pending.json()
@@ -3007,7 +3007,7 @@ def test_consume_approval_route_denies_when_not_approved_or_binding_mismatch(
     wrong_binding = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id="not-a-real-binding-id"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert wrong_binding.status_code == 200, wrong_binding.text
     wrong_binding_body = wrong_binding.json()
@@ -3022,7 +3022,7 @@ def test_consume_approval_route_is_not_found_for_missing_or_cross_scope_approval
     missing = client.post(
         "/api/agent-studio/approvals/missing-approval/consume",
         json=_consume_body(binding_id="whatever"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert missing.status_code == 404
 
@@ -3033,14 +3033,14 @@ def test_consume_approval_route_is_not_found_for_missing_or_cross_scope_approval
     cross_project = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(OTHER_PROJECT_ID, binding_id=binding["binding_id"]),
-        headers=MULTI_PROJECT_USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert cross_project.status_code == 404
 
     cross_tenant = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=OTHER_TENANT_HEADERS,
+        headers=OTHER_TENANT_SERVICE_HEADERS,
     )
     assert cross_tenant.status_code == 404
 
@@ -3051,7 +3051,7 @@ def test_consume_approval_route_returns_503_when_persistence_unavailable(
     response = unavailable_client.post(
         "/api/agent-studio/approvals/missing-approval/consume",
         json=_consume_body(binding_id="whatever"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 503
 
@@ -3067,9 +3067,44 @@ def test_consume_approval_route_returns_503_when_consumption_port_unavailable(
     response = approval_consumption_unavailable_client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 503
+
+
+def test_consume_approval_route_rejects_ordinary_project_member_and_wrong_role_with_403(
+    client: TestClient,
+    store: AgentStudioStore,
+) -> None:
+    """``POST /approvals/{id}/consume`` is runtime-internal control plane,
+    exactly like the ``/idempotency/*`` routes: a normal, real project
+    member -- even with valid membership, an existing approved approval,
+    and well-formed request IDs -- must be denied before ever reaching the
+    approval-consumption port. A caller with real project membership and
+    *a* role claim, but not the exact expected role string, is rejected the
+    same way."""
+    binding, approval = _setup_approved_capability_approval(
+        client, store, logical_agent_id="agent-consume-authz"
+    )
+
+    ordinary_member = client.post(
+        f"/api/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=USER_HEADERS,
+    )
+    assert ordinary_member.status_code == 403
+
+    wrong_role = client.post(
+        f"/api/agent-studio/approvals/{approval['id']}/consume",
+        json=_consume_body(binding_id=binding["binding_id"]),
+        headers=WRONG_ROLE_SERVICE_HEADERS,
+    )
+    assert wrong_role.status_code == 403
+
+
+def test_consume_approval_route_excluded_from_openapi_schema(client: TestClient) -> None:
+    schema = client.get("/openapi.json", headers=SERVICE_HEADERS).json()
+    assert "/api/agent-studio/approvals/{approval_id}/consume" not in schema["paths"]
 
 
 # --- approval context resolution & release attestation routes --------------
@@ -3133,7 +3168,7 @@ def test_resolve_approval_context_route_resolves_and_can_be_consumed(
             idempotency_key=f"idem-{body['invocation_id']}",
             release_id=release["id"],
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert consume_response.status_code == 200, consume_response.text
     assert consume_response.json()["outcome"] == "consumed"
@@ -6284,7 +6319,7 @@ def test_audit_events_recorded_for_gate_failure_and_capability_approval_lifecycl
     consume_response = client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert consume_response.status_code == 200, consume_response.text
     consumed_events = audit_service.list_events(
@@ -6582,7 +6617,7 @@ def test_audit_unavailable_client_fails_closed_before_every_wired_mutation(
     consume_response = audit_unavailable_client.post(
         f"/api/agent-studio/approvals/{approval['id']}/consume",
         json=_consume_body(binding_id=binding["binding_id"]),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert consume_response.status_code == 503
 

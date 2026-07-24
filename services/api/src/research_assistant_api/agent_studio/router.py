@@ -184,15 +184,16 @@ from research_assistant_api.identity import (
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 
 #: The exact Entra application-role value a caller's ``IdentityContext.roles``
-#: must contain to invoke the runtime-internal idempotency control-plane
-#: routes below (``/idempotency/*``). These routes are never part of the
-#: researcher/project-user-facing API surface -- they exist purely for a
-#: hosted-agent runtime's own (managed-identity or service-principal)
-#: caller to record its own claim/lease/completion bookkeeping. A normal
-#: human project member -- even one with valid, real project membership and
-#: well-formed request IDs -- must never be able to invoke them; only an
-#: identity actually carrying this exact role string can. See
-#: ``_require_hosted_runtime_service``.
+#: must contain to invoke the runtime-internal control-plane routes below
+#: (the ``/idempotency/*`` routes and ``POST /approvals/{id}/consume``).
+#: These routes are never part of the researcher/project-user-facing API
+#: surface -- they exist purely for a hosted-agent runtime's own
+#: (managed-identity or service-principal) caller to record its own
+#: claim/lease/completion bookkeeping or spend a decided approval at actual
+#: invocation time. A normal human project member -- even one with valid,
+#: real project membership and well-formed request IDs -- must never be
+#: able to invoke them; only an identity actually carrying this exact role
+#: string can. See ``_require_hosted_runtime_service``.
 HOSTED_RUNTIME_SERVICE_ROLE = "AgentStudio.RuntimeService"
 
 #: Default ``ProjectMembershipResolver`` used whenever the composed app
@@ -411,21 +412,22 @@ def _is_hosted_runtime_service(identity: IdentityContext) -> bool:
 
 
 def _require_hosted_runtime_service(identity: IdentityContext) -> None:
-    """Gate for the runtime-internal idempotency control-plane routes.
+    """Gate for a runtime-internal control-plane route.
 
     Raises 403 for any identity -- including an otherwise-valid,
     project-member human identity with well-formed request IDs -- that does
     not carry the exact ``HOSTED_RUNTIME_SERVICE_ROLE`` claim. Must run
-    before ``_scope()`` on every idempotency route: this is identity-kind
-    gating, not project-membership gating, so it must reject a disallowed
-    caller before any project-scope resolution is even attempted.
+    before ``_scope()`` on every route it guards (the idempotency routes and
+    ``POST /approvals/{id}/consume``): this is identity-kind gating, not
+    project-membership gating, so it must reject a disallowed caller before
+    any project-scope resolution is even attempted.
     """
 
     if not _is_hosted_runtime_service(identity):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail=(
-                "This runtime-internal idempotency control-plane operation requires an identity "
+                "This runtime-internal control-plane operation requires an identity "
                 f"carrying the '{HOSTED_RUNTIME_SERVICE_ROLE}' application role."
             ),
         )
@@ -1631,7 +1633,11 @@ def revoke_approval_route(
     return ApprovalRecordView(record=record, effective_state=effective_state, revocations=revocations)
 
 
-@router.post("/approvals/{approval_id}/consume", response_model=ApprovalConsumptionResult)
+@router.post(
+    "/approvals/{approval_id}/consume",
+    response_model=ApprovalConsumptionResult,
+    include_in_schema=False,
+)
 async def consume_approval_route(
     request: Request,
     approval_id: str,
@@ -1640,23 +1646,28 @@ async def consume_approval_route(
     """Durably, atomically spend a ``CAPABILITY_OPERATION`` approval at
     actual runtime invocation.
 
-    This is the *only* backend path by which a runtime invocation can turn
-    a decided approval into a spent, one-time authorization: the hosted
-    caller supplies nothing but the decision reference (``approval_id``,
-    from the path) and the concrete facts of this specific invocation
-    (binding/operation/instance/args/destination/policy/release/
-    idempotency) -- never a boolean claim of "this is approved". The acting
-    ``principal_id`` is always the authenticated caller's own identity,
-    never client-supplied. Every identifying field is independently
-    revalidated against the approval's own pinned version/binding by
-    ``ApprovalConsumptionPort`` before anything is durably recorded, so a
-    request naming the right ``approval_id`` cannot be used to spend it
-    against a different binding/operation/instance than what was actually
-    approved. Fails closed (``DENIED``) rather than raising an error for
-    every "not currently authorized" case; only scope/existence failures
-    raise HTTP errors.
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface, exactly like the
+    ``/idempotency/*`` routes -- never a researcher/project-user-facing
+    operation, regardless of project membership. This is the *only* backend
+    path by which a runtime invocation can turn a decided approval into a
+    spent, one-time authorization: the hosted caller supplies nothing but
+    the decision reference (``approval_id``, from the path) and the concrete
+    facts of this specific invocation (binding/operation/instance/args/
+    destination/policy/release/idempotency) -- never a boolean claim of
+    "this is approved". The acting ``principal_id`` is always the
+    authenticated caller's own identity, never client-supplied. Every
+    identifying field is independently revalidated against the approval's
+    own pinned version/binding by ``ApprovalConsumptionPort`` before
+    anything is durably recorded, so a request naming the right
+    ``approval_id`` cannot be used to spend it against a different
+    binding/operation/instance than what was actually approved. Fails
+    closed (``DENIED``) rather than raising an error for every "not
+    currently authorized" case; only scope/existence failures raise HTTP
+    errors.
     """
     identity = _identity(request)
+    _require_hosted_runtime_service(identity)
     store = _store(request)
     scope = _scope(request, identity, payload.project_id)
     record = store.get_approval(scope, approval_id)
