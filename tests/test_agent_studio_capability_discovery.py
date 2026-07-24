@@ -9,8 +9,10 @@ from research_assistant_api.agent_studio.capability_discovery import (
     CapabilityDiscoveryRequest,
     CapabilityDiscoveryResult,
     CapabilityDiscoverySource,
+    DiscoveryRefreshMetadata,
     InMemoryCapabilityDiscoverySource,
     NullCapabilityDiscoverySource,
+    ProviderDescriptorPins,
     discover_with_timeout,
 )
 from research_assistant_api.agent_studio.models import (
@@ -117,6 +119,51 @@ def test_discovery_result_unavailable_result_cannot_carry_descriptors_or_instanc
         CapabilityDiscoveryResult(
             descriptors=(descriptor,), available=False, unavailable_reason="provider unreachable"
         )
+
+
+def test_discovery_result_unavailable_result_cannot_carry_pins_or_refresh_metadata() -> None:
+    descriptor_pin = ProviderDescriptorPins(
+        provider_id="p",
+        descriptor_backend_id="p:d",
+        descriptor_id="d",
+        descriptor_version="1",
+        descriptor_digest="a" * 64,
+        operations=(),
+    )
+    with pytest.raises(ValueError, match="cannot carry provider pins or refresh metadata"):
+        CapabilityDiscoveryResult(
+            available=False,
+            unavailable_reason="provider unreachable",
+            descriptor_pins=(descriptor_pin,),
+        )
+
+    refresh = DiscoveryRefreshMetadata(
+        provider_contract_version="v", canonicalization_version="c", provider_ids=("p",)
+    )
+    with pytest.raises(ValueError, match="cannot carry provider pins or refresh metadata"):
+        CapabilityDiscoveryResult(
+            available=False, unavailable_reason="provider unreachable", refresh_metadata=refresh
+        )
+
+
+def test_discovery_result_available_result_carries_pins_and_refresh_metadata() -> None:
+    descriptor_pin = ProviderDescriptorPins(
+        provider_id="p",
+        descriptor_backend_id="p:d",
+        descriptor_id="d",
+        descriptor_version="1",
+        descriptor_digest="a" * 64,
+        operations=(),
+    )
+    refresh = DiscoveryRefreshMetadata(
+        provider_contract_version="v", canonicalization_version="c", provider_ids=("p",)
+    )
+    result = CapabilityDiscoveryResult(descriptor_pins=(descriptor_pin,), refresh_metadata=refresh)
+
+    assert result.available is True
+    assert result.descriptor_pins == (descriptor_pin,)
+    assert result.instance_pins == ()
+    assert result.refresh_metadata is refresh
 
 
 def test_discovery_request_requires_explicit_scope_principal_and_correlation_id() -> None:

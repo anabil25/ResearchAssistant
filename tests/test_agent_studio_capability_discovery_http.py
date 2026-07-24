@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from time import time
 from types import TracebackType
 from typing import Any, Self
@@ -18,6 +19,7 @@ from research_assistant_api.agent_studio.capability_discovery import (
     build_capability_discovery_source,
 )
 from research_assistant_api.agent_studio.models import HealthStatus, InstanceReadiness, OperationClass
+from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
@@ -193,6 +195,12 @@ def _source(handler: Any, *, credential: FakeCredential | None = None, token_sco
     return source, client
 
 
+def _bounded_source(handler: Any, **bounds: Any) -> tuple[HttpCapabilityDiscoverySource, httpx.AsyncClient]:
+    client = httpx.AsyncClient(base_url="https://provider.example", transport=httpx.MockTransport(handler))
+    source = HttpCapabilityDiscoverySource("https://provider.example", client=client, **bounds)
+    return source, client
+
+
 @pytest.mark.asyncio
 async def test_discover_maps_single_provider_descriptor_and_instance() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -228,8 +236,11 @@ async def test_discover_maps_single_provider_descriptor_and_instance() -> None:
     assert operation.approval_policy_ref is None
     assert operation.idempotent is False
     assert operation.source_url == "https://example.com/docs"
-    assert operation.input_schema_digest == f"provider-rfc8785-sha256:{'a' * 64}"
-    assert operation.output_schema_digest == f"provider-rfc8785-sha256:{'b' * 64}"
+    # Backend operation schema digests are this backend's own canonical digest
+    # of the wire schema objects (separately named from the provider's own
+    # RFC-8785 digests), never the provider's prefixed value.
+    assert operation.input_schema_digest == compute_schema_digest({"type": "object"})
+    assert operation.output_schema_digest == compute_schema_digest({"type": "object"})
 
     assert len(result.instances) == 1
     instance = result.instances[0]
@@ -241,9 +252,46 @@ async def test_discover_maps_single_provider_descriptor_and_instance() -> None:
     assert instance.health_status == HealthStatus.HEALTHY
     assert instance.unavailable_reason is None
     assert instance.registered_by == "user-1"
-    # Provider-reported digests are never trusted as backend-authoritative.
+    # Backend authoritative digests are recomputed by the registry, so the
+    # adapter deliberately leaves them unset on the domain object.
     assert instance.descriptor_digest is None
     assert instance.instance_fingerprint is None
+
+    # The provider's own wire pins are preserved verbatim, separately named,
+    # alongside (never in place of) the backend digests above.
+    assert len(result.descriptor_pins) == 1
+    descriptor_pin = result.descriptor_pins[0]
+    assert descriptor_pin.provider_id == "foundry"
+    assert descriptor_pin.descriptor_backend_id == "foundry:file_search"
+    assert descriptor_pin.descriptor_id == "file_search"
+    assert descriptor_pin.descriptor_version == "1"
+    assert descriptor_pin.descriptor_digest == "c" * 64
+    assert len(descriptor_pin.operations) == 1
+    operation_pin = descriptor_pin.operations[0]
+    assert operation_pin.operation_id == "search"
+    assert operation_pin.operation_version == "1"
+    assert operation_pin.idempotency == "none"
+    assert operation_pin.approval_policy == "never"
+    assert operation_pin.input_schema_digest == "a" * 64
+    assert operation_pin.output_schema_digest == "b" * 64
+
+    assert len(result.instance_pins) == 1
+    instance_pin = result.instance_pins[0]
+    assert instance_pin.provider_id == "foundry"
+    assert instance_pin.instance_backend_id == "foundry:instance-1"
+    assert instance_pin.instance_id == "instance-1"
+    assert instance_pin.provider_resource_id == "res-1"
+    assert instance_pin.config_hash == "d" * 64
+    assert instance_pin.instance_fingerprint == "f" * 64
+    assert instance_pin.descriptor_digest == "c" * 64
+    assert instance_pin.connection_authorization_digest == "e" * 64
+    assert instance_pin.allowed_destinations_digest == "0" * 64
+
+    # Refresh interface metadata is populated on a successful pass.
+    assert result.refresh_metadata is not None
+    assert result.refresh_metadata.provider_contract_version == EXPECTED_PROVIDER_CONTRACT_VERSION
+    assert result.refresh_metadata.canonicalization_version == EXPECTED_CANONICALIZATION_VERSION
+    assert result.refresh_metadata.provider_ids == ("foundry",)
 
 
 @pytest.mark.asyncio
@@ -758,14 +806,18 @@ async def test_discover_skips_instance_referencing_a_skipped_descriptor() -> Non
 @pytest.mark.asyncio
 async def test_discover_collapses_duplicate_provider_ids_in_catalog_to_a_warning() -> None:
     """A catalog listing the same ``provider_id`` twice (a malformed catalog)
-    must not crash -- the second occurrence's descriptors/instances collide
-    with the first's namespaced identities and are dropped with a warning."""
+    must not crash -- the duplicate is dropped before fan-out (so the provider
+    is not requested twice) and recorded as a warning."""
+
+    calls = 0
 
     async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal calls
         if request.url.path == "/v1/providers":
             payload = _catalog_payload(["foundry"])
             payload["providers"] = payload["providers"] * 2
             return httpx.Response(200, json=payload)
+        calls += 1
         return httpx.Response(200, json=_capabilities_payload("foundry"))
 
     source, client = _source(handler)
@@ -775,7 +827,8 @@ async def test_discover_collapses_duplicate_provider_ids_in_catalog_to_a_warning
     assert result.available is True
     assert len(result.descriptors) == 1
     assert len(result.instances) == 1
-    assert any("collided" in warning for warning in result.warnings)
+    assert calls == 1  # the duplicate was never fanned out
+    assert any("more than once" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -815,7 +868,7 @@ async def test_discover_sends_no_authorization_header_when_not_configured() -> N
 
 
 @pytest.mark.asyncio
-async def test_discover_treats_missing_operation_digest_as_none() -> None:
+async def test_discover_preserves_absent_operation_digest_pin_as_none() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/providers":
             return httpx.Response(200, json=_catalog_payload(["foundry"]))
@@ -828,7 +881,13 @@ async def test_discover_treats_missing_operation_digest_as_none() -> None:
     result = await source.discover(_request())
     await client.aclose()
 
-    assert result.descriptors[0].operations[0].input_schema_digest is None
+    # The backend digest is still computed from the wire input_schema object;
+    # an absent provider digest does not blank the backend's own digest.
+    assert result.descriptors[0].operations[0].input_schema_digest == compute_schema_digest({"type": "object"})
+    # The raw provider pin honestly records the absent digest as None (an
+    # absent value, never a dropped-present value).
+    assert result.descriptor_pins[0].operations[0].input_schema_digest is None
+    assert result.descriptor_pins[0].operations[0].output_schema_digest == "b" * 64
 
 
 @pytest.mark.asyncio
@@ -891,3 +950,596 @@ def test_capability_provider_url_rejects_embedded_credentials_or_query() -> None
         Settings(agent_studio_capability_provider_url="https://user:pass@provider.example")
     with pytest.raises(ValueError, match="must not contain credentials"):
         Settings(agent_studio_capability_provider_url="https://provider.example?x=1")
+
+
+# --- provider-owner findings: idempotency enum + verbatim pins ---------------
+
+
+@pytest.mark.asyncio
+async def test_discover_treats_caller_key_idempotency_as_conditional_not_true() -> None:
+    """``caller_key`` is idempotent only when the caller supplies a key, so it
+    must never be collapsed into an unconditional idempotent boolean; the exact
+    enum is preserved verbatim on the operation pin instead."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(operations=[_operation_payload(idempotency="caller_key")])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors[0].operations[0].idempotent is False
+    assert result.descriptor_pins[0].operations[0].idempotency == "caller_key"
+
+
+@pytest.mark.asyncio
+async def test_discover_backend_operation_digest_is_none_without_wire_schema_object() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        operation = _operation_payload()
+        del operation["input_schema"]
+        descriptor = _descriptor_payload(operations=[operation])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    operation = result.descriptors[0].operations[0]
+    # No wire schema object -> no backend digest; the still-present output schema
+    # object still yields its own backend digest.
+    assert operation.input_schema_digest is None
+    assert operation.output_schema_digest == compute_schema_digest({"type": "object"})
+    # The raw provider digest is preserved verbatim regardless of the backend digest.
+    assert result.descriptor_pins[0].operations[0].input_schema_digest == "a" * 64
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_with_malformed_config_hash_pin() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(config_hash="NOT-A-HEX-DIGEST")
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert result.instance_pins == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_with_empty_provider_resource_id_pin() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(provider_resource_id="")
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_descriptor_with_malformed_descriptor_digest_pin() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(descriptor_digest="short")
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert result.descriptor_pins == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+# --- provider-owner findings: bounds (bytes/cardinality/concurrency/deadline) -
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_catalog_exceeds_byte_cap() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_catalog_payload(["foundry"]))
+
+    source, client = _bounded_source(handler, max_response_bytes=16)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "exceeded" in (result.unavailable_reason or "")
+    assert result.descriptors == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_degrades_provider_with_oversized_response_to_a_warning() -> None:
+    filler = "x" * 200_000
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        payload = _capabilities_payload("foundry")
+        payload["warnings"] = [{"reason_code": "big", "message": filler, "provider_id": "foundry"}]
+        return httpx.Response(200, json=payload)
+
+    source, client = _bounded_source(handler, max_response_bytes=50_000)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # Catalog is small enough to pass; only the oversized provider degrades.
+    assert result.available is True
+    assert result.descriptors == ()
+    assert any("exceeded" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_catalog_exceeds_provider_cap() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["one", "two", "three"]))
+        return httpx.Response(200, json=_capabilities_payload(request.url.path.split("/")[3], instances=[]))
+
+    source, client = _bounded_source(handler, max_providers=2)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "exceeding the adapter cap" in (result.unavailable_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_provider_exceeding_descriptor_cap() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptors = [_descriptor_payload(descriptor_id="d1"), _descriptor_payload(descriptor_id="d2")]
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=descriptors, instances=[]))
+
+    source, client = _bounded_source(handler, max_descriptors_per_provider=1)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("exceeding the adapter cap" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_provider_exceeding_instance_cap() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instances = [_instance_payload(instance_id="i1"), _instance_payload(instance_id="i2")]
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=instances))
+
+    source, client = _bounded_source(handler, max_instances_per_provider=1)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("exceeding the adapter cap" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_descriptor_exceeding_operation_cap() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(
+            operations=[_operation_payload(operation_id="a"), _operation_payload(operation_id="b")]
+        )
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _bounded_source(handler, max_operations_per_descriptor=1)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("could not be translated" in warning and "exceeding" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_overall_deadline_exceeded() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        await asyncio.sleep(0.5)
+        return httpx.Response(200, json=_catalog_payload([]))
+
+    source, client = _bounded_source(handler, deadline_seconds=0.02)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "deadline" in (result.unavailable_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_discover_bounds_per_provider_concurrency_to_configured_max() -> None:
+    in_flight = 0
+    max_seen = 0
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        nonlocal in_flight, max_seen
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload([f"p{index}" for index in range(6)]))
+        in_flight += 1
+        max_seen = max(max_seen, in_flight)
+        await asyncio.sleep(0.02)
+        in_flight -= 1
+        provider_id = request.url.path.split("/")[3]
+        return httpx.Response(200, json=_capabilities_payload(provider_id, descriptors=[], instances=[]))
+
+    source, client = _bounded_source(handler, max_concurrency=2)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    # Without the semaphore all six providers would run at once.
+    assert max_seen <= 2
+
+
+@pytest.mark.asyncio
+async def test_discover_empty_catalog_still_returns_refresh_metadata() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(200, json=_catalog_payload([]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.refresh_metadata is not None
+    assert result.refresh_metadata.provider_ids == ()
+
+
+def test_build_capability_discovery_source_wires_settings_bounds() -> None:
+    source = build_capability_discovery_source(
+        Settings(
+            agent_studio_capability_provider_url="https://provider.example",
+            agent_studio_capability_provider_max_response_bytes=123,
+            agent_studio_capability_provider_max_providers=4,
+            agent_studio_capability_provider_max_descriptors_per_provider=5,
+            agent_studio_capability_provider_max_instances_per_provider=6,
+            agent_studio_capability_provider_max_operations_per_descriptor=7,
+            agent_studio_capability_provider_max_concurrency=3,
+            agent_studio_capability_provider_deadline_seconds=9.0,
+        )
+    )
+
+    assert isinstance(source, HttpCapabilityDiscoverySource)
+    assert source._max_response_bytes == 123
+    assert source._max_providers == 4
+    assert source._max_descriptors_per_provider == 5
+    assert source._max_instances_per_provider == 6
+    assert source._max_operations_per_descriptor == 7
+    assert source._max_concurrency == 3
+    assert source._deadline_seconds == 9.0
+
+
+# --- provider-owner review follow-ups: stricter fail-closed hardening ---------
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_operation_with_non_object_wire_schema() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(operations=[_operation_payload(input_schema="not-an-object")])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_descriptor_with_duplicate_operation_ids() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(
+            operations=[_operation_payload(operation_id="dup"), _operation_payload(operation_id="dup")]
+        )
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("duplicate operation ids" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_with_mismatched_contract_version() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(provider_contract_version="research-assistant.integration-provider.v6")
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("provider_contract_version" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_whose_provider_id_does_not_match_enclosing_provider() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(provider_id="someone-else")
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("does not match its enclosing provider" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_refuses_to_request_an_unsafe_provider_id() -> None:
+    requested_paths: list[str] = []
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        requested_paths.append(request.url.path)
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["../admin"]))
+        return httpx.Response(200, json=_capabilities_payload("../admin"))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.descriptors == ()
+    assert any("safe opaque identifier" in warning for warning in result.warnings)
+    # The unsafe provider id was never interpolated into a request path.
+    assert requested_paths == ["/v1/providers"]
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_disagreeing_with_descriptor_digest() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(descriptor_digest="a" * 64)  # descriptor pins "c" * 64
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.descriptors) == 1
+    assert result.instances == ()
+    assert any("disagrees with its descriptor" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_disagreeing_with_descriptor_version() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(descriptor_version="9")  # descriptor version is "1"
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.descriptors) == 1
+    assert result.instances == ()
+    assert any("disagrees with its descriptor" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_catalog_providers_is_not_a_list() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["providers"] = None
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "was not a JSON array" in (result.unavailable_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_on_non_200_catalog_status() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        return httpx.Response(302, json={"redirected": True}, headers={"location": "https://evil.example"})
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "non-200" in (result.unavailable_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_discover_collapses_duplicate_descriptor_ids_within_a_provider_to_a_warning() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptors = [_descriptor_payload(descriptor_id="dup"), _descriptor_payload(descriptor_id="dup")]
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=descriptors, instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.descriptors) == 1
+    assert len(result.descriptor_pins) == 1
+    assert any("collided with an already-discovered descriptor" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_collapses_duplicate_instance_ids_within_a_provider_to_a_warning() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instances = [_instance_payload(instance_id="dup"), _instance_payload(instance_id="dup")]
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=instances))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.instances) == 1
+    assert len(result.instance_pins) == 1
+    assert any("collided with an already-discovered instance" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_treats_absent_operation_array_field_as_empty() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        operation = _operation_payload()
+        del operation["least_privilege_scopes"]
+        descriptor = _descriptor_payload(operations=[operation])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors[0].operations[0].least_privilege_scopes == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_operation_with_non_array_security_field() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        # A bare string where an array is required would silently explode into
+        # per-character destinations; the adapter must fail closed instead.
+        descriptor = _descriptor_payload(operations=[_operation_payload(side_effect_destinations="prod-db")])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_instance_with_non_object_configuration() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(configuration=None)
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_operation_with_non_string_array_member() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        # A non-string member must fail closed, not be str()-coerced into "123".
+        descriptor = _descriptor_payload(operations=[_operation_payload(least_privilege_roles=[123])])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("could not be translated" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_filters_catalog_entries_without_a_string_provider_id() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            payload = _catalog_payload(["foundry"])
+            payload["providers"].append(
+                {
+                    "provider_id": None,
+                    "family": "microsoft_foundry",
+                    "name": "broken",
+                    "description": "no id",
+                    "auth_modes": [],
+                    "provenance": [],
+                    "capability_descriptors": [],
+                }
+            )
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, json=_capabilities_payload("foundry"))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # The null-provider_id entry is filtered but honestly surfaced as a warning,
+    # so an available result never hides an incomplete catalog.
+    assert result.available is True
+    assert len(result.descriptors) == 1
+    assert result.refresh_metadata is not None
+    assert result.refresh_metadata.provider_ids == ("foundry",)
+    assert any("no usable string provider_id" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_validates_instance_against_the_retained_duplicate_descriptor() -> None:
+    """When a provider ships two descriptors sharing a raw id, the first is
+    retained; an instance that matches only the *dropped* second descriptor
+    must be skipped (never mis-bound to the retained first one)."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        first = _descriptor_payload(descriptor_id="dup", descriptor_digest="a" * 64)
+        second = _descriptor_payload(descriptor_id="dup", descriptor_digest="b" * 64)
+        # This instance agrees only with the dropped ``second`` descriptor.
+        instance = _instance_payload(descriptor_id="dup", descriptor_digest="b" * 64)
+        return httpx.Response(
+            200, json=_capabilities_payload("foundry", descriptors=[first, second], instances=[instance])
+        )
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.descriptors) == 1
+    assert result.descriptor_pins[0].descriptor_digest == "a" * 64  # the retained first descriptor
+    assert result.instances == ()
+    assert any("disagrees with its descriptor" in warning for warning in result.warnings)

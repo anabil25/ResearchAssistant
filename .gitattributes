@@ -1,0 +1,4 @@
+# Pinned provider wire-contract golden: preserve exact bytes (CRLF) on every
+# platform so its SHA-256 stays byte-identical to the provider-owner pin,
+# regardless of core.autocrlf. Treated as binary; git must never convert EOLs.
+tests/golden/provider-adapter-openapi.v7.json -text

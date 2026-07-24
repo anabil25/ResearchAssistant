@@ -241,6 +241,77 @@ class Settings(BaseSettings):
             "also configured."
         ),
     )
+    #: Adapter-owned defence-in-depth bounds for the provider-v7 HTTP discovery
+    #: adapter (``agent_studio.capability_discovery.HttpCapabilityDiscoverySource``).
+    #: Every one of these is settings-owned and never derived from the wire,
+    #: the requesting user, or a model: an untrusted provider response can never
+    #: talk the adapter into unbounded memory, cardinality, fan-out, or wall-clock
+    #: cost. Exceeding a bound fails closed with a typed honest "unavailable"
+    #: result (catalog-level) or a skipped item with a warning (per provider).
+    agent_studio_capability_provider_max_response_bytes: int = Field(
+        default=8_000_000,
+        gt=0,
+        le=134_217_728,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_RESPONSE_BYTES",
+        description=(
+            "Hard cap on the number of bytes read from any single provider discovery "
+            "HTTP response before it is JSON-parsed. A response larger than this is "
+            "abandoned unread rather than buffered in full."
+        ),
+    )
+    agent_studio_capability_provider_max_providers: int = Field(
+        default=250,
+        gt=0,
+        le=100_000,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_PROVIDERS",
+        description=(
+            "Maximum number of providers the catalog ('GET /v1/providers') may list. "
+            "A larger catalog cannot be honestly enumerated within the adapter's "
+            "bounds, so discovery reports an explicit unavailable result."
+        ),
+    )
+    agent_studio_capability_provider_max_descriptors_per_provider: int = Field(
+        default=500,
+        gt=0,
+        le=100_000,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_DESCRIPTORS",
+        description="Maximum capability descriptors accepted from one provider's discovery response.",
+    )
+    agent_studio_capability_provider_max_instances_per_provider: int = Field(
+        default=2_000,
+        gt=0,
+        le=1_000_000,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_INSTANCES",
+        description="Maximum discovered instances accepted from one provider's discovery response.",
+    )
+    agent_studio_capability_provider_max_operations_per_descriptor: int = Field(
+        default=200,
+        gt=0,
+        le=100_000,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_OPERATIONS",
+        description="Maximum operations accepted on a single capability descriptor.",
+    )
+    agent_studio_capability_provider_max_concurrency: int = Field(
+        default=8,
+        gt=0,
+        le=256,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_MAX_CONCURRENCY",
+        description=(
+            "Maximum concurrent per-provider capability requests the adapter fans out "
+            "with; bounds outbound connection pressure independent of catalog size."
+        ),
+    )
+    agent_studio_capability_provider_deadline_seconds: float = Field(
+        default=25.0,
+        gt=0,
+        le=600.0,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_DEADLINE_SECONDS",
+        description=(
+            "Overall wall-clock ceiling for a single discovery pass (catalog plus all "
+            "per-provider fan-out). Exceeding it yields an honest unavailable result "
+            "rather than a partial catalog presented as complete."
+        ),
+    )
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
