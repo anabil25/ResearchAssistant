@@ -38,6 +38,11 @@ jobs:
           mkdir -p coverage/python
           uv run pytest -q --cov --cov-report=term-missing --cov-report=html:coverage/python/html --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
 
+      - name: Enforce exact suppression and coverage domain
+        id: suppression_contract
+        continue-on-error: true
+        run: uv run python scripts/check_suppression_contract.py
+
       - name: Upload Python coverage
         if: always()
         uses: actions/upload-artifact@v4
@@ -116,9 +121,11 @@ jobs:
         if: always()
         env:
           PYTHON_COVERAGE: ${{ steps.python_coverage.outcome }}
+          SUPPRESSION_CONTRACT: ${{ steps.suppression_contract.outcome }}
           JEST_COVERAGE: ${{ steps.jest_coverage.outcome }}
           BROWSER_TESTS: ${{ steps.browser_tests.outcome }}
         run: |
           test "$PYTHON_COVERAGE" = "success"
+          test "$SUPPRESSION_CONTRACT" = "success"
           test "$JEST_COVERAGE" = "success"
           test "$BROWSER_TESTS" = "success"
