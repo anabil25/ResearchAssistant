@@ -61,7 +61,7 @@ class RuntimeContextResponse(BaseModel):
 
     The locked wire has no non-resolved success variant: a 200 is returned
     only when a currently-effective approval authorizes the operation, and
-    therefore ``approval_id``/``approval_decision_version``/``invocation_id``
+    therefore ``approval_id``/``approval_version``/``invocation_id``
     are always present and non-null. Every non-resolved outcome (no effective
     approval, operation not part of the mapping, mapping/release absent,
     expired, unavailable) is a strict HTTP error with uniform external
@@ -89,7 +89,7 @@ class RuntimeContextResponse(BaseModel):
     operation_id: str = Field(min_length=1, max_length=200)
 
     approval_id: str = Field(min_length=1, max_length=200)
-    approval_decision_version: str = Field(min_length=1, max_length=200)
+    approval_version: str = Field(min_length=1, max_length=200)
     invocation_id: str = Field(min_length=1, max_length=200)
     #: The exact ``request_digest`` the runtime supplied, echoed back so a
     #: runtime/audit can correlate this resolved context to the precise request

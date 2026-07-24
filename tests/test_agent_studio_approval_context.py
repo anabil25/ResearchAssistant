@@ -12,6 +12,7 @@ from research_assistant_api.agent_studio.approval_context import (
     ApprovalContextRequest,
     ApprovalContextResult,
     StoreBackedApprovalContextResolver,
+    compute_approval_decision_revision,
 )
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
@@ -162,6 +163,30 @@ def _seed(store: AgentStudioStore, **approval_overrides: object) -> None:
 
 
 # --- model contract ---------------------------------------------------------
+
+
+def test_decision_revision_is_deterministic_and_not_version_id() -> None:
+    approved = _approval(state=ApprovalState.APPROVED)
+    revision = compute_approval_decision_revision(approved)
+    assert revision.startswith("approval-decision:v1:sha256:")
+    assert revision == compute_approval_decision_revision(_approval(state=ApprovalState.APPROVED))
+    # Never the pinned agent version_id.
+    assert approved.version_id not in revision
+
+
+def test_decision_revision_changes_with_the_decision() -> None:
+    base = compute_approval_decision_revision(_approval(state=ApprovalState.APPROVED, approval_id="a1"))
+    other_approver = compute_approval_decision_revision(
+        _approval(state=ApprovalState.APPROVED, approval_id="a1").model_copy(update={"approver_id": "someone-else"})
+    )
+    assert base != other_approver
+
+
+def test_decision_revision_handles_undecided_record() -> None:
+    # decided_at None branch (a pending record has no decision timestamp).
+    pending = _approval(state=ApprovalState.PENDING)
+    assert pending.decided_at is None
+    assert compute_approval_decision_revision(pending).startswith("approval-decision:v1:sha256:")
 
 
 def test_request_is_frozen_and_rejects_unknown_fields() -> None:
@@ -351,7 +376,11 @@ async def test_resolved_returns_approval_id_and_fresh_invocation_id() -> None:
 
     assert result.outcome is ApprovalContextOutcome.RESOLVED
     assert result.approval_id == "approval-1"
-    assert result.approval_version == "version-1"
+    # approval_version is the durable DECISION-RECORD revision, never the pinned
+    # agent version_id ("version-1").
+    assert result.approval_version is not None
+    assert result.approval_version.startswith("approval-decision:v1:sha256:")
+    assert result.approval_version != "version-1"
     assert result.invocation_id is not None
     assert result.invocation_id.startswith("inv-")
 

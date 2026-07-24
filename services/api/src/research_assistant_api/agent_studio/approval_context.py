@@ -33,6 +33,8 @@ fresh identifier for the *attempt* that is about to happen.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from enum import StrEnum
 from typing import Protocol
 from uuid import uuid4
@@ -43,6 +45,36 @@ from research_assistant_api.agent_studio.approvals import compute_approval_effec
 from research_assistant_api.agent_studio.models import ApprovalEffectiveState, ApprovalKind, StudioApprovalRecord
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
+
+#: Versioned prefix for the durable approval-decision revision digest.
+_APPROVAL_DECISION_REVISION_PREFIX = "approval-decision:v1:sha256:"
+
+
+def compute_approval_decision_revision(record: StudioApprovalRecord) -> str:
+    """Durable revision of an approval *decision record*.
+
+    This is the value surfaced as ``approval_version`` -- deliberately a
+    function of the decision's own authoritative fields (id, decided state,
+    deciding approver, decision timestamp, rationale), NOT of the agent
+    ``version_id`` the approval is pinned to. It changes if and only if the
+    decision changes, so a consumer can pin the exact decision revision that
+    authorized it; misusing the pinned AgentVersion id here was a confirmed
+    backend blocker and is never done.
+    """
+
+    canonical = json.dumps(
+        [
+            record.id,
+            record.state.value,
+            record.approver_id,
+            record.decided_at.isoformat() if record.decided_at is not None else None,
+            record.rationale,
+        ],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    return f"{_APPROVAL_DECISION_REVISION_PREFIX}{hashlib.sha256(canonical.encode('utf-8')).hexdigest()}"
+
 
 
 class ApprovalContextRequest(BaseModel):
@@ -99,10 +131,10 @@ class ApprovalContextResult(BaseModel):
 
     outcome: ApprovalContextOutcome
     approval_id: str | None = None
-    #: The selected approval's durable pinned ``version_id`` (the exact agent
-    #: version the decision was bound to), surfaced as selection output so a
-    #: caller can report the durable decision version without re-fetching the
-    #: approval record. Populated only for ``RESOLVED``.
+    #: The selected approval's durable *decision-record* revision (see
+    #: ``compute_approval_decision_revision``) -- a function of the decision's
+    #: own fields, never the pinned agent ``version_id``. Populated only for
+    #: ``RESOLVED``.
     approval_version: str | None = None
     invocation_id: str | None = None
     reason: str | None = None
@@ -188,7 +220,7 @@ class StoreBackedApprovalContextResolver:
         return ApprovalContextResult(
             outcome=ApprovalContextOutcome.RESOLVED,
             approval_id=winner.id,
-            approval_version=winner.version_id,
+            approval_version=compute_approval_decision_revision(winner),
             invocation_id=f"inv-{uuid4().hex}",
         )
 

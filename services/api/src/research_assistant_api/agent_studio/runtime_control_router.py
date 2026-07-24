@@ -156,7 +156,7 @@ def build_runtime_control_app(
             mapping,
             payload.request_digest,
             approval_id=result.approval_id,
-            approval_decision_version=result.approval_version,
+            approval_version=result.approval_version,
             invocation_id=result.invocation_id,
         )
 
@@ -172,7 +172,7 @@ def _context_response(
     request_digest: str,
     *,
     approval_id: str,
-    approval_decision_version: str,
+    approval_version: str,
     invocation_id: str,
 ) -> RuntimeContextResponse:
     """Build the fully-resolved (200) mapping-derived context response."""
@@ -189,7 +189,7 @@ def _context_response(
         binding_id=mapping.binding.binding_id,
         operation_id=mapping.binding.operation_ref.id,
         approval_id=approval_id,
-        approval_decision_version=approval_decision_version,
+        approval_version=approval_version,
         invocation_id=invocation_id,
         request_digest=request_digest,
     )

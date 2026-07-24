@@ -47,7 +47,7 @@ def _response(**overrides: object) -> RuntimeContextResponse:
         "binding_id": "binding-1",
         "operation_id": "search",
         "approval_id": "appr-1",
-        "approval_decision_version": "approval.decision.v1",
+        "approval_version": "approval-decision:v1:sha256:" + "1" * 64,
         "invocation_id": "inv-1",
         "request_digest": DIGEST,
     }
@@ -90,14 +90,14 @@ def test_request_is_frozen() -> None:
 def test_success_response_is_fully_resolved_with_non_null_approval_fields() -> None:
     response = _response()
     assert response.approval_id == "appr-1"
-    assert response.approval_decision_version == "approval.decision.v1"
+    assert response.approval_version == "approval-decision:v1:sha256:" + "1" * 64
     assert response.invocation_id == "inv-1"
     assert response.request_digest == DIGEST
 
 
 def test_success_response_rejects_missing_approval_field() -> None:
     with pytest.raises(ValidationError):
-        _response(approval_decision_version=None)
+        _response(approval_version=None)
 
 
 def test_success_response_rejects_empty_approval_id() -> None:

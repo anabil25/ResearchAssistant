@@ -321,7 +321,9 @@ def test_context_resolved_returns_mapping_derived_approval() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["approval_id"] == "approval-1"
-    assert body["approval_decision_version"] == "version-1"
+    # Durable decision-record revision, never the pinned agent version_id.
+    assert body["approval_version"].startswith("approval-decision:v1:sha256:")
+    assert body["approval_version"] != "version-1"
     assert body["invocation_id"].startswith("inv-")
     assert body["request_digest"] == REQUEST_DIGEST
     assert body["tenant_id"] == "tenant-1"
