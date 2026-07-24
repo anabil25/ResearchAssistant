@@ -79,29 +79,55 @@ def _principal(
 
 
 class _Loader:
-    """Records whether the mapping loader was invoked."""
+    """Models the server-owned client->deployment authority + mapping load.
 
-    def __init__(self, mapping: RuntimeDeploymentMapping | None) -> None:
+    Returns the mapping only when called with the exact authorized
+    ``(client_app_id, deployment_id)`` pair (constant-time equivalent), else
+    ``None`` -- exactly like ``build_authorized_mapping_loader``.
+    """
+
+    def __init__(
+        self,
+        mapping: RuntimeDeploymentMapping | None,
+        *,
+        authorized_client: str = CLIENT_APP_ID,
+        authorized_deployment: str = "dep-1",
+    ) -> None:
         self._mapping = mapping
+        self._authorized_client = authorized_client
+        self._authorized_deployment = authorized_deployment
         self.calls = 0
 
-    def __call__(self) -> RuntimeDeploymentMapping | None:
+    def __call__(self, client_app_id: str, deployment_id: str) -> RuntimeDeploymentMapping | None:
         self.calls += 1
-        return self._mapping
+        if client_app_id == self._authorized_client and deployment_id == self._authorized_deployment:
+            return self._mapping
+        return None
 
 
 def _authorize(
-    mapping: RuntimeDeploymentMapping | None, **overrides: object
+    mapping: RuntimeDeploymentMapping | None,
+    *,
+    principal: RuntimePrincipal | None = None,
+    loader: _Loader | None = None,
+    **overrides: object,
 ) -> tuple[RuntimeAuthzDecision, _Loader]:
     presented = mapping if mapping is not None else _mapping()
-    loader = _Loader(mapping)
+    resolved_principal = principal if principal is not None else _principal()
+    if loader is None:
+        # Default: the authenticated client is bound to exactly this deployment.
+        loader = _Loader(
+            mapping,
+            authorized_client=resolved_principal.client_app_id,
+            authorized_deployment=presented.deployment_id,
+        )
     kwargs = {
         "policy": _policy(),
-        "principal": _principal(),
+        "principal": resolved_principal,
         "presented_deployment_id": presented.deployment_id,
         "presented_mapping_ref": presented.mapping_ref,
         "presented_mapping_digest": presented.mapping_digest,
-        "load_mapping": loader,
+        "load_authorized_mapping": loader,
     }
     kwargs.update(overrides)
     decision = authorize_runtime_request(**kwargs)  # type: ignore[arg-type]
@@ -173,10 +199,23 @@ def test_revoked_mapping_is_denied() -> None:
     assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
 
 
-def test_deployment_id_mismatch_is_denied() -> None:
+def test_client_not_bound_is_uniform_not_found() -> None:
+    # The authenticated client is bound to a DIFFERENT client id in the index,
+    # so the loader returns None -> the same MAPPING_NOT_FOUND as no-such-mapping.
+    mapping = _mapping()
+    loader = _Loader(mapping, authorized_client="some-other-client", authorized_deployment="dep-1")
+    decision, used = _authorize(mapping, loader=loader)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_FOUND
+    assert decision.mapping is None
+    assert used.calls == 1
+
+
+def test_client_bound_to_other_deployment_is_uniform_not_found() -> None:
+    # Bound client, but to a different deployment than the asserted one.
     mapping = _mapping(deployment_id="dep-1")
-    decision, _ = _authorize(mapping, presented_deployment_id="dep-other")
-    assert decision.reason is RuntimeAuthzReason.DEPLOYMENT_ID_MISMATCH
+    loader = _Loader(mapping, authorized_client=CLIENT_APP_ID, authorized_deployment="dep-elsewhere")
+    decision, _ = _authorize(mapping, loader=loader)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_FOUND
 
 
 def test_client_not_in_allowlist_is_denied() -> None:
@@ -221,7 +260,7 @@ def test_enforce_returns_mapping_on_success() -> None:
         presented_deployment_id=mapping.deployment_id,
         presented_mapping_ref=mapping.mapping_ref,
         presented_mapping_digest=mapping.mapping_digest,
-        load_mapping=lambda: mapping,
+        load_authorized_mapping=lambda _client, _dep: mapping,
     )
     assert returned is mapping
 
@@ -234,7 +273,7 @@ def test_enforce_raises_uniform_error_on_denial() -> None:
             presented_deployment_id="dep-1",
             presented_mapping_ref="x",
             presented_mapping_digest="y",
-            load_mapping=lambda: _mapping(),
+            load_authorized_mapping=lambda _client, _dep: _mapping(),
         )
     assert excinfo.value.decision.reason is RuntimeAuthzReason.MISSING_APP_ROLE
 

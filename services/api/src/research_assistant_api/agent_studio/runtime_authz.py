@@ -37,11 +37,11 @@ only and never shaped into the client response.
 from __future__ import annotations
 
 import hmac
-from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from enum import StrEnum
 
+from research_assistant_api.agent_studio.runtime_client_binding import AuthorizedMappingLoader
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 
 
@@ -58,7 +58,6 @@ class RuntimeAuthzReason(StrEnum):
     MISSING_APP_ROLE = "missing_app_role"
     MAPPING_NOT_FOUND = "mapping_not_found"
     MAPPING_NOT_ACTIVE = "mapping_not_active"
-    DEPLOYMENT_ID_MISMATCH = "deployment_id_mismatch"
     CLIENT_NOT_ALLOWED = "client_not_allowed"
     MAPPING_REF_MISMATCH = "mapping_ref_mismatch"
     MAPPING_DIGEST_MISMATCH = "mapping_digest_mismatch"
@@ -131,13 +130,18 @@ def authorize_runtime_request(
     presented_deployment_id: str,
     presented_mapping_ref: str,
     presented_mapping_digest: str,
-    load_mapping: Callable[[], RuntimeDeploymentMapping | None],
+    load_authorized_mapping: AuthorizedMappingLoader,
 ) -> RuntimeAuthzDecision:
     """Resolve the runtime authorization order for a single request.
 
-    ``load_mapping`` is invoked only after issuer/audience/role pass, so an
-    unauthorized caller never triggers the partition read. All comparisons of
-    the ref/digest use a constant-time compare to avoid leaking match progress.
+    ``load_authorized_mapping`` is invoked only after issuer/audience/role pass,
+    and it is responsible for authorizing the authenticated client's binding to
+    the asserted deployment *before* any mapping point-read: it returns the
+    mapping only when the trusted ``client_app_id`` is bound to exactly that
+    ``deployment_id`` (server-owned authority), and ``None`` uniformly
+    otherwise. The caller-asserted deployment id is therefore never itself the
+    lookup authority, and an unbound/wrong client cannot enumerate or time-probe
+    deployment ids. All ref/digest comparisons are constant-time.
     """
 
     if principal.issuer != policy.expected_issuer:
@@ -147,13 +151,11 @@ def authorize_runtime_request(
     if policy.required_app_role not in principal.app_roles:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MISSING_APP_ROLE)
 
-    mapping = load_mapping()
+    mapping = load_authorized_mapping(principal.client_app_id, presented_deployment_id)
     if mapping is None:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_FOUND)
     if not mapping.is_effective_at(datetime.now(UTC)):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_ACTIVE)
-    if not hmac.compare_digest(mapping.deployment_id, presented_deployment_id):
-        return RuntimeAuthzDecision(reason=RuntimeAuthzReason.DEPLOYMENT_ID_MISMATCH)
 
     if not _client_is_allowlisted(principal, mapping):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.CLIENT_NOT_ALLOWED)
@@ -190,7 +192,7 @@ def enforce_runtime_authorization(
     presented_deployment_id: str,
     presented_mapping_ref: str,
     presented_mapping_digest: str,
-    load_mapping: Callable[[], RuntimeDeploymentMapping | None],
+    load_authorized_mapping: AuthorizedMappingLoader,
 ) -> RuntimeDeploymentMapping:
     """Fail-closed wrapper: return the authorized mapping or raise.
 
@@ -204,7 +206,7 @@ def enforce_runtime_authorization(
         presented_deployment_id=presented_deployment_id,
         presented_mapping_ref=presented_mapping_ref,
         presented_mapping_digest=presented_mapping_digest,
-        load_mapping=load_mapping,
+        load_authorized_mapping=load_authorized_mapping,
     )
     if decision.authorized and decision.mapping is not None:
         return decision.mapping

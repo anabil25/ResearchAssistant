@@ -44,16 +44,20 @@ _CLIENT_APP_ID_CLAIMS = ("appid", "azp")
 def extract_runtime_principal(claims: Mapping[str, list[str]]) -> RuntimePrincipal | None:
     """Project already-decoded platform claims into a ``RuntimePrincipal``.
 
-    Returns ``None`` unless the minimum workload-identity claims are present:
-    an issuer, at least one audience, and a client/app id. ``app_roles`` may be
-    empty -- a token with no roles is still a valid principal that
-    ``runtime_authz`` will then deny for lacking the required internal role, so
-    "no roles" is an authorization decision, not an extraction failure.
+    Fails closed (returns ``None``) unless the minimum workload-identity claims
+    are present and unambiguous: exactly one distinct issuer, at least one
+    audience, and exactly one client/app id. The client id is taken from
+    ``appid`` (v1) and/or ``azp`` (v2); if both are present and **disagree**, or
+    either carries more than one distinct value, that is a conflicting/ambiguous
+    identity and is refused outright -- never resolved by silent precedence.
+    ``app_roles`` may be empty -- a token with no roles is still a valid
+    principal that ``runtime_authz`` will then deny for lacking the required
+    internal role.
     """
 
-    issuer = _first(claims, _ISSUER_CLAIM)
+    issuer = _exactly_one(claims, _ISSUER_CLAIM)
     audiences = tuple(claims.get(_AUDIENCE_CLAIM, []))
-    client_app_id = _first_of(claims, _CLIENT_APP_ID_CLAIMS)
+    client_app_id = _single_client_app_id(claims)
     if issuer is None or not audiences or client_app_id is None:
         return None
     return RuntimePrincipal(
@@ -89,14 +93,22 @@ def resolve_runtime_principal(request: Request, settings: Settings) -> RuntimePr
     return extract_runtime_principal(_claim_values(payload))
 
 
-def _first(claims: Mapping[str, list[str]], claim_type: str) -> str | None:
-    values = claims.get(claim_type)
-    return values[0] if values else None
+def _exactly_one(claims: Mapping[str, list[str]], claim_type: str) -> str | None:
+    """The single distinct value of ``claim_type``, or ``None`` if absent or
+    ambiguous (more than one distinct value)."""
+    values = set(claims.get(claim_type, []))
+    return next(iter(values)) if len(values) == 1 else None
 
 
-def _first_of(claims: Mapping[str, list[str]], claim_types: tuple[str, ...]) -> str | None:
-    for claim_type in claim_types:
-        value = _first(claims, claim_type)
-        if value is not None:
-            return value
-    return None
+def _single_client_app_id(claims: Mapping[str, list[str]]) -> str | None:
+    """The single client/app id across ``appid`` and ``azp``.
+
+    Returns ``None`` when no candidate exists, or when ``appid``/``azp`` carry
+    more than one distinct value between them (both present and disagreeing, or
+    either repeated) -- a conflicting identity is refused, never resolved by
+    silent precedence.
+    """
+    candidates = set()
+    for claim_type in _CLIENT_APP_ID_CLAIMS:
+        candidates.update(claims.get(claim_type, []))
+    return next(iter(candidates)) if len(candidates) == 1 else None

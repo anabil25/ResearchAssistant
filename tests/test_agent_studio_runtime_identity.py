@@ -91,6 +91,34 @@ def test_extract_preserves_multiple_audiences() -> None:
     assert principal.audiences == (AUDIENCE, "api://other")
 
 
+def test_extract_accepts_matching_appid_and_azp() -> None:
+    claims = _claims()
+    claims["azp"] = ["client-app-1"]  # equal to appid
+    principal = extract_runtime_principal(claims)
+    assert principal is not None
+    assert principal.client_app_id == "client-app-1"
+
+
+def test_extract_fails_closed_when_appid_and_azp_disagree() -> None:
+    claims = _claims()
+    claims["azp"] = ["different-app"]  # conflicts with appid=client-app-1
+    assert extract_runtime_principal(claims) is None
+
+
+def test_extract_fails_closed_on_multiple_appid_values() -> None:
+    assert extract_runtime_principal(_claims(appid=["a", "b"])) is None
+
+
+def test_extract_fails_closed_on_ambiguous_issuer() -> None:
+    assert extract_runtime_principal(_claims(iss=[ISSUER, "https://evil.example/v2.0"])) is None
+
+
+def test_extract_accepts_duplicate_identical_issuer() -> None:
+    principal = extract_runtime_principal(_claims(iss=[ISSUER, ISSUER]))
+    assert principal is not None
+    assert principal.issuer == ISSUER
+
+
 # --- resolve_runtime_principal (request-level) -----------------------------
 
 

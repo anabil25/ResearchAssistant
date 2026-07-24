@@ -37,6 +37,10 @@ from research_assistant_api.agent_studio.runtime_authz import (
     enforce_runtime_authorization,
     uniform_denial,
 )
+from research_assistant_api.agent_studio.runtime_client_binding import (
+    ClientDeploymentBindingResolver,
+    build_authorized_mapping_loader,
+)
 from research_assistant_api.agent_studio.runtime_control_schemas import (
     RuntimeBindingView,
     RuntimeContextDecision,
@@ -62,6 +66,7 @@ MAPPING_DIGEST_HEADER = "x-runtime-mapping-digest"
 def build_runtime_control_app(
     *,
     mapping_store: RuntimeDeploymentMappingStore,
+    client_binding_resolver: ClientDeploymentBindingResolver,
     auth_policy: RuntimeAuthPolicy,
     settings: Settings,
     context_resolver: ApprovalContextResolver,
@@ -73,6 +78,7 @@ def build_runtime_control_app(
         version="1.0.0",
         description="Internal runtime-control plane (research-assistant.runtime-control.v1).",
     )
+    load_authorized_mapping = build_authorized_mapping_loader(client_binding_resolver, mapping_store)
 
     def _authorize(
         request: Request,
@@ -92,7 +98,7 @@ def build_runtime_control_app(
                 presented_deployment_id=deployment_id,
                 presented_mapping_ref=mapping_ref,
                 presented_mapping_digest=mapping_digest,
-                load_mapping=lambda: mapping_store.get(deployment_id),
+                load_authorized_mapping=load_authorized_mapping,
             )
         except RuntimeAuthorizationError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=uniform_denial()) from exc
