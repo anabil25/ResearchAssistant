@@ -28,6 +28,7 @@ def _request(**overrides: object) -> RuntimeContextRequest:
         "mapping_ref": {
             "id": "dep-1",
             "schema_version": "runtime-deployment-mapping:v1",
+            "revision": 1,
             "digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
         },
         "operation_id": "search",
@@ -40,8 +41,9 @@ def _request(**overrides: object) -> RuntimeContextRequest:
 def _response(**overrides: object) -> RuntimeContextResponse:
     kwargs: dict[str, object] = {
         "deployment_id": "dep-1",
-        "mapping_ref": "runtime-deployment-mapping:v1:dep-1",
+        "mapping_ref": "runtime-deployment-mapping:v1:dep-1:1",
         "mapping_digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
+        "revision_sequence": 1,
         "tenant_id": "tenant-1",
         "project_id": "project-1",
         "environment": DeploymentEnvironment.DEVELOPMENT,
@@ -63,18 +65,24 @@ def _response(**overrides: object) -> RuntimeContextResponse:
 
 
 def test_mapping_ref_object_defaults_schema_version_and_builds_flat_ref() -> None:
-    # Ruling A: the mapping reference is a single in-body object carrying id +
-    # schema_version + digest; the backend reconstructs the flat ref from it.
-    ref = RuntimeMappingRef(id="dep-1", digest="runtime-deployment-mapping:v1:sha256:" + DIGEST)
+    # Ruling A + Flaw C: the mapping reference is a single in-body object carrying
+    # id + schema_version + revision + digest; the backend reconstructs the flat
+    # ref (with the revision component) from it.
+    ref = RuntimeMappingRef(id="dep-1", revision=3, digest="runtime-deployment-mapping:v1:sha256:" + DIGEST)
     assert ref.schema_version == "runtime-deployment-mapping:v1"
-    assert ref.flat_ref == "runtime-deployment-mapping:v1:dep-1"
+    assert ref.flat_ref == "runtime-deployment-mapping:v1:dep-1:3"
 
 
 def test_mapping_ref_object_is_strict_and_requires_digest() -> None:
     with pytest.raises(ValidationError):
-        RuntimeMappingRef(id="dep-1")  # type: ignore[call-arg]
+        RuntimeMappingRef(id="dep-1", revision=1)  # type: ignore[call-arg]
     with pytest.raises(ValidationError):
-        RuntimeMappingRef(id="dep-1", digest="x" * 64, extra="nope")  # type: ignore[call-arg]
+        RuntimeMappingRef(id="dep-1", revision=1, digest="x" * 64, extra="nope")  # type: ignore[call-arg]
+
+
+def test_mapping_ref_object_requires_positive_revision() -> None:
+    with pytest.raises(ValidationError):
+        RuntimeMappingRef(id="dep-1", revision=0, digest="x" * 64)
 
 
 def test_request_defaults_protocol_and_is_strict() -> None:
@@ -153,6 +161,7 @@ def _consumption_request(**overrides: object) -> RuntimeConsumptionRequest:
         "mapping_ref": {
             "id": "dep-1",
             "schema_version": "runtime-deployment-mapping:v1",
+            "revision": 1,
             "digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
         },
         "approval_id": "appr-1",

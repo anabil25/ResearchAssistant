@@ -65,6 +65,7 @@ class RuntimeAuthzReason(StrEnum):
     MAPPING_RETIRED = "mapping_retired"
     CLIENT_NOT_ALLOWED = "client_not_allowed"
     MAPPING_REF_MISMATCH = "mapping_ref_mismatch"
+    MAPPING_REVISION_STALE = "mapping_revision_stale"
     MAPPING_DIGEST_MISMATCH = "mapping_digest_mismatch"
 
 
@@ -193,6 +194,15 @@ def authorize_runtime_request(
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.CLIENT_NOT_ALLOWED)
 
     if not hmac.compare_digest(presented_mapping_ref, mapping.mapping_ref):
+        # Flaw C: with the revision component in the ref, separate ROUTINE
+        # post-supersession staleness (same schema + deployment, different
+        # revision) from a genuine ref disagreement, so incident response never
+        # confuses a stale runtime with a tampered one. The ref is issued
+        # material (not a secret), so classifying it need not be constant-time;
+        # the content digest below stays constant-time.
+        revision_prefix = f"{mapping.schema_version}:{mapping.deployment_id}:"
+        if presented_mapping_ref.startswith(revision_prefix):
+            return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_REVISION_STALE)
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_REF_MISMATCH)
     if not hmac.compare_digest(presented_mapping_digest, mapping.mapping_digest):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_DIGEST_MISMATCH)

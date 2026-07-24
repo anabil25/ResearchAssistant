@@ -80,7 +80,9 @@ def _mapping(
             AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),
         ),
         lifecycle_state=lifecycle_state,
-        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        revision_sequence=1,
+        revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        deployment_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="release-service",
     )
 
@@ -215,10 +217,11 @@ def _client(
     return TestClient(app)
 
 
-def _ref(mapping: RuntimeDeploymentMapping, *, digest: str | None = None) -> dict[str, str]:
+def _ref(mapping: RuntimeDeploymentMapping, *, digest: str | None = None) -> dict[str, object]:
     return {
         "id": mapping.deployment_id,
         "schema_version": mapping.schema_version,
+        "revision": mapping.revision_sequence,
         "digest": digest if digest is not None else mapping.mapping_digest,
     }
 
@@ -265,9 +268,10 @@ def test_retrieve_wrong_role_is_uniform_404() -> None:
 def test_retrieve_unknown_deployment_is_uniform_404() -> None:
     # Store empty -> mapping not found; identical response to a forbidden case.
     client = _client(mapping=None)
+    ref = {"id": "dep-1", "schema_version": "runtime-deployment-mapping:v1", "revision": 1, "digest": "x"}
     response = client.post(
         RETRIEVE_URL,
-        json={"mapping_ref": {"id": "dep-1", "schema_version": "runtime-deployment-mapping:v1", "digest": "x"}},
+        json={"mapping_ref": ref},
         headers={"x-ms-client-principal": _principal_header()},
     )
     assert response.status_code == 404
@@ -291,7 +295,12 @@ def test_retrieve_ref_id_not_matching_path_is_uniform_404() -> None:
     # redirect the request to a different deployment than the path names.
     mapping = _mapping()
     client = _client(mapping)
-    ref = {"id": "dep-elsewhere", "schema_version": mapping.schema_version, "digest": mapping.mapping_digest}
+    ref = {
+        "id": "dep-elsewhere",
+        "schema_version": mapping.schema_version,
+        "revision": mapping.revision_sequence,
+        "digest": mapping.mapping_digest,
+    }
     response = client.post(
         RETRIEVE_URL, json={"mapping_ref": ref}, headers={"x-ms-client-principal": _principal_header()}
     )
@@ -384,7 +393,7 @@ def test_context_missing_digest_in_ref_is_rejected() -> None:
     # mapping_ref missing its digest is a schema violation (422), not a 404.
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver())
-    ref_no_digest = {"id": mapping.deployment_id, "schema_version": mapping.schema_version}
+    ref_no_digest = {"id": mapping.deployment_id, "schema_version": mapping.schema_version, "revision": 1}
     response = client.post(
         CONTEXT_URL,
         json={"mapping_ref": ref_no_digest, "operation_id": "search", "request_digest": REQUEST_DIGEST},
@@ -454,7 +463,14 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
         _collect(
             empty.post(
                 RETRIEVE_URL,
-                json={"mapping_ref": {"id": "dep-1", "schema_version": "runtime-deployment-mapping:v1", "digest": "x"}},
+                json={
+                    "mapping_ref": {
+                        "id": "dep-1",
+                        "schema_version": "runtime-deployment-mapping:v1",
+                        "revision": 1,
+                        "digest": "x",
+                    }
+                },
                 headers={"x-ms-client-principal": _principal_header()},
             )
         )
@@ -468,7 +484,7 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
         {"lifecycle_state": RuntimeMappingLifecycleState.RETIRED},
         {"revoked_at": past},
         {"expires_at": past},
-        {"created_at": future},  # not-yet-effective
+        {"revision_created_at": future},  # not-yet-effective
     ):
         faulted = _mapping().model_copy(update=update)
         faulted_client = _client(faulted)
@@ -487,3 +503,4 @@ def _collect(response: object) -> tuple[int, str]:
 
     status_code = response.status_code  # type: ignore[attr-defined]
     return status_code, _json.dumps(response.json(), sort_keys=True)  # type: ignore[attr-defined]
+

@@ -45,25 +45,29 @@ class RuntimeMappingRef(BaseModel):
 
     Ruling A: the mapping reference is a single structured object living *inside*
     the request body -- one source of truth -- rather than a flat ``mapping_ref``
-    string paired with a separate ``x-runtime-mapping-digest`` header. It carries
-    the opaque deployment ``id``, the strict ``schema_version``, and the full
-    ``digest`` the runtime was issued. The backend reconstructs the flat ref
-    (``<schema_version>:<id>``) and matches BOTH ref and digest exactly against
-    the server-loaded mapping; nothing here is authority, only material the
-    server re-verifies.
+    string paired with a separate ``x-runtime-mapping-digest`` header. Flaw C: it
+    also carries the monotonic ``revision`` so the ref identifies exactly ONE
+    document (one revision), making post-supersession staleness structurally
+    distinguishable from tampering. It carries the opaque deployment ``id``, the
+    strict ``schema_version``, the ``revision`` sequence, and the full ``digest``
+    the runtime was issued. The backend reconstructs the flat ref
+    (``<schema_version>:<id>:<revision>``) and matches BOTH ref and digest
+    exactly against the server-loaded mapping; nothing here is authority, only
+    material the server re-verifies.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     id: str = Field(min_length=1, max_length=200)
     schema_version: Literal["runtime-deployment-mapping:v1"] = RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION
+    revision: int = Field(ge=1)
     #: Full prefixed mapping digest (``runtime-deployment-mapping:v1:sha256:...``).
     digest: str = Field(min_length=1, max_length=200)
 
     @property
     def flat_ref(self) -> str:
-        """The flat ``<schema_version>:<id>`` ref the backend compares to ``mapping.mapping_ref``."""
-        return f"{self.schema_version}:{self.id}"
+        """The flat ``<schema_version>:<id>:<revision>`` ref the backend compares to ``mapping.mapping_ref``."""
+        return f"{self.schema_version}:{self.id}:{self.revision}"
 
 
 class RuntimeContextRequest(BaseModel):
@@ -109,6 +113,10 @@ class RuntimeContextResponse(BaseModel):
     deployment_id: str = Field(min_length=1, max_length=200)
     mapping_ref: str = Field(min_length=1, max_length=400)
     mapping_digest: str = Field(min_length=1, max_length=200)
+    #: Flaw A5: the monotonic revision sequence, returned so the harness can keep
+    #: a per-deployment high-water mark and reject a lower sequence (best-effort
+    #: client-side rollback detection).
+    revision_sequence: int = Field(ge=1)
 
     tenant_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
@@ -194,6 +202,7 @@ class RuntimeMappingView(BaseModel):
     deployment_id: str
     mapping_ref: str
     mapping_digest: str
+    revision_sequence: int = Field(ge=1)
     tenant_id: str
     project_id: str
     environment: DeploymentEnvironment

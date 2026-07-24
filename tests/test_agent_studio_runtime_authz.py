@@ -63,7 +63,9 @@ def _mapping(
             else (AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),)
         ),
         lifecycle_state=lifecycle_state,
-        created_at=FIXED_NOW,
+        revision_sequence=1,
+        revision_created_at=FIXED_NOW,
+        deployment_created_at=FIXED_NOW,
         created_by="release-service",
     )
 
@@ -195,7 +197,7 @@ def test_retired_mapping_is_denied() -> None:
 
 
 def test_not_yet_effective_mapping_is_denied() -> None:
-    mapping = _mapping().model_copy(update={"created_at": FIXED_NOW + timedelta(days=1)})
+    mapping = _mapping().model_copy(update={"revision_created_at": FIXED_NOW + timedelta(days=1)})
     decision, _ = _authorize(mapping)
     assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_YET_EFFECTIVE
 
@@ -286,8 +288,19 @@ def test_client_present_but_role_not_held_is_denied() -> None:
 
 def test_mapping_ref_mismatch_is_denied() -> None:
     mapping = _mapping()
-    decision, _ = _authorize(mapping, presented_mapping_ref="runtime-deployment-mapping:v1:tampered")
+    decision, _ = _authorize(mapping, presented_mapping_ref="runtime-deployment-mapping:v1:tampered:1")
     assert decision.reason is RuntimeAuthzReason.MAPPING_REF_MISMATCH
+
+
+def test_stale_revision_ref_is_a_distinct_reason() -> None:
+    # Flaw C: same schema + deployment, different revision component = routine
+    # post-supersession staleness, distinguishable from tampering, external body
+    # still uniform. The runtime echoes an older revision's ref (seq 1) while the
+    # loader serves the current revision (seq 5).
+    mapping = _mapping().model_copy(update={"revision_sequence": 5})
+    stale_ref = f"{mapping.schema_version}:{mapping.deployment_id}:1"
+    decision, _ = _authorize(mapping, presented_mapping_ref=stale_ref)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_REVISION_STALE
 
 
 def test_mapping_digest_mismatch_is_denied() -> None:

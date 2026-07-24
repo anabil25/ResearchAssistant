@@ -58,7 +58,9 @@ def _mapping(
         ),
         lifecycle_state=lifecycle_state,
         revoked_at=revoked_at,
-        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        revision_sequence=1,
+        revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
+        deployment_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="control-plane",
     )
 

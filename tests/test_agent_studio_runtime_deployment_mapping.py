@@ -75,7 +75,9 @@ def _mapping(
         ),
         lifecycle_state=lifecycle_state,
         supersedes_deployment_id=supersedes_deployment_id,
-        created_at=FIXED_CREATED_AT,
+        revision_sequence=1,
+        revision_created_at=FIXED_CREATED_AT,
+        deployment_created_at=FIXED_CREATED_AT,
         created_by="release-service",
     )
 
@@ -88,9 +90,11 @@ def test_mapping_schema_version_is_strict_constant() -> None:
     assert mapping.schema_version == RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION == "runtime-deployment-mapping:v1"
 
 
-def test_mapping_ref_is_schema_version_and_opaque_deployment_id() -> None:
+def test_mapping_ref_is_schema_version_deployment_and_revision() -> None:
     mapping = _mapping(deployment_id="dep-xyz")
-    assert mapping.mapping_ref == "runtime-deployment-mapping:v1:dep-xyz"
+    # Ruling A + Flaw C: the ref carries the revision component so it identifies
+    # exactly ONE document (one revision), not merely the deployment.
+    assert mapping.mapping_ref == "runtime-deployment-mapping:v1:dep-xyz:1"
     # mapping_ref must not leak scope/partition values.
     assert "tenant-1" not in mapping.mapping_ref
     assert "project-1" not in mapping.mapping_ref
@@ -207,7 +211,7 @@ def test_lifecycle_states_are_exhaustive() -> None:
 
 def test_naive_created_at_is_rejected() -> None:
     with pytest.raises(ValidationError, match="must be timezone-aware"):
-        RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": datetime(2026, 1, 1, 12, 0, 0)})
+        RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_created_at": datetime(2026, 1, 1, 12, 0, 0)})
 
 
 def test_aware_non_utc_created_at_is_normalized_to_utc() -> None:
@@ -215,10 +219,10 @@ def test_aware_non_utc_created_at_is_normalized_to_utc() -> None:
 
     plus_two = timezone(timedelta(hours=2))
     mapping = RuntimeDeploymentMapping(
-        **{**_mapping().model_dump(), "created_at": datetime(2026, 1, 1, 14, 0, 0, tzinfo=plus_two)}
+        **{**_mapping().model_dump(), "revision_created_at": datetime(2026, 1, 1, 14, 0, 0, tzinfo=plus_two)}
     )
-    assert mapping.created_at.utcoffset() == timedelta(0)
-    assert mapping.created_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    assert mapping.revision_created_at.utcoffset() == timedelta(0)
+    assert mapping.revision_created_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 # --- N1: expiry / revocation / lifecycle authority -------------------------
@@ -259,7 +263,7 @@ def test_lifecycle_fault_reports_the_specific_cause() -> None:
 def test_lifecycle_fault_not_yet_effective_before_created_at() -> None:
     # created_at is caller-supplied, so a future window is expressible; a mapping
     # is not valid authority before it begins.
-    future = _mapping().model_copy(update={"created_at": datetime(2026, 12, 1, tzinfo=UTC)})
+    future = _mapping().model_copy(update={"revision_created_at": datetime(2026, 12, 1, tzinfo=UTC)})
     assert future.lifecycle_fault(datetime(2026, 6, 1, tzinfo=UTC)) == "not_yet_effective"
     # At/after created_at it is effective again.
     assert future.lifecycle_fault(datetime(2026, 12, 1, tzinfo=UTC)) is None
@@ -268,7 +272,7 @@ def test_lifecycle_fault_not_yet_effective_before_created_at() -> None:
 def test_validity_window_bounds_are_inclusive() -> None:
     created = datetime(2026, 3, 1, tzinfo=UTC)
     expires = datetime(2026, 9, 1, tzinfo=UTC)
-    mapping = _mapping().model_copy(update={"created_at": created, "expires_at": expires})
+    mapping = _mapping().model_copy(update={"revision_created_at": created, "expires_at": expires})
     # now == created_at (lower bound) is effective.
     assert mapping.lifecycle_fault(created) is None
     # now == expires_at (upper bound) is effective.
@@ -282,21 +286,23 @@ def test_rejects_empty_validity_window() -> None:
     created = datetime(2026, 3, 1, tzinfo=UTC)
     with pytest.raises(ValidationError, match="empty validity window"):
         RuntimeDeploymentMapping(
-            **{**_mapping().model_dump(), "created_at": created, "expires_at": created - timedelta(seconds=1)}
+            **{**_mapping().model_dump(), "revision_created_at": created, "expires_at": created - timedelta(seconds=1)}
         )
 
 
 def test_permits_single_instant_window() -> None:
     created = datetime(2026, 3, 1, tzinfo=UTC)
-    mapping = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created, "expires_at": created})
+    mapping = RuntimeDeploymentMapping(
+        **{**_mapping().model_dump(), "revision_created_at": created, "expires_at": created}
+    )
     assert mapping.lifecycle_fault(created) is None
 
 
 def test_rejects_revoked_before_created() -> None:
     created = datetime(2026, 3, 1, tzinfo=UTC)
-    with pytest.raises(ValidationError, match="revoked_at must not be before created_at"):
+    with pytest.raises(ValidationError, match="revoked_at must not be before revision_created_at"):
         RuntimeDeploymentMapping(
-            **{**_mapping().model_dump(), "created_at": created, "revoked_at": created - timedelta(seconds=1)}
+            **{**_mapping().model_dump(), "revision_created_at": created, "revoked_at": created - timedelta(seconds=1)}
         )
 
 
@@ -304,8 +310,8 @@ def test_same_inputs_produce_identical_digest() -> None:
     # The positive proof the default-factory defect class is gone: two same-input
     # constructions digest identically.
     created = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
-    a = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created})
-    b = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created})
+    a = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_created_at": created})
+    b = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_created_at": created})
     assert a.mapping_digest == b.mapping_digest
 
 
@@ -317,9 +323,16 @@ def test_lifecycle_fault_prioritizes_revocation_over_expiry() -> None:
     assert mapping.lifecycle_fault(now) == "revoked"
 
 
-def test_created_at_is_required() -> None:
+def test_revision_created_at_is_required() -> None:
     payload = _mapping().model_dump()
-    del payload["created_at"]
+    del payload["revision_created_at"]
+    with pytest.raises(ValidationError):
+        RuntimeDeploymentMapping(**payload)
+
+
+def test_deployment_created_at_is_required() -> None:
+    payload = _mapping().model_dump()
+    del payload["deployment_created_at"]
     with pytest.raises(ValidationError):
         RuntimeDeploymentMapping(**payload)
 
@@ -328,6 +341,31 @@ def test_expiry_and_revocation_change_the_digest() -> None:
     base = _mapping().mapping_digest
     assert _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
     assert _mapping().model_copy(update={"revoked_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
+
+
+def test_revision_sequence_is_covered_by_digest_and_ref() -> None:
+    base = _mapping()
+    bumped = base.model_copy(update={"revision_sequence": 2})
+    assert bumped.mapping_digest != base.mapping_digest
+    assert bumped.mapping_ref.endswith(":2")
+    assert base.mapping_ref.endswith(":1")
+
+
+def test_deployment_created_at_is_covered_by_digest() -> None:
+    base = _mapping().mapping_digest
+    other = _mapping().model_copy(update={"deployment_created_at": datetime(2025, 1, 1, tzinfo=UTC)})
+    assert other.mapping_digest != base
+
+
+def test_revision_sequence_must_be_positive() -> None:
+    with pytest.raises(ValidationError):
+        RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_sequence": 0})
+
+
+def test_revision_id_is_the_digest_hex_tail() -> None:
+    mapping = _mapping()
+    assert mapping.revision_id == mapping.mapping_digest.rsplit(":", 1)[-1]
+    assert ":" not in mapping.revision_id
 
 
 # --- M1: nested refs are frozen (digest cannot drift) ----------------------

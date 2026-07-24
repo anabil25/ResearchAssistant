@@ -277,24 +277,42 @@ class RuntimeDeploymentMapping(BaseModel):
     lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE
     supersedes_deployment_id: str | None = Field(default=None, max_length=200)
 
+    #: Monotonic integer revision of this deployment. Each new revision of a
+    #: deployment (supersession, revocation, retirement) carries a strictly
+    #: greater ``revision_sequence`` than the one it succeeds; the control-plane
+    #: producer enforces strictly-increasing repointing against the current
+    #: binding pointer (rollback protection). It is a plain digest-covered
+    #: integer and is NEVER derived from any timestamp -- a caller-supplied or
+    #: skewed clock must not be able to order revisions.
+    revision_sequence: int = Field(ge=1)
+
     #: Optional hard expiry: after this instant the mapping is no longer valid
     #: authority even if its ``lifecycle_state`` is still ``ACTIVE`` and it was
-    #: never explicitly revoked. Aware UTC.
+    #: never explicitly revoked. Aware UTC. Evaluated against the REVISION
+    #: instant window ``[revision_created_at, expires_at]``.
     expires_at: datetime | None = None
     #: Set (aware UTC) once the mapping has been revoked; a revoked mapping is
-    #: permanently invalid authority regardless of lifecycle/expiry.
+    #: permanently invalid authority regardless of lifecycle/expiry. On a
+    #: retiring revision this is set at construction (a "born revoked" revision
+    #: is the normal revocation mechanism under the revision model), so
+    #: ``revoked_at >= revision_created_at`` (equal is valid).
     revoked_at: datetime | None = None
 
-    #: Aware-UTC creation timestamp. REQUIRED (no default): a mapping is
-    #: authoritative content whose ``created_at`` is inside the digest, so the
-    #: control-plane must construct the object ONCE with a deterministic
-    #: timestamp and persist/retry that exact payload -- never re-materialize
-    #: per write attempt with a fresh ``utc_now()`` (which would change the
-    #: digest and make an idempotent retry look like a divergent conflict).
-    created_at: datetime
+    #: Aware-UTC instant THIS REVISION was written. REQUIRED (no default): a
+    #: mapping revision is authoritative content whose timestamp is inside the
+    #: digest, so the control-plane must construct the object ONCE with a
+    #: deterministic instant and persist/retry that exact payload -- never
+    #: re-materialize per attempt with a fresh ``utc_now()``. The validity
+    #: window and the NOT_YET_EFFECTIVE gate are evaluated against THIS instant.
+    revision_created_at: datetime
+    #: Aware-UTC instant the DEPLOYMENT (logical) was first created. Carried
+    #: across every revision for lineage so deployment-origin time is not lost
+    #: when ``revision_created_at`` advances per revision. Digest-covered but
+    #: never used for validity evaluation.
+    deployment_created_at: datetime
     created_by: str = Field(min_length=1, max_length=200)
 
-    @field_validator("created_at", "expires_at", "revoked_at")
+    @field_validator("revision_created_at", "deployment_created_at", "expires_at", "revoked_at")
     @classmethod
     def _timestamps_are_aware_utc(cls, value: datetime | None) -> datetime | None:
         if value is None:
@@ -332,31 +350,36 @@ class RuntimeDeploymentMapping(BaseModel):
 
     @model_validator(mode="after")
     def _validity_window_is_coherent(self) -> RuntimeDeploymentMapping:
-        """Structural coherence of the [created_at, expires_at] window and revocation.
+        """Structural coherence of the [revision_created_at, expires_at] window and revocation.
 
-        Both window bounds are inclusive (see ``lifecycle_fault``). An empty
-        window (``expires_at < created_at``) is rejected; the degenerate
-        single-instant window (``expires_at == created_at``) is permitted. A
-        ``revoked_at`` before ``created_at`` is rejected -- revocation records an
-        act that happened at or after creation (a revoking *revision* is born at
-        the revocation instant), never before it. "Not future-dated" (revoked_at
-        must be <= the write instant) is a producer-level check where an injected
-        ``now`` is available; the model enforces the created_at lower bound.
+        Both window bounds are inclusive (see ``lifecycle_fault``) and are
+        evaluated against the REVISION instant. An empty window
+        (``expires_at < revision_created_at``) is rejected; the degenerate
+        single-instant window (``expires_at == revision_created_at``) is
+        permitted. A ``revoked_at`` before ``revision_created_at`` is rejected --
+        a revoking revision is *born* at the revocation instant, so
+        ``revoked_at >= revision_created_at`` (equal is valid). "Not
+        future-dated" (revoked_at must be <= the write instant) is a
+        producer-level check where an injected ``now`` is available.
         """
-        if self.expires_at is not None and self.expires_at < self.created_at:
-            raise ValueError("expires_at must not be before created_at (empty validity window).")
-        if self.revoked_at is not None and self.revoked_at < self.created_at:
-            raise ValueError("revoked_at must not be before created_at.")
+        if self.expires_at is not None and self.expires_at < self.revision_created_at:
+            raise ValueError("expires_at must not be before revision_created_at (empty validity window).")
+        if self.revoked_at is not None and self.revoked_at < self.revision_created_at:
+            raise ValueError("revoked_at must not be before revision_created_at.")
         return self
 
     @property
     def mapping_ref(self) -> str:
         """Opaque, stable reference a runtime echoes back in every request.
 
-        Composed of the strict schema version and the opaque deployment id;
-        it exposes no scope/partition value and is safe to hand to a runtime.
+        Composed of the strict schema version, the opaque deployment id, and the
+        monotonic ``revision_sequence`` so the ref identifies exactly ONE
+        document (one revision), not merely the deployment. This makes ordinary
+        post-supersession staleness structurally distinguishable from tampering:
+        a stale runtime's ref differs only in the revision component. It exposes
+        no scope/partition value and is safe to hand to a runtime.
         """
-        return f"{self.schema_version}:{self.deployment_id}"
+        return f"{self.schema_version}:{self.deployment_id}:{self.revision_sequence}"
 
     @property
     def mapping_digest(self) -> str:
@@ -396,7 +419,7 @@ class RuntimeDeploymentMapping(BaseModel):
             return "superseded"
         if self.lifecycle_state is RuntimeMappingLifecycleState.RETIRED:
             return "retired"
-        if now < self.created_at:
+        if now < self.revision_created_at:
             return "not_yet_effective"
         if self.expires_at is not None and now > self.expires_at:
             return "expired"
@@ -439,9 +462,11 @@ def compute_mapping_digest(mapping: RuntimeDeploymentMapping) -> str:
         ],
         "lifecycle_state": mapping.lifecycle_state.value,
         "supersedes_deployment_id": mapping.supersedes_deployment_id,
+        "revision_sequence": mapping.revision_sequence,
         "expires_at": mapping.expires_at.isoformat() if mapping.expires_at is not None else None,
         "revoked_at": mapping.revoked_at.isoformat() if mapping.revoked_at is not None else None,
-        "created_at": mapping.created_at.isoformat(),
+        "revision_created_at": mapping.revision_created_at.isoformat(),
+        "deployment_created_at": mapping.deployment_created_at.isoformat(),
         "created_by": mapping.created_by,
     }
     canonical = json.dumps(payload, sort_keys=True, separators=(",", ":"))
