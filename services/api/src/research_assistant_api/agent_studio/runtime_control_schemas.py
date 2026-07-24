@@ -21,13 +21,13 @@ forge because the server chooses them.
 from __future__ import annotations
 
 from datetime import datetime
+from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from research_assistant_api.agent_studio.models import (
     APPROVAL_CONSUMPTION_RECORD_VERSION,
-    ApprovalConsumptionOutcome,
     DeploymentEnvironment,
     utc_now,
 )
@@ -188,7 +188,9 @@ class RuntimeDestinationHash(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     algorithm: Literal["destination:v1:sha256"] = "destination:v1:sha256"
-    digest: str = Field(pattern=r"^destination:v1:sha256:[0-9a-f]{64}$")
+    #: Raw lowercase 64-hex SHA-256 digest -- the ``digest`` field itself is
+    #: never prefixed; the scheme lives in ``algorithm``.
+    digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
 class RuntimeConsumptionRequest(BaseModel):
@@ -200,7 +202,7 @@ class RuntimeConsumptionRequest(BaseModel):
     request, binding, arguments, destination, idempotency key). No
     tenant/project, release, url, or key authority -- the backend rederives the
     authoritative binding/destination from the mapping and independently
-    revalidates each digest.
+    revalidates each digest. All raw digests are lowercase 64-hex.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -214,19 +216,46 @@ class RuntimeConsumptionRequest(BaseModel):
     binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     destination_hash: RuntimeDestinationHash
-    idempotency_digest: str = Field(pattern=r"^idem:v1:sha256:[0-9a-f]{64}$")
+    idempotency_key_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+
+
+class RuntimeConsumptionDisposition(StrEnum):
+    """The full set of runtime-control consumption dispositions.
+
+    Success: ``CONSUMED`` (first, only durable spend) and ``REPLAYED`` (a
+    same-key verified retry of the *same* invocation, returning the original
+    receipt). Non-success (each a strict typed HTTP error): ``DENIED`` (never
+    authorized), ``EXPIRED`` (approval past expiry), ``NOT_FOUND`` (approval/
+    binding not present), ``MISMATCH`` (a supplied digest did not match),
+    ``REVOKED`` (approval revoked), and ``EXHAUSTED`` (a *different* invocation
+    already spent a single-use grant).
+    """
+
+    CONSUMED = "consumed"
+    REPLAYED = "replayed"
+    DENIED = "denied"
+    EXPIRED = "expired"
+    NOT_FOUND = "not_found"
+    MISMATCH = "mismatch"
+    REVOKED = "revoked"
+    EXHAUSTED = "exhausted"
+
+
+_CONSUMPTION_SUCCESS_DISPOSITIONS = (
+    RuntimeConsumptionDisposition.CONSUMED,
+    RuntimeConsumptionDisposition.REPLAYED,
+)
 
 
 class RuntimeConsumptionReceipt(BaseModel):
-    """The durable receipt a runtime receives on a successful (or replayed)
-    consumption.
+    """The durable receipt returned on a successful (or replayed) consumption.
 
     Every field is non-null: a receipt exists only when a real durable
-    consumption record does, so ``approver_id`` and ``expires_at`` (copied from
-    the spent approval) are always present, as are the approval decision
-    version and the durable consumption revision. A same-key replay returns the
-    *original* receipt; the runtime adapter can normalize that to a local
-    "consumed" without re-spending.
+    consumption record does. ``approval_version`` is the durable approval
+    *decision* revision; ``consumption_version`` is the durable *record*
+    revision -- both distinct from ``record_contract_version`` (the record's
+    schema/contract version tag). A same-key verified replay returns the
+    original receipt with ``replayed=True``; a fresh spend has ``replayed=False``.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -234,39 +263,64 @@ class RuntimeConsumptionReceipt(BaseModel):
     consumption_id: str = Field(min_length=1, max_length=200)
     approval_id: str = Field(min_length=1, max_length=200)
     invocation_id: str = Field(min_length=1, max_length=200)
-    consumption_version: str = Field(default=APPROVAL_CONSUMPTION_RECORD_VERSION, min_length=1)
-    approval_decision_version: str = Field(min_length=1, max_length=200)
-    consumption_revision: str = Field(min_length=1, max_length=200)
+    approval_version: str = Field(min_length=1, max_length=200)
+    consumption_version: str = Field(min_length=1, max_length=200)
     approver_id: str = Field(min_length=1, max_length=200)
     expires_at: datetime
     consumed_at: datetime
+    mapping_digest: str = Field(min_length=1, max_length=200)
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    idempotency_key_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    one_time: bool = True
+    replayed: bool
+    #: Separate from the durable ``consumption_version`` revision: the schema/
+    #: contract version tag of this record's field set.
+    record_contract_version: str = Field(default=APPROVAL_CONSUMPTION_RECORD_VERSION, min_length=1)
 
 
 class RuntimeConsumptionResponse(BaseModel):
-    """Disposition + optional durable receipt for a consumption attempt.
+    """Success (HTTP 200) body for a consumption: a ``consumed``/``replayed``
+    disposition and the complete durable receipt.
 
-    ``receipt`` is present exactly for the terminal-success dispositions
-    (``CONSUMED`` and ``ALREADY_CONSUMED`` -- a completed spend or an idempotent
-    replay of the same invocation) and absent for ``DENIED``/``EXHAUSTED``, so a
-    runtime can never treat a denial or an exhausted single-use grant as a
-    usable receipt.
+    There is no non-success 200 variant: ``disposition`` is restricted to the
+    two success values and ``receipt`` is always present. Every non-success
+    disposition is a strict ``RuntimeConsumptionError`` HTTP error instead.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
     deployment_id: str = Field(min_length=1, max_length=200)
-    disposition: ApprovalConsumptionOutcome
-    receipt: RuntimeConsumptionReceipt | None = None
+    disposition: RuntimeConsumptionDisposition
+    receipt: RuntimeConsumptionReceipt
 
     @model_validator(mode="after")
-    def _receipt_present_iff_terminal_success(self) -> RuntimeConsumptionResponse:
-        terminal_success = self.disposition in (
-            ApprovalConsumptionOutcome.CONSUMED,
-            ApprovalConsumptionOutcome.ALREADY_CONSUMED,
-        )
-        if terminal_success and self.receipt is None:
-            raise ValueError(f"A '{self.disposition.value}' consumption must carry a durable receipt.")
-        if not terminal_success and self.receipt is not None:
-            raise ValueError(f"A '{self.disposition.value}' consumption must not carry a receipt.")
+    def _success_disposition_matches_receipt(self) -> RuntimeConsumptionResponse:
+        if self.disposition not in _CONSUMPTION_SUCCESS_DISPOSITIONS:
+            raise ValueError("A consumption success response disposition must be 'consumed' or 'replayed'.")
+        expected_replayed = self.disposition is RuntimeConsumptionDisposition.REPLAYED
+        if self.receipt.replayed != expected_replayed:
+            raise ValueError("receipt.replayed must agree with the disposition (replayed <-> True).")
+        return self
+
+
+class RuntimeConsumptionError(BaseModel):
+    """Strict typed error body for every non-success consumption disposition.
+
+    Unlike the fully-opaque context denial, a consumption failure surfaces its
+    exact ``disposition`` (denied/expired/not_found/mismatch/revoked/exhausted)
+    so the runtime can react correctly (e.g. stop retrying an exhausted single-
+    use grant vs re-requesting an expired approval), alongside an opaque
+    ``detail``.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    disposition: RuntimeConsumptionDisposition
+    detail: str
+
+    @model_validator(mode="after")
+    def _disposition_is_non_success(self) -> RuntimeConsumptionError:
+        if self.disposition in _CONSUMPTION_SUCCESS_DISPOSITIONS:
+            raise ValueError("A consumption error disposition must not be a success value.")
         return self
