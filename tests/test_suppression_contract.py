@@ -9,6 +9,7 @@ from scripts.check_suppression_contract import (
     _javascript_comments,
     census,
     compare_inventory,
+    mypy_excluded_files,
     mypy_module_name,
     mypy_paths,
     mypy_roots,
@@ -135,6 +136,20 @@ def test_validate_inventory_rejects_mypy_domain_drift(tmp_path: Path) -> None:
     assert "configured mypy roots differ from the packaging-derived domain" in errors
     assert "configured mypy search paths differ from packaging-derived import roots" in errors
     assert "mypy report module set differs from the packaging-derived Python domain" in errors
+
+
+def test_validate_inventory_rejects_excludes_inside_mypy_domain(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["mypyConfig"]["exclude"] = ["src/"]
+    inventory["mypyExcludedDomainFiles"] = mypy_excluded_files(
+        inventory["mypyFiles"],
+        inventory["mypyConfig"]["exclude"],
+    )
+
+    assert (
+        "mypy exclude removes files from the packaging-derived domain: "
+        "src/package/module.py"
+    ) in validate_inventory(tmp_path, inventory, [])
 
 
 def test_mypy_domain_derives_roots_paths_and_modules_from_packaging() -> None:
@@ -293,6 +308,7 @@ def _minimal_inventory() -> dict[str, Any]:
         "reportedCoverageFiles": ["src/package/module.py"],
         "moduleNames": ["package.module"],
         "mypyFiles": ["src/package/module.py"],
+        "mypyExcludedDomainFiles": [],
         "mypyModuleNames": ["package.module"],
         "reportedMypyModules": ["package.module"],
         "productionFiles": [],

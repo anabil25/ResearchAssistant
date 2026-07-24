@@ -431,6 +431,15 @@ def mypy_file_inventory(paths: list[str], roots: list[str]) -> list[str]:
     )
 
 
+def mypy_excluded_files(files: list[str], patterns: str | list[str]) -> list[str]:
+    expressions = [patterns] if isinstance(patterns, str) else patterns
+    return sorted(
+        path
+        for path in files
+        if any(re.search(expression, path) for expression in expressions)
+    )
+
+
 def mypy_module_name(path: str, search_paths: list[str]) -> str:
     file_path = PurePosixPath(path)
     matching = [
@@ -615,6 +624,7 @@ def build_inventory(
     discovered_mypy_roots = mypy_roots(paths, discovered_roots)
     discovered_mypy_paths = mypy_paths(discovered_roots)
     mypy_files = mypy_file_inventory(paths, discovered_mypy_roots)
+    mypy_config = mypy_configuration(root)
     mypy_modules = sorted(
         mypy_module_name(path, discovered_mypy_paths) for path in mypy_files
     )
@@ -630,13 +640,17 @@ def build_inventory(
     inventory = {
         "schemaVersion": SCHEMA_VERSION,
         "coverageConfig": config,
-        "mypyConfig": mypy_configuration(root),
+        "mypyConfig": mypy_config,
         "discoveredSourceRoots": discovered_roots,
         "discoveredMypyRoots": discovered_mypy_roots,
         "discoveredMypyPaths": discovered_mypy_paths,
         "sourceFiles": source_files,
         "moduleNames": modules,
         "mypyFiles": mypy_files,
+        "mypyExcludedDomainFiles": mypy_excluded_files(
+            mypy_files,
+            mypy_config["exclude"],
+        ),
         "mypyModuleNames": mypy_modules,
         "reportedMypyModules": reported_mypy_modules(mypy_report),
         "reportedCoverageFiles": reported_files,
@@ -688,6 +702,11 @@ def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]
         errors.append("configured mypy roots differ from the packaging-derived domain")
     if sorted(mypy["mypy_path"] or []) != inventory["discoveredMypyPaths"]:
         errors.append("configured mypy search paths differ from packaging-derived import roots")
+    if inventory["mypyExcludedDomainFiles"]:
+        errors.append(
+            "mypy exclude removes files from the packaging-derived domain: "
+            + ", ".join(inventory["mypyExcludedDomainFiles"])
+        )
     if inventory["mypyModuleNames"] != inventory["reportedMypyModules"]:
         errors.append("mypy report module set differs from the packaging-derived Python domain")
 
@@ -774,6 +793,7 @@ def census(inventory: dict[str, Any]) -> dict[str, Any]:
         "coverageSourceRoots": len(inventory["discoveredSourceRoots"]),
         "coverageModules": len(inventory["moduleNames"]),
         "mypyFiles": len(inventory["mypyFiles"]),
+        "mypyExcludedDomainFiles": len(inventory["mypyExcludedDomainFiles"]),
         "mypyModules": len(inventory["mypyModuleNames"]),
     }
 

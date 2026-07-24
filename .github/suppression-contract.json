@@ -682,6 +682,7 @@
     "strict": true,
     "warn_unused_ignores": true
   },
+  "mypyExcludedDomainFiles": [],
   "mypyFiles": [
     "agents/coordinator/main.py",
     "agents/dataset/main.py",
