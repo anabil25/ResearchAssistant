@@ -94,11 +94,16 @@ jobs:
         working-directory: apps/web
         run: npx playwright install --with-deps chromium
 
-      - name: Run full-stack browser tests
-        id: browser_tests
+      - name: Run atomic full-stack E2E coverage gate
+        id: e2e_gate
         continue-on-error: true
         working-directory: apps/web
-        run: npm run test:e2e
+        # Invokes the atomic `test:e2e:gate` wrapper (scripts/run-e2e-coverage-gate.mjs),
+        # not separate `test:e2e` + `verify:e2e-runtime-coverage` steps -- that split
+        # reintroduced the exact stale/leftover-report risk the atomic wrapper exists to
+        # close, since a standalone verify step has no proof the report it reads was
+        # produced by *this* invocation's Playwright run rather than an earlier one.
+        run: npm run test:e2e:gate
 
       - name: Upload Playwright report and screenshots
         if: always()
@@ -117,8 +122,8 @@ jobs:
         env:
           PYTHON_COVERAGE: ${{ steps.python_coverage.outcome }}
           JEST_COVERAGE: ${{ steps.jest_coverage.outcome }}
-          BROWSER_TESTS: ${{ steps.browser_tests.outcome }}
+          E2E_GATE: ${{ steps.e2e_gate.outcome }}
         run: |
           test "$PYTHON_COVERAGE" = "success"
           test "$JEST_COVERAGE" = "success"
-          test "$BROWSER_TESTS" = "success"
+          test "$E2E_GATE" = "success"

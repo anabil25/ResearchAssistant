@@ -197,6 +197,32 @@ describe("LiteratureStudio", () => {
     expect(screen.getByText("Claim & citation audit")).toBeInTheDocument();
     expect(screen.getByText("Resolved")).toBeInTheDocument();
     expect(screen.getByText("Unresolved")).toBeInTheDocument();
+    expect(document.querySelector('[data-audit-status="warning"]')).toHaveTextContent(
+      /unresolved references found/i,
+    );
+  });
+
+  it("marks the audit tab not-verified when no hosted-agent insight is present, even with resolved citations", async () => {
+    const user = userEvent.setup();
+    const noInsightResult = {
+      ...literatureResult,
+      insight: undefined,
+    } as unknown as LiteratureStudioResult;
+    render(
+      <LiteratureStudio
+        result={noInsightResult}
+        running={false}
+        error={null}
+        onRun={jest.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: "Audit" }));
+    expect(
+      document.querySelector('[data-audit-status="not-verified"]'),
+    ).toHaveTextContent(/not verified — no hosted-agent insight/i);
+    expect(document.querySelector('[data-audit-status="passed"]')).toBeNull();
+    expect(document.querySelector('[data-audit-status="warning"]')).toBeNull();
   });
 
   it("adds and removes inclusion/exclusion criteria and sends them on run", async () => {
@@ -323,7 +349,7 @@ describe("LiteratureStudio", () => {
       target: { value: "2018" },
     });
     fireEvent.change(screen.getByLabelText("Through"), {
-      target: { value: "2027" },
+      target: { value: "2019" },
     });
     await user.type(
       screen.getByPlaceholderText("Add inclusion criterion"),
@@ -360,7 +386,7 @@ describe("LiteratureStudio", () => {
     );
     expect(onRun.mock.calls[0][2].onlineResearch).toBe(true);
     expect(inputs.date_from).toBe(2018);
-    expect(inputs.date_to).toBe(2027);
+    expect(inputs.date_to).toBe(2019);
     expect(inputs.sources).toContain("arXiv");
     expect(inputs.sources).not.toContain("PubMed");
     expect(inputs.inclusion_criteria).toContain(
@@ -401,6 +427,49 @@ describe("LiteratureStudio", () => {
     },
     10000,
   );
+
+  it("blocks submission for an out-of-order or future-dated protocol window and recovers once corrected", async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <LiteratureStudio
+        result={literatureResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+
+    const publishedFrom = screen.getByLabelText("Published from");
+    const through = screen.getByLabelText("Through");
+    const runButton = screen.getByRole("button", {
+      name: "Search & screen evidence",
+    });
+
+    fireEvent.change(publishedFrom, { target: { value: "2022" } });
+    fireEvent.change(through, { target: { value: "2019" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /must not be after/i,
+    );
+    expect(publishedFrom).toHaveAttribute("aria-invalid", "true");
+    expect(through).toHaveAttribute("aria-invalid", "true");
+    expect(runButton).toBeDisabled();
+
+    const futureYear = String(new Date().getFullYear() + 1);
+    fireEvent.change(publishedFrom, { target: { value: "2020" } });
+    fireEvent.change(through, { target: { value: futureYear } });
+    expect(screen.getByRole("alert")).toHaveTextContent(/future/i);
+    expect(runButton).toBeDisabled();
+
+    fireEvent.change(through, { target: { value: "2024" } });
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(runButton).toBeEnabled();
+
+    await user.click(runButton);
+    expect(onRun).toHaveBeenCalledTimes(1);
+    expect(onRun.mock.calls[0][2].inputs.date_from).toBe(2020);
+    expect(onRun.mock.calls[0][2].inputs.date_to).toBe(2024);
+  });
 
   it("updates every extraction field and clears the export notice on edit", async () => {
     const user = userEvent.setup();
@@ -493,6 +562,9 @@ describe("LiteratureStudio", () => {
     await user.click(screen.getByRole("button", { name: "Audit" }));
     expect(document.querySelector(".metric-line")?.textContent).toContain(
       "1 resolved",
+    );
+    expect(document.querySelector('[data-audit-status="passed"]')).toHaveTextContent(
+      /passed — every citation was checked/i,
     );
 
     await user.click(screen.getByRole("button", { name: "Extract" }));
@@ -996,6 +1068,130 @@ describe("GrantStudio", () => {
     ).toBeDisabled();
   });
 
+  it("maps configuration_required and unavailable funding connector test_status to distinct non-runnable states and excludes them from the run payload", async () => {
+    const user = userEvent.setup();    const onRun = jest.fn().mockResolvedValue(undefined);
+    const data: Pick<WorkspaceData, "connectors"> = {
+      connectors: [
+        workspaceData.connectors[0],
+        {
+          id: "foundation_dir",
+          name: "Foundation Directory",
+          category: "Funding",
+          description: "Private foundation opportunity records.",
+          auth_kind: "None",
+          secret_status: "Not required",
+          enabled: true,
+          test_status: "configuration_required",
+          last_tested_at: null,
+          assigned_agents: ["grant"],
+          terms_url: "https://foundationdirectory.example.test/",
+          data_boundary: "Public metadata only.",
+          capabilities: ["Awards"],
+        },
+        {
+          id: "crossref",
+          name: "Crossref",
+          category: "Funding",
+          description: "DOI metadata and scholarly work resolution.",
+          auth_kind: "None",
+          secret_status: "Not required",
+          enabled: true,
+          test_status: "unavailable",
+          last_tested_at: null,
+          assigned_agents: ["grant"],
+          terms_url: "https://www.crossref.org/services/metadata-delivery/rest-api/",
+          data_boundary: "Public metadata only.",
+          capabilities: ["DOI resolution"],
+        },
+      ],
+    };
+    render(
+      <GrantStudio
+        result={grantResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+        data={data as unknown as WorkspaceData}
+      />,
+    );
+
+    const needsConnectionCheckbox = screen.getByRole("checkbox", {
+      name: /Foundation Directory/i,
+    });
+    const unavailableCheckbox = screen.getByRole("checkbox", { name: /Crossref/i });
+    expect(needsConnectionCheckbox).toBeDisabled();
+    expect(needsConnectionCheckbox).not.toBeChecked();
+    expect(unavailableCheckbox).toBeDisabled();
+    expect(unavailableCheckbox).not.toBeChecked();
+    expect(screen.getByText("Needs connection setup")).toBeInTheDocument();
+    expect(screen.getByText("Currently unavailable")).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: /red-team draft/i }));
+    const fundingSources = onRun.mock.calls[0][2].inputs.funding_sources;
+    expect(fundingSources).toContain("grants_gov");
+    expect(fundingSources).not.toContain("foundation_dir");
+    expect(fundingSources).not.toContain("crossref");
+  });
+
+  it("removes a previously discoverable connector from Opportunity discovery once a test-connection refresh reports it non-runnable", async () => {
+    // Regression: `fundingSources` selection alone must not keep a
+    // connector listed as a searchable/usable opportunity source once its
+    // live test_status stops being runnable. Simulates the connector
+    // becoming unavailable after a "Test connection" refresh (a data prop
+    // update, since the connector's readiness is server-derived) while it
+    // remains present in the reviewer's already-selected fundingSources.
+    const readyData: Pick<WorkspaceData, "connectors"> = {
+      connectors: [workspaceData.connectors[0]],
+    };
+    const { rerender } = render(
+      <GrantStudio
+        result={grantResult}
+        running={false}
+        error={null}
+        onRun={jest.fn()}
+        data={readyData as unknown as WorkspaceData}
+      />,
+    );
+
+    const discoveryPanel = screen.getByLabelText("Opportunity discovery");
+    expect(within(discoveryPanel).getByText("Grants.gov")).toBeInTheDocument();
+    const fundingPanel = screen.getByLabelText("Funding source discovery");
+    expect(
+      within(fundingPanel).getByRole("checkbox", { name: /Grants\.gov/i }),
+    ).toBeChecked();
+
+    const nowUnavailableData: Pick<WorkspaceData, "connectors"> = {
+      connectors: [
+        { ...workspaceData.connectors[0], test_status: "unavailable" },
+      ],
+    };
+    rerender(
+      <GrantStudio
+        result={grantResult}
+        running={false}
+        error={null}
+        onRun={jest.fn()}
+        data={nowUnavailableData as unknown as WorkspaceData}
+      />,
+    );
+
+    expect(
+      within(discoveryPanel).queryByText("Grants.gov"),
+    ).not.toBeInTheDocument();
+    expect(
+      within(discoveryPanel).getByText(
+        /select at least one funding connector above/i,
+      ),
+    ).toBeInTheDocument();
+    expect(
+      within(fundingPanel).getByRole("checkbox", { name: /Grants\.gov/i }),
+    ).toBeDisabled();
+    expect(
+      within(fundingPanel).getByRole("checkbox", { name: /Grants\.gov/i }),
+    ).not.toBeChecked();
+    expect(screen.getByText("Currently unavailable")).toBeInTheDocument();
+  });
+
   it("keeps incomplete connector requests out of the draft list and shows mapped requirements without matching evidence", async () => {
     const user = userEvent.setup();
     const sparseGrant = {
@@ -1391,6 +1587,95 @@ describe("MatchingStudio", () => {
     expect(screen.getByText("Shortlist (1)")).toBeInTheDocument();
   });
 
+  it("maps configuration_required and unavailable test_status to distinct non-runnable states and excludes them from the run payload", async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    const data: Pick<WorkspaceData, "connectors"> = {
+      connectors: [
+        {
+          id: "openalex",
+          name: "OpenAlex",
+          category: "Discovery",
+          description: "Open catalog of works, people, and institutions.",
+          auth_kind: "None",
+          secret_status: "Not required",
+          enabled: true,
+          test_status: "ready",
+          last_tested_at: null,
+          assigned_agents: ["matching"],
+          terms_url: "https://docs.openalex.org/",
+          data_boundary: "Public metadata only.",
+          capabilities: ["Search", "Entity leads"],
+        },
+        {
+          id: "ror",
+          name: "ROR",
+          category: "Identity",
+          description: "Open identifiers for research organizations.",
+          auth_kind: "None",
+          secret_status: "Not required",
+          enabled: true,
+          test_status: "configuration_required",
+          last_tested_at: null,
+          assigned_agents: ["matching"],
+          terms_url: "https://ror.org/terms/",
+          data_boundary: "Public metadata only.",
+          capabilities: ["Organization resolution"],
+        },
+        {
+          id: "orcid",
+          name: "ORCID",
+          category: "Identity",
+          description: "Public researcher identifier records.",
+          auth_kind: "None",
+          secret_status: "Not required",
+          enabled: true,
+          test_status: "unavailable",
+          last_tested_at: null,
+          assigned_agents: ["matching"],
+          terms_url: "https://info.orcid.org/terms-of-use/",
+          data_boundary: "Public metadata only.",
+          capabilities: ["Identity resolution"],
+        },
+      ],
+    };
+    render(
+      <MatchingStudio
+        result={null}
+        running={false}
+        error={null}
+        onRun={onRun}
+        data={data as unknown as WorkspaceData}
+      />,
+    );
+
+    const readyCheckbox = screen.getByRole("checkbox", { name: "OpenAlex" });
+    const needsConnectionCheckbox = screen.getByRole("checkbox", {
+      name: /^ROR/,
+    });
+    const unavailableCheckbox = screen.getByRole("checkbox", {
+      name: /^ORCID/,
+    });
+
+    expect(readyCheckbox).toBeEnabled();
+    expect(readyCheckbox).toBeChecked();
+    expect(needsConnectionCheckbox).toBeDisabled();
+    expect(needsConnectionCheckbox).not.toBeChecked();
+    expect(unavailableCheckbox).toBeDisabled();
+    expect(unavailableCheckbox).not.toBeChecked();
+    expect(screen.getByText("Needs connection setup")).toBeInTheDocument();
+    expect(screen.getByText("Currently unavailable")).toBeInTheDocument();
+
+    await user.click(
+      screen.getByRole("button", { name: "Build verified shortlist" }),
+    );
+
+    const inputs = onRun.mock.calls[0][2].inputs;
+    expect(inputs.sources).toContain("openalex");
+    expect(inputs.sources).not.toContain("ror");
+    expect(inputs.sources).not.toContain("orcid");
+  });
+
   it("re-adds hard filters and flags matches that still have hard-filter gaps", async () => {
     const user = userEvent.setup();
     const onRun = jest.fn().mockResolvedValue(undefined);
@@ -1687,7 +1972,7 @@ describe("DatasetStudio", () => {
     ).toBeDisabled();
   });
 
-  it("renders computed and estimate-only dataset details", () => {
+  it("renders computed and estimate-only dataset details", async () => {
     const { rerender } = render(
       <DatasetStudio
         result={computedDatasetResult}
@@ -1707,9 +1992,13 @@ describe("DatasetStudio", () => {
     expect(
       screen.getByText("Safe for bounded local computation"),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
-      "Computation remained within the approved boundary.",
-    );
+    // ResearchMarkdown is lazy-loaded (React.lazy + dynamic import), so its
+    // Suspense fallback needs at least one microtask flush before the mocked
+    // component appears -- findBy* awaits that instead of asserting
+    // synchronously against the not-yet-resolved fallback.
+    expect(
+      await screen.findByTestId("research-markdown"),
+    ).toHaveTextContent("Computation remained within the approved boundary.");
 
     rerender(
       <DatasetStudio
@@ -1810,7 +2099,7 @@ describe("DatasetStudio", () => {
     expect(screen.getByText("— min")).toBeInTheDocument();
   });
 
-  it("handles canceled uploads, JSON submits, and non-text CSV previews", async () => {
+  it("handles canceled uploads and non-text CSV previews, and never enables Run for a JSON upload", async () => {
     const user = userEvent.setup();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const fileReaderSpy = jest
@@ -1849,6 +2138,10 @@ describe("DatasetStudio", () => {
     });
     expect(screen.getByText("binary.csv")).toBeInTheDocument();
 
+    // A JSON upload never reads bytes (no FileReader is invoked for it) and
+    // must never enable Run: the request payload would omit `csv_text`
+    // entirely, contradicting the visible "JSON preview only uploads to
+    // Library" copy. Approving the plan alone must not be enough.
     fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
       target: {
         files: [
@@ -1863,12 +2156,17 @@ describe("DatasetStudio", () => {
         /i approve sending this bounded dataset to the foundry dataset agent/i,
       ),
     );
+    expect(
+      screen.getByRole("button", {
+        name: "Analyze with Foundry Code Interpreter",
+      }),
+    ).toBeDisabled();
     await user.click(
       screen.getByRole("button", {
         name: "Analyze with Foundry Code Interpreter",
       }),
     );
-    expect(onRun.mock.calls[0][2].inputs).not.toHaveProperty("csv_text");
+    expect(onRun).not.toHaveBeenCalled();
     fileReaderSpy.mockRestore();
   });
 
@@ -1950,9 +2248,10 @@ describe("DatasetStudio", () => {
         };
         return reader as unknown as FileReader;
       });
+    const onRun = jest.fn();
 
     render(
-      <DatasetStudio result={null} running={false} error={null} onRun={jest.fn()} />,
+      <DatasetStudio result={null} running={false} error={null} onRun={onRun} />,
     );
 
     fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
@@ -1977,12 +2276,274 @@ describe("DatasetStudio", () => {
     const runButton = screen.getByRole("button", {
       name: "Analyze with Foundry Code Interpreter",
     });
+    // Real defect fix: runDisabled previously only checked
+    // csvReadStatus === "reading", so approving the plan after a failed CSV
+    // read left the button enabled and a run could be submitted with no
+    // csv_text at all. csvReadStatus "error" must block the run exactly
+    // like "reading" does, until a newly-selected file reaches "ready".
     fireEvent.click(
       screen.getByLabelText(
         /i approve sending this bounded dataset to the foundry dataset agent/i,
       ),
     );
-    expect(runButton).toBeEnabled();
+    expect(runButton).toBeDisabled();
+    // Defense in depth: the form's onSubmit guard must also refuse to fire
+    // onRun even if a disabled button were somehow bypassed (e.g. Enter key).
+    fireEvent.submit(runButton.closest("form") as HTMLFormElement);
+    expect(onRun).not.toHaveBeenCalled();
+    fileReaderSpy.mockRestore();
+  });
+
+  it("[pw.dataset-upload:error] treats a zero-byte CSV file as a read error instead of silently reaching ready", async () => {
+    // Real defect fix: FileReader succeeds with `result === ""` for an empty
+    // file, and `csvText ? {csv_text: csvText} : {}` treated that empty
+    // string as falsy -- silently omitting `csv_text` from the submitted
+    // payload while csvReadStatus still became "ready" and the RunButton
+    // enabled, so the UI claimed the asset was ready when the backend would
+    // never receive any CSV content at all. Empty content must be surfaced
+    // as an explicit read error, never as "ready".
+    let deliverLoad: (() => void) | null = null;
+    const fileReaderSpy = jest
+      .spyOn(window, "FileReader")
+      .mockImplementation(() => {
+        const reader: {
+          result: string;
+          onload: ((event: ProgressEvent<FileReader>) => void) | null;
+          onerror: ((event: ProgressEvent<FileReader>) => void) | null;
+          readAsText: () => void;
+        } = {
+          result: "",
+          onload: null,
+          onerror: null,
+          readAsText() {
+            deliverLoad = () =>
+              reader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+          },
+        };
+        return reader as unknown as FileReader;
+      });
+    const onRun = jest.fn();
+
+    render(
+      <DatasetStudio result={null} running={false} error={null} onRun={onRun} />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [new File([""], "empty.csv", { type: "text/csv" })],
+      },
+    });
+
+    const tile = screen
+      .getByText("empty.csv")
+      .closest(".asset-upload-tile") as HTMLElement;
+    expect(tile).toHaveAttribute("data-read-status", "reading");
+
+    await act(async () => {
+      deliverLoad?.();
+    });
+
+    expect(tile).toHaveAttribute("data-read-status", "error");
+    expect(screen.getByText(/this csv file is empty/i)).toBeInTheDocument();
+
+    const runButton = screen.getByRole("button", {
+      name: "Analyze with Foundry Code Interpreter",
+    });
+    fireEvent.click(
+      screen.getByLabelText(
+        /i approve sending this bounded dataset to the foundry dataset agent/i,
+      ),
+    );
+    expect(runButton).toBeDisabled();
+    fireEvent.submit(runButton.closest("form") as HTMLFormElement);
+    expect(onRun).not.toHaveBeenCalled();
+    fileReaderSpy.mockRestore();
+  });
+
+  it("[pw.dataset-upload:reading] ignores a stale reader when rapid reselection supersedes it before the first read resolves", async () => {
+    type MockReader = {
+      result: string | null;
+      onload: ((event: ProgressEvent<FileReader>) => void) | null;
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null;
+      onabort: (() => void) | null;
+      abort: jest.Mock;
+      readAsText: jest.Mock;
+    };
+    const readers: MockReader[] = [];
+    const fileReaderSpy = jest
+      .spyOn(window, "FileReader")
+      .mockImplementation(() => {
+        const reader: MockReader = {
+          result: null,
+          onload: null,
+          onerror: null,
+          onabort: null,
+          abort: jest.fn(),
+          readAsText: jest.fn(),
+        };
+        readers.push(reader);
+        return reader as unknown as FileReader;
+      });
+    const onRun = jest.fn().mockResolvedValue(undefined);
+
+    render(
+      <DatasetStudio result={null} running={false} error={null} onRun={onRun} />,
+    );
+
+    // Select the first file; its reader is created but deliberately never
+    // delivered yet (readAsText is a no-op stub), simulating a slow read.
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [
+          new File(["id,outcome\n1,first-file-content\n"], "first.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+
+    // Rapidly reselect a different file before the first read resolves.
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [
+          new File(["id,outcome\n2,second-file-content\n"], "second.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+
+    expect(readers).toHaveLength(2);
+    const [staleReader, currentReader] = readers;
+    // The superseded reader is aborted as a defense-in-depth measure.
+    expect(staleReader.abort).toHaveBeenCalledTimes(1);
+
+    const tile = screen
+      .getByText("second.csv")
+      .closest(".asset-upload-tile") as HTMLElement;
+    expect(tile).toHaveAttribute("data-read-status", "reading");
+
+    // The newer (current) reader resolves first.
+    currentReader.result = "id,outcome\n2,second-file-content\n";
+    await act(async () => {
+      currentReader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+    });
+    expect(tile).toHaveAttribute("data-read-status", "ready");
+
+    // The stale first reader resolves out of order, after abort() was
+    // already called on it. Its onload must still be ignored even though it
+    // fires, proving the generation guard — not just abort() — protects
+    // state.
+    staleReader.result = "id,outcome\n1,first-file-content\n";
+    await act(async () => {
+      staleReader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+    });
+
+    expect(tile).toHaveAttribute("data-read-status", "ready");
+    expect(screen.getByText("second.csv")).toBeInTheDocument();
+
+    fireEvent.click(
+      screen.getByLabelText(
+        /i approve sending this bounded dataset to the foundry dataset agent/i,
+      ),
+    );
+    await act(async () => {
+      fireEvent.click(
+        screen.getByRole("button", {
+          name: "Analyze with Foundry Code Interpreter",
+        }),
+      );
+    });
+
+    expect(onRun).toHaveBeenCalledTimes(1);
+    const inputs = onRun.mock.calls[0][2].inputs as {
+      filename: string;
+      csv_text?: string;
+    };
+    expect(inputs.filename).toBe("second.csv");
+    expect(inputs.csv_text).toContain("second-file-content");
+    expect(inputs.csv_text).not.toContain("first-file-content");
+
+    fileReaderSpy.mockRestore();
+  });
+
+  it("[pw.dataset-upload:reading] ignores a stale reader's onerror after a newer file supersedes it", async () => {
+    type MockReader = {
+      result: string | null;
+      onload: ((event: ProgressEvent<FileReader>) => void) | null;
+      onerror: ((event: ProgressEvent<FileReader>) => void) | null;
+      abort: jest.Mock;
+      readAsText: jest.Mock;
+    };
+    const readers: MockReader[] = [];
+    const fileReaderSpy = jest
+      .spyOn(window, "FileReader")
+      .mockImplementation(() => {
+        const reader: MockReader = {
+          result: null,
+          onload: null,
+          onerror: null,
+          abort: jest.fn(),
+          readAsText: jest.fn(),
+        };
+        readers.push(reader);
+        return reader as unknown as FileReader;
+      });
+
+    render(
+      <DatasetStudio
+        result={null}
+        running={false}
+        error={null}
+        onRun={jest.fn()}
+      />,
+    );
+
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [
+          new File(["id,outcome\n1,first-file-content\n"], "first.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+    fireEvent.change(screen.getByLabelText("Upload a dataset file"), {
+      target: {
+        files: [
+          new File(["id,outcome\n2,second-file-content\n"], "second.csv", {
+            type: "text/csv",
+          }),
+        ],
+      },
+    });
+
+    expect(readers).toHaveLength(2);
+    const [staleReader, currentReader] = readers;
+
+    const tile = screen
+      .getByText("second.csv")
+      .closest(".asset-upload-tile") as HTMLElement;
+
+    currentReader.result = "id,outcome\n2,second-file-content\n";
+    await act(async () => {
+      currentReader.onload?.(new ProgressEvent("load") as ProgressEvent<FileReader>);
+    });
+    expect(tile).toHaveAttribute("data-read-status", "ready");
+
+    // The stale first reader fails out of order after being superseded; the
+    // guard must ignore its onerror too, so no error banner appears and the
+    // newer file's "ready" status/content stand untouched.
+    await act(async () => {
+      staleReader.onerror?.(new ProgressEvent("error") as ProgressEvent<FileReader>);
+    });
+
+    expect(tile).toHaveAttribute("data-read-status", "ready");
+    expect(screen.getByText("second.csv")).toBeInTheDocument();
+    expect(
+      screen.queryByText(/this csv file could not be read/i),
+    ).not.toBeInTheDocument();
+
     fileReaderSpy.mockRestore();
   });
 });
@@ -2199,6 +2760,11 @@ describe("AutomationStudio", () => {
     run: baseRun({ capability: "orchestration" }),
     template_id: "evidence-review-v2",
     trigger: "Manual",
+    // Matches AUTOMATION_TEMPLATES[0] ("evidence-review-v2")'s full,
+    // unedited default step graph exactly, so this fixture represents a
+    // genuine passing dry run *for the graph currently on screen* rather
+    // than for some other, smaller graph -- see the "gates activation"
+    // test below for why that distinction matters.
     steps: [
       {
         id: "ingest",
@@ -2206,6 +2772,38 @@ describe("AutomationStudio", () => {
         kind: "activity",
         depends_on: [],
         retry_limit: 3,
+        approval_required: false,
+      },
+      {
+        id: "retrieve",
+        label: "Retrieve evidence",
+        kind: "fan_out",
+        depends_on: ["ingest"],
+        retry_limit: 2,
+        approval_required: false,
+      },
+      {
+        id: "synthesize",
+        label: "Synthesize",
+        kind: "agent",
+        depends_on: ["retrieve"],
+        retry_limit: 1,
+        approval_required: false,
+      },
+      {
+        id: "review",
+        label: "Human review",
+        kind: "approval",
+        depends_on: ["synthesize"],
+        retry_limit: 0,
+        approval_required: true,
+      },
+      {
+        id: "export",
+        label: "Export",
+        kind: "external_action",
+        depends_on: ["review"],
+        retry_limit: 2,
         approval_required: false,
       },
     ],
@@ -2249,7 +2847,7 @@ describe("AutomationStudio", () => {
 
     await user.click(screen.getByRole("button", { name: "Add step" }));
     await user.type(screen.getByLabelText("Step label"), "Notify reviewer");
-    await user.click(screen.getByRole("button", { name: "Add" }));
+    await user.keyboard("{Enter}");
     const stepEditor = screen.getByRole("region", {
       name: "Workflow step editor",
     });
@@ -2261,7 +2859,7 @@ describe("AutomationStudio", () => {
     const retryInput = screen.getByLabelText("Retry limit (0-5)");
     await user.clear(retryInput);
     await user.type(retryInput, "2");
-    await user.click(screen.getByRole("button", { name: "Save" }));
+    await user.keyboard("{Enter}");
 
     await user.click(
       screen.getByRole("button", { name: "Validate & dry run" }),
@@ -2276,18 +2874,28 @@ describe("AutomationStudio", () => {
 
   it("gates activation behind a passing dry run and an explicit confirmation", async () => {
     const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
         result={automationResult}
         running={false}
         error={null}
-        onRun={jest.fn()}
+        onRun={onRun}
       />,
     );
 
     const activateButton = screen.getByRole("button", {
       name: "Activate after approval",
     });
+    // A passed result the parent already happens to be holding at mount
+    // does not by itself authorize activation: nothing in *this* session
+    // has confirmed it corresponds to the currently displayed graph, so it
+    // starts disabled until an explicit dry run is (re-)run here.
+    expect(activateButton).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(onRun).toHaveBeenCalledTimes(1);
     expect(activateButton).toBeEnabled();
     await user.click(activateButton);
 
@@ -2298,6 +2906,181 @@ describe("AutomationStudio", () => {
     expect(
       screen.getByRole("button", { name: /activated \(draft workspace\)/i }),
     ).toBeDisabled();
+  });
+
+  it("invalidates a passing dry run after edits and while revalidation is pending or errored", async () => {
+    const user = userEvent.setup();
+    let resolveRun!: () => void;
+    const onRun = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+    const { rerender } = render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    const activateButton = screen.getByRole("button", {
+      name: "Activate after approval",
+    });
+
+    // A passed result the parent already holds at mount does not by
+    // itself authorize activation until this session runs its own dry run.
+    expect(activateButton).toBeDisabled();
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(
+      screen.getByRole("button", { name: "Running workflow..." }),
+    ).toBeDisabled();
+    expect(activateButton).toBeDisabled();
+    await act(async () => resolveRun());
+    expect(activateButton).toBeEnabled();
+
+    // Editing the configuration after a pass immediately invalidates it.
+    await user.selectOptions(screen.getByLabelText("Trigger"), "GitHub");
+    expect(activateButton).toBeDisabled();
+
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(activateButton).toBeDisabled();
+    await act(async () => resolveRun());
+    // The parent hasn't applied an updated result yet -- the studio still
+    // only has the stale, pre-edit "Manual" result -- so a resolved dry
+    // run with no matching server-echoed content still does not enable
+    // activation. A mismatched/stale result stays disabled.
+    expect(activateButton).toBeDisabled();
+
+    rerender(
+      <AutomationStudio
+        result={{ ...automationResult, trigger: "GitHub" }}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    // Once the parent applies the exact server-echoed result for the
+    // configuration currently on screen, activation is enabled again.
+    expect(activateButton).toBeEnabled();
+
+    rerender(
+      <AutomationStudio
+        result={{ ...automationResult, trigger: "GitHub" }}
+        running={false}
+        error="Validation transport failed"
+        onRun={onRun}
+      />,
+    );
+    expect(activateButton).toBeDisabled();
+
+    rerender(
+      <AutomationStudio
+        result={{ ...automationResult, trigger: "GitHub" }}
+        running
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    expect(activateButton).toBeDisabled();
+
+    rerender(
+      <AutomationStudio
+        result={{
+          ...automationResult,
+          trigger: "GitHub",
+          validation_errors: ["Approval policy is incomplete."],
+        }}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    expect(activateButton).toBeDisabled();
+  });
+
+  it("does not re-enable activation when an edit is reverted back to the last-validated content without a fresh dry run", async () => {
+    // Regression for an edit-away-then-edit-back fingerprint bypass: the
+    // activation gate must track *which draft version* was actually dry
+    // run, not just whether the current content happens to match the last
+    // validated content again. An edit that is undone (reverted to
+    // byte-identical configuration) must still require a new dry run
+    // before activation is allowed.
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    const activateButton = screen.getByRole("button", {
+      name: "Activate after approval",
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(activateButton).toBeEnabled();
+
+    // Edit away from the validated configuration...
+    await user.selectOptions(screen.getByLabelText("Trigger"), "GitHub");
+    expect(activateButton).toBeDisabled();
+
+    // ...then edit back to byte-identical content ("Manual", matching the
+    // still-current `automationResult` prop) without ever running a new
+    // dry run. Content equality alone must not be enough to re-enable
+    // activation.
+    await user.selectOptions(screen.getByLabelText("Trigger"), "Manual");
+    expect(activateButton).toBeDisabled();
+  });
+
+  it("cannot activate through a stale-open confirmation dialog after an edit invalidates the gate while it is open", async () => {
+    // Regression: the "Confirm activation" button must recheck the gate at
+    // confirm time, not just trust that it was valid when the dialog was
+    // opened. Opening the dialog and then invalidating the draft (an edit,
+    // here removing a step) before pressing "Confirm activation" must not
+    // activate.
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+    const activateButton = screen.getByRole("button", {
+      name: "Activate after approval",
+    });
+
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(activateButton).toBeEnabled();
+    await user.click(activateButton);
+    const dialog = screen.getByRole("dialog", { name: /activate graph/i });
+
+    // Invalidate the gate while the confirmation dialog is still open.
+    await user.click(
+      screen.getByRole("button", { name: "Remove Export" }),
+    );
+
+    await user.click(
+      within(dialog).getByRole("button", { name: "Confirm activation" }),
+    );
+    expect(
+      screen.queryByRole("button", { name: /activated \(draft workspace\)/i }),
+    ).not.toBeInTheDocument();
+    expect(activateButton).toBeDisabled();
   });
 
   it("adds only an authorized capability catalog entry to the graph and blocks an unauthorized one", async () => {
@@ -2502,6 +3285,8 @@ describe("AutomationStudio", () => {
 
     expect(screen.getByRole("alert")).toHaveTextContent("Dry run failed");
     await user.click(screen.getByRole("button", { name: /Grant red team/i }));
+    expect(screen.getAllByText("Parse notice")).toHaveLength(2);
+    expect(screen.queryByText("Ingest & verify")).not.toBeInTheDocument();
     await user.selectOptions(screen.getByLabelText("Trigger"), "Schedule");
     await user.click(
       screen.getByRole("button", { name: "Preview Literature Studio" }),
@@ -2523,6 +3308,15 @@ describe("AutomationStudio", () => {
       template_id: "grant-review-v2",
       trigger: "Schedule",
     });
+    expect(onRun.mock.calls[0][2].inputs.steps).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ id: "parse-notice", label: "Parse notice" }),
+        expect.objectContaining({
+          id: "approve-submission",
+          approval_required: true,
+        }),
+      ]),
+    );
     expect(
       screen.getByText("Review step depends on missing evidence output."),
     ).toBeInTheDocument();
@@ -2533,18 +3327,27 @@ describe("AutomationStudio", () => {
 
   it("supports canceling drafts, editing dependencies, removing steps, and dismissing activation dialogs", async () => {
     const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
         result={automationResult}
         running={false}
         error={null}
-        onRun={jest.fn()}
+        onRun={onRun}
       />,
     );
 
     const activateButton = screen.getByRole("button", {
       name: "Activate after approval",
     });
+    // Establish a genuine local pass (matching content, matching draft
+    // version) before exercising the activation dialog -- this test isn't
+    // about the fingerprint/version gate itself, just the dialog UI, so
+    // get past the gate the same way a real user would.
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(activateButton).toBeEnabled();
     await user.click(activateButton);
     let dialog = screen.getByRole("dialog", { name: /activate graph/i });
     await user.click(within(dialog).getByLabelText("Close activation dialog"));
@@ -2563,6 +3366,11 @@ describe("AutomationStudio", () => {
     const stepEditor = screen.getByRole("region", {
       name: "Workflow step editor",
     });
+    expect(
+      within(stepEditor).getByRole("button", { name: "Add" }),
+    ).toBeDisabled();
+    await user.click(screen.getByLabelText("Step label"));
+    await user.keyboard("{Enter}");
     expect(
       within(stepEditor).getByRole("button", { name: "Add" }),
     ).toBeDisabled();
@@ -2620,6 +3428,51 @@ describe("AutomationStudio", () => {
           data_boundary: "Project outputs only.",
           capabilities: ["Export"],
         },
+        {
+          id: "unready_export",
+          name: "Unready Export",
+          category: "Storage",
+          description: "Not yet proven ready.",
+          auth_kind: "OAuth",
+          secret_status: "Configured",
+          enabled: true,
+          test_status: "error",
+          last_tested_at: null,
+          assigned_agents: ["orchestration"],
+          terms_url: "https://example.test/unready",
+          data_boundary: "Project outputs only.",
+          capabilities: ["Export"],
+        },
+        {
+          id: "grant_only_export",
+          name: "Grant-only Export",
+          category: "Storage",
+          description: "Ready but assigned outside orchestration.",
+          auth_kind: "OAuth",
+          secret_status: "Configured",
+          enabled: true,
+          test_status: "ready",
+          last_tested_at: null,
+          assigned_agents: ["grant"],
+          terms_url: "https://example.test/grant-only",
+          data_boundary: "Grant outputs only.",
+          capabilities: ["Export"],
+        },
+        {
+          id: "ready_with_key_export",
+          name: "Ready-with-key Export",
+          category: "Storage",
+          description: "Runnable using a provided API key.",
+          auth_kind: "ApiKey",
+          secret_status: "Configured",
+          enabled: true,
+          test_status: "ready_with_key",
+          last_tested_at: null,
+          assigned_agents: ["orchestration"],
+          terms_url: "https://example.test/ready-with-key",
+          data_boundary: "Project outputs only.",
+          capabilities: ["Export"],
+        },
       ],
       runs: [
         {
@@ -2661,6 +3514,29 @@ describe("AutomationStudio", () => {
     expect(
       screen.getByRole("button", { name: "Remove OneDrive Export" }),
     ).toBeInTheDocument();
+    const unreadyRow = within(catalog)
+      .getByText("Unready Export")
+      .closest(".step-editor-row") as HTMLElement;
+    expect(
+      within(unreadyRow).getByRole("button", { name: "Add to graph" }),
+    ).toBeDisabled();
+    const grantOnlyRow = within(catalog)
+      .getByText("Grant-only Export")
+      .closest(".step-editor-row") as HTMLElement;
+    expect(
+      within(grantOnlyRow).getByRole("button", { name: "Add to graph" }),
+    ).toBeDisabled();
+    // Regression: a "ready_with_key" connector (API-key-backed, not OAuth) is
+    // a genuinely runnable status per the shared isConnectorRunnable/
+    // connectorAvailability helper, not just "ready" — the catalog's
+    // authorization check must recognize it, not silently exclude it via an
+    // inline `test_status === "ready"` comparison.
+    const readyWithKeyRow = within(catalog)
+      .getByText("Ready-with-key Export")
+      .closest(".step-editor-row") as HTMLElement;
+    expect(
+      within(readyWithKeyRow).getByRole("button", { name: "Add to graph" }),
+    ).toBeEnabled();
 
     const runManager = screen.getByRole("region", {
       name: "Workflow run management",
@@ -2688,7 +3564,14 @@ describe("AutomationStudio", () => {
       connectors: [],
       runs: [],
     };
-    render(
+    let resolveRun!: () => void;
+    const onRun = jest.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          resolveRun = resolve;
+        }),
+    );
+    const { rerender } = render(
       <AutomationStudio
         result={{
           ...automationResult,
@@ -2697,7 +3580,7 @@ describe("AutomationStudio", () => {
         } as unknown as AutomationStudioResult}
         running={false}
         error={null}
-        onRun={jest.fn()}
+        onRun={onRun}
         data={data as unknown as WorkspaceData}
       />,
     );
@@ -2758,9 +3641,35 @@ describe("AutomationStudio", () => {
       await user.click(screen.getByRole("button", { name: "Save" }));
       expect(screen.getAllByText("Ingest & verify").length).toBeGreaterThan(0);
 
-      await user.click(
-        screen.getByRole("button", { name: "Activate after approval" }),
+      const activateButton = screen.getByRole("button", {
+        name: "Activate after approval",
+      });
+      expect(activateButton).toBeDisabled();
+      await user.click(screen.getByRole("button", { name: "Validate & dry run" }));
+      await act(async () => resolveRun());
+      // The parent hasn't applied a result matching this reduced,
+      // single-step graph yet, so activation stays gated even though a
+      // dry run just resolved.
+      expect(activateButton).toBeDisabled();
+      rerender(
+        <AutomationStudio
+          result={{
+            ...automationResult,
+            trigger: "Manual",
+            steps: [automationResult.steps[0]],
+            validation_errors: [],
+            dry_run_status: "passed",
+            graph_version: undefined,
+            graph_hash: "",
+          } as unknown as AutomationStudioResult}
+          running={false}
+          error={null}
+          onRun={onRun}
+          data={data as unknown as WorkspaceData}
+        />,
       );
+      expect(activateButton).toBeEnabled();
+      await user.click(activateButton);
       const dialog = screen.getByRole("dialog", { name: /activate graph 2\.0/i });
       expect(dialog).toHaveTextContent("Activate graph 2.0");
       expect(dialog).not.toHaveTextContent("(hash");

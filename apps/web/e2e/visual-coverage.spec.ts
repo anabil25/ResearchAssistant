@@ -5,7 +5,7 @@ import {
   CORE_SCREENSHOT_CONTRACTS,
   STATE_SCREENSHOT_IDS,
 } from "../src/testing/interaction-manifest";
-import { expect, test } from "./fixtures";
+import { completeWorkspaceRequests, expect, test } from "./fixtures";
 
 test.setTimeout(120_000);
 
@@ -23,12 +23,24 @@ async function expectAccessible(page: Page) {
   expect(results.violations).toEqual([]);
 }
 
+async function selectWorkspaceRoute(page: Page, route: string) {
+  await page.evaluate((nextRoute) => {
+    window.history.pushState({}, "", nextRoute);
+    window.dispatchEvent(new PopStateEvent("popstate"));
+  }, route);
+}
+
 test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] captures core and critical states [pw.literature.protocol.run:loading][pw.literature.protocol.run:error][pw.literature.screen.tab:empty]", async ({
   page,
   releaseDiagnostics,
 }, testInfo) => {
-  for (const contract of CORE_SCREENSHOT_CONTRACTS) {
-    await page.goto(contract.route);
+  await completeWorkspaceRequests(page, () =>
+    page.goto(CORE_SCREENSHOT_CONTRACTS[0].route),
+  );
+  for (const [index, contract] of CORE_SCREENSHOT_CONTRACTS.entries()) {
+    if (index > 0) {
+      await selectWorkspaceRoute(page, contract.route);
+    }
     await expect(page.locator(".workbench-shell")).toHaveAttribute(
       "data-workspace-ready",
       "true",
@@ -40,7 +52,7 @@ test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] capt
     await capture(page, testInfo, contract.id);
   }
 
-  await page.goto("/?view=literature");
+  await selectWorkspaceRoute(page, "/?view=literature");
   await expect(page.locator(".workbench-shell")).toHaveAttribute(
     "data-workspace-ready",
     "true",
@@ -86,7 +98,7 @@ test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] capt
   await expectAccessible(page);
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[2]);
 
-  await page.goto("/?view=institutional_qa");
+  await selectWorkspaceRoute(page, "/?view=institutional_qa");
   await expect(page.locator(".workbench-shell")).toHaveAttribute(
     "data-workspace-ready",
     "true",

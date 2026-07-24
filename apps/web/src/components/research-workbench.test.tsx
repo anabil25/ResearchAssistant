@@ -14,7 +14,11 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
-import type { LiteratureStudioResult, StudioRun } from "@/lib/types";
+import type {
+  AutomationStudioResult,
+  LiteratureStudioResult,
+  StudioRun,
+} from "@/lib/types";
 import type { ComponentType } from "react";
 
 jest.mock("@/lib/api", () => ({
@@ -724,6 +728,218 @@ describe("ResearchWorkbench", () => {
     expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(4);
   });
 
+  it("serializes transitional-state polling instead of starving forever when a response consistently takes longer than the poll interval", async () => {
+    jest.useFakeTimers();
+    const transitionalWorkspace = cloneWorkspaceData();
+    transitionalWorkspace.library[0].status = "processing";
+    transitionalWorkspace.runs[0].status = "running";
+
+    const slowPollResponse = createDeferred<WorkspaceData>();
+    mockedGetWorkspaceData
+      .mockResolvedValueOnce(transitionalWorkspace) // initial mount load
+      .mockReturnValueOnce(slowPollResponse.promise); // first poll, held open
+
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    act(() => {
+      jest.advanceTimersByTime(3_000);
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2));
+
+    // A fixed `setInterval` would have queued more polls here even though
+    // the first poll's response has not landed yet -- with a consistently
+    // slow backend, every one of those extra ticks would bump the
+    // sequence guard again and doom every response (including this one)
+    // to be discarded on arrival. Advancing well past several more
+    // 3s ticks while the response is still held open must NOT issue any
+    // further requests: at most one poll may ever be in flight at a time.
+    act(() => {
+      jest.advanceTimersByTime(30_000);
+    });
+    expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2);
+
+    // Now let the slow response finally resolve, well after several poll
+    // intervals have elapsed. Because only one request was ever in
+    // flight, this is still the most-recently-issued request, so its
+    // result must be applied -- proving the response is never starved.
+    const settledWorkspace = cloneWorkspaceData();
+    settledWorkspace.library[0].status = "processing";
+    settledWorkspace.runs[0].status = "running";
+    settledWorkspace.runs[0].current_stage = "Slow poll finally landed";
+    mockedGetWorkspaceData.mockResolvedValueOnce(cloneWorkspaceData());
+    await act(async () => {
+      slowPollResponse.resolve(settledWorkspace);
+      await slowPollResponse.promise;
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /runs & approvals/i }));
+    expect(screen.getByText("Slow poll finally landed")).toBeInTheDocument();
+  });
+
+  it("discards a stale refresh response that resolves after a newer refresh was issued (workspace-ready / approval-notification race)", async () => {
+    const user = userEvent.setup();
+    const deferredStaleNavigateRefresh = createDeferred<WorkspaceData>();
+    const freshFocusWorkspace = cloneWorkspaceData();
+    freshFocusWorkspace.summary.library_items = 42;
+    const staleNavigateWorkspace = cloneWorkspaceData();
+    staleNavigateWorkspace.summary.library_items = 7;
+
+    mockedGetWorkspaceData
+      .mockResolvedValueOnce(cloneWorkspaceData()) // initial mount load
+      .mockReturnValueOnce(deferredStaleNavigateRefresh.promise) // navigate("library") refresh, held open
+      .mockResolvedValueOnce(freshFocusWorkspace); // focus refresh, resolves before the older one
+
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    // Navigating to Library issues a refresh (request #2) that we hold open
+    // so it resolves after a later, newer refresh -- reproducing the
+    // out-of-order network response that previously let a stale result
+    // silently overwrite fresher data (including the pending-approvals count
+    // the notification bell reads).
+    await user.click(screen.getByRole("button", { name: /^Library \d+$/i }));
+    await screen.findByRole("heading", { name: "Library" });
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(3));
+    expect(
+      await screen.findByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+
+    // Now let the older, navigation-triggered refresh resolve. Its result
+    // must be discarded because a newer refresh has since completed --
+    // proving requests are applied in issue order, not resolution order.
+    await act(async () => {
+      deferredStaleNavigateRefresh.resolve(staleNavigateWorkspace);
+      await deferredStaleNavigateRefresh.promise;
+    });
+    expect(
+      screen.getByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Library 7$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("discards a stale refresh rejection that arrives after a newer refresh already succeeded", async () => {
+    const deferredStaleNavigateRefresh = createDeferred<WorkspaceData>();
+    const freshFocusWorkspace = cloneWorkspaceData();
+    freshFocusWorkspace.summary.library_items = 42;
+
+    mockedGetWorkspaceData
+      .mockResolvedValueOnce(cloneWorkspaceData()) // initial mount load
+      .mockReturnValueOnce(deferredStaleNavigateRefresh.promise) // navigate("runs") refresh, held open, will reject
+      .mockResolvedValueOnce(freshFocusWorkspace); // focus refresh, resolves before the older one
+
+    const user = userEvent.setup();
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    await user.click(screen.getByRole("button", { name: /^Runs & approvals/i }));
+    await screen.findByRole("heading", { name: "Runs & Approvals" });
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(3));
+    expect(
+      await screen.findByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+
+    // The older, navigation-triggered refresh now rejects. Because a newer
+    // refresh has already completed successfully, this stale rejection must
+    // be discarded rather than overwriting the fresh data with a phantom
+    // "unavailable" error banner (covers `refresh`'s own catch-branch
+    // sequence guard, not just its success-branch guard).
+    await act(async () => {
+      deferredStaleNavigateRefresh.reject(new Error("stale runs refresh failed"));
+      await deferredStaleNavigateRefresh.promise.catch(() => undefined);
+    });
+    expect(
+      screen.queryByText(/Live workspace data is unavailable/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("discards a stale initial-mount response that resolves after a later refresh already succeeded", async () => {
+    const deferredMountLoad = createDeferred<WorkspaceData>();
+    const freshFocusWorkspace = cloneWorkspaceData();
+    freshFocusWorkspace.summary.library_items = 42;
+    const staleMountWorkspace = cloneWorkspaceData();
+    staleMountWorkspace.summary.library_items = 7;
+
+    mockedGetWorkspaceData
+      .mockReturnValueOnce(deferredMountLoad.promise) // initial mount load, held open
+      .mockResolvedValueOnce(freshFocusWorkspace); // focus refresh, resolves before the mount load
+
+    render(<ResearchWorkbench />);
+    expect(
+      screen.getByRole("main").closest(".workbench-shell"),
+    ).toHaveAttribute("data-workspace-ready", "false");
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+
+    // Now let the mount-triggered load resolve. It must be discarded because
+    // the focus-triggered refresh already applied newer data -- covers the
+    // request-sequence guard inside the mount effect's own fetch, not only
+    // the shared `refresh` callback's guard.
+    await act(async () => {
+      deferredMountLoad.resolve(staleMountWorkspace);
+      await deferredMountLoad.promise;
+    });
+    expect(
+      screen.getByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /^Library 7$/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("discards a stale initial-mount rejection that arrives after a later refresh already succeeded", async () => {
+    const deferredMountLoad = createDeferred<WorkspaceData>();
+    const freshFocusWorkspace = cloneWorkspaceData();
+    freshFocusWorkspace.summary.library_items = 42;
+
+    mockedGetWorkspaceData
+      .mockReturnValueOnce(deferredMountLoad.promise) // initial mount load, held open, will reject
+      .mockResolvedValueOnce(freshFocusWorkspace); // focus refresh, resolves before the mount load
+
+    render(<ResearchWorkbench />);
+
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2));
+    expect(
+      await screen.findByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+
+    // The mount-triggered load now rejects. It must be discarded because a
+    // later refresh already succeeded, so no phantom "unavailable" error
+    // banner should appear over the already-fresh data.
+    await act(async () => {
+      deferredMountLoad.reject(new Error("stale mount load failed"));
+      await deferredMountLoad.promise.catch(() => undefined);
+    });
+    expect(
+      screen.queryByText(/Live workspace data is unavailable/i),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /^Library 42$/i }),
+    ).toBeInTheDocument();
+  });
+
   it("supports search, evidence, and navigation controls through buttons, scrims, and keyboard shortcuts", async () => {
     const user = userEvent.setup();
     render(<ResearchWorkbench />);
@@ -1158,5 +1374,137 @@ describe("ResearchWorkbench", () => {
     );
     expect(screen.getAllByText("Evidence review graph").length).toBeGreaterThan(0);
     expect(screen.getByText("Exact gated action")).toBeInTheDocument();
+  });
+
+  it("discards a stale Workflow Automation dry-run response that resolves after a newer one already applied its result", async () => {
+    const user = userEvent.setup();
+    const staleResult: AutomationStudioResult = {
+      run: baseRun({
+        capability: "orchestration",
+        id: "run-orc-stale",
+        durable_instance_id: "research-run-orc-stale",
+        title: "Stale dry run",
+      }),
+      template_id: "evidence-review-v2",
+      trigger: "Manual",
+      steps: [],
+      validation_errors: ["Stale dry run failure"],
+      dry_run_status: "failed",
+      graph_version: "1.0",
+      graph_hash: "stalehash0000001",
+      citations: [],
+    };
+    const freshResult: AutomationStudioResult = {
+      run: baseRun({
+        capability: "orchestration",
+        id: "run-orc-fresh",
+        durable_instance_id: "research-run-orc-fresh",
+        title: "Fresh dry run",
+      }),
+      template_id: "evidence-review-v2",
+      trigger: "Manual",
+      steps: [],
+      validation_errors: [],
+      dry_run_status: "passed",
+      graph_version: "1.0",
+      graph_hash: "freshhash0000001",
+      citations: [],
+    };
+    const deferredStale = createDeferred<AutomationStudioResult>();
+    const deferredFresh = createDeferred<AutomationStudioResult>();
+    jest
+      .mocked(runStudio)
+      .mockReturnValueOnce(deferredStale.promise)
+      .mockReturnValueOnce(deferredFresh.promise);
+
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+    await user.click(screen.getByRole("button", { name: "Workflow Automation" }));
+    await screen.findByRole("heading", { name: "Workflow Automation" });
+
+    // Two overlapping dry runs are issued before either resolves -- e.g. a
+    // fast double-submit racing ahead of the button's disabled re-render,
+    // or (as reproduced directly here) two dispatched submissions of the
+    // same form. Network responses are not guaranteed to resolve in issue
+    // order, so the *second* (fresher) request resolving before the first
+    // (now-stale) one must not let that stale response overwrite it later.
+    const form = document.querySelector(".automation-studio form");
+    if (!form) throw new Error("Workflow Automation form not found");
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(runStudio).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      deferredFresh.resolve(freshResult);
+      await deferredFresh.promise;
+    });
+    expect(await screen.findByText("Dry run passed")).toBeInTheDocument();
+
+    // The older, first-issued request now resolves. Its result must be
+    // discarded because a newer request has since completed.
+    await act(async () => {
+      deferredStale.resolve(staleResult);
+      await deferredStale.promise;
+    });
+    expect(screen.getByText("Dry run passed")).toBeInTheDocument();
+    expect(screen.queryByText("Dry run failed")).not.toBeInTheDocument();
+    expect(
+      screen.queryByText("Stale dry run failure"),
+    ).not.toBeInTheDocument();
+  });
+
+  it("discards a stale Workflow Automation dry-run rejection that arrives after a newer request already applied its result", async () => {
+    const user = userEvent.setup();
+    const freshResult: AutomationStudioResult = {
+      run: baseRun({
+        capability: "orchestration",
+        id: "run-orc-fresh-2",
+        durable_instance_id: "research-run-orc-fresh-2",
+        title: "Fresh dry run",
+      }),
+      template_id: "evidence-review-v2",
+      trigger: "Manual",
+      steps: [],
+      validation_errors: [],
+      dry_run_status: "passed",
+      graph_version: "1.0",
+      graph_hash: "freshhash0000002",
+      citations: [],
+    };
+    const deferredStale = createDeferred<AutomationStudioResult>();
+    const deferredFresh = createDeferred<AutomationStudioResult>();
+    jest
+      .mocked(runStudio)
+      .mockReturnValueOnce(deferredStale.promise)
+      .mockReturnValueOnce(deferredFresh.promise);
+
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+    await user.click(screen.getByRole("button", { name: "Workflow Automation" }));
+    await screen.findByRole("heading", { name: "Workflow Automation" });
+
+    const form = document.querySelector(".automation-studio form");
+    if (!form) throw new Error("Workflow Automation form not found");
+    fireEvent.submit(form);
+    fireEvent.submit(form);
+    expect(runStudio).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      deferredFresh.resolve(freshResult);
+      await deferredFresh.promise;
+    });
+    expect(await screen.findByText("Dry run passed")).toBeInTheDocument();
+
+    // The older, first-issued request now rejects. Its failure must be
+    // discarded too -- a newer request already succeeded and that result
+    // must not be clobbered by a stale error message.
+    await act(async () => {
+      deferredStale.reject(new Error("Stale transport failure"));
+      await deferredStale.promise.catch(() => undefined);
+    });
+    expect(screen.getByText("Dry run passed")).toBeInTheDocument();
+    expect(
+      screen.queryByText("Stale transport failure"),
+    ).not.toBeInTheDocument();
   });
 });

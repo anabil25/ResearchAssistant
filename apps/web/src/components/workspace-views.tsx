@@ -145,6 +145,15 @@ function connectorStatusInfo(connector: ConnectorSetting): {
   };
 }
 
+function evaluationState(
+  score: number,
+  gate: string,
+): "ready" | "blocked" | "degraded" {
+  if (score === 100) return "ready";
+  if (gate === "Blocking") return "blocked";
+  return "degraded";
+}
+
 export function Overview({
   data,
   capabilities,
@@ -1065,7 +1074,10 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
   } | null>(null);
   const [connectorQuery, setConnectorQuery] = useState("");
   const [connectorCategory, setConnectorCategory] = useState("All");
-  const [busyConnector, setBusyConnector] = useState<string | null>(null);
+  const [busyConnector, setBusyConnector] = useState<{
+    id: string;
+    action: "saving" | "testing";
+  } | null>(null);
   const [managedConnectorId, setManagedConnectorId] = useState(
     data?.connectors[0]?.id ?? "",
   );
@@ -1111,9 +1123,18 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
     connector: ConnectorSetting,
     update: Partial<ConnectorSetting>,
   ) => {
-    setBusyConnector(connector.id);
+    const nextConnector = { ...connector, ...update };
+    if (nextConnector.enabled && nextConnector.assigned_agents.length === 0) {
+      setStatus({
+        message:
+          "Enabled connectors must be assigned to at least one specialist.",
+        tone: "error",
+      });
+      return;
+    }
+    setBusyConnector({ id: connector.id, action: "saving" });
     setStatus(null);
-    void updateConnector({ ...connector, ...update })
+    void updateConnector(nextConnector)
       .then(async () => {
         await onRefresh();
         setConnectorDrafts((current) => {
@@ -1137,7 +1158,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
   };
 
   const runConnectorTest = (connector: ConnectorSetting) => {
-    setBusyConnector(connector.id);
+    setBusyConnector({ id: connector.id, action: "testing" });
     setStatus(null);
     void testConnector(connector.id)
       .then(async (updated) => {
@@ -1574,7 +1595,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                         aria-label={`Enable ${managedConnector.name}`}
                         checked={connectorDraft.enabled}
                         disabled={
-                          busyConnector === managedConnector.id ||
+                          busyConnector?.id === managedConnector.id ||
                           ["pubmed", "grants_gov"].includes(managedConnector.id)
                         }
                         onChange={(event) =>
@@ -1602,7 +1623,7 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                               type="checkbox"
                               aria-label={`Assign ${agent} to ${managedConnector.name}`}
                               checked={connectorDraft.assigned_agents.includes(agent)}
-                              disabled={busyConnector === managedConnector.id}
+                              disabled={busyConnector?.id === managedConnector.id}
                               onChange={(event) => {
                                 const assigned = event.target.checked
                                   ? [...connectorDraft.assigned_agents, agent]
@@ -1642,19 +1663,23 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                       <div>
                         <button
                           type="button"
-                          disabled={busyConnector === managedConnector.id}
+                          disabled={busyConnector?.id === managedConnector.id}
                           onClick={() => runConnectorTest(managedConnector)}
                         >
-                          {busyConnector === managedConnector.id
+                          {busyConnector?.id === managedConnector.id &&
+                          busyConnector.action === "testing"
                             ? "Testing…"
                             : "Test connection"}
                         </button>
                         <button
                           className="primary-button"
                           type="submit"
-                          disabled={busyConnector === managedConnector.id}
+                          disabled={busyConnector?.id === managedConnector.id}
                         >
-                          Save configuration
+                          {busyConnector?.id === managedConnector.id &&
+                          busyConnector.action === "saving"
+                            ? "Saving…"
+                            : "Save configuration"}
                         </button>
                       </div>
                     </div>
@@ -1777,18 +1802,32 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                   ["Abstention behavior", 100, "Blocking"],
                   ["Policy compliance", 100, "Blocking"],
                   ["Accessibility", 100, "Blocking"],
-                ].map(([label, score, gate]) => (
-                  <article className="panel evaluation-card" key={String(label)}>
-                    <div>
-                      <strong>{label}</strong>
-                      <span>{gate}</span>
-                    </div>
-                    <div className="evaluation-score">
-                      <i style={{ width: `${score}%` }} />
-                    </div>
-                    <em>{score}%</em>
-                  </article>
-                ))}
+                ].map(([label, score, gate]) => {
+                  const state = evaluationState(Number(score), String(gate));
+                  return (
+                    <article
+                      className="panel evaluation-card"
+                      data-evaluation-state={state}
+                      key={String(label)}
+                    >
+                      <div>
+                        <strong>{label}</strong>
+                        <span>
+                          {state === "ready"
+                            ? "Ready"
+                            : state === "blocked"
+                              ? "Blocked"
+                              : "Degraded"}{" "}
+                          · {gate}
+                        </span>
+                      </div>
+                      <div className="evaluation-score">
+                        <i style={{ width: `${score}%` }} />
+                      </div>
+                      <em>{score}%</em>
+                    </article>
+                  );
+                })}
               </div>
             </section>
           ) : null}
@@ -1799,9 +1838,9 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <div>
                   <h2>Platform integration readiness</h2>
                   <p>
-                    Truthful status only. Nothing here is enabled until an
-                    administrator provisions and verifies it outside this
-                    demo workspace.
+                    Truthful status only. Ready capabilities do not grant
+                    user-level permissions, and blocked capabilities remain off
+                    until an administrator verifies their prerequisites.
                   </p>
                 </div>
               </div>
@@ -1809,7 +1848,12 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <article className="panel readiness-status-card">
                   <div>
                     <strong>APIM / Toolbox</strong>
-                    <span className="subtle-chip">Deployment managed</span>
+                    <span
+                      className="subtle-chip"
+                      data-readiness-state="deployment-managed"
+                    >
+                      Deployment managed
+                    </span>
                   </div>
                   <p>
                     The accelerator provisions APIM-backed MCP connectors and
@@ -1820,7 +1864,12 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <article className="panel readiness-status-card">
                   <div>
                     <strong>Work IQ</strong>
-                    <span className="subtle-chip">Disabled by default</span>
+                    <span
+                      className="subtle-chip"
+                      data-readiness-state="needs-consent"
+                    >
+                      Needs tenant consent
+                    </span>
                   </div>
                   <p>
                     Requires tenant-level Microsoft Graph consent. Not granted
@@ -1831,7 +1880,10 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <article className="panel readiness-status-card">
                   <div>
                     <strong>GitHub Copilot connector authoring</strong>
-                    <span className="subtle-chip">
+                    <span
+                      className="subtle-chip"
+                      data-readiness-state="blocked"
+                    >
                       Repository setup required
                     </span>
                   </div>
@@ -1844,7 +1896,12 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <article className="panel readiness-status-card">
                   <div>
                     <strong>Foundry Code Interpreter</strong>
-                    <span className="subtle-chip">Dataset toolbox</span>
+                    <span
+                      className="subtle-chip"
+                      data-readiness-state="ready"
+                    >
+                      Ready: dataset toolbox
+                    </span>
                   </div>
                   <p>
                     Dataset analysis runs through the existing Foundry Hosted

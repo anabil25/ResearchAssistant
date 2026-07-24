@@ -3026,6 +3026,8 @@ button.fui-Button.primary-button:disabled {
 }
 
 .canvas-toolbar {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3069,6 +3071,7 @@ button.fui-Button.primary-button:disabled {
   align-items: center;
   justify-content: center;
   padding: 105px 20px 80px;
+  transform-origin: top center;
 }
 
 .graph-step-wrap {
@@ -5775,7 +5778,10 @@ button.fui-Button.primary-button:disabled {
 }
 
 .screening-decision-controls button[data-decision="maybe"][data-active="true"] {
-  color: #90621c;
+  /* #90621c on --amber-soft measured 4.42:1, just under the WCAG AA 4.5:1
+     minimum for this 12px/650-weight text (too small to qualify for the
+     3:1 large-text exception). #855716 measures 5.18:1. */
+  color: #855716;
   background: var(--amber-soft);
   border-color: #e3cd9e;
 }

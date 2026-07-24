@@ -3,7 +3,15 @@ import type { Page, TestInfo } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
 
-const BASE_URL = process.env.PLAYWRIGHT_BASE_URL ?? "http://127.0.0.1:3000";
+// See the matching comment in grant-state-closure.spec.ts: the web app's
+// port is dynamically OS-assigned per invocation by playwright.config.ts,
+// which memoizes it into PLAYWRIGHT_WEB_PORT for every worker process to
+// read -- a stale hardcoded fallback here would make this regex never match
+// the real request URL, hanging every waitForRequest/waitForResponse below
+// until the test timeout.
+const BASE_URL =
+  process.env.PLAYWRIGHT_BASE_URL ??
+  `http://127.0.0.1:${process.env.PLAYWRIGHT_WEB_PORT ?? "3000"}`;
 const LITERATURE_RUN_URL = new RegExp(
   `^${BASE_URL.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/api/backend/api/studios/literature/run$`,
 );
@@ -197,12 +205,13 @@ test.describe("Literature state closure", () => {
     await page.keyboard.type("2018");
     await expect(publishedFrom).toHaveValue("2018");
 
+    const currentYear = String(new Date().getFullYear());
     const through = page.getByLabel("Through");
-    await expect(through).toHaveValue("2026");
+    await expect(through).toHaveValue(currentYear);
     await through.focus();
     await page.keyboard.press("Control+A");
-    await page.keyboard.type("2027");
-    await expect(through).toHaveValue("2027");
+    await page.keyboard.type("2019");
+    await expect(through).toHaveValue("2019");
 
     const arxiv = page.getByRole("checkbox", { name: "arXiv" });
     await expect(arxiv).not.toBeChecked();
@@ -213,13 +222,58 @@ test.describe("Literature state closure", () => {
     const payload = await runLiteratureAndCapturePayload(page);
     expect(payload.objective).toBe("Audit retrieval quality");
     expect(payload.inputs.date_from).toBe(2018);
-    expect(payload.inputs.date_to).toBe(2027);
+    expect(payload.inputs.date_to).toBe(2019);
     expect(payload.inputs.sources).toEqual(
       expect.arrayContaining(["PubMed", "Europe PMC", "Crossref", "OpenAlex", "arXiv"]),
     );
 
     await capture(page, testInfo, "literature-protocol-keyboard-selected-sources");
     await expectAccessible(page);
+  });
+
+  test("[pw.literature.protocol.date-window:invalid][pw.literature.protocol.run:disabled] blocks submission for an out-of-order or future-dated window and recovers once corrected", async ({
+    page,
+  }, testInfo) => {
+    await gotoView(page, "literature");
+
+    const publishedFrom = page.getByLabel("Published from");
+    const through = page.getByLabel("Through");
+    const errorBanner = page.locator("#literature-date-window-error");
+    const runButton = page.getByRole("button", {
+      name: "Search & screen evidence",
+    });
+
+    async function setYear(field: typeof publishedFrom, value: string) {
+      await field.focus();
+      await page.keyboard.press("Control+A");
+      await page.keyboard.type(value);
+    }
+
+    await setYear(publishedFrom, "2022");
+    await setYear(through, "2019");
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText('must not be after "Through"');
+    await expect(publishedFrom).toHaveAttribute("aria-invalid", "true");
+    await expect(through).toHaveAttribute(
+      "aria-describedby",
+      "literature-date-window-error",
+    );
+    await expect(runButton).toBeDisabled();
+    await capture(page, testInfo, "literature-date-window-invalid-order");
+    await expectAccessible(page);
+
+    const futureYear = String(new Date().getFullYear() + 1);
+    await setYear(publishedFrom, "2020");
+    await setYear(through, futureYear);
+    await expect(errorBanner).toBeVisible();
+    await expect(errorBanner).toContainText("future year");
+    await expect(runButton).toBeDisabled();
+    await capture(page, testInfo, "literature-date-window-invalid-future");
+    await expectAccessible(page);
+
+    await setYear(through, "2024");
+    await expect(errorBanner).toHaveCount(0);
+    await expect(runButton).toBeEnabled();
   });
 
   test("[pw.literature.protocol.criteria:empty][pw.literature.protocol.criteria:duplicate] ignores blank and duplicate criteria additions", async ({
@@ -264,6 +318,13 @@ test.describe("Literature state closure", () => {
 
     await runLiteratureAndCapturePayload(page);
     await expect(page.locator(".audit-board")).toBeVisible();
+    await expect(page.locator("[data-audit-status]")).toHaveAttribute(
+      "data-audit-status",
+      "warning",
+    );
+    await expect(page.locator("[data-audit-status]")).toContainText(
+      "Unresolved references found",
+    );
     await expect(page.locator(".audit-board .metric-line")).toContainText(
       "1 unresolved",
     );
@@ -272,6 +333,41 @@ test.describe("Literature state closure", () => {
     ).toContainText("Unresolved");
 
     await capture(page, testInfo, "literature-audit-warning");
+    await expectAccessible(page);
+  });
+
+  test("[pw.literature.audit.tab:passed] shows a genuine passed outcome only when insight is present with zero unresolved citations", async ({
+    page,
+  }, testInfo) => {
+    const passedResult = {
+      ...clone(BASE_LITERATURE_RESULT),
+      insight: {
+        ...clone(BASE_LITERATURE_RESULT.insight),
+        unresolved_source_ids: [],
+      },
+    };
+    await mockLiteratureRun(page, passedResult);
+    await gotoView(page, "literature");
+
+    await page.getByRole("button", { name: "Audit" }).click();
+    await runLiteratureAndCapturePayload(page);
+
+    await expect(page.locator(".audit-board")).toBeVisible();
+    await expect(page.locator("[data-audit-status]")).toHaveAttribute(
+      "data-audit-status",
+      "passed",
+    );
+    await expect(page.locator("[data-audit-status]")).toContainText(
+      "Passed",
+    );
+    await expect(page.locator("[data-audit-status]")).toContainText(
+      "zero unresolved references",
+    );
+    await expect(page.locator(".audit-board .metric-line")).toContainText(
+      "0 unresolved",
+    );
+
+    await capture(page, testInfo, "literature-audit-passed");
     await expectAccessible(page);
   });
 
@@ -287,13 +383,25 @@ test.describe("Literature state closure", () => {
     await exclude.focus();
     await page.keyboard.press("Enter");
     await expect(exclude).toHaveAttribute("data-active", "true");
+
+    const secondRecord = page.locator(".screening-record").nth(1);
+    const maybe = secondRecord.getByRole("button", { name: "Maybe" });
+    await maybe.click();
+    await expect(maybe).toHaveAttribute("data-active", "true");
+
     await expect(page.locator(".screening-board .metric-line")).toContainText(
-      "1 included",
+      "0 included",
     );
     await expect(page.locator(".screening-board .metric-line")).toContainText(
       "1 excluded",
     );
+    await expect(page.locator(".screening-board .metric-line")).toContainText(
+      "1 maybe",
+    );
 
+    // Also exercises the "maybe" active-state contrast fix (WCAG AA) via the
+    // axe scan below -- the color was previously 4.42:1 against the panel
+    // background and is now 5.18:1.
     await capture(page, testInfo, "literature-screen-partial");
     await expectAccessible(page);
 

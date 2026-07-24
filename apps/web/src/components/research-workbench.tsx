@@ -262,13 +262,40 @@ export function ResearchWorkbench() {
   const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const railCloseRef = useRef<HTMLButtonElement | null>(null);
   const wasNavOpenRef = useRef(false);
+  // Several triggers can each start a workspace fetch independently and
+  // concurrently: the initial mount load, the transitional-state poll, the
+  // window "focus" listener, view navigation, and post-decision refreshes.
+  // Network responses are not guaranteed to resolve in the order they were
+  // issued, so an older in-flight request finishing after a newer one (e.g.
+  // a stale poll response landing just after a fresh post-approval refresh)
+  // would silently overwrite up-to-date data -- including the pending
+  // approvals count the notification bell reads -- with stale data. A
+  // monotonic request sequence number lets every refresh discard its own
+  // result if a newer refresh has since been issued, so only the
+  // most-recently-requested response is ever applied, deterministically.
+  const requestSequenceRef = useRef(0);
+  // executeStudio (below) issues its own runStudio() calls, independently of
+  // and interleaved with the workspace-data refresh above, so it needs its
+  // own monotonic sequence counter rather than sharing requestSequenceRef:
+  // a studio run's response racing against a workspace refresh is not the
+  // failure mode being guarded against here, but two studio runs racing
+  // against each other is -- e.g. re-running a slow validation, then
+  // immediately cloning into a new draft and running a fast one; without
+  // this guard the slow, now-stale first response could land after the
+  // fast one and silently overwrite the result the user is currently
+  // looking at with an answer for a configuration they've already
+  // abandoned.
+  const studioRequestSequenceRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = (requestSequenceRef.current += 1);
     try {
       const next = await getWorkspaceData();
+      if (requestSequenceRef.current !== requestId) return;
       setData(next);
       setLoadError(null);
     } catch (error) {
+      if (requestSequenceRef.current !== requestId) return;
       setLoadError(
         error instanceof Error
           ? error.message
@@ -278,26 +305,28 @@ export function ResearchWorkbench() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    // Inlined rather than calling the `refresh` useCallback directly: the
+    // mount effect must not invoke a state-setting function synchronously
+    // from its own body (react-hooks/set-state-in-effect), so the fetch is
+    // issued as an async continuation here instead, while still sharing the
+    // same monotonic `requestSequenceRef` guard `refresh` uses, so this
+    // initial load and any other concurrently-triggered refresh still
+    // resolve deterministically to whichever was requested most recently.
+    const requestId = (requestSequenceRef.current += 1);
     void getWorkspaceData()
       .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setLoadError(null);
-        }
+        if (requestSequenceRef.current !== requestId) return;
+        setData(next);
+        setLoadError(null);
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
-          setLoadError(
-            error instanceof Error
-              ? error.message
-              : "Workspace data could not be loaded.",
-          );
-        }
+        if (requestSequenceRef.current !== requestId) return;
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Workspace data could not be loaded.",
+        );
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
@@ -321,10 +350,33 @@ export function ResearchWorkbench() {
         ["planned", "running"].includes(run.status),
       );
     if (!hasTransitionalState) return;
-    const interval = window.setInterval(() => {
-      void refresh();
-    }, 3_000);
-    return () => window.clearInterval(interval);
+    // A fixed `setInterval` fires again every 3s regardless of whether the
+    // previous `refresh()` call is still in flight. If `getWorkspaceData()`
+    // consistently takes longer than 3s to resolve (a slow backend, a busy
+    // gateway, etc.), each tick bumps `requestSequenceRef` again *before*
+    // the prior response lands, so `refresh`'s own stale-response guard
+    // (see above) would discard every single response forever -- the
+    // transitional UI would poll indefinitely without ever applying a
+    // result, even once the underlying state genuinely finished
+    // processing. Scheduling the next poll only after the current one
+    // settles serializes polling (never more than one in-flight poll
+    // request at a time), so a slow response always gets to apply -- and
+    // the next request is only issued once there is nothing left for it to
+    // race against.
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const scheduleNext = () => {
+      timeoutId = window.setTimeout(() => {
+        void refresh().finally(() => {
+          if (!cancelled) scheduleNext();
+        });
+      }, 3_000);
+    };
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+    };
   }, [data, refresh]);
 
   useEffect(() => {
@@ -394,18 +446,23 @@ export function ResearchWorkbench() {
     objective: string,
     options: StudioRunOptions = {},
   ) => {
+    const requestId = (studioRequestSequenceRef.current += 1);
     setStudioRunning(true);
     setStudioError(null);
     try {
       const result = await runStudio(capability, objective, options);
+      if (studioRequestSequenceRef.current !== requestId) return;
       setStudioResult(result);
       void refresh();
     } catch (error) {
+      if (studioRequestSequenceRef.current !== requestId) return;
       setStudioError(
         error instanceof Error ? error.message : "The studio run failed.",
       );
     } finally {
-      setStudioRunning(false);
+      if (studioRequestSequenceRef.current === requestId) {
+        setStudioRunning(false);
+      }
     }
   };
 

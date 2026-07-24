@@ -461,6 +461,18 @@ class WorkflowDefinitionV3(V3Contract):
 
 
 class ApprovalRequestV3(V3Contract):
+    """Approval request lifecycle contract.
+
+    ``state`` intentionally mirrors the live, wired implementation in
+    ``research_assistant_api.workspace.ApprovalState`` (pending/approved/
+    rejected/cancelled) rather than a broader aspirational set. There is no
+    ``changes_requested``/``expired``/``withdrawn`` transition anywhere in the
+    running API, generated frontend client (``ApprovalState`` in
+    ``generated-api.ts``), or UI — keeping this literal in sync with those
+    boundaries avoids the contract drift where this "authoritative" schema
+    promised a decision the platform does not implement.
+    """
+
     id: str = Field(pattern=r"^approval-[a-z0-9-]{3,96}$")
     run_id: str
     node_id: str | None = None
@@ -472,12 +484,22 @@ class ApprovalRequestV3(V3Contract):
     requested_by: str
     requested_at: datetime = Field(default_factory=utc_now)
     expires_at: datetime | None = None
-    state: Literal["pending", "approved", "rejected", "changes_requested", "expired", "withdrawn"] = "pending"
+    state: Literal["pending", "approved", "rejected", "cancelled"] = "pending"
 
 
 class ApprovalDecisionV3(V3Contract):
+    """Approval decision contract.
+
+    ``decision`` is restricted to ``approved``/``rejected`` to match the
+    live enforcement in ``research_assistant_api.workspace.ApprovalDecision.
+    validate_decision``, which explicitly rejects any other value
+    (including ``changes_requested``). ``cancelled`` is a system-driven
+    state transition (e.g. run cancellation), not an approver decision, so
+    it is correctly excluded here too.
+    """
+
     approval_id: str
-    decision: Literal["approved", "rejected", "changes_requested"]
+    decision: Literal["approved", "rejected"]
     rationale: str = Field(min_length=3, max_length=2000)
     decided_by: str
     decided_at: datetime = Field(default_factory=utc_now)

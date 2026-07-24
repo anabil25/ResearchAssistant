@@ -210,15 +210,18 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     surface: "Literature",
     control: "Published from and through",
     behavior: "Edits an ordered bounded date window and surfaces validation errors.",
-    baseline: "functional-uncovered",
+    baseline: "functional-covered",
     milestone: "M3",
     // Evidence: studio-components.tsx date-window inputs are plain always-enabled
-    // <input type="date"> fields with no `disabled` prop and no async read/write
-    // path, so disabled/loading are not reachable. There is no field-level error
-    // banner tied specifically to the date inputs (studio-level errors surface via
-    // StudioError, not per-field). "success" has no code path distinct from typing
-    // (no secondary import/apply action for this control).
-    states: ["ready", "keyboard"],
+    // <input type="number"> fields with no `disabled` prop and no async read/write
+    // path, so disabled/loading are not reachable. Real `dateWindowError` validation
+    // (~L306-319) computes a field-level error whenever "Published from" is after
+    // "Through", either field is empty/unparseable, or either bound is a future
+    // year — rendered via `#literature-date-window-error` (role="alert") and wired
+    // to `aria-invalid`/`aria-describedby` on both inputs, plus a disabled RunButton
+    // and an early-return submit guard. "success" has no code path distinct from
+    // typing (no secondary import/apply action for this control).
+    states: ["ready", "keyboard", "invalid"],
     testIds: ["jest.literature-date-window", "pw.literature-protocol"],
   },
   {
@@ -271,11 +274,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Creates a run with loading, partial, success, empty, retry, and error states.",
     baseline: "functional-covered",
     milestone: "M3",
-    // Evidence: studio-components.tsx ~L557 — `<RunButton running={running}>` is
-    // rendered with no `disabled` prop passed, so the submit button is only ever
-    // disabled while `running` (the "loading" state); there is no separate,
-    // distinct "disabled" precondition for this control.
-    states: ["ready", "keyboard", "loading", "success", "error"],
+    // Evidence: studio-components.tsx `<RunButton running={running}
+    // disabled={!!dateWindowError}>` — the submit button is disabled either
+    // while `running` (the "loading" state) or whenever the sibling
+    // date-window control's validation is failing (a distinct, independently
+    // reachable "disabled" precondition, not merely `running`).
+    states: ["ready", "keyboard", "loading", "disabled", "success", "error"],
     testIds: ["pw.literature-run"],
   },
   {
@@ -345,14 +349,20 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     id: "literature.audit.tab",
     surface: "Literature",
     control: "Audit tab",
-    behavior: "Shows resolved/unresolved citation status and excluded-record reasons for the current run.",
+    behavior: "Shows a truthful pass/warning/not-verified audit outcome plus resolved/unresolved citation status and excluded-record reasons for the current run.",
     baseline: "functional-covered",
     milestone: "M3",
-    // Evidence: same tab-rendering pattern as literature.screen.tab — no per-tab
-    // loading skeleton, and audit-tab evidence is rendered directly from the
-    // completed run's citation/resolution data with no "blocked"/"error" branch
-    // distinct from the studio-level StudioError.
-    states: ["empty", "passed", "warning"],
+    // Evidence: studio-components.tsx ~L313-330, L788-800 — a computed
+    // `auditStatus` is rendered as a visible outcome paragraph
+    // (`.audit-outcome`, `data-audit-status`), not just the static "Claim &
+    // citation audit" header: "not-verified" when `literature.insight` is
+    // absent (e.g. execution_mode "mock", or a hosted run with no insight —
+    // the audit has not actually checked anything), "passed" only when
+    // `insight` is present AND zero unresolved source ids, and "warning"
+    // when `insight` is present with 1+ unresolved source ids. No
+    // per-tab loading skeleton, and no "blocked"/"error" branch distinct
+    // from the studio-level StudioError.
+    states: ["empty", "not-verified", "passed", "warning"],
     testIds: ["jest.literature-tabs", "pw.literature-audit"],
   },
   {
@@ -377,12 +387,25 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Toggles assigned funding connectors included in the run request and opens a connector-builder dialog that records a draft request pending admin review.",
     baseline: "functional-covered",
     milestone: "M4",
-    // Evidence: studio-components.tsx ~L1093-1115 — funding connector checkboxes
-    // are plain, always-enabled toggles over `fundingConnectors` with no health
-    // or authorization flag checked in the UI, and no async/error path; the only
-    // observable states are the checkbox toggle and the "no connectors assigned"
-    // empty-list message.
-    states: ["ready", "selected", "empty"],
+    // Evidence: studio-components.tsx ~L1103-1132 — funding connector
+    // checkboxes are now gated through the same
+    // `src/lib/connector-availability.ts` mapping used by Matching's source
+    // list: only "ready" connectors (test_status ready/ready_with_key) are
+    // selectable/checked and included in `funding_sources` at submit; a
+    // "needs-connection" (configuration_required), "unavailable"
+    // (unavailable), or "disabled" (enabled === false) connector renders a
+    // distinct caption and is unselectable, and is filtered out of the
+    // submitted payload even if present in the default selection. The
+    // "empty" state is the "no connectors assigned" message; there is still
+    // no async/error path tied to the toggle itself.
+    states: [
+      "ready",
+      "selected",
+      "needs-connection",
+      "unavailable",
+      "disabled",
+      "empty",
+    ],
     testIds: ["jest.grant-sources", "pw.grant-connectors"],
   },
   {
@@ -444,10 +467,16 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Records the verifying user and controls deterministic readiness.",
     baseline: "functional-uncovered",
     milestone: "M4",
-    // Evidence: studio-components.tsx ~L1290-1300 — a plain always-enabled
-    // checkbox with no permission/authorization gating in the frontend or the
-    // GrantStudioResult schema, so "permission-denied" has no reachable code path.
-    states: ["unchecked", "checked", "error"],
+    // Evidence: studio-components.tsx ~L1342-1346 — `factsConfirmed` is a
+    // plain useState<boolean> bound to an always-enabled checkbox's onChange;
+    // there is no disabled/loading/error prop, no async read/write path, and
+    // no permission/authorization gating in the frontend or the
+    // GrantStudioResult schema, so "error" (like "permission-denied") has no
+    // reachable code path for this control specifically. A downstream
+    // package-build request failing after the checkbox is checked exercises
+    // grant.package.build's own error state, not this one -- the checkbox
+    // itself never transitions to any error/disabled rendering.
+    states: ["unchecked", "checked"],
     testIds: ["jest.grant-facts", "pw.grant-fit"],
   },
   {
@@ -521,13 +550,31 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects governed sources with consent/readiness constraints.",
     baseline: "functional-covered",
     milestone: "M5",
-    // Evidence: studio-components.tsx ~L1610-1665 — "unavailable" is
-    // `disabled={!connector.enabled}` on public source checkboxes, and
-    // "consent-required" is the permanently `checked={false} disabled` Work IQ
-    // toggle with its Microsoft Graph consent note (L1647-1664); both are real,
-    // always-reachable code paths. There is no error variable tied to source
-    // selection itself (only the studio-level StudioError), so "error" is trimmed.
-    states: ["ready", "selected", "unavailable", "consent-required"],
+    // Evidence: studio-components.tsx ~L1526-1660 — public source checkboxes
+    // are gated through `src/lib/connector-availability.ts`'s
+    // `connectorAvailability()`, which truthfully maps the real backend
+    // `enabled` + `test_status` fields to 4 distinct, mutually exclusive
+    // categories: "ready" (test_status ready/ready_with_key, selectable and
+    // sent as a runnable source), "needs-connection" (test_status
+    // configuration_required — provider never configured/authorized),
+    // "unavailable" (test_status unavailable — latest probe failed), and
+    // "disabled" (enabled === false, wins regardless of test_status). Only
+    // "ready" connectors are selectable/checked; the other 3 render a
+    // distinct caption and are `disabled` on the checkbox. `sources` is
+    // filtered to `runnableSources` before submission, so a non-ready
+    // connector can never reach the run payload even via a stale default
+    // selection. "consent-required" is the permanently `checked={false}
+    // disabled` Work IQ toggle with its Microsoft Graph consent note. There
+    // is no error variable tied to source selection itself (only the
+    // studio-level StudioError), so "error" is trimmed.
+    states: [
+      "ready",
+      "selected",
+      "needs-connection",
+      "unavailable",
+      "disabled",
+      "consent-required",
+    ],
     testIds: ["jest.matching-sources", "pw.matching-sources"],
   },
   {
@@ -659,13 +706,37 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Sends only the bounded approved dataset to the Foundry Hosted Dataset Agent and its project-scoped Code Interpreter Toolbox, then renders typed outputs and limitations.",
     baseline: "functional-covered",
     milestone: "M6",
-    // Evidence: studio-components.tsx ~L2068 (RunButton running/disabled),
-    // ~L2256-2266 (compute_proposal.approval_required lock banner vs. local-compute
-    // banner). "running" is the same run() in-flight moment as dataset.profile:loading;
-    // "failed" is the same onRun() rejection moment as dataset.profile:error; "blocked"
-    // is the distinct "Human approval required before submit" banner shown when the
-    // large/estimate-required asset's compute_proposal.approval_required is true.
-    states: ["pending-approval", "running", "completed", "failed", "blocked"],
+    // Evidence: studio-components.tsx ~L1989-1991 (runDisabled formula), ~L2068
+    // (RunButton running/disabled), ~L2001 (status-chip renders
+    // `run.status.replaceAll("_", " ")` verbatim), ~L2288-2298
+    // (compute_proposal.approval_required lock banner vs. local-compute banner).
+    // "running" is the same run() in-flight moment as dataset.profile:loading;
+    // "failed" is the same onRun() rejection moment as dataset.profile:error.
+    // "waiting-for-approval" and "blocked" are genuinely distinct, non-overlapping
+    // gates -- confirmed by the backend's own `RunStatus` union in
+    // generated-api.ts, which declares "waiting_for_approval" and "blocked" as
+    // two separate literal values, not synonyms:
+    // "waiting-for-approval" covers TWO resolvable moments that are both
+    // fixtures for this same state (neither is a hard stop): (a) the pre-submit
+    // RunButton-disabled moment caused specifically by `!planApproved` with the
+    // asset otherwise ready to run (v3-gap-closing.spec.ts), and (b) the later
+    // "Human approval required before submit" banner for large/estimate-required
+    // assets, backed by `run.status: "waiting_for_approval"` and
+    // compute_proposal.approval_required === true even after planApproved was
+    // checked and the run attempted (matching-dataset-state-closure.spec.ts).
+    // "blocked" is a genuinely different, non-resolvable-by-approval condition:
+    // the backend literally returns `run.status: "blocked"` (e.g. a
+    // data-governance policy denial) with compute_proposal.approval_required
+    // false -- no local checkbox or human reviewer can clear it -- and is
+    // rendered verbatim in the status-chip plus the asset's profile note
+    // (matching-dataset-state-closure.spec.ts).
+    states: [
+      "waiting-for-approval",
+      "running",
+      "completed",
+      "failed",
+      "blocked",
+    ],
     testIds: ["jest.dataset-plan", "pw.dataset-upload"],
   },
   {
@@ -733,11 +804,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     surface: "Workflow",
     control: "Workflow template cards",
     behavior: "Selects and loads an editable versioned graph.",
-    baseline: "functional-uncovered",
+    baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L2762-2871 — `templates` is a hardcoded
-    // 3-item array rendered with plain onClick handlers; there is no async
-    // fetch or per-template error concept, so loading/error are trimmed.
+    // Evidence: studio-components.tsx AUTOMATION_TEMPLATES — a fixed 3-item
+    // array of real, distinct step graphs rendered with plain onClick
+    // handlers; there is no async fetch or per-template error concept, so
+    // loading/error are trimmed.
     states: ["ready", "selected"],
     testIds: ["jest.workflow-template", "pw.workflow-template"],
   },
@@ -746,13 +818,14 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     surface: "Workflow",
     control: "Trigger selector",
     behavior: "Configures a typed manual, schedule, webhook, GitHub, or library trigger.",
-    baseline: "functional-uncovered",
+    baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L2872-2883 — a plain <select> with no
-    // `disabled` prop and no async read/write path tied to selection, so
-    // disabled/loading/error are trimmed; native keyboard selection remains
-    // reachable and distinct from a pointer click.
-    states: ["ready", "keyboard", "success"],
+    // Evidence: studio-components.tsx — a plain <select> with Manual, Schedule,
+    // Webhook, GitHub, and Library upload options and no `disabled` prop and no
+    // async read/write path tied to selection, so disabled/loading/error are
+    // trimmed; native keyboard selection remains reachable and distinct from a
+    // pointer click.
+    states: ["ready", "selected", "keyboard"],
     testIds: ["jest.workflow-trigger", "pw.workflow-trigger"],
   },
   {
@@ -762,14 +835,15 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Adds only authorized versioned capabilities to the graph.",
     baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L2645-2671 (buildCatalogItems) — the
-    // Studio group is always sourced from the hardcoded, non-empty
-    // AUTOMATION_STUDIO_CATALOG, so catalogItems can never be length 0 and
-    // "empty" is trimmed. There is no error variable for the catalog itself
-    // (only the studio-level StudioError), so "error" is trimmed too. "loading"
-    // is `data === null || data === undefined` (L2768) and "unauthorized" is
-    // `!item.authorized` (L2651/L2659, driven by real `data.agents`/
-    // `data.connectors` mock values) — both remain reachable and testable.
+    // Evidence: studio-components.tsx (buildCatalogItems) — the Studio group is
+    // always sourced from the hardcoded, non-empty AUTOMATION_STUDIO_CATALOG,
+    // so catalogItems can never be length 0 and "empty" is trimmed. There is no
+    // error variable for the catalog itself (only the studio-level
+    // StudioError), so "error" is trimmed too. "loading" is `data === null ||
+    // data === undefined` and "unauthorized" is now driven by
+    // `connector.enabled && test_status === "ready" &&
+    // assigned_agents.includes("orchestration")` (real `data.connectors` mock
+    // values) — both remain reachable and testable.
     states: ["loading", "ready", "unauthorized", "preview"],
     testIds: ["jest.workflow-catalog", "pw.workflow-catalog"],
   },
@@ -780,11 +854,11 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Adds up to 8 typed steps, blocks removing a step that others depend on, and edits label/kind/retries/dependencies/approval in an accessible list editor; edited steps are sent to dry run.",
     baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L3447-3459 — the commit button is
+    // Evidence: studio-components.tsx StepDraftForm — the commit button is
     // `disabled={isNew ? !draft.label.trim() : false}`, so "invalid" (an empty
     // label blocking the Add commit) is a real, reachable state. saveEdit/addStep
-    // (L3791-3827) are synchronous local setState calls with no async period and
-    // no error variable, so "saving" and "error" are trimmed.
+    // are synchronous local setState calls with no async period and no error
+    // variable, so "saving" and "error" are trimmed.
     states: ["draft", "dirty", "invalid", "valid"],
     testIds: ["jest.workflow-graph", "pw.workflow-graph"],
   },
@@ -812,30 +886,43 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     id: "workflow.activate",
     surface: "Workflow",
     control: "Activate after approval",
-    behavior: "Stays disabled until a dry run passes with zero graph errors, then requires an explicit confirmation dialog before recording a session-local activation state.",
+    behavior: "Disabled until a dry run passes with zero graph errors against the exact current draft: the pass is matched by a fingerprint derived from the server's own echoed template_id/trigger/steps (not the client-submitted values) and by draft version, so any step/trigger/template edit, or cloning into a new draft version with identical content, immediately invalidates it and requires a fresh passing dry run before an explicit confirmation dialog can record activation.",
     baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L3336-3345 — "Confirm activation" is a
-    // synchronous `setActivated(true)` with no async call, no error path, no
-    // rejection outcome, and no further approval workflow beyond this dialog,
-    // so waiting-for-approval/rejected/error are trimmed.
-    states: ["disabled", "ready", "active"],
+    // No "rejected" state: studio-components.tsx's activation confirmation
+    // dialog only exposes Cancel (calls setActivationConfirmOpen(false),
+    // simply closing the dialog with no persisted outcome) and Confirm
+    // activation (rechecks canActivate before recording activation). There
+    // is no code path that produces an outcome distinct from the dialog
+    // never having been opened, so "rejected" was a structurally impossible
+    // state and has been removed rather than credited by a Cancel-click test.
+    states: ["disabled", "ready", "waiting-for-approval", "active"],
     testIds: ["jest.workflow-activation", "pw.workflow-activation"],
   },
   {
     id: "workflow.run.manage",
     surface: "Workflow",
-    control: "Pause, resume, retry, cancel, inspect, clone, and version",
-    behavior: "Manages durable runs without repeating completed external effects.",
+    control: "Run status, inspect, clone, and unavailable scheduler controls",
+    behavior: "Displays API-backed durable run states, links inspection, clones a new draft, and keeps scheduler actions disabled when the control plane is unavailable.",
     baseline: "functional-covered",
     milestone: "M8",
-    // Evidence: studio-components.tsx ~L3257-3284 — the Pause/Resume/Retry/Cancel
-    // buttons are permanently `disabled` (Durable Task Scheduler control plane
-    // not exposed), and generated-api.ts RunStatus has no "paused"/"retrying"
-    // value, so "paused" and "retrying" have no reachable code path. "running",
-    // "failed", and "cancelled" remain reachable as real RunStatus values
-    // rendered via `orchestrationRuns` (L3229-3231, mockable via the `data` prop).
-    states: ["running", "failed", "cancelled", "completed"],
+    // Evidence: studio-components.tsx — the Pause/Resume/Retry/Cancel buttons
+    // are permanently `disabled` (Durable Task Scheduler control plane not
+    // exposed), and generated-api.ts RunStatus has 8 real values (planned,
+    // running, waiting_for_approval, partial, blocked, completed, cancelled,
+    // failed), all reachable via `orchestrationRuns` (mockable through the
+    // `data` prop). "paused"/"retrying" have no reachable code path and were
+    // never real RunStatus values.
+    states: [
+      "planned",
+      "running",
+      "waiting-for-approval",
+      "partial",
+      "blocked",
+      "completed",
+      "cancelled",
+      "failed",
+    ],
     testIds: ["jest.workflow-run", "pw.workflow-run"],
   },
   {
@@ -875,14 +962,18 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Opens a detail dialog with source metadata, governance, checksum, and evidence counts.",
     baseline: "functional-covered",
     milestone: "M9",
-    // Corrected from a 6-state lifecycle list to the 2 states the backend can
+    // Corrected from a 6-state lifecycle list to the 4 states the backend can
     // actually produce: generated-api.ts declares
     // `LibraryStatus = "ready" | "processing" | "needs_review" | "blocked"`.
     // workspace-views.tsx renders `item.status` verbatim via `statusLabel()`
-    // with no "failed"/"quarantined"/"superseded"/"archived" concept anywhere
-    // in the type or the component; declaring them would make the contract
-    // unsatisfiable by design, not a real coverage gap.
-    states: ["ready", "processing"],
+    // (row ~500, detail dialog ~570) with no "failed"/"quarantined"/
+    // "superseded"/"archived" concept anywhere in the type or the component --
+    // declaring those would make the contract unsatisfiable by design, not a
+    // real coverage gap. "needs_review" and "blocked" ARE real, distinct
+    // `LibraryStatus` literals rendered identically to "ready"/"processing"
+    // and are just as reachable via a mocked item; omitting them was itself
+    // an under-claim.
+    states: ["ready", "processing", "needs-review", "blocked"],
     testIds: ["jest.library-detail", "pw.library-detail"],
   },
   {
@@ -902,15 +993,33 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Selects a run and displays authoritative events, artifacts, costs, and traces.",
     baseline: "functional-covered",
     milestone: "M9",
-    // Corrected from a 5-state list to the 3 states reachable today:
-    // RunsView (workspace-views.tsx ~747-935) renders `data.runs` synchronously
+    // RunsView (workspace-views.tsx ~756-935) renders `data.runs` synchronously
     // from props with no internal fetch/loading state for the run list or the
     // detail panel itself (only the approval decision has a busy/error state,
     // tracked separately as approvals.decide). "loading" and generic "error"
-    // have no reachable code path for run selection/display. `run.status` is
-    // the backend `RunStatus` enum, which does include "partial", so that
-    // state is reachable via a mocked run record.
-    states: ["ready", "selected", "partial"],
+    // have no reachable code path for run selection/display. `run.status`
+    // (~868-888) is the backend `RunStatus` enum rendered verbatim through the
+    // identical `<em className={`table-status ${run.status}`}>{statusLabel(
+    // run.status)}</em>` expression for every row and for the selected-run
+    // overview -- there is no status-specific branch, so all 8 real
+    // generated-api.ts RunStatus literals (planned, running,
+    // waiting_for_approval, partial, blocked, completed, cancelled, failed)
+    // are equally reachable via a mocked run record, not just a subset.
+    // "waiting-for-approval" is the kebab state-token spelling of that
+    // literal (see dataset.execution for the convention); the other 7
+    // literals contain no underscore and are used as-is.
+    states: [
+      "ready",
+      "selected",
+      "planned",
+      "running",
+      "waiting-for-approval",
+      "partial",
+      "blocked",
+      "completed",
+      "cancelled",
+      "failed",
+    ],
     testIds: ["pw.operational-surfaces", "pw.run-detail"],
   },
   {
@@ -926,7 +1035,7 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
   {
     id: "approvals.decide",
     surface: "Approvals",
-    control: "Approve, reject, and request changes",
+    control: "Approve and reject",
     behavior: "Records actor, exact payload digest, rationale, delivery, and idempotent decision.",
     baseline: "functional-uncovered",
     milestone: "M9",
@@ -937,7 +1046,12 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     // decision API with "approved" or "rejected". There is no third decision
     // path and no "changes_requested"/"expired" value anywhere in the type or
     // the component; declaring them would make the contract unsatisfiable by
-    // design, not a real coverage gap.
+    // design, not a real coverage gap. The previously-divergent "authoritative"
+    // packages/research_core/.../v3_contracts.py (ApprovalRequestV3/
+    // ApprovalDecisionV3) has since been reconciled to this same
+    // pending/approved/rejected/cancelled + approved/rejected shape, so every
+    // Python/generated contract now agrees with this manifest instead of one
+    // silently overclaiming.
     states: ["pending", "submitting", "approved", "rejected", "error"],
     testIds: ["jest.approval-decision", "pw.approval-decision"],
   },
@@ -958,7 +1072,19 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Validates, persists, and reports success/error without enabling global web research.",
     baseline: "functional-uncovered",
     milestone: "M9",
-    states: STANDARD_STATES,
+    // workspace-views.tsx renders the submit button disabled only while the PUT
+    // is in flight (the visible label is "Saving…"), so "disabled" was not an
+    // independently reachable state. research-workbench.tsx surfaces initial
+    // settings load failures, including an API 401, before data is available.
+    states: [
+      "ready",
+      "keyboard",
+      "loading",
+      "saving",
+      "success",
+      "error",
+      "unauthorized",
+    ],
     testIds: ["jest.settings-general", "pw.settings-general"],
   },
   {
@@ -988,13 +1114,14 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Uses the connector manager widget to persist allowlisted specialist assignments and prevent invalid combinations.",
     baseline: "functional-covered",
     milestone: "M9",
-    // Corrected from a 5-state list to the 3 states reachable today: the
-    // assignment checkboxes (workspace-views.tsx ~1591-1622) have no
-    // minimum-selection guard and the form submits unconditionally via
-    // `mutateConnector`; there is no client-side "invalid" combination that
-    // blocks submission. "saving" (busyConnector) and "error" (catch path)
-    // remain real and are declared separately.
-    states: ["selected", "unselected", "saving", "error"],
+    // Corrected from an earlier, mistaken "no client-side guard" note: the
+    // assignment checkboxes (workspace-views.tsx ~1127-1134) DO block
+    // submission client-side — an enabled connector with zero assigned
+    // specialists sets a status-only error and returns before calling
+    // `updateConnector`, so no PUT is ever sent. "invalid" is a real,
+    // independently reachable state alongside "saving" (busyConnector) and
+    // "error" (catch path).
+    states: ["selected", "unselected", "saving", "error", "invalid"],
     testIds: ["jest.connector-assign", "pw.connector-assign"],
   },
   {
@@ -1042,15 +1169,24 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     behavior: "Shows deployment-managed connector/toolbox state, scoped draft-PR connector authoring, the project-scoped Code Interpreter boundary, and truthful disabled Work IQ prerequisites.",
     baseline: "functional-covered",
     milestone: "M9",
-    // Corrected from a 6-state lifecycle list to the single state reachable
-    // today: the Readiness tab (workspace-views.tsx ~1795-1857) renders 4
-    // hardcoded `<article>` cards with fixed copy and no props/data-driven
-    // variation whatsoever -- there is no fetch, no per-target status field,
-    // and no loading/permission/error branch. "unconfigured" is the only
-    // truthful rendered state; the other five would make the contract
-    // unsatisfiable by design, not a real coverage gap.
-    states: ["unconfigured"],
+    // workspace-views.tsx renders four static readiness cards with no request or
+    // state machine: APIM/Toolbox is deployment-managed, Work IQ needs tenant
+    // consent, Copilot authoring is blocked on repository setup, and the dataset
+    // Toolbox is ready. The prior partial/permission-denied/unsupported/error
+    // states had no production branch and therefore could never be exercised.
+    states: ["deployment-managed", "needs-consent", "blocked", "ready"],
     testIds: ["jest.integration-readiness", "pw.integration-readiness"],
+  },
+  {
+    id: "settings.evaluations.release",
+    surface: "Settings",
+    control: "Release evaluation gates",
+    behavior:
+      "Shows each independent deterministic release dimension as ready, blocked, or degraded without collapsing scores.",
+    baseline: "functional-covered",
+    milestone: "M9",
+    states: ["ready", "blocked", "degraded"],
+    testIds: ["jest.evaluation-readiness", "pw.evaluation-readiness"],
   },
 ] as const;
 
@@ -1186,6 +1322,7 @@ const AUTH_STATES = new Set([
   "admin-consent-required",
   "consent-required",
   "locked",
+  "needs-consent",
   "permission-denied",
   "unauthorized",
   "user-consent-required",

@@ -341,9 +341,10 @@ test.describe("[pw.approval-decision] approvals state closure", () => {
 
     await gotoView(page, "runs");
     releaseDiagnostics.expectConsoleError(/500 \(Internal Server Error\)/);
-    await page
-      .getByRole("textbox", { name: "Reviewer rationale" })
-      .fill("Approving would violate the release boundary.");
+    const rationaleField = page.getByRole("textbox", {
+      name: "Reviewer rationale",
+    });
+    await rationaleField.fill("Approving would violate the release boundary.");
     await page
       .getByRole("button", { name: "Approve exact action" })
       .click();
@@ -353,6 +354,13 @@ test.describe("[pw.approval-decision] approvals state closure", () => {
     );
     await expect(page.getByRole("button", { name: "Approve exact action" })).toBeEnabled();
     await expect(page.getByText(FIXED_APPROVAL.title)).toBeVisible();
+    // A failed decision must re-enable rationale and preserve exactly what
+    // the reviewer typed -- never silently clear it, and never leave it
+    // stuck disabled once the failed request has settled.
+    await expect(rationaleField).toBeEnabled();
+    await expect(rationaleField).toHaveValue(
+      "Approving would violate the release boundary.",
+    );
     await capture(page, testInfo, "approvals-decision-error");
     await expectAccessible(page);
   });
@@ -430,6 +438,64 @@ test.describe("[pw.library-ingest] library state closure", () => {
     await capture(page, testInfo, "library-item-processing-detail");
     await expectAccessible(page);
   });
+
+  test("[pw.library-detail] library rows opening needs-review and blocked items truthfully render those distinct real LibraryStatus literals [pw.library.item.open:needs-review][pw.library.item.open:blocked]", async ({
+    page,
+  }, testInfo) => {
+    const needsReviewItem = {
+      ...BASE_LIBRARY_ITEM,
+      id: "library-item-needs-review",
+      title: "Cohort protocol pending governance review",
+      status: "needs_review",
+      checksum: "sha256:needs-review",
+      description: "Flagged for governance review before use.",
+    };
+    const blockedItem = {
+      ...BASE_LIBRARY_ITEM,
+      id: "library-item-blocked",
+      title: "Withdrawn dataset citation",
+      status: "blocked",
+      checksum: "sha256:blocked",
+      description: "Blocked from use pending licensing resolution.",
+    };
+    await mockWorkspaceData(page, {
+      library: [needsReviewItem, blockedItem],
+    });
+
+    await gotoView(page, "library");
+
+    const needsReviewRow = page.getByRole("button", {
+      name: new RegExp(needsReviewItem.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    });
+    await expect(
+      needsReviewRow.locator(`.table-status.${needsReviewItem.status}`),
+    ).toHaveText("needs review");
+    await needsReviewRow.click();
+    const needsReviewDialog = page.getByRole("dialog", {
+      name: needsReviewItem.title,
+    });
+    await expect(needsReviewDialog.locator("dl.library-detail-facts")).toContainText(
+      "needs review",
+    );
+    await capture(page, testInfo, "library-item-needs-review-detail");
+    await expectAccessible(page);
+    await needsReviewDialog.getByRole("button", { name: "Close source detail" }).click();
+    await expect(needsReviewDialog).toBeHidden();
+
+    const blockedRow = page.getByRole("button", {
+      name: new RegExp(blockedItem.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")),
+    });
+    await expect(blockedRow.locator(`.table-status.${blockedItem.status}`)).toHaveText(
+      "blocked",
+    );
+    await blockedRow.click();
+    const blockedDialog = page.getByRole("dialog", { name: blockedItem.title });
+    await expect(blockedDialog.locator("dl.library-detail-facts")).toContainText(
+      "blocked",
+    );
+    await capture(page, testInfo, "library-item-blocked-detail");
+    await expectAccessible(page);
+  });
 });
 
 test.describe("[pw.run-detail] runs state closure", () => {
@@ -474,6 +540,143 @@ test.describe("[pw.run-detail] runs state closure", () => {
       page.getByText("Extraction evidence missing for one source"),
     ).toBeVisible();
     await capture(page, testInfo, "runs-select-partial");
+    await expectAccessible(page);
+  });
+
+  test("[pw.run-detail] selecting planned, waiting-for-approval, and blocked runs keeps the detail panel truthfully aligned with each distinct real RunStatus literal [pw.runs.select:planned][pw.runs.select:waiting-for-approval][pw.runs.select:blocked]", async ({
+    page,
+  }, testInfo) => {
+    const plannedRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-planned",
+      durable_instance_id: "research-fixture-run-planned",
+      title: "Planned literature intake run",
+      status: "planned",
+      current_stage: "Queued for execution",
+      progress: 0,
+      artifact_count: 0,
+      approval_id: null,
+    };
+    const waitingRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-waiting-select",
+      durable_instance_id: "research-fixture-run-waiting-select",
+      title: "Grant package awaiting reviewer decision",
+      status: "waiting_for_approval",
+      current_stage: "Reviewer approval",
+      approval_id: null,
+    };
+    const blockedRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-blocked",
+      durable_instance_id: "research-fixture-run-blocked",
+      title: "Blocked dataset export run",
+      status: "blocked",
+      current_stage: "Blocked by data-governance policy",
+      progress: 12,
+      artifact_count: 0,
+      approval_id: null,
+    };
+    await mockWorkspaceData(page, {
+      runs: [plannedRun, waitingRun, blockedRun],
+      approvals: [],
+    });
+
+    await gotoView(page, "runs");
+
+    for (const run of [plannedRun, waitingRun, blockedRun]) {
+      await page
+        .getByRole("button", { name: new RegExp(run.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })
+        .click();
+      await expect(
+        page.locator('.detailed-run-list button[data-active="true"]'),
+      ).toContainText(run.title);
+      await expect(page.locator(".run-overview .table-status")).toHaveText(
+        run.status.replaceAll("_", " "),
+      );
+      await expect(page.getByText(run.current_stage)).toBeVisible();
+    }
+    await capture(page, testInfo, "runs-select-planned-waiting-blocked");
+    await expectAccessible(page);
+  });
+
+  test("[pw.run-detail] selecting running, completed, cancelled, and failed runs renders each remaining real RunStatus literal through the same row/detail code path [pw.runs.select:running][pw.runs.select:completed][pw.runs.select:cancelled][pw.runs.select:failed]", async ({
+    page,
+  }, testInfo) => {
+    // These 4 literals complete generated-api.ts's 8-value RunStatus union
+    // (planned/waiting_for_approval/partial/blocked already covered above).
+    // workspace-views.tsx renders every run row and the selected-run overview
+    // through the identical `<em className={`table-status ${run.status}`}>
+    // {statusLabel(run.status)}</em>` expression regardless of which literal
+    // is present -- there is no status-specific branch that would make these
+    // four unreachable, so they are exercised here rather than excluded.
+    const runningRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-running",
+      durable_instance_id: "research-fixture-run-running",
+      title: "Running literature synthesis pass",
+      capability: "literature",
+      status: "running",
+      current_stage: "Synthesizing extracted evidence",
+      progress: 42,
+      artifact_count: 1,
+      approval_id: null,
+    };
+    const completedRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-completed-select",
+      durable_instance_id: "research-fixture-run-completed-select",
+      title: "Completed grant package export",
+      capability: "grant",
+      status: "completed",
+      current_stage: "Release package exported",
+      progress: 100,
+      approval_id: null,
+    };
+    const cancelledRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-cancelled",
+      durable_instance_id: "research-fixture-run-cancelled",
+      title: "Cancelled dataset profiling run",
+      capability: "dataset",
+      status: "cancelled",
+      current_stage: "Cancelled by requester",
+      progress: 30,
+      artifact_count: 0,
+      approval_id: null,
+    };
+    const failedRun = {
+      ...FIXED_RUN_WAITING,
+      id: "fixture-run-failed",
+      durable_instance_id: "research-fixture-run-failed",
+      title: "Failed institutional QA run",
+      capability: "institutional_qa",
+      status: "failed",
+      current_stage: "Connector timeout during retrieval",
+      progress: 55,
+      artifact_count: 0,
+      approval_id: null,
+    };
+    await mockWorkspaceData(page, {
+      runs: [runningRun, completedRun, cancelledRun, failedRun],
+      approvals: [],
+    });
+
+    await gotoView(page, "runs");
+
+    for (const run of [runningRun, completedRun, cancelledRun, failedRun]) {
+      await page
+        .getByRole("button", { name: new RegExp(run.title.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")) })
+        .click();
+      await expect(
+        page.locator('.detailed-run-list button[data-active="true"]'),
+      ).toContainText(run.title);
+      await expect(page.locator(".run-overview .table-status")).toHaveText(
+        run.status,
+      );
+      await expect(page.getByText(run.current_stage)).toBeVisible();
+    }
+    await capture(page, testInfo, "runs-select-running-completed-cancelled-failed");
     await expectAccessible(page);
   });
 });
@@ -532,7 +735,7 @@ test.describe("[pw.settings-general] settings general state closure", () => {
     );
   });
 
-  test("[pw.settings-general] saving disables the form action and reports API failures inline [pw.settings.general.form:disabled][pw.settings.general.form:error]", async ({
+  test("[pw.settings-general] saving disables the form action and reports API failures inline", async ({
     page,
     releaseDiagnostics,
   }, testInfo) => {
@@ -576,7 +779,7 @@ test.describe("[pw.settings-general] settings general state closure", () => {
 });
 
 test.describe("[pw.connector-enable] connector enable state closure", () => {
-  test("[pw.connector-enable] saving a connector enable change disables the control and surfaces update errors [pw.settings.connectors.enable:saving][pw.settings.connectors.enable:error]", async ({
+  test("[pw.connector-enable] saving a connector enable change disables the control and surfaces update errors", async ({
     page,
     releaseDiagnostics,
   }, testInfo) => {
@@ -607,7 +810,7 @@ test.describe("[pw.connector-enable] connector enable state closure", () => {
     await page.getByRole("button", { name: "Save configuration" }).click();
 
     await expect(enableCheckbox).toBeDisabled();
-    await expect(page.getByRole("button", { name: "Save configuration" })).toBeDisabled();
+    await expect(page.getByRole("button", { name: "Saving…" })).toBeDisabled();
     await capture(page, testInfo, "connector-enable-saving");
     await expectAccessible(page);
 
@@ -626,7 +829,7 @@ test.describe("[pw.connector-enable] connector enable state closure", () => {
 });
 
 test.describe("[pw.connector-assign] connector assignment state closure", () => {
-  test("[pw.connector-assign] assignment saves disable specialist checkboxes and preserve a visible error on failure [pw.settings.connectors.assign:saving][pw.settings.connectors.assign:error]", async ({
+  test("[pw.connector-assign] assignment saves disable specialist checkboxes and preserve a visible error on failure", async ({
     page,
     releaseDiagnostics,
   }, testInfo) => {
@@ -676,7 +879,7 @@ test.describe("[pw.connector-assign] connector assignment state closure", () => 
 });
 
 test.describe("[pw.connector-test] connector test state closure", () => {
-  test("[pw.connector-test] test connection reports healthy, degraded, configuration-required, and failed outcomes while exposing the live testing state [pw.settings.connectors.test:testing][pw.settings.connectors.test:healthy][pw.settings.connectors.test:degraded][pw.settings.connectors.test:configuration-required][pw.settings.connectors.test:failed]", async ({
+  test("[pw.connector-test] test connection reports healthy, degraded, configuration-required, and failed outcomes while exposing the live testing state", async ({
     page,
   }, testInfo) => {
     const workspace = await mockWorkspaceData(page, {

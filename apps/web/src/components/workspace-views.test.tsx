@@ -698,6 +698,10 @@ describe("RunsView", () => {
     expect(
       screen.getByRole("button", { name: "Approve exact action" }),
     ).toBeDisabled();
+    // Rationale must remain disabled (not just the decision buttons) while a
+    // decision is in flight -- the authoritative product decision is that
+    // rationale stays disabled during the request, never editable mid-flight.
+    expect(screen.getByLabelText("Reviewer rationale")).toBeDisabled();
 
     deferred.resolve(buildApprovalRecord({ state: "rejected" }));
 
@@ -707,36 +711,63 @@ describe("RunsView", () => {
         screen.getByRole("button", { name: "Reject action" }),
       ).not.toBeDisabled(),
     );
+    // After a successful decision settles, the rationale field is re-enabled
+    // and cleared (the record's stored rationale is deleted on success), not
+    // left disabled or holding stale text.
+    await waitFor(() =>
+      expect(screen.getByLabelText("Reviewer rationale")).not.toBeDisabled(),
+    );
+    expect(screen.getByLabelText("Reviewer rationale")).toHaveValue("");
     },
     10000,
   );
 
-  it("surfaces approval API failures and fallback messages", async () => {
+  it(
+    "keeps rationale disabled mid-flight and re-enables it with the typed text preserved after a failed decision",
+    async () => {
     const user = userEvent.setup();
+    const onRefresh = jest.fn().mockResolvedValue(undefined);
+    const firstAttempt = createDeferred<ApprovalRecord>();
     jest
       .mocked(decideApproval)
-      .mockRejectedValueOnce(new Error("Decision denied by policy."))
+      .mockReturnValueOnce(firstAttempt.promise)
       .mockRejectedValueOnce("denied");
 
     render(
       <RunsView
         data={buildRunsWorkspaceData()}
-        onRefresh={jest.fn()}
+        onRefresh={onRefresh}
         focusRunId="run-approval"
       />,
     );
 
-    await user.type(screen.getByLabelText("Reviewer rationale"), "Valid rationale");
+    const rationaleField = screen.getByLabelText("Reviewer rationale");
+    await user.type(rationaleField, "Valid rationale");
     await user.click(screen.getByRole("button", { name: "Approve exact action" }));
+
+    // Rationale is disabled while the decision request is in flight, before
+    // it has even resolved or rejected.
+    expect(rationaleField).toBeDisabled();
+
+    firstAttempt.reject(new Error("Decision denied by policy."));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Decision denied by policy.",
     );
+    // A failed decision re-enables rationale and preserves exactly what the
+    // reviewer typed -- it must never be silently cleared on error, only on
+    // a genuinely successful decision.
+    await waitFor(() => expect(rationaleField).not.toBeDisabled());
+    expect(rationaleField).toHaveValue("Valid rationale");
 
     await user.click(screen.getByRole("button", { name: "Approve exact action" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Decision could not be saved.",
     );
-  });
+    await waitFor(() => expect(rationaleField).not.toBeDisabled());
+    expect(rationaleField).toHaveValue("Valid rationale");
+    },
+    10000,
+  );
 
   it("shows an empty workspace state without runs", () => {
     render(<RunsView data={null} onRefresh={jest.fn()} />);
@@ -777,9 +808,28 @@ describe("SettingsView", () => {
 
     await user.click(screen.getByRole("button", { name: "Evaluation" }));
     expect(screen.getByText("Retrieval completeness")).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-evaluation-state="ready"]'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-evaluation-state="blocked"]'),
+    ).toBeInTheDocument();
+    expect(
+      container.querySelector('[data-evaluation-state="degraded"]'),
+    ).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Readiness" }));
     expect(screen.getByText("GitHub Copilot connector authoring")).toBeInTheDocument();
+    for (const state of [
+      "deployment-managed",
+      "needs-consent",
+      "blocked",
+      "ready",
+    ]) {
+      expect(
+        container.querySelector(`[data-readiness-state="${state}"]`),
+      ).toBeInTheDocument();
+    }
     expect(await axe(container)).toHaveNoViolations();
   });
 
@@ -949,7 +999,7 @@ describe("SettingsView", () => {
     ).toHaveAttribute("target", "_blank");
     expect(
       screen.getByRole("link", { name: /provider terms/i }),
-    ).toHaveAttribute("rel", "noreferrer");
+    ).toHaveAttribute("rel", "noopener noreferrer");
 
     await user.click(screen.getByRole("button", { name: "Funding" }));
     const catalog = screen
@@ -1146,6 +1196,37 @@ describe("SettingsView", () => {
     );
     expect(await screen.findByRole("status")).toHaveTextContent(
       "Connector update failed.",
+    );
+  });
+
+  it("blocks enabled connector configurations with no assigned specialist", async () => {
+    const user = userEvent.setup();
+    const datacite = buildConnector({
+      id: "datacite",
+      name: "DataCite",
+      category: "Datasets",
+      enabled: true,
+      assigned_agents: ["dataset"],
+    });
+
+    render(
+      <SettingsView
+        data={buildWorkspaceData({ connectors: [datacite] })}
+        onRefresh={jest.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+    await user.click(
+      screen.getByRole("checkbox", { name: "Assign dataset to DataCite" }),
+    );
+    await user.click(
+      screen.getByRole("button", { name: "Save configuration" }),
+    );
+
+    expect(updateConnector).not.toHaveBeenCalled();
+    expect(screen.getByRole("status")).toHaveTextContent(
+      "Enabled connectors must be assigned to at least one specialist.",
     );
   });
 });

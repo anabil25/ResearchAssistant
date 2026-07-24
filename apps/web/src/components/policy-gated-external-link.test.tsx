@@ -13,7 +13,7 @@ describe("PolicyGatedExternalLink", () => {
     const link = screen.getByRole("link", { name: /provider terms/i });
     expect(link).toHaveAttribute("href", "https://www.crossref.org/terms/");
     expect(link).toHaveAttribute("target", "_blank");
-    expect(link).toHaveAttribute("rel", "noreferrer");
+    expect(link).toHaveAttribute("rel", "noopener noreferrer");
     expect(link).toHaveAttribute("data-terms-state", "ready");
   });
 
@@ -61,5 +61,21 @@ describe("PolicyGatedExternalLink", () => {
     const blocked = screen.getByRole("status");
     expect(blocked).toHaveClass("connector-terms-blocked");
     expect(blocked).toHaveClass("custom-link");
+  });
+
+  it("supports a surface-owned allowlist without weakening the default policy", () => {
+    render(
+      <PolicyGatedExternalLink
+        url="https://connections.example.org/terms"
+        policy={{ allowedHosts: new Set(["connections.example.org"]) }}
+      >
+        Connection terms
+      </PolicyGatedExternalLink>,
+    );
+
+    expect(screen.getByRole("link", { name: "Connection terms" })).toHaveAttribute(
+      "href",
+      "https://connections.example.org/terms",
+    );
   });
 });

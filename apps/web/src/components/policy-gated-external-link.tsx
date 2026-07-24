@@ -23,6 +23,7 @@ import { Lock } from "lucide-react";
 import {
   describeUrlPolicyRejection,
   evaluateExternalUrlPolicy,
+  type ExternalUrlPolicy,
 } from "@/lib/url-policy";
 
 export interface PolicyGatedExternalLinkProps {
@@ -32,6 +33,8 @@ export interface PolicyGatedExternalLinkProps {
   children: ReactNode;
   /** Optional class applied to both the allowed anchor and blocked status span. */
   className?: string;
+  /** A deterministic surface-owned allowlist; defaults to connector terms hosts. */
+  policy?: ExternalUrlPolicy;
 }
 
 /**
@@ -44,15 +47,16 @@ export function PolicyGatedExternalLink({
   url,
   children,
   className,
+  policy,
 }: PolicyGatedExternalLinkProps) {
-  const policy = evaluateExternalUrlPolicy(url);
+  const decision = evaluateExternalUrlPolicy(url, policy);
 
-  if (policy.allowed) {
+  if (decision.allowed) {
     return (
       <a
-        href={policy.url}
+        href={decision.url}
         target="_blank"
-        rel="noreferrer"
+        rel="noopener noreferrer"
         data-terms-state="ready"
         className={className}
       >
@@ -61,7 +65,7 @@ export function PolicyGatedExternalLink({
     );
   }
 
-  const reason = describeUrlPolicyRejection(policy.reason);
+  const reason = describeUrlPolicyRejection(decision.reason);
   return (
     <span
       className={
