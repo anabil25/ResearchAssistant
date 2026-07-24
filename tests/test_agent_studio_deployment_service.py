@@ -26,9 +26,6 @@ from research_assistant_api.agent_studio.models import (
     ApprovalKind,
     ApprovalRevocation,
     ApprovalState,
-    CapabilityBinding,
-    CapabilityDescriptorRef,
-    CapabilityOperationRef,
     CapabilityVersionPin,
     DeploymentEnvironment,
     HealthStatus,
@@ -919,10 +916,22 @@ def test_rollback_is_cross_project_isolated(
 
 def test_resolve_returns_full_contract_for_bound_version(
     release_service: ReleaseServiceHarness,
-    deployment_service: DeploymentService,
     store: AgentStudioStore,
 ) -> None:
     _create_agent(release_service, logical_agent_id="agent-resolve-contract")
+    # This test attaches a real capability binding to assert on the
+    # resolved contract's `capability_versions` field, so it needs a real
+    # registry (not the shared no-registry `deployment_service` fixture) --
+    # a missing registry now fails closed for any manifest with capability
+    # bindings (see the missing-registry-fail-closed tests above). Attach
+    # via the registry (not a hand-built `CapabilityBinding`) so the
+    # binding carries a pinned descriptor digest and passes freshness.
+    deployment_service = DeploymentService(store, capability_registry=release_service._registry)
+    binding = release_service._registry.attach(
+        descriptor_id="foundry.web_search",
+        operation="search",
+        attached_by="user-1",
+    )
     draft = store.get_draft(_scope(), "agent-resolve-contract")
     assert draft is not None
     input_schema = SchemaRef(ref="schema://input", digest="sha256:input")
@@ -933,14 +942,7 @@ def test_resolve_returns_full_contract_for_bound_version(
         logical_agent_id="agent-resolve-contract",
         manifest=draft.manifest.model_copy(
             update={
-                "capabilities": (
-                    CapabilityBinding(
-                        provider_contract_version="agent-studio.capability-registry.v1",
-                        descriptor_ref=CapabilityDescriptorRef(id="foundry.web_search"),
-                        operation_ref=CapabilityOperationRef(id="search"),
-                        attached_by="user-1",
-                    ),
-                ),
+                "capabilities": (binding,),
                 "input_schema_ref": input_schema,
                 "output_schema_ref": output_schema,
             }
@@ -1335,6 +1337,71 @@ def test_resolve_fails_closed_when_capability_binding_goes_stale_after_deploy(
         stale_deployment_service.resolve(
             tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-resolve-stale-binding"
         )
+
+
+def test_resolve_fails_closed_when_capability_registry_is_missing_at_resolve_time(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    """Same missing-registry-fail-closed contract as deploy, but for the
+    resolve/invoke path: ``_build_contract`` calls
+    ``_revalidate_capability_bindings`` too, so a registry that goes
+    missing (e.g. a discovery-source outage) between deploy and a later
+    resolve/invoke call must not silently serve a contract whose binding
+    freshness can no longer be verified."""
+    _deployed_stale_prone_version(release_service, store, logical_agent_id="agent-resolve-no-registry")
+    no_registry_deployment_service = DeploymentService(store)
+
+    with pytest.raises(DeploymentServiceError, match="registry is unavailable"):
+        no_registry_deployment_service.resolve(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, logical_agent_id="agent-resolve-no-registry"
+        )
+
+
+def test_contract_for_version_fails_closed_when_capability_registry_is_missing(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    version = _deployed_stale_prone_version(
+        release_service, store, logical_agent_id="agent-contract-no-registry"
+    )
+    no_registry_deployment_service = DeploymentService(store)
+
+    with pytest.raises(DeploymentServiceError, match="registry is unavailable"):
+        no_registry_deployment_service.contract_for_version(
+            tenant_id="demo", project_id=TEST_PROJECT_ID, version_id=version.id
+        )
+
+
+def test_catalog_omits_agent_instead_of_raising_when_capability_registry_is_missing(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    """``catalog`` already tolerates a per-agent ``DeploymentServiceError``
+    by omitting that agent (see ``test_catalog_omits_stale_bound_agent_
+    instead_of_raising``); confirm that tolerance also covers the new
+    missing-registry-fail-closed error, not just registry-known staleness."""
+    _deployed_stale_prone_version(release_service, store, logical_agent_id="agent-catalog-no-registry")
+    healthy_version, _ = _version_with_latest_release(
+        release_service,
+        store,
+        latest_status=ReleaseStatus.GATED,
+        logical_agent_id="agent-catalog-no-registry-healthy",
+    )
+    healthy_deployment_service = DeploymentService(store)
+    healthy_deployment_service.deploy(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-catalog-no-registry-healthy",
+        version_id=healthy_version.id,
+        deployed_by="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    no_registry_deployment_service = DeploymentService(store)
+
+    contracts = no_registry_deployment_service.catalog(tenant_id="demo", project_id=TEST_PROJECT_ID)
+
+    assert [contract.logical_agent_id for contract in contracts] == ["agent-catalog-no-registry-healthy"]
 
 
 def test_contract_for_version_fails_closed_when_capability_binding_is_stale(
@@ -1735,33 +1802,64 @@ def test_deploy_hard_fails_when_capability_binding_descriptor_is_unknown_to_the_
         )
 
 
-def test_omitting_capability_registry_is_a_test_only_convenience_and_skips_freshness_revalidation(
+def test_omitting_capability_registry_fails_closed_for_a_manifest_with_capability_bindings(
     release_service: ReleaseServiceHarness,
     store: AgentStudioStore,
 ) -> None:
-    """Contract test for a review hardening note: ``DeploymentService``
-    accepts ``capability_registry=None`` purely so lightweight unit tests
-    can exercise deployment mechanics unrelated to capability revalidation
-    (see the constructor docstring). With no registry supplied, binding
-    freshness is *not* re-checked and an otherwise-stale binding (a
-    descriptor unknown to any catalog) deploys successfully -- this is the
-    intentionally permissive test-only path.
+    """Missing-registry-fail-closed regression: earlier review rounds
+    treated ``DeploymentService(store)`` (``capability_registry=None``) as
+    an unconditional test-only convenience that silently skipped both
+    binding-freshness and approval revalidation. That contradicted this
+    class's own constructor docstring, which promises approval/freshness
+    checks "fail closed at the point the check would run ... rather than
+    silently skipping" once a manifest actually declares a capability
+    binding -- mirroring how ``_revalidate_model_deployment`` already
+    fails closed via ``UnavailableModelDiscovery`` when no model-discovery
+    port is supplied.
 
-    This must never be reachable in production: ``research_assistant_api.
-    app._init_agent_studio`` always constructs ``DeploymentService`` with
-    ``capability_registry=registry`` bound to the live
-    ``CapabilityRegistry``, so production deploys always run the freshness
-    gate exercised by ``test_deploy_hard_fails_when_capability_binding_
-    descriptor_is_unknown_to_the_registry`` above."""
+    A manifest with an attached, approval-gated capability binding but no
+    registry to verify it against must now hard-fail deploy instead of
+    deploying unchecked."""
     version = _capability_gated_version(
         release_service, store, logical_agent_id="agent-deploy-no-registry-supplied"
     )
     deployment_service = DeploymentService(store)
 
+    with pytest.raises(DeploymentServiceError, match="registry is unavailable"):
+        deployment_service.deploy(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            logical_agent_id="agent-deploy-no-registry-supplied",
+            version_id=version.id,
+            deployed_by="user-1",
+            actor_role=AgentRole.OWNER,
+        )
+
+
+def test_omitting_capability_registry_is_still_tolerated_for_a_capability_free_manifest(
+    release_service: ReleaseServiceHarness,
+    store: AgentStudioStore,
+) -> None:
+    """The lightweight-unit-test convenience described on the
+    ``DeploymentService`` constructor remains legitimate when there are no
+    capability bindings to check at all: nothing needs the registry, so a
+    missing registry is harmless and must not block deploy. This is the
+    scenario the vast majority of this file's tests actually rely on via
+    the shared ``deployment_service`` fixture (``DeploymentService(store)``
+    with no registry, deploying capability-free versions)."""
+    version, _ = _version_with_latest_release(
+        release_service,
+        store,
+        latest_status=ReleaseStatus.GATED,
+        logical_agent_id="agent-deploy-no-registry-no-capabilities",
+    )
+    assert version.manifest.capabilities == ()
+    deployment_service = DeploymentService(store)
+
     record = deployment_service.deploy(
         tenant_id="demo",
         project_id=TEST_PROJECT_ID,
-        logical_agent_id="agent-deploy-no-registry-supplied",
+        logical_agent_id="agent-deploy-no-registry-no-capabilities",
         version_id=version.id,
         deployed_by="user-1",
         actor_role=AgentRole.OWNER,

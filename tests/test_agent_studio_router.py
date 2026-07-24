@@ -3830,9 +3830,32 @@ def test_record_health_requires_maintainer_role_at_router_and_service(
 
 
 def test_resolve_contract_and_catalog_routes_cover_full_happy_path(
-    client: TestClient,
+    settings: Settings,
     store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+    audit_service: AuditService,
 ) -> None:
+    # This test attaches a real capability binding, so it needs a
+    # registry-backed ``DeploymentService`` (the shared no-registry
+    # ``deployment_service``/``client`` fixtures fail closed for any
+    # manifest with capability bindings -- see
+    # ``test_resolve_and_contract_routes_fail_closed_on_stale_capability_binding``).
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=DeploymentService(store, capability_registry=registry),
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=audit_service,
+    )
+    client = TestClient(app)
     _create_agent(client, logical_agent_id="agent-contract", headers=USER_HEADERS)
     draft = _get_draft(client, "agent-contract", headers=USER_HEADERS)
     draft["manifest"]["input_schema_ref"] = {

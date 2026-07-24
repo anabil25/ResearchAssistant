@@ -97,9 +97,23 @@ class DeploymentService:
         candidate is checked (not just the first) so an older, since-revoked
         approval sitting ahead of a newer valid one in the list cannot mask
         that a currently-valid approval does exist.
+
+        A manifest with no capability bindings has nothing to check, so a
+        missing registry is tolerated (this is the lightweight-unit-test
+        convenience described on the constructor). But once the manifest
+        *does* declare a capability binding, a missing/unavailable registry
+        can no longer determine whether that binding requires approval —
+        silently skipping would let an approval-gated binding through
+        unchecked. Fail closed instead, matching ``_revalidate_model_
+        deployment``'s behavior for a missing model-discovery port.
         """
-        if self._registry is None:
+        if not version.manifest.capabilities:
             return
+        if self._registry is None:
+            raise DeploymentServiceError(
+                "Capability registry is unavailable; cannot verify approval "
+                "requirements for a manifest with attached capability bindings."
+            )
         catalog = self._registry.as_mapping()
         approvals = self._store.list_approvals(scope, version.id)
         for binding in version.manifest.capabilities:
@@ -149,9 +163,20 @@ class DeploymentService:
         approval state. A binding that was fresh at cut/gate time can still
         drift before deploy (e.g. the provider descriptor changed, or the
         discovered instance was reconfigured/removed).
+
+        As with ``_revalidate_capability_approvals``, a missing registry is
+        only tolerated when the manifest has no capability bindings to
+        check; once a binding is present, a missing registry cannot prove
+        freshness and must fail closed rather than silently pass this
+        version through to deploy/resolve/invoke.
         """
-        if self._registry is None:
+        if not version.manifest.capabilities:
             return
+        if self._registry is None:
+            raise DeploymentServiceError(
+                "Capability registry is unavailable; cannot verify binding "
+                "freshness for a manifest with attached capability bindings."
+            )
         for binding in version.manifest.capabilities:
             reason = self._registry.check_binding_freshness(binding)
             if reason is not None:
