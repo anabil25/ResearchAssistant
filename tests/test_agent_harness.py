@@ -62,6 +62,7 @@ from shared.capabilities import (
     ToolRegistration,
     attach_provider_binding,
     runtime_attested_registration,
+    template_instance_fingerprint,
 )
 from shared.catalog import capabilities_for_manifest
 from shared.contracts import (
@@ -74,6 +75,7 @@ from shared.contracts import (
     CoordinatorRequest,
     CoordinatorResponse,
     DatasetRequest,
+    DeploymentScope,
     EvidenceRef,
     GrantResponse,
     LiteratureRequest,
@@ -93,6 +95,7 @@ from shared.contracts import (
     SpecialistResult,
     SupportStatus,
     bind_contracts,
+    bind_deployment_scope,
     canonical_digest,
     resolve_authorized_evidence,
 )
@@ -220,6 +223,8 @@ def _settings(**overrides: Any) -> HarnessSettings:
         "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/p",
         "model_deployment_name": "gpt-5.4-mini",
         "model_deployment_version": "2026-03-17",
+        "deployment_tenant_id": "tenant-a",
+        "deployment_project_id": "project-a",
     }
     values.update(overrides)
     return HarnessSettings.model_validate(values)
@@ -239,13 +244,10 @@ class _TrustedScope(TypedDict, total=False):
 
 
 def _trusted_scope(manifest: AgentManifest) -> _TrustedScope:
-    tenant_ids = {binding.tenant_scope for binding in manifest.capability_bindings}
-    project_ids = {binding.project_scope for binding in manifest.capability_bindings}
-    if len(tenant_ids) != 1 or len(project_ids) != 1:
-        raise ValueError("Test manifests must have one capability tenant and project scope")
+    del manifest
     return {
-        "trusted_tenant_id": tenant_ids.pop(),
-        "trusted_project_id": project_ids.pop(),
+        "trusted_tenant_id": "tenant-a",
+        "trusted_project_id": "project-a",
     }
 
 
@@ -311,6 +313,10 @@ def _binding(capability_id: str) -> CapabilityBinding:
 
 class _ManifestProviderAdapter:
     def __init__(self, bindings: tuple[CapabilityBinding, ...]) -> None:
+        bindings = tuple(
+            binding if binding.tenant_scope is not None else _scope_test_binding(binding)
+            for binding in bindings
+        )
         versions = {binding.provider_contract_version for binding in bindings}
         if len(versions) != 1:
             raise ValueError("Test adapter requires one provider contract version")
@@ -332,8 +338,8 @@ class _ManifestProviderAdapter:
                 connection_ref=binding.connection_ref,
                 policy_ref=binding.policy_ref,
                 allowed_destinations=binding.allowed_destinations,
-                tenant_id=binding.tenant_scope,
-                project_id=binding.project_scope,
+                tenant_id=cast(str, binding.tenant_scope),
+                project_id=cast(str, binding.project_scope),
                 readiness="READY",
                 health="READY",
                 auth_ready=True,
@@ -375,6 +381,19 @@ class _ManifestProviderAdapter:
         return invoke
 
 
+def _scope_test_binding(binding: CapabilityBinding) -> CapabilityBinding:
+    scoped = binding.model_copy(
+        update={"tenant_scope": "tenant-a", "project_scope": "project-a"}
+    )
+    return scoped.model_copy(
+        update={
+            "instance_ref": scoped.instance_ref.model_copy(
+                update={"fingerprint": template_instance_fingerprint(scoped)}
+            )
+        }
+    )
+
+
 def _runtime_registration(
     binding: CapabilityBinding,
 ) -> tuple[ToolRegistration, _ManifestProviderAdapter]:
@@ -383,8 +402,8 @@ def _runtime_registration(
         runtime_attested_registration(
             binding,
             adapter,
-            tenant_id=binding.tenant_scope,
-            project_id=binding.project_scope,
+            tenant_id=cast(str, binding.tenant_scope),
+            project_id=cast(str, binding.project_scope),
             clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
         ),
         adapter,
@@ -821,6 +840,8 @@ def test_settings_validate_environment_and_readiness() -> None:
             "AGENT_DEFAULT_TIMEOUT_SECONDS": "30",
             "AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED": "TRUE",
             "AZURE_ENV_NAME": "test",
+            "RESEARCH_WORKSPACE_TENANT_ID": "tenant-a",
+            "RESEARCH_WORKSPACE_PROJECT_ID": "project-a",
         }
     )
     assert settings.telemetry_content_recording is True
@@ -830,6 +851,7 @@ def test_settings_validate_environment_and_readiness() -> None:
         "environment": "test",
         "managed_identity": True,
         "toolbox_configured": True,
+        "deployment_scope_configured": True,
     }
     assert _settings().readiness()["managed_identity"] is False
     with pytest.raises(ConfigurationError):
@@ -842,6 +864,99 @@ def test_settings_validate_environment_and_readiness() -> None:
                 "AGENT_DEFAULT_TIMEOUT_SECONDS": "not-a-number",
             }
         )
+    with pytest.raises(ValidationError, match="supplied together"):
+        _settings(deployment_project_id=None)
+    with pytest.raises(ValidationError, match="application-owned"):
+        _settings(deployment_tenant_id="provider-discovery://tenant")
+    with pytest.raises(ConfigurationError, match="invalid"):
+        HarnessSettings.from_environment(
+            {
+                "FOUNDRY_PROJECT_ENDPOINT": "https://example.test",
+                "AZURE_AI_MODEL_DEPLOYMENT_NAME": "model",
+                "RESEARCH_WORKSPACE_TENANT_ID": "provider-discovery://tenant",
+                "RESEARCH_WORKSPACE_PROJECT_ID": "provider-discovery://project",
+            }
+        )
+
+
+def test_source_manifests_are_templates_and_scope_binding_is_immutable() -> None:
+    for template in list_manifests():
+        assert template.deployment_scope is None
+        assert all(
+            binding.tenant_scope is None and binding.project_scope is None
+            for binding in template.capability_bindings
+        )
+
+    template = get_manifest("dataset")
+    scope_a = DeploymentScope(tenant_id="tenant-a", project_id="project-a")
+    scope_b = DeploymentScope(tenant_id="tenant-b", project_id="project-b")
+    scoped_a = bind_deployment_scope(template, scope_a)
+    scoped_b = bind_deployment_scope(template, scope_b)
+    assert scoped_a.deployment_scope == scope_a
+    assert scoped_a.capability_bindings[0].tenant_scope == "tenant-a"
+    assert scoped_a.capability_bindings[0].instance_ref.fingerprint != (
+        scoped_b.capability_bindings[0].instance_ref.fingerprint
+    )
+    assert manifest_digest(scoped_a) != manifest_digest(scoped_b)
+    assert bind_deployment_scope(scoped_a, scope_a) == scoped_a
+    with pytest.raises(ValidationError, match="supplied together"):
+        CapabilityBinding.model_validate(
+            {
+                **scoped_a.capability_bindings[0].model_dump(mode="python"),
+                "project_scope": None,
+            }
+        )
+    with pytest.raises(ValidationError, match="exactly match"):
+        AgentManifest.model_validate(
+            {
+                **scoped_a.model_dump(mode="python"),
+                "deployment_scope": scope_b,
+            }
+        )
+    with pytest.raises(ContractError, match="different deployment scope"):
+        bind_deployment_scope(scoped_a, scope_b)
+    foreign_binding = template.capability_bindings[0].model_copy(
+        update={"tenant_scope": "tenant-b", "project_scope": "project-b"}
+    )
+    with pytest.raises(ContractError, match="binding is already bound"):
+        bind_deployment_scope(
+            template.model_copy(update={"capability_bindings": (foreign_binding,)}),
+            scope_a,
+        )
+    with pytest.raises(ValidationError, match="application-owned"):
+        DeploymentScope(
+            tenant_id="provider-discovery://tenant",
+            project_id="provider-discovery://project",
+        )
+
+
+def test_factory_scope_authority_is_settings_owned_and_release_is_scope_specific() -> None:
+    factory = get_factory("literature")
+    settings_a = _settings(
+        model_deployment_name="gpt-5.6-sol",
+        model_deployment_version="2026-07-09",
+    )
+    settings_b = settings_a.model_copy(
+        update={
+            "deployment_tenant_id": "tenant-b",
+            "deployment_project_id": "project-b",
+        }
+    )
+    with pytest.raises(ConfigurationError, match="assertion does not match"):
+        factory.prepare(
+            settings_a,
+            trusted_tenant_id="tenant-b",
+            trusted_project_id="project-a",
+        )
+    with pytest.raises(ConfigurationError, match="supplied together"):
+        factory.prepare(settings_a, trusted_tenant_id="tenant-a")
+
+    release_a = factory.release(settings_a)
+    release_b = factory.release(settings_b)
+    assert release_a.deployment_scope == settings_a.deployment_scope
+    assert release_b.deployment_scope == settings_b.deployment_scope
+    assert release_a.manifest_digest != release_b.manifest_digest
+    assert release_a.release_id != release_b.release_id
 
 
 def test_structured_errors_never_leak_unknown_exception_messages() -> None:
@@ -1439,8 +1554,8 @@ async def test_runtime_registration_reattests_before_every_handler_call() -> Non
     registration = runtime_attested_registration(
         binding,
         adapter,
-        tenant_id=binding.tenant_scope,
-        project_id=binding.project_scope,
+        tenant_id=cast(str, binding.tenant_scope),
+        project_id=cast(str, binding.project_scope),
         clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
     )
     context = FunctionInvocationContext(
@@ -1474,8 +1589,8 @@ async def test_runtime_registration_reattests_before_every_handler_call() -> Non
     sync_registration = runtime_attested_registration(
         binding,
         sync_adapter,
-        tenant_id=binding.tenant_scope,
-        project_id=binding.project_scope,
+        tenant_id=cast(str, binding.tenant_scope),
+        project_id=cast(str, binding.project_scope),
         clock=lambda: datetime(2026, 7, 23, tzinfo=UTC),
     )
     sync_result = sync_registration.handler({"value": 1})
@@ -1800,7 +1915,7 @@ def _approval_request(
         approval_decision_id=context.approval_decision_id,
         binding_id=binding.binding_id,
         tenant_id=context.tenant_id,
-        project_id=binding.project_scope,
+        project_id=cast(str, binding.project_scope),
         actor_id=context.principal_id,
         scopes=tuple(sorted(context.scopes)),
         binding_digest=key.binding_digest,
@@ -3549,6 +3664,7 @@ async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit
         approval_adapter=_AutoApprovalAdapter(),
         release_id=release_id,
         allow_test_idempotency_store=True,
+        utcnow=lambda: now[0],
     )
     with pytest.raises(IdempotencyInProgressError):
         await executor.invoke(capability.id, {}, context)
@@ -4142,18 +4258,22 @@ def test_release_metadata_is_immutable_and_deterministic(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
-    manifest = get_manifest("dataset")
-    assert manifest_digest(manifest) == manifest_digest(manifest.model_copy())
-    provider_adapter = _ManifestProviderAdapter(manifest.capability_bindings)
-    registrations = (
-        GovernedAgentFactory(manifest)
-        .prepare(
-            _settings(),
-            provider_adapter=provider_adapter,
-            **_trusted_scope(manifest),
+    template = get_manifest("dataset")
+    assert manifest_digest(template) == manifest_digest(template.model_copy())
+    with pytest.raises(ConfigurationError, match="immutable deployment scope"):
+        build_release_metadata(
+            template,
+            model_deployment=template.model_policy.deployment_name,
         )
-        .registrations
+    provider_adapter = _ManifestProviderAdapter(template.capability_bindings)
+    prepared = GovernedAgentFactory(template).prepare(
+        _settings(),
+        provider_adapter=provider_adapter,
+        **_trusted_scope(template),
     )
+    manifest = prepared.manifest
+    registrations = prepared.registrations
+    assert manifest_digest(manifest) != manifest_digest(template)
     versions = {
         "agent-framework-core": "1.12.0",
         "agent-framework-foundry": "1.10.2",
@@ -4211,6 +4331,7 @@ def test_release_metadata_is_immutable_and_deterministic(
     assert release.knowledge_versions == (("dataset.knowledge", "evidence-v2"),)
     assert release.runtime_kind == "custom"
     assert release.input_schema_hash == manifest.input_schema.sha256
+    assert release.deployment_scope == manifest.deployment_scope
     with pytest.raises(ValidationError):
         release.agent_name = "changed"
     explicit = build_release_metadata(
@@ -4272,13 +4393,13 @@ def test_release_metadata_is_immutable_and_deterministic(
 
 
 def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
-    manifest = get_manifest("literature")
-    release = GovernedAgentFactory(manifest).release(
-        _settings(
-            model_deployment_name=manifest.model_policy.deployment_name,
-            model_deployment_version=manifest.model_policy.pinned_model_version,
-        )
+    template = get_manifest("literature")
+    settings = _settings(
+        model_deployment_name=template.model_policy.deployment_name,
+        model_deployment_version=template.model_policy.pinned_model_version,
     )
+    manifest = bind_deployment_scope(template, cast(DeploymentScope, settings.deployment_scope))
+    release = GovernedAgentFactory(template).release(settings)
     local_attestor = InMemoryReleaseAttestor(
         manifest.evaluation.objective_hard_gates
     )
@@ -4360,6 +4481,14 @@ def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
     mismatches = (
         valid.model_copy(update={"release_id": f"sha256:{'0' * 64}"}),
         valid.model_copy(update={"manifest_digest": "0" * 64}),
+        valid.model_copy(
+            update={
+                "deployment_scope": DeploymentScope(
+                    tenant_id="tenant-b",
+                    project_id="project-b",
+                )
+            }
+        ),
         valid.model_copy(update={"contract_schema_digest": "0" * 64}),
         valid.model_copy(update={"idempotency_contract_schema_digest": "0" * 64}),
         valid.model_copy(update={"approval_contract_schema_digest": "0" * 64}),
@@ -4443,14 +4572,24 @@ def test_factory_requires_current_provider_attestation() -> None:
     assert factory.readiness(settings)["ready"] is False
 
     adapter = _ManifestProviderAdapter(factory.manifest.capability_bindings)
-    with pytest.raises(ConfigurationError, match="trusted tenant and project"):
-        factory.prepare(settings, provider_adapter=adapter)
+    with pytest.raises(ConfigurationError, match="trusted deployment tenant and project"):
+        factory.prepare(
+            settings.model_copy(
+                update={
+                    "deployment_tenant_id": None,
+                    "deployment_project_id": None,
+                }
+            ),
+            provider_adapter=adapter,
+        )
     prepared = factory.prepare(
         settings,
         provider_adapter=adapter,
         **_trusted_scope(factory.manifest),
     )
-    assert prepared.manifest is factory.manifest
+    assert prepared.manifest is not factory.manifest
+    assert prepared.manifest.deployment_scope == settings.deployment_scope
+    assert factory.manifest.deployment_scope is None
     assert all(registration.runtime_attested for registration in prepared.registrations)
     assert adapter.handler_resolutions == len(factory.manifest.capability_bindings)
     assert (
@@ -5323,7 +5462,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     assert (
         len(
             middleware_for_manifest(
-                online_manifest,
+                online_prepared.manifest,
                 _settings(),
                 online_prepared.capabilities,
                 online_prepared.registrations,
@@ -5334,14 +5473,14 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     )
     with pytest.raises(ConfigurationError, match="authenticated tenant and project"):
         middleware_for_manifest(
-            online_manifest,
+            online_prepared.manifest,
             _settings(),
             online_prepared.capabilities,
             online_prepared.registrations,
         )
     with pytest.raises(ConfigurationError, match="exactly match"):
         middleware_for_manifest(
-            online_manifest,
+            online_prepared.manifest,
             _settings(),
             online_prepared.capabilities,
             online_prepared.registrations[:-1],
@@ -5568,7 +5707,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     assert exposed(LiteratureResponse(summary="model"), connector_evidence)["authorized_evidence"]
     with pytest.raises(ConfigurationError, match="resolved runtime settings"):
         middleware_for_manifest(
-            online_manifest,
+            online_prepared.manifest,
             None,
             online_prepared.capabilities,
             online_prepared.registrations,
@@ -5671,15 +5810,13 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         await LocalHarness(manifest, cancelled).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
 
     dataset = get_manifest("dataset")
-    dataset_registrations = (
-        GovernedAgentFactory(dataset)
-        .prepare(
-            _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
-            provider_adapter=_ManifestProviderAdapter(dataset.capability_bindings),
-            **_trusted_scope(dataset),
-        )
-        .registrations
+    dataset_prepared = GovernedAgentFactory(dataset).prepare(
+        _settings(toolbox_endpoint="https://toolbox.example/toolboxes/dataset/mcp"),
+        provider_adapter=_ManifestProviderAdapter(dataset.capability_bindings),
+        **_trusted_scope(dataset),
     )
+    dataset_registrations = dataset_prepared.registrations
+    dataset = dataset_prepared.manifest
     local_dataset = LocalHarness(
         dataset,
         lambda _request: ResearchResponse(summary="not executed"),
@@ -5734,11 +5871,10 @@ def test_coordinator_policy_is_required_and_budget_is_enforced(
     assert policy is not None
     bounded = policy.model_copy(update={"budget_units": 1})
     router = CoordinatorRouter(specialist_policy=bounded)
-    coordinator_binding = manifest.capability_bindings[0]
     request = CoordinatorRequest.model_validate(
         _request(
-            tenant_id=coordinator_binding.tenant_scope,
-            project_id=coordinator_binding.project_scope,
+            tenant_id="tenant-a",
+            project_id="project-a",
             requested_capabilities=["literature", "grant"],
         )
     )
@@ -5788,8 +5924,8 @@ async def test_agent_framework_coordinator_workflow_preserves_typed_evidence() -
     workflow = build_coordinator_workflow(_coordinator_registration(invoke))
     request = CoordinatorRequest.model_validate(
         _request(
-            tenant_id=coordinator_binding.tenant_scope,
-            project_id=coordinator_binding.project_scope,
+            tenant_id="tenant-a",
+            project_id="project-a",
             requested_capabilities=["literature", "grant"],
         )
     )
@@ -5828,11 +5964,10 @@ async def test_coordinator_workflow_validates_hosted_message_envelope() -> None:
     with pytest.raises(ContractError, match="invalid"):
         await workflow.run([Message(role="user", contents=["{}"])])
 
-    binding = manifest.capability_bindings[0]
     request = CoordinatorRequest.model_validate(
         _request(
-            tenant_id=binding.tenant_scope,
-            project_id=binding.project_scope,
+            tenant_id="tenant-a",
+            project_id="project-a",
             requested_capabilities=["literature"],
         )
     )

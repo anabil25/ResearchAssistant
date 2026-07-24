@@ -53,6 +53,14 @@ flowchart LR
   by a profile-specific entry point.
 - Each specialist declares a distinct workflow and output contract. The API
   owns typed artifacts; free-form Hosted Agent text is supplemental analysis.
+- Checked-in agent manifests are unscoped templates and carry no tenant or
+  project authority. Each Hosted Agent receives
+  `RESEARCH_WORKSPACE_TENANT_ID` and `RESEARCH_WORKSPACE_PROJECT_ID` from the
+  deployment environment. Startup binds those trusted values into a new frozen
+  manifest, every capability binding, provider attestation, and the immutable
+  release identity. Missing scope fails startup for capability-bearing agents;
+  legacy `provider-discovery://` sentinels and cross-scope attestations or
+  invocations are rejected.
 
 ### Runtime governance boundary
 
@@ -64,6 +72,13 @@ flowchart LR
   consume an exact-bound one-time `approval_decision_id`, persist the receipt,
   and only then resolve the runtime handler. Client booleans are never
   authorization.
+- The API accepts a backend-owned `ApprovalContextResolverFactory` only through
+  its application composition root. Lifespan binds the factory to the trusted
+  workspace scope and accepts only a resolver declaring durable semantics.
+  `RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER=true` (and `prod`/`production`
+  environments) fail startup when no provider is installed. Optional
+  environments return 503 for approval-gated dataset compute rather than
+  deriving authority from client input.
 - Provider attachments require the exact
   `research-assistant.integration-provider.v6` wire contract and canonical
   OpenAPI SHA-256. The harness retains its runtime-neutral typed references,

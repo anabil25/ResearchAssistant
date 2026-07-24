@@ -98,7 +98,24 @@ class ResolvedApprovalContext(BaseModel):
 
 
 class ApprovalContextResolver(Protocol):
+    is_durable: bool
+
     async def resolve(self, request: ApprovalContextRequest) -> ResolvedApprovalContext: ...
+
+
+class ApprovalContextResolverScope(BaseModel):
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+    tenant_id: str = Field(min_length=1, max_length=100)
+    project_id: str = Field(min_length=1, max_length=100)
+    environment: str = Field(min_length=1, max_length=100)
+
+
+class ApprovalContextResolverFactory(Protocol):
+    def build(
+        self,
+        scope: ApprovalContextResolverScope,
+    ) -> ApprovalContextResolver: ...
 
 
 class ApprovalContextUnavailableError(RuntimeError):
@@ -119,6 +136,26 @@ class ApprovalContextRejectedError(RuntimeError):
         self.code = code
 
 
+def compose_approval_context_resolver(
+    factory: ApprovalContextResolverFactory | None,
+    scope: ApprovalContextResolverScope,
+    *,
+    required: bool,
+) -> ApprovalContextResolver | None:
+    if factory is None:
+        if required:
+            raise ApprovalContextUnavailableError(
+                "A durable approval context resolver is required but no provider is installed."
+            )
+        return None
+    resolver = factory.build(scope)
+    if not getattr(resolver, "is_durable", False):
+        raise ApprovalContextUnavailableError(
+            "The configured approval context resolver is not a durable production adapter."
+        )
+    return resolver
+
+
 async def resolve_approval_context(
     resolver: ApprovalContextResolver | None,
     approval_request: ApprovalContextRequest,
@@ -126,6 +163,10 @@ async def resolve_approval_context(
     if resolver is None:
         raise ApprovalContextUnavailableError(
             "Dataset compute is unavailable because no trusted approval context resolver is configured."
+        )
+    if not getattr(resolver, "is_durable", False):
+        raise ApprovalContextUnavailableError(
+            "Dataset compute is unavailable because the approval resolver is not durable."
         )
     resolution = await resolver.resolve(approval_request)
     if resolution.request_digest != approval_request.digest:

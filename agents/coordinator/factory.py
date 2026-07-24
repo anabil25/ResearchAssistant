@@ -59,6 +59,7 @@ def build_agent(
     )
     prepared = bootstrap.prepared
     release = bootstrap.release
+    deployment_scope = prepared.manifest.deployment_scope
     return WorkflowAgent(
         build_coordinator_workflow(
             prepared.registrations[0],
@@ -82,8 +83,16 @@ def build_agent(
             allow_test_approval_adapter=allow_test_approval_adapter,
             audit_sink=audit_sink,
             conversation_store=conversation_store,
-            trusted_tenant_id=trusted_tenant_id,
-            trusted_project_id=trusted_project_id,
+            trusted_tenant_id=(
+                deployment_scope.tenant_id
+                if deployment_scope is not None
+                else None
+            ),
+            trusted_project_id=(
+                deployment_scope.project_id
+                if deployment_scope is not None
+                else None
+            ),
         ),
     )
 

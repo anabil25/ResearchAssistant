@@ -119,6 +119,12 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
         assert config["codeConfiguration"]["runtime"] == "python_3_13"
         assert config["protocols"] == [{"protocol": "responses", "version": "2.0.0"}]
         assert "agent_reference" not in str(config)
+        environment = {
+            item["name"]: item["value"]
+            for item in config["environmentVariables"]
+        }
+        assert environment["RESEARCH_WORKSPACE_TENANT_ID"] == "${AZURE_TENANT_ID}", name
+        assert environment["RESEARCH_WORKSPACE_PROJECT_ID"] == "${AZURE_AI_PROJECT_NAME}", name
         entry_point = ROOT / "agents" / config["codeConfiguration"]["entryPoint"]
         source = entry_point.read_text(encoding="utf-8")
         assert "sys.path.insert" in source, name
@@ -184,6 +190,13 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
     assert "searchLocation" not in parameters["parameters"]
     assert "-v2" not in container_apps
     assert "keyVault" not in resources
+    assert container_apps.count(
+        "name: 'RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER'"
+    ) == 1
+    assert (
+        "name: 'RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER'\n"
+        "              value: 'true'"
+    ) in container_apps
 
 
 def test_accelerator_private_data_and_ci_principal_contracts() -> None:

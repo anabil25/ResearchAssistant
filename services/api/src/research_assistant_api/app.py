@@ -35,9 +35,12 @@ from research_assistant_api.approval_context import (
     ApprovalContextRejectedError,
     ApprovalContextRequest,
     ApprovalContextResolver,
+    ApprovalContextResolverFactory,
+    ApprovalContextResolverScope,
     ApprovalContextUnavailableError,
     ClientApprovalAuthorityError,
     ResolvedApprovalContext,
+    compose_approval_context_resolver,
     resolve_approval_context,
 )
 from research_assistant_api.blob_sources import (
@@ -118,7 +121,19 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
-    application.state.approval_context_resolver = None
+    approval_resolver_factory = cast(
+        ApprovalContextResolverFactory | None,
+        getattr(application.state, "approval_context_resolver_factory", None),
+    )
+    application.state.approval_context_resolver = compose_approval_context_resolver(
+        approval_resolver_factory,
+        ApprovalContextResolverScope(
+            tenant_id=settings.workspace_tenant_id,
+            project_id=settings.workspace_project_id,
+            environment=settings.environment,
+        ),
+        required=settings.approval_context_resolver_required,
+    )
     _reconcile_pending_runs(
         application.state.workspace,
         application.state.scheduler,

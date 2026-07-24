@@ -220,8 +220,6 @@ def _capability_binding(
         connection_ref=connection,
         policy_ref=policy,
         allowed_destinations=destinations,
-        tenant_scope="provider-discovery://tenant",
-        project_scope="provider-discovery://project",
     )
     fingerprint = template_instance_fingerprint(binding)
     return binding.model_copy(

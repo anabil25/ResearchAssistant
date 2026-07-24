@@ -26,6 +26,7 @@ from .contracts import (
     CoordinatorRequest,
     CoordinatorResponse,
     DatasetRequest,
+    DeploymentScope,
     GrantRequest,
     InstitutionRequest,
     LiteratureRequest,
@@ -41,6 +42,7 @@ from .contracts import (
     SpecialistRequestPayload,
     SpecialistResult,
     bind_contracts,
+    bind_deployment_scope,
     canonical_digest,
 )
 from .credentials import get_credential
@@ -159,6 +161,18 @@ def build_coordinator_workflow(
     effective_policy = specialist_policy or coordinator.specialist_policy
     if effective_policy is None:
         raise ContractError("Coordinator manifest requires a specialist policy")
+    binding_scope = (
+        registration.binding.tenant_scope,
+        registration.binding.project_scope,
+    )
+    if None not in binding_scope:
+        coordinator = bind_deployment_scope(
+            coordinator,
+            DeploymentScope(
+                tenant_id=cast(str, binding_scope[0]),
+                project_id=cast(str, binding_scope[1]),
+            ),
+        )
     if not registration.runtime_attested or coordinator.capability_bindings != (registration.binding,):
         raise ConfigurationError(
             "Coordinator workflow requires its exact runtime-attested registration",

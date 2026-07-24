@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import importlib
 import json
 from types import SimpleNamespace
-from typing import Any
+from typing import Any, cast
 
 import httpx
 import pytest
@@ -14,9 +15,11 @@ from research_assistant_api.app import _agent_message, app
 from research_assistant_api.approval_context import (
     ApprovalContextRejectedError,
     ApprovalContextRequest,
+    ApprovalContextResolverScope,
     ApprovalContextUnavailableError,
     ApprovalRejectionCode,
     ResolvedApprovalContext,
+    compose_approval_context_resolver,
     resolve_approval_context,
 )
 from research_assistant_api.config import Settings
@@ -191,6 +194,8 @@ def test_dataset_hosted_envelope_is_bounded_and_uses_stable_caller_key() -> None
 
 
 class FakeApprovalContextResolver:
+    is_durable = True
+
     def __init__(
         self,
         rejection: ApprovalRejectionCode | None = None,
@@ -213,6 +218,16 @@ class FakeApprovalContextResolver:
             approval_decision_id="approval-server-1",
             invocation_id="invocation-server-1",
         )
+
+
+class FakeApprovalContextResolverFactory:
+    def __init__(self, resolver: Any) -> None:
+        self.resolver = resolver
+        self.scopes: list[ApprovalContextResolverScope] = []
+
+    def build(self, scope: ApprovalContextResolverScope) -> Any:
+        self.scopes.append(scope)
+        return self.resolver
 
 
 class CapturingDatasetGateway:
@@ -369,6 +384,81 @@ async def test_approval_context_helper_fails_closed_without_resolver() -> None:
     )
     with pytest.raises(ApprovalContextUnavailableError):
         await resolve_approval_context(None, request)
+
+
+def test_approval_resolver_composition_requires_a_durable_app_owned_provider() -> None:
+    scope = ApprovalContextResolverScope(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        environment="production",
+    )
+    assert compose_approval_context_resolver(None, scope, required=False) is None
+    with pytest.raises(ApprovalContextUnavailableError, match="no provider"):
+        compose_approval_context_resolver(None, scope, required=True)
+
+    durable = FakeApprovalContextResolver()
+    factory = FakeApprovalContextResolverFactory(durable)
+    assert compose_approval_context_resolver(factory, scope, required=True) is durable
+    assert factory.scopes == [scope]
+
+    non_durable = SimpleNamespace(is_durable=False)
+    with pytest.raises(ApprovalContextUnavailableError, match="not a durable"):
+        compose_approval_context_resolver(
+            FakeApprovalContextResolverFactory(non_durable),
+            scope,
+            required=True,
+        )
+
+
+def test_api_lifespan_installs_required_production_approval_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("research_assistant_api.app")
+    production = Settings(
+        environment="production",
+        workspace_tenant_id="tenant-real",
+        workspace_project_id="project-real",
+    )
+    monkeypatch.setattr(app_module, "get_settings", lambda: production)
+    resolver = FakeApprovalContextResolver()
+    factory = FakeApprovalContextResolverFactory(resolver)
+    app.state.approval_context_resolver_factory = factory
+    try:
+        with TestClient(app):
+            assert app.state.approval_context_resolver is resolver
+            assert factory.scopes == [
+                ApprovalContextResolverScope(
+                    tenant_id="tenant-real",
+                    project_id="project-real",
+                    environment="production",
+                )
+            ]
+    finally:
+        del app.state.approval_context_resolver_factory
+
+    with (
+        pytest.raises(ApprovalContextUnavailableError, match="no provider"),
+        TestClient(app),
+    ):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_approval_context_helper_rejects_non_durable_resolver() -> None:
+    request = ApprovalContextRequest.from_inputs(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        actor_id="actor-a",
+        inputs={
+            "approval_reference": "approval-request-1",
+            "idempotency_key": "dataset-operation-1",
+        },
+    )
+    with pytest.raises(ApprovalContextUnavailableError, match="not durable"):
+        await resolve_approval_context(
+            cast(Any, SimpleNamespace(is_durable=False)),
+            request,
+        )
 
 
 def test_gateway_retries_documented_session_not_ready_sequence(

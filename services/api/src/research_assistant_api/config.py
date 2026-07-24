@@ -92,6 +92,10 @@ class Settings(BaseSettings):
         default="demo-project",
         validation_alias="RESEARCH_WORKSPACE_PROJECT_ID",
     )
+    require_approval_context_resolver: bool = Field(
+        default=False,
+        validation_alias="RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER",
+    )
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -140,6 +144,13 @@ class Settings(BaseSettings):
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Connector gateway URL must not contain credentials, query, or fragment")
         return value.rstrip("/")
+
+    @property
+    def approval_context_resolver_required(self) -> bool:
+        return self.require_approval_context_resolver or self.environment.casefold() in {
+            "prod",
+            "production",
+        }
 
 @lru_cache
 def get_settings() -> Settings:

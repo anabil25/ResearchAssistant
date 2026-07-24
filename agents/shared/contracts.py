@@ -8,7 +8,7 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from .capabilities import CapabilityBinding
+from .capabilities import CapabilityBinding, template_instance_fingerprint
 from .errors import ContractError
 
 
@@ -740,6 +740,20 @@ class EvaluationPolicy(BaseModel):
         return self
 
 
+class DeploymentScope(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    tenant_id: str = Field(min_length=1, max_length=256)
+    project_id: str = Field(min_length=1, max_length=512)
+
+    @field_validator("tenant_id", "project_id")
+    @classmethod
+    def reject_template_sentinels(cls, value: str) -> str:
+        if value.startswith("provider-discovery://"):
+            raise ValueError("deployment scope must be a real application-owned identifier")
+        return value
+
+
 class AgentManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -748,6 +762,7 @@ class AgentManifest(BaseModel):
     name: str = Field(pattern=r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
     behavior_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     parent_manifest_hash: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    deployment_scope: DeploymentScope | None = None
     description: str = Field(min_length=1)
     instructions: str = Field(min_length=1)
     input_schema: SchemaReference
@@ -770,6 +785,22 @@ class AgentManifest(BaseModel):
         ]
         if len(capability_operations) != len(set(capability_operations)):
             raise ValueError("capability bindings must be unique")
+        expected_scope = (
+            (None, None)
+            if self.deployment_scope is None
+            else (
+                self.deployment_scope.tenant_id,
+                self.deployment_scope.project_id,
+            )
+        )
+        binding_scopes = {
+            (binding.tenant_scope, binding.project_scope)
+            for binding in self.capability_bindings
+        }
+        if binding_scopes - {expected_scope}:
+            raise ValueError(
+                "capability binding scopes must exactly match the manifest deployment scope"
+            )
         if self.online and "public" not in self.instructions.lower():
             raise ValueError("online manifests must state their public-data boundary")
         if self.specialist_policy is not None and self.id != "coordinator":
@@ -816,3 +847,44 @@ class AgentManifest(BaseModel):
     @property
     def enable_web_search(self) -> bool:
         return self.online
+
+
+def bind_deployment_scope(
+    manifest: AgentManifest,
+    scope: DeploymentScope,
+) -> AgentManifest:
+    if manifest.deployment_scope is not None and manifest.deployment_scope != scope:
+        raise ContractError("Agent manifest is already bound to a different deployment scope")
+    scoped_bindings: list[CapabilityBinding] = []
+    for binding in manifest.capability_bindings:
+        if (
+            binding.tenant_scope is not None
+            and (
+                binding.tenant_scope != scope.tenant_id
+                or binding.project_scope != scope.project_id
+            )
+        ):
+            raise ContractError(
+                "Capability binding is already bound to a different deployment scope"
+            )
+        scoped_binding = binding.model_copy(
+            update={
+                "tenant_scope": scope.tenant_id,
+                "project_scope": scope.project_id,
+            }
+        )
+        scoped_binding = scoped_binding.model_copy(
+            update={
+                "instance_ref": scoped_binding.instance_ref.model_copy(
+                    update={"fingerprint": template_instance_fingerprint(scoped_binding)}
+                )
+            }
+        )
+        scoped_bindings.append(scoped_binding)
+    return AgentManifest.model_validate(
+        {
+            **manifest.model_dump(mode="python"),
+            "deployment_scope": scope,
+            "capability_bindings": tuple(scoped_bindings),
+        }
+    )

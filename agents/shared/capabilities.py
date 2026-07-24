@@ -261,8 +261,8 @@ class CapabilityBinding(BaseModel):
     connection_ref: ConnectionReference
     policy_ref: PolicyReference
     allowed_destinations: DestinationConstraints
-    tenant_scope: str = Field(min_length=1, max_length=256)
-    project_scope: str = Field(min_length=1, max_length=512)
+    tenant_scope: str | None = Field(default=None, min_length=1, max_length=256)
+    project_scope: str | None = Field(default=None, min_length=1, max_length=512)
 
     @model_validator(mode="after")
     def provider_contract_is_exact(self) -> CapabilityBinding:
@@ -270,6 +270,8 @@ class CapabilityBinding(BaseModel):
             raise ValueError("capability binding requires the canonical provider v6 contract")
         if self.provider_contract_schema_digest != PROVIDER_CONTRACT_SCHEMA_DIGEST:
             raise ValueError("capability binding provider schema digest does not match v6")
+        if (self.tenant_scope is None) != (self.project_scope is None):
+            raise ValueError("capability binding tenant and project scopes must be supplied together")
         return self
 
 

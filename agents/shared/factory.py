@@ -19,7 +19,13 @@ from .capabilities import (
     runtime_attested_registration,
 )
 from .catalog import capabilities_for_manifest
-from .contracts import AgentManifest, MemoryScope, bind_contracts
+from .contracts import (
+    AgentManifest,
+    DeploymentScope,
+    MemoryScope,
+    bind_contracts,
+    bind_deployment_scope,
+)
 from .credentials import get_credential
 from .errors import ConfigurationError, HarnessError
 from .idempotency import IdempotencyStore
@@ -96,6 +102,7 @@ class GovernedAgentFactory:
         )
         prepared = bootstrap.prepared
         release = bootstrap.release
+        deployment_scope = prepared.manifest.deployment_scope
         if client is None:
             client = _build_foundry_client(effective_settings)
         contracts = bind_contracts(prepared.manifest)
@@ -120,8 +127,16 @@ class GovernedAgentFactory:
                 allow_test_approval_adapter=allow_test_approval_adapter,
                 conversation_store=conversation_store,
                 audit_sink=audit_sink,
-                trusted_tenant_id=trusted_tenant_id,
-                trusted_project_id=trusted_project_id,
+                trusted_tenant_id=(
+                    deployment_scope.tenant_id
+                    if deployment_scope is not None
+                    else None
+                ),
+                trusted_project_id=(
+                    deployment_scope.project_id
+                    if deployment_scope is not None
+                    else None
+                ),
             ),
         )
 
@@ -164,7 +179,10 @@ class GovernedAgentFactory:
         conversation_store: ConversationStore | None = None,
         long_term_memory_store: LongTermMemoryStore | None = None,
     ) -> dict[str, str | bool]:
-        readiness = settings.readiness(toolbox_required=_requires_toolbox(self.manifest))
+        readiness = settings.readiness(
+            toolbox_required=_requires_toolbox(self.manifest),
+            deployment_scope_required=bool(self.manifest.capability_bindings),
+        )
         try:
             prepared = self.prepare(
                 settings,
@@ -249,35 +267,38 @@ class GovernedAgentFactory:
         trusted_project_id: str | None = None,
     ) -> PreparedAgent:
         self._validate_model_policy(settings)
-        capabilities = capabilities_for_manifest(self.manifest, settings)
-        if self.manifest.capability_bindings and provider_adapter is None:
+        deployment_scope = self._resolve_deployment_scope(
+            settings,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
+        )
+        prepared_manifest = (
+            bind_deployment_scope(self.manifest, deployment_scope)
+            if deployment_scope is not None
+            else self.manifest
+        )
+        capabilities = capabilities_for_manifest(prepared_manifest, settings)
+        if prepared_manifest.capability_bindings and provider_adapter is None:
             raise ConfigurationError(
                 "Capability bindings require an attested provider adapter",
-                context={"agent": self.manifest.id},
-            )
-        if self.manifest.capability_bindings and (
-            trusted_tenant_id is None or trusted_project_id is None
-        ):
-            raise ConfigurationError(
-                "Capability bindings require a trusted tenant and project scope",
-                context={"agent": self.manifest.id},
+                context={"agent": prepared_manifest.id},
             )
         registrations = (
             tuple(
                 runtime_attested_registration(
                     binding,
                     provider_adapter,
-                    tenant_id=cast(str, trusted_tenant_id),
-                    project_id=cast(str, trusted_project_id),
+                    tenant_id=cast(DeploymentScope, deployment_scope).tenant_id,
+                    project_id=cast(DeploymentScope, deployment_scope).project_id,
                     handler_resolver=handler_resolver,
                 )
-                for binding in self.manifest.capability_bindings
+                for binding in prepared_manifest.capability_bindings
             )
             if provider_adapter is not None
             else ()
         )
         return PreparedAgent(
-            manifest=self.manifest,
+            manifest=prepared_manifest,
             capabilities=capabilities,
             registrations=registrations,
         )
@@ -363,6 +384,35 @@ class GovernedAgentFactory:
                 "Configured model version does not match manifest model policy",
                 context={"agent": self.manifest.id},
             )
+
+    def _resolve_deployment_scope(
+        self,
+        settings: HarnessSettings,
+        *,
+        trusted_tenant_id: str | None,
+        trusted_project_id: str | None,
+    ) -> DeploymentScope | None:
+        if (trusted_tenant_id is None) != (trusted_project_id is None):
+            raise ConfigurationError(
+                "Trusted deployment tenant and project assertions must be supplied together",
+                context={"agent": self.manifest.id},
+            )
+        deployment_scope = settings.deployment_scope
+        if trusted_tenant_id is not None and (
+            deployment_scope is None
+            or trusted_tenant_id != deployment_scope.tenant_id
+            or trusted_project_id != deployment_scope.project_id
+        ):
+            raise ConfigurationError(
+                "Trusted deployment scope assertion does not match HarnessSettings",
+                context={"agent": self.manifest.id},
+            )
+        if self.manifest.capability_bindings and deployment_scope is None:
+            raise ConfigurationError(
+                "Capability-bearing Hosted Agents require a trusted deployment tenant and project scope",
+                context={"agent": self.manifest.id},
+            )
+        return deployment_scope
 
 
 def get_factory(profile_id: str) -> GovernedAgentFactory:

@@ -11,7 +11,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from .approvals import approval_contract_schema_digest
 from .capabilities import PROVIDER_CONTRACT_ARTIFACT_DIGEST, ToolRegistration
-from .contracts import AgentManifest, ObjectiveGate, canonical_digest
+from .contracts import AgentManifest, DeploymentScope, ObjectiveGate, canonical_digest
 from .errors import ConfigurationError, HarnessError, ReleaseAttestationError
 from .idempotency import idempotency_contract_schema_digest
 
@@ -47,6 +47,7 @@ class ReleaseAttestation(BaseModel):
     version: str = Field(min_length=1, max_length=128)
     release_id: str = Field(pattern=r"^sha256:[0-9a-f]{64}$")
     manifest_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    deployment_scope: DeploymentScope | None
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -101,6 +102,7 @@ class ReleaseMetadata(BaseModel):
         default=None,
         pattern=r"^[0-9a-f]{64}$",
     )
+    deployment_scope: DeploymentScope | None
     input_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -168,6 +170,11 @@ def build_release_metadata(
 ) -> ReleaseMetadata:
     if model_deployment != manifest.model_policy.deployment_name:
         raise ValueError("resolved model deployment does not match manifest model policy")
+    if manifest.capability_bindings and manifest.deployment_scope is None:
+        raise ConfigurationError(
+            "Capability-bearing releases require an immutable deployment scope",
+            context={"agent": manifest.id},
+        )
     if tuple(registration.binding for registration in registrations) != manifest.capability_bindings or any(
         not registration.runtime_attested for registration in registrations
     ):
@@ -267,6 +274,11 @@ def build_release_metadata(
         "parent_release_id": parent_release_id,
         "manifest_digest": manifest_hash,
         "parent_manifest_hash": manifest.parent_manifest_hash,
+        "deployment_scope": (
+            manifest.deployment_scope.model_dump(mode="json")
+            if manifest.deployment_scope is not None
+            else None
+        ),
         "input_schema_hash": manifest.input_schema.sha256,
         "output_schema_hash": manifest.output_schema.sha256,
         "source_bundle_hash": bundle_hash,
@@ -297,6 +309,7 @@ def build_release_metadata(
         parent_release_id=parent_release_id,
         manifest_digest=manifest_hash,
         parent_manifest_hash=manifest.parent_manifest_hash,
+        deployment_scope=manifest.deployment_scope,
         input_schema_hash=manifest.input_schema.sha256,
         output_schema_hash=manifest.output_schema.sha256,
         source_bundle_hash=bundle_hash,
@@ -352,6 +365,7 @@ def validate_release_attestation(
     if (
         attestation.release_id != release.release_id
         or attestation.manifest_digest != release.manifest_digest
+        or attestation.deployment_scope != release.deployment_scope
         or attestation.contract_schema_digest != release.contract_schema_digest
         or attestation.idempotency_contract_schema_digest
         != release.idempotency_contract_schema_digest
@@ -398,6 +412,7 @@ class InMemoryReleaseAttestor:
             version="1",
             release_id=release.release_id,
             manifest_digest=release.manifest_digest,
+            deployment_scope=release.deployment_scope,
             contract_schema_digest=release.contract_schema_digest,
             idempotency_contract_schema_digest=(
                 release.idempotency_contract_schema_digest

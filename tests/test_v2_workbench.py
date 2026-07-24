@@ -42,6 +42,8 @@ def _principal(tenant_id: str, groups: list[str]) -> str:
 
 
 class TrustedDatasetApprovalResolver:
+    is_durable = True
+
     async def resolve(
         self,
         request: ApprovalContextRequest,
