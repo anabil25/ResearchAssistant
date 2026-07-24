@@ -23,6 +23,9 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from azure.cosmos import ContainerProxy
+from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
+
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 
 
@@ -70,3 +73,66 @@ class InMemoryRuntimeDeploymentMappingStore:
 
     def get(self, deployment_id: str) -> RuntimeDeploymentMapping | None:
         return self._by_deployment_id.get(deployment_id)
+
+
+#: Cosmos ``documentType`` discriminator and partition-key path for the
+#: dedicated runtime deployment mapping container. The container is
+#: partitioned by ``/deployment_id`` (the opaque, server-generated key) so a
+#: runtime point-read is always a single-partition ``read_item`` by that id --
+#: never a scope-keyed lookup (a runtime never supplies a scope) and never a
+#: cross-partition query.
+RUNTIME_MAPPING_DOCUMENT_TYPE = "runtimeDeploymentMappingV1"
+RUNTIME_MAPPING_PARTITION_KEY_PATH = "/deployment_id"
+
+
+class CosmosRuntimeDeploymentMappingStore:
+    """Durable adapter: one immutable document per mapping, partitioned by
+    ``/deployment_id``.
+
+    Writes use ``create_item`` (never ``upsert``) so Cosmos itself is the
+    atomic create-if-absent primitive: a duplicate ``deployment_id`` is
+    rejected server-side with 409. A 409 whose already-stored content is
+    byte-identical (same ``mapping_digest``) is treated as an idempotent
+    re-put; a 409 whose stored content diverges is a hard
+    ``RuntimeMappingConflictError`` -- an immutable mapping can never be
+    overwritten. ``get`` is always a fresh point ``read_item`` (404 -> None),
+    never a cache-first return.
+    """
+
+    def __init__(self, container: ContainerProxy) -> None:
+        self._container = container
+
+    def put(self, mapping: RuntimeDeploymentMapping) -> RuntimeDeploymentMapping:
+        document = {
+            "id": mapping.deployment_id,
+            "documentType": RUNTIME_MAPPING_DOCUMENT_TYPE,
+            "deployment_id": mapping.deployment_id,
+            # Denormalized index fields for governance queries; the authoritative
+            # values always live inside ``payload``.
+            "mapping_digest": mapping.mapping_digest,
+            "tenant_id": mapping.tenant_id,
+            "project_id": mapping.project_id,
+            "logical_agent_id": mapping.logical_agent_id,
+            "lifecycle_state": mapping.lifecycle_state.value,
+            "payload": mapping.model_dump(mode="json"),
+        }
+        try:
+            self._container.create_item(document)
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 409:
+                raise
+            existing = self.get(mapping.deployment_id)
+            if existing is None or existing.mapping_digest != mapping.mapping_digest:
+                raise RuntimeMappingConflictError(
+                    f"A runtime deployment mapping for deployment_id '{mapping.deployment_id}' "
+                    "already exists with different content; mappings are immutable."
+                ) from exc
+            return existing
+        return mapping
+
+    def get(self, deployment_id: str) -> RuntimeDeploymentMapping | None:
+        try:
+            document = dict(self._container.read_item(item=deployment_id, partition_key=deployment_id))
+        except CosmosResourceNotFoundError:
+            return None
+        return RuntimeDeploymentMapping.model_validate(document["payload"])

@@ -1,6 +1,10 @@
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
+from azure.cosmos import ContainerProxy
+from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 from research_assistant_api.agent_studio.models import (
     CapabilityDescriptorRef,
     CapabilityOperationRef,
@@ -13,6 +17,7 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDestinationHashPolicy,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import (
+    CosmosRuntimeDeploymentMappingStore,
     InMemoryRuntimeDeploymentMappingStore,
     RuntimeMappingConflictError,
 )
@@ -85,3 +90,79 @@ def test_distinct_deployment_ids_are_isolated() -> None:
     store.put(b)
     assert store.get("dep-a") is a
     assert store.get("dep-b") is b
+
+
+# --- Cosmos adapter --------------------------------------------------------
+
+
+class _FakeContainer:
+    """Minimal Cosmos container double honoring create_item/read_item semantics."""
+
+    def __init__(self, *, read_returns_none_on_conflict: bool = False, create_status: int = 409) -> None:
+        self.items: dict[str, dict[str, object]] = {}
+        self._read_returns_none_on_conflict = read_returns_none_on_conflict
+        self._create_status = create_status
+
+    def create_item(self, body: dict[str, object]) -> dict[str, object]:
+        item_id = str(body["id"])
+        if item_id in self.items:
+            raise CosmosHttpResponseError(status_code=self._create_status, message="conflict")  # type: ignore[no-untyped-call]
+        self.items[item_id] = dict(body)
+        return dict(body)
+
+    def read_item(self, *, item: str, partition_key: str) -> dict[str, object]:
+        assert item == partition_key  # partitioned by /deployment_id
+        if item not in self.items or (self._read_returns_none_on_conflict and item in self.items):
+            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        return dict(self.items[item])
+
+
+def test_cosmos_get_returns_none_when_absent() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    assert store.get("missing") is None
+
+
+def test_cosmos_put_then_get_round_trips() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    mapping = _mapping(deployment_id="dep-1")
+    assert store.put(mapping) is mapping
+    loaded = store.get("dep-1")
+    assert loaded is not None
+    assert loaded.mapping_digest == mapping.mapping_digest
+    assert loaded.deployment_id == "dep-1"
+
+
+def test_cosmos_put_is_idempotent_for_identical_content() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.put(_mapping(deployment_id="dep-1"))
+    returned = store.put(_mapping(deployment_id="dep-1"))
+    assert returned is not None
+    assert returned.deployment_id == "dep-1"
+
+
+def test_cosmos_put_rejects_diverging_content() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.put(_mapping(deployment_id="dep-1", backend_version="1.2.3"))
+    with pytest.raises(RuntimeMappingConflictError, match="already exists with different content"):
+        store.put(_mapping(deployment_id="dep-1", backend_version="9.9.9"))
+
+
+def test_cosmos_put_conflict_but_vanished_existing_is_conflict() -> None:
+    # 409 on create, but the existing doc is gone by the time we re-read
+    # (concurrent delete): fail closed as a conflict, never silently succeed.
+    container = _FakeContainer(read_returns_none_on_conflict=True)
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    container.items["dep-1"] = {"id": "dep-1"}  # force create_item to 409
+    with pytest.raises(RuntimeMappingConflictError):
+        store.put(_mapping(deployment_id="dep-1"))
+
+
+def test_cosmos_put_reraises_non_conflict_error() -> None:
+    container = _FakeContainer(create_status=503)
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    container.items["dep-1"] = {"id": "dep-1"}  # force create_item to raise 503
+    with pytest.raises(CosmosHttpResponseError):
+        store.put(_mapping(deployment_id="dep-1"))
