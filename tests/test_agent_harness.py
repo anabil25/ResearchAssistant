@@ -160,7 +160,6 @@ from shared.release import (
     build_release_metadata,
     manifest_digest,
     release_attestation_contract_schema_digest,
-    source_bundle_digest,
     validate_release_attestation,
 )
 from shared.settings import HarnessSettings
@@ -187,6 +186,10 @@ from shared.workflows import (
     build_coordinator_workflow,
     specialist_handler_resolver,
 )
+
+from scripts.build_agent_source_bundle import source_bundle_hash
+
+TEST_SOURCE_BUNDLE_HASH = source_bundle_hash((("fixture.py", b"VALUE = 1\n"),))
 
 
 def _request(**overrides: Any) -> dict[str, Any]:
@@ -223,6 +226,7 @@ def _settings(**overrides: Any) -> HarnessSettings:
         "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/p",
         "model_deployment_name": "gpt-5.4-mini",
         "model_deployment_version": "2026-03-17",
+        "source_bundle_hash": TEST_SOURCE_BUNDLE_HASH,
         "deployment_tenant_id": "tenant-a",
         "deployment_project_id": "project-a",
     }
@@ -829,7 +833,21 @@ def test_memory_scopes_and_objective_release_gates_are_explicit() -> None:
         )
 
 
-def test_settings_validate_environment_and_readiness() -> None:
+def test_settings_validate_environment_and_readiness(tmp_path: Path) -> None:
+    source_manifest_path = tmp_path / "source-bundle.json"
+    source_manifest_path.write_text(
+        json.dumps(
+            {
+                "entry_count": 1,
+                "producer": "research-assistant.git-source-bundle",
+                "schema_version": "1",
+                "source_bundle_hash": TEST_SOURCE_BUNDLE_HASH,
+                "source_revision": "a" * 40,
+                "source_root": "agents",
+            }
+        ),
+        encoding="utf-8",
+    )
     settings = HarnessSettings.from_environment(
         {
             "FOUNDRY_PROJECT_ENDPOINT": "https://example.services.ai.azure.com/api/projects/p",
@@ -842,7 +860,8 @@ def test_settings_validate_environment_and_readiness() -> None:
             "AZURE_ENV_NAME": "test",
             "RESEARCH_WORKSPACE_TENANT_ID": "tenant-a",
             "RESEARCH_WORKSPACE_PROJECT_ID": "project-a",
-        }
+        },
+        source_manifest_path=source_manifest_path,
     )
     assert settings.telemetry_content_recording is True
     assert settings.model_deployment_version == "2026-01-01"
@@ -855,14 +874,15 @@ def test_settings_validate_environment_and_readiness() -> None:
     }
     assert _settings().readiness()["managed_identity"] is False
     with pytest.raises(ConfigurationError):
-        HarnessSettings.from_environment({})
+        HarnessSettings.from_environment({}, source_manifest_path=source_manifest_path)
     with pytest.raises(ConfigurationError):
         HarnessSettings.from_environment(
             {
                 "FOUNDRY_PROJECT_ENDPOINT": "https://example.test",
                 "AZURE_AI_MODEL_DEPLOYMENT_NAME": "model",
                 "AGENT_DEFAULT_TIMEOUT_SECONDS": "not-a-number",
-            }
+            },
+            source_manifest_path=source_manifest_path,
         )
     with pytest.raises(ValidationError, match="supplied together"):
         _settings(deployment_project_id=None)
@@ -875,7 +895,8 @@ def test_settings_validate_environment_and_readiness() -> None:
                 "AZURE_AI_MODEL_DEPLOYMENT_NAME": "model",
                 "RESEARCH_WORKSPACE_TENANT_ID": "provider-discovery://tenant",
                 "RESEARCH_WORKSPACE_PROJECT_ID": "provider-discovery://project",
-            }
+            },
+            source_manifest_path=source_manifest_path,
         )
 
 
@@ -3676,6 +3697,7 @@ async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit
     local = LocalHarness(
         get_manifest("literature"),
         lambda _request: _evidence_response(),
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         idempotency_store=store,
     )
     local_executor = local.capability_executor(registry)
@@ -4264,6 +4286,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             template,
             model_deployment=template.model_policy.deployment_name,
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         )
     provider_adapter = _ManifestProviderAdapter(template.capability_bindings)
     prepared = GovernedAgentFactory(template).prepare(
@@ -4294,7 +4317,7 @@ def test_release_metadata_is_immutable_and_deterministic(
     release = build_release_metadata(
         manifest,
         model_deployment="gpt-5.4-mini",
-        source_bundle_hash="a" * 64,
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=built_at,
         registrations=registrations,
@@ -4338,7 +4361,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         manifest,
         model_deployment="gpt-5.4-mini",
         source_revision="explicit",
-        source_bundle_hash="a" * 64,
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         built_at=built_at,
         registrations=registrations,
     )
@@ -4346,18 +4369,29 @@ def test_release_metadata_is_immutable_and_deterministic(
     same_content = build_release_metadata(
         manifest,
         model_deployment="gpt-5.4-mini",
-        source_bundle_hash="a" * 64,
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=datetime(2026, 7, 23, tzinfo=UTC),
         registrations=registrations,
     )
     assert same_content.release_id == release.release_id
+    with pytest.raises(TypeError, match="source_bundle_hash"):
+        cast(Any, build_release_metadata)(
+            manifest,
+            model_deployment=manifest.model_policy.deployment_name,
+            registrations=registrations,
+        )
     with pytest.raises(ValueError, match="model policy"):
-        build_release_metadata(manifest, model_deployment="unapproved-model")
+        build_release_metadata(
+            manifest,
+            model_deployment="unapproved-model",
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        )
     with pytest.raises(ConfigurationError, match="attested provider registrations"):
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         )
     unattested = tuple(
         ToolRegistration(
@@ -4372,6 +4406,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
             registrations=unattested,
         )
     versions["agent-framework-foundry-hosting"] = "1.0.0"
@@ -4379,17 +4414,10 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
             registrations=registrations,
         )
     versions["agent-framework-foundry-hosting"] = "1.0.0b260721"
-
-    root = tmp_path / "bundle"
-    root.mkdir()
-    (root / "agent.py").write_text("VALUE = 1\n", encoding="utf-8")
-    (root / "ignored.md").write_text("ignored", encoding="utf-8")
-    first_hash = source_bundle_digest(root)
-    (root / "agent.py").write_text("VALUE = 2\n", encoding="utf-8")
-    assert source_bundle_digest(root) != first_hash
 
 
 def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
@@ -5779,7 +5807,11 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
 @pytest.mark.asyncio
 async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     manifest = get_manifest("literature")
-    harness = LocalHarness(manifest, lambda _request: _evidence_response())
+    harness = LocalHarness(
+        manifest,
+        lambda _request: _evidence_response(),
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+    )
     assert harness.readiness()["input_contract"] == "LiteratureRequestV2"
     assert harness.readiness()["idempotency_store_configured"] is True
     result = await harness.invoke(LocalInvocation(manifest_id="literature", payload=_request()))
@@ -5793,13 +5825,18 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         await asyncio.sleep(0)
         return {"summary": "async result"}
 
-    async_result = await LocalHarness(manifest, async_runner).invoke(
+    async_result = await LocalHarness(
+        manifest,
+        async_runner,
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+    ).invoke(
         LocalInvocation(manifest_id="literature", payload=_request())
     )
     assert async_result.ok is True
     failed = await LocalHarness(
         manifest,
         lambda _request: (_ for _ in ()).throw(ContractError("blocked")),
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
     ).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
     assert failed.error is not None and failed.error.code == "contract_error"
 
@@ -5807,7 +5844,11 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         raise asyncio.CancelledError
 
     with pytest.raises(asyncio.CancelledError):
-        await LocalHarness(manifest, cancelled).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
+        await LocalHarness(
+            manifest,
+            cancelled,
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        ).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
 
     dataset = get_manifest("dataset")
     dataset_prepared = GovernedAgentFactory(dataset).prepare(
@@ -5820,6 +5861,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     local_dataset = LocalHarness(
         dataset,
         lambda _request: ResearchResponse(summary="not executed"),
+        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
         registrations=dataset_registrations,
     )
     assert local_dataset.readiness()["ready"] is False
@@ -5827,6 +5869,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         LocalHarness(
             dataset,
             lambda _request: ResearchResponse(summary="not executed"),
+            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
             registrations=dataset_registrations,
             idempotency_store=InMemoryIdempotencyStore(),
             approval_adapter=_AutoApprovalAdapter(),

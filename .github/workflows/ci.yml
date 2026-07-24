@@ -26,6 +26,9 @@ jobs:
       - name: Restore Python environment
         run: uv sync --all-packages --group dev --frozen
 
+      - name: Bake committed Hosted Agent source identity
+        run: python -m scripts.build_agent_source_bundle
+
       - name: Lint, type-check, test, and audit Python
         run: |
           uv run ruff check packages services agents scripts tests

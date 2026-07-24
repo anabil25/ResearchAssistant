@@ -14,7 +14,10 @@ from shared.profiles import get_profile, list_profiles
 from shared.settings import HarnessSettings
 from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
 
+from scripts.build_agent_source_bundle import source_bundle_hash
+
 ROOT = Path(__file__).parents[1]
+TEST_SOURCE_BUNDLE_HASH = source_bundle_hash((("fixture.py", b"VALUE = 1\n"),))
 
 
 def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
@@ -111,6 +114,18 @@ def test_coordinator_routes_public_only_to_online_specialists() -> None:
 def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
     manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
     services = manifest["services"]
+    assert manifest["hooks"]["predeploy"] == {
+        "windows": {
+            "shell": "pwsh",
+            "run": "./scripts/predeploy.ps1",
+        },
+        "posix": {
+            "shell": "sh",
+            "run": "./scripts/predeploy.sh",
+        },
+    }
+    agent_ignore = (ROOT / "agents" / ".agentignore").read_text(encoding="utf-8")
+    assert "!.release/source-bundle.json" in agent_ignore
     agent_services = {name: config for name, config in services.items() if config.get("host") == "azure.ai.agent"}
 
     assert len(agent_services) == 9
@@ -168,6 +183,7 @@ def test_online_agents_use_foundry_toolbox_when_configured(
         {
             "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/p",
             "model_deployment_name": "gpt-5.4-mini",
+            "source_bundle_hash": TEST_SOURCE_BUNDLE_HASH,
             "toolbox_endpoint": "https://foundry.example/toolboxes/test/mcp?api-version=v1",
         }
     )

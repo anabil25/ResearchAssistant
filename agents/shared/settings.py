@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Mapping
+from pathlib import Path
 
 from pydantic import (
     BaseModel,
@@ -15,6 +16,7 @@ from pydantic import (
 
 from .contracts import DeploymentScope
 from .errors import ConfigurationError
+from .source_identity import load_baked_source_bundle_manifest
 
 
 class HarnessSettings(BaseModel):
@@ -23,6 +25,7 @@ class HarnessSettings(BaseModel):
     foundry_project_endpoint: HttpUrl
     model_deployment_name: str = Field(min_length=1)
     model_deployment_version: str | None = Field(default=None, min_length=1)
+    source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     managed_identity_client_id: str | None = None
     toolbox_endpoint: HttpUrl | None = None
     deployment_tenant_id: str | None = Field(default=None, min_length=1, max_length=256)
@@ -32,14 +35,21 @@ class HarnessSettings(BaseModel):
     environment: str = Field(default="production", min_length=1)
 
     @classmethod
-    def from_environment(cls, environ: Mapping[str, str] | None = None) -> HarnessSettings:
+    def from_environment(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        source_manifest_path: Path | None = None,
+    ) -> HarnessSettings:
         values = os.environ if environ is None else environ
         try:
+            source_manifest = load_baked_source_bundle_manifest(source_manifest_path)
             return cls.model_validate(
                 {
                     "foundry_project_endpoint": values.get("FOUNDRY_PROJECT_ENDPOINT", ""),
                     "model_deployment_name": values.get("AZURE_AI_MODEL_DEPLOYMENT_NAME", ""),
                     "model_deployment_version": values.get("AZURE_AI_MODEL_DEPLOYMENT_VERSION") or None,
+                    "source_bundle_hash": source_manifest.source_bundle_hash,
                     "managed_identity_client_id": values.get("AZURE_CLIENT_ID") or None,
                     "toolbox_endpoint": values.get("TOOLBOX_ENDPOINT") or None,
                     "deployment_tenant_id": values.get("RESEARCH_WORKSPACE_TENANT_ID")

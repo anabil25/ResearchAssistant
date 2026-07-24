@@ -4,7 +4,6 @@ import importlib.metadata
 import os
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from pathlib import Path
 from typing import Literal, Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -131,24 +130,6 @@ def manifest_digest(manifest: AgentManifest) -> str:
     return canonical_digest(manifest.model_dump(mode="json"))
 
 
-def source_bundle_digest(root: Path | None = None) -> str:
-    source_root = root or Path(__file__).resolve().parents[1]
-    entries: list[tuple[str, str]] = []
-    for path in source_root.rglob("*"):
-        if not path.is_file() or "__pycache__" in path.parts:
-            continue
-        if path.suffix != ".py" and path.name != "requirements.txt":
-            continue
-        entries.append(
-            (
-                path.relative_to(source_root).as_posix(),
-                path.read_bytes().hex(),
-            )
-        )
-    entries.sort(key=lambda item: item[0])
-    return canonical_digest(entries)
-
-
 def release_attestation_contract_schema_digest() -> str:
     return canonical_digest(
         {
@@ -162,8 +143,8 @@ def build_release_metadata(
     manifest: AgentManifest,
     *,
     model_deployment: str,
+    source_bundle_hash: str,
     source_revision: str | None = None,
-    source_bundle_hash: str | None = None,
     parent_release_id: str | None = None,
     built_at: datetime | None = None,
     registrations: tuple[ToolRegistration, ...] = (),
@@ -230,7 +211,6 @@ def build_release_metadata(
     idempotency_schema_hash = idempotency_contract_schema_digest()
     approval_schema_hash = approval_contract_schema_digest()
     release_attestation_schema_hash = release_attestation_contract_schema_digest()
-    bundle_hash = source_bundle_hash or source_bundle_digest()
     capability_versions = tuple(
         sorted((binding.descriptor_ref.id, binding.descriptor_ref.version) for binding in manifest.capability_bindings)
     )
@@ -281,7 +261,7 @@ def build_release_metadata(
         ),
         "input_schema_hash": manifest.input_schema.sha256,
         "output_schema_hash": manifest.output_schema.sha256,
-        "source_bundle_hash": bundle_hash,
+        "source_bundle_hash": source_bundle_hash,
         "source_revision": revision,
         "model_deployment": model_deployment,
         "model_deployment_ref": manifest.model_policy.selected_deployment_ref,
@@ -312,7 +292,7 @@ def build_release_metadata(
         deployment_scope=manifest.deployment_scope,
         input_schema_hash=manifest.input_schema.sha256,
         output_schema_hash=manifest.output_schema.sha256,
-        source_bundle_hash=bundle_hash,
+        source_bundle_hash=source_bundle_hash,
         source_revision=revision,
         model_deployment=model_deployment,
         model_deployment_ref=manifest.model_policy.selected_deployment_ref,
