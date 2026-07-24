@@ -5,6 +5,7 @@ import { defineConfig, devices } from "@playwright/test";
 import {
   defaultPortLockDeps,
   releasePortLock,
+  touchPortLock,
   tryClaimPortLock,
 } from "./src/testing/port-lock";
 import { REQUIRED_PLAYWRIGHT_PROJECT_NAMES } from "./src/testing/playwright-projects";
@@ -74,7 +75,7 @@ function findFreePortSync(): number {
         `Could not determine an assigned ephemeral port (got: ${JSON.stringify(output)}).`,
       );
     }
-    if (tryClaimPortLock(lockDeps, port)) {
+    if (tryClaimPortLock(lockDeps, port, [...claimedPorts, port])) {
       registerPortLockRelease(lockDeps, port);
       return port;
     }
@@ -90,11 +91,22 @@ function findFreePortSync(): number {
 let portLockCleanupRegistered = false;
 const claimedPorts: number[] = [];
 
+// How often the live owner refreshes each claimed lock's heartbeat --
+// comfortably inside `heartbeatStaleMs` (45s, see port-lock.ts) so a
+// concurrent invocation never mistakes an active, merely-slow-starting
+// server for an abandoned one.
+const HEARTBEAT_INTERVAL_MS = 15_000;
+
 /**
  * Release this invocation's port-lock claims when its process exits (normal
  * exit or SIGINT/SIGTERM), so a later invocation doesn't need to wait for
  * the (unnecessary, since we're exiting cleanly) stale-lock/liveness check
- * to reclaim the same port. Registered once per process, not once per port.
+ * to reclaim the same port. Also starts (once per process, not once per
+ * port) the periodic heartbeat that keeps every claimed lock looking
+ * "actively owned" for as long as this invocation is genuinely alive --
+ * without it, a slow `npm run build`/server-startup phase alone could
+ * exceed `heartbeatStaleMs` and cause a concurrent invocation to
+ * legitimately (from its point of view) reclaim the same port mid-run.
  */
 function registerPortLockRelease(
   lockDeps: ReturnType<typeof defaultPortLockDeps>,
@@ -105,7 +117,16 @@ function registerPortLockRelease(
     return;
   }
   portLockCleanupRegistered = true;
+  const heartbeatTimer = setInterval(() => {
+    for (const claimedPort of claimedPorts) {
+      touchPortLock(lockDeps, claimedPort);
+    }
+  }, HEARTBEAT_INTERVAL_MS);
+  // Never let the heartbeat alone keep the orchestrator process alive --
+  // it should only run for as long as the process has other real work.
+  heartbeatTimer.unref();
   const releaseAll = () => {
+    clearInterval(heartbeatTimer);
     for (const claimedPort of claimedPorts) {
       releasePortLock(lockDeps, claimedPort);
     }
@@ -187,6 +208,14 @@ const { gatewayPort, apiPort, webPort } = deployedBaseUrl
 
 export default defineConfig({
   testDir: "./e2e",
+  // The identity-handshake half of the port-lock hardening (see
+  // src/testing/port-lock-handshake.ts's doc comment): runs once, after
+  // Playwright has confirmed every local webServer below is actually up
+  // and answering its health check, and aborts the run loudly if this
+  // invocation's port-lock claims were reclaimed as stale by a concurrent
+  // invocation in the meantime. A no-op in deployed-target mode (no local
+  // webServer, no port claims to verify).
+  globalSetup: "./src/testing/port-lock-handshake",
   // Overridable via PLAYWRIGHT_OUTPUT_DIR so the atomic release-gate
   // wrapper (scripts/run-e2e-coverage-gate.mjs) can give each of its
   // invocations its own invocation-unique directory instead of always

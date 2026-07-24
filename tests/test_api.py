@@ -759,6 +759,67 @@ def test_research_route_deselecting_all_grant_sources_makes_zero_gateway_calls()
     assert calls["invoke"]["agent_name"] == "grant-online-agent"
 
 
+def test_research_route_rejects_conflicting_sources_and_legacy_funding_sources() -> None:
+    # `funding_sources` is a retired alias no production code path reads.
+    # If a caller (a stale client build, a hand-crafted request, etc.) sends
+    # both it and the canonical `sources` field with disagreeing values, the
+    # server must refuse to guess which list is authoritative rather than
+    # silently honoring one and dropping the other.
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/research/grant",
+            json={
+                "query": "Compare public funding opportunities",
+                "context": {
+                    "sources": ["NSF"],
+                    "funding_sources": ["NIH"],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert "funding_sources" in response.json()["detail"]
+    assert "sources" in response.json()["detail"]
+
+
+def test_research_route_allows_matching_sources_and_legacy_funding_sources() -> None:
+    # Non-conflicting duplication (both fields present, identical value) is
+    # not ambiguous -- only a disagreement between the two is rejected.
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/research/grant",
+            json={
+                "query": "Compare public funding opportunities",
+                "context": {
+                    "sources": ["NSF"],
+                    "funding_sources": ["NSF"],
+                },
+            },
+        )
+
+    assert response.status_code == 200
+
+
+def test_studio_run_route_rejects_conflicting_sources_and_legacy_funding_sources() -> None:
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/studios/grant/run",
+            json={
+                "objective": "Compare public funding opportunities in depth",
+                "inputs": {
+                    "sources": ["NSF"],
+                    "funding_sources": ["NIH"],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert "funding_sources" in response.json()["detail"]
+
+
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [

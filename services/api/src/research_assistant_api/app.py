@@ -675,7 +675,28 @@ def agents(request: Request) -> list[AgentSetting]:
     return store.agents()
 
 
+def _reject_conflicting_source_fields(payload: StudioRunRequest) -> None:
+    # The canonical connector-selection key is `sources`. A retired legacy
+    # alias (`funding_sources`) must never be silently honored: if a caller
+    # sends both and they disagree, that is an ambiguous request (which list
+    # is authoritative?) rather than a harmless duplicate, and honoring
+    # either one unilaterally could silently widen or narrow the connector
+    # set the user actually selected. Reject it outright instead of guessing.
+    sources = payload.inputs.get("sources")
+    legacy_sources = payload.inputs.get("funding_sources")
+    if legacy_sources is not None and sources is not None and legacy_sources != sources:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Request specified both `sources` and the retired "
+                "`funding_sources` field with conflicting values. Send "
+                "connector selection only under `sources`."
+            ),
+        )
+
+
 def _online_policy(capability: Capability, payload: StudioRunRequest) -> None:
+    _reject_conflicting_source_fields(payload)
     if not payload.online_research:
         return
     if capability not in ONLINE_ALLOWED:

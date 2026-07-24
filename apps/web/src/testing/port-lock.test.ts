@@ -13,8 +13,11 @@ import {
   defaultPortLockDeps,
   isPortLockHeld,
   releasePortLock,
+  touchPortLock,
   tryClaimPortLock,
+  verifyLockIdentity,
   type PortLockDeps,
+  type PortLockRecord,
 } from "./port-lock";
 
 // `port-lock.ts` destructures `openSync`/`rmSync` as named imports from
@@ -38,21 +41,47 @@ const mockOpenSync = openSync as unknown as jest.Mock;
 const mockRmSync = rmSync as unknown as jest.Mock;
 const mockReadFileSync = readFileSync as unknown as jest.Mock;
 
+let nonceCounter = 0;
+
 function makeDeps(overrides: Partial<PortLockDeps> = {}): {
   deps: PortLockDeps;
   cleanup: () => void;
 } {
   const lockDir = mkdtempSync(join(tmpdir(), "port-lock-test-"));
+  nonceCounter += 1;
   const deps: PortLockDeps = {
     lockDir,
     pid: 4242,
+    nonce: `test-nonce-${nonceCounter}`,
+    worktreeRoot: "/fake/worktree-root",
     isProcessAlive: () => true,
+    now: () => 1_000_000,
+    heartbeatStaleMs: 45_000,
     ...overrides,
   };
   return {
     deps,
     cleanup: () => rmSync(lockDir, { recursive: true, force: true }),
   };
+}
+
+/** Seed a lock file with a well-formed JSON record directly (bypassing
+ * `tryClaimPortLock`), for tests that need to simulate a pre-existing lock
+ * from some other invocation without going through the claim path. */
+function writeRawRecord(
+  lockPath: string,
+  overrides: Partial<PortLockRecord> = {},
+): void {
+  const record: PortLockRecord = {
+    pid: 999,
+    nonce: "seed-nonce",
+    worktreeRoot: "/seed/worktree-root",
+    ports: [],
+    claimedAt: 0,
+    heartbeatAt: 0,
+    ...overrides,
+  };
+  writeFileSync(lockPath, JSON.stringify(record));
 }
 
 describe("port-lock", () => {
@@ -162,13 +191,13 @@ describe("port-lock", () => {
     });
     const lockPath = join(deps.lockDir, "57000.lock");
     try {
-      writeFileSync(lockPath, "999"); // seed the stale lock
+      writeRawRecord(lockPath, { pid: 999 }); // seed the stale lock
 
       mockRmSync.mockImplementationOnce(() => {
         // Simulate a second, genuinely concurrent invocation completing
         // its own reclaim (unlink + re-create) in the exact instant
         // between this invocation's unlink and its own retry.
-        writeFileSync(lockPath, "555");
+        writeRawRecord(lockPath, { pid: 555, nonce: "concurrent-winner" });
       });
       expect(tryClaimPortLock(deps, 57000)).toBe(false);
     } finally {
@@ -183,7 +212,7 @@ describe("port-lock", () => {
     });
     const lockPath = join(deps.lockDir, "58000.lock");
     try {
-      writeFileSync(lockPath, "888");
+      writeRawRecord(lockPath, { pid: 888 });
 
       mockRmSync.mockImplementationOnce(
         (path: string, options?: import("node:fs").RmOptions) => {
@@ -272,6 +301,40 @@ describe("port-lock", () => {
     }
   });
 
+  it("defaultPortLockDeps carries a non-empty per-invocation nonce, a worktree root, and a positive heartbeat staleness threshold", () => {
+    const originalNonceEnv = process.env.PLAYWRIGHT_PORT_LOCK_NONCE;
+    delete process.env.PLAYWRIGHT_PORT_LOCK_NONCE;
+    try {
+      const deps = defaultPortLockDeps(
+        mkdtempSync(join(tmpdir(), "port-lock-default-deps-nonce-test-")),
+      );
+      try {
+        expect(typeof deps.nonce).toBe("string");
+        expect(deps.nonce.length).toBeGreaterThan(0);
+        expect(deps.worktreeRoot).toBe(process.cwd());
+        expect(deps.heartbeatStaleMs).toBeGreaterThan(0);
+        expect(typeof deps.now()).toBe("number");
+
+        // A second call within the same process must reuse the exact same
+        // nonce (memoized via the environment) rather than minting a fresh
+        // one -- otherwise the later identity handshake in globalSetup
+        // would always fail, since it would compare against a nonce
+        // different from the one actually written into the lock file at
+        // claim time.
+        const second = defaultPortLockDeps(deps.lockDir);
+        expect(second.nonce).toBe(deps.nonce);
+      } finally {
+        rmSync(deps.lockDir, { recursive: true, force: true });
+      }
+    } finally {
+      if (originalNonceEnv === undefined) {
+        delete process.env.PLAYWRIGHT_PORT_LOCK_NONCE;
+      } else {
+        process.env.PLAYWRIGHT_PORT_LOCK_NONCE = originalNonceEnv;
+      }
+    }
+  });
+
   it("defaultPortLockDeps defaults its lock directory to a path under the OS temp dir when none is supplied", () => {
     const deps = defaultPortLockDeps();
     expect(deps.lockDir.startsWith(tmpdir())).toBe(true);
@@ -292,6 +355,154 @@ describe("port-lock", () => {
         throw error;
       });
       expect(isPortLockHeld(deps, 60000)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats a malformed or legacy plain-PID lock file as unheld (safe to reclaim) rather than throwing", () => {
+    const { deps, cleanup } = makeDeps({ isProcessAlive: () => true });
+    const lockPath = join(deps.lockDir, "67000.lock");
+    try {
+      writeFileSync(lockPath, "999"); // legacy plain-PID format, not JSON
+      expect(isPortLockHeld(deps, 67000)).toBe(false);
+      expect(tryClaimPortLock(deps, 67000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats a lock as stale (reclaimable) once its heartbeat is older than heartbeatStaleMs, even though its PID number is technically still alive -- the PID-reuse gap a pure liveness check misses", () => {
+    let currentTime = 0;
+    const { deps: firstInvocation, cleanup } = makeDeps({
+      pid: 4242,
+      isProcessAlive: () => true, // stays "alive" for the whole test
+      now: () => currentTime,
+      heartbeatStaleMs: 45_000,
+    });
+    try {
+      expect(tryClaimPortLock(firstInvocation, 61000)).toBe(true);
+
+      // A much later invocation's clock shows the heartbeat is far beyond
+      // the staleness window -- e.g. this exact PID number was reused by a
+      // completely unrelated process after the real claimant crashed or
+      // stalled without releasing its lock.
+      currentTime = 100_000; // 100s later, > 45s heartbeatStaleMs
+      const laterInvocation: PortLockDeps = {
+        ...firstInvocation,
+        pid: 5000,
+        nonce: "later-invocation-nonce",
+      };
+      expect(isPortLockHeld(laterInvocation, 61000)).toBe(false);
+      expect(tryClaimPortLock(laterInvocation, 61000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("touchPortLock refreshes the heartbeat so a live, still-owning invocation is never mistaken for stale", () => {
+    let currentTime = 0;
+    const { deps, cleanup } = makeDeps({
+      pid: 7000,
+      isProcessAlive: () => true,
+      now: () => currentTime,
+      heartbeatStaleMs: 45_000,
+    });
+    try {
+      expect(tryClaimPortLock(deps, 62000)).toBe(true);
+
+      currentTime = 40_000; // still within the staleness window
+      expect(touchPortLock(deps, 62000)).toBe(true);
+
+      // Without the touch above, 80_000ms since claimedAt=0 would exceed
+      // the 45s threshold. With the heartbeat refreshed at 40_000, the age
+      // relative to *that* refresh is only 40_000ms, still fresh.
+      currentTime = 80_000;
+      expect(isPortLockHeld(deps, 62000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("touchPortLock is a no-op that returns false when the lock no longer names this invocation (already reclaimed by a different owner)", () => {
+    const { deps: original, cleanup } = makeDeps({ pid: 8000 });
+    try {
+      expect(tryClaimPortLock(original, 63000)).toBe(true);
+      const impostor: PortLockDeps = {
+        ...original,
+        pid: 9000,
+        nonce: "impostor-nonce",
+      };
+      expect(touchPortLock(impostor, 63000)).toBe(false);
+      // The genuine owner's record is untouched by the impostor's failed
+      // attempt -- it still verifies as owned by the original invocation.
+      expect(verifyLockIdentity(original, 63000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("verifyLockIdentity confirms the current on-disk lock still names this exact invocation, and rejects a foreign nonce/pid or a not-yet-claimed port", () => {
+    const { deps: owner, cleanup } = makeDeps({ pid: 10_000 });
+    try {
+      expect(verifyLockIdentity(owner, 64000)).toBe(false); // nothing claimed yet
+      expect(tryClaimPortLock(owner, 64000)).toBe(true);
+      expect(verifyLockIdentity(owner, 64000)).toBe(true);
+
+      const foreign: PortLockDeps = {
+        ...owner,
+        pid: 11_000,
+        nonce: "foreign-nonce",
+      };
+      expect(verifyLockIdentity(foreign, 64000)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("simulates the real foreign-takeover scenario the globalSetup identity handshake guards against: after a stale reclaim by a different invocation, the original claimant's verifyLockIdentity now correctly fails", () => {
+    let currentTime = 0;
+    const { deps: original, cleanup } = makeDeps({
+      pid: 12_000,
+      isProcessAlive: () => true,
+      now: () => currentTime,
+      heartbeatStaleMs: 45_000,
+    });
+    try {
+      expect(tryClaimPortLock(original, 65000)).toBe(true);
+      expect(verifyLockIdentity(original, 65000)).toBe(true);
+
+      currentTime = 100_000; // original invocation stalled; heartbeat now stale
+      const concurrentInvocation: PortLockDeps = {
+        ...original,
+        pid: 13_000,
+        nonce: "concurrent-nonce",
+      };
+      expect(tryClaimPortLock(concurrentInvocation, 65000)).toBe(true);
+
+      // The original invocation's own identity check -- exactly what
+      // port-lock-handshake.ts's globalSetup performs after every local
+      // webServer is confirmed healthy -- must now report it no longer
+      // owns this port, so the run aborts loudly instead of silently
+      // testing against a port a different invocation has since claimed.
+      expect(verifyLockIdentity(original, 65000)).toBe(false);
+      expect(verifyLockIdentity(concurrentInvocation, 65000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("records the full set of this invocation's claimed ports (not just the single port each individual lock file represents) for diagnostics", () => {
+    const { deps, cleanup } = makeDeps();
+    try {
+      expect(tryClaimPortLock(deps, 66000, [66000, 66001, 66002])).toBe(true);
+      const raw = JSON.parse(
+        readFileSync(join(deps.lockDir, "66000.lock"), "utf8"),
+      ) as PortLockRecord;
+      expect(raw.ports).toEqual([66000, 66001, 66002]);
+      expect(raw.worktreeRoot).toBe(deps.worktreeRoot);
+      expect(raw.nonce).toBe(deps.nonce);
+      expect(raw.pid).toBe(deps.pid);
     } finally {
       cleanup();
     }
