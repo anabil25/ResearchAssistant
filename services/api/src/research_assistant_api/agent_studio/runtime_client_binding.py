@@ -23,12 +23,12 @@ Ratified design constraints (do not reinvent):
    states inside the caller's own authorized set, which it already knows.
 4. **Writes are control-plane only.** The index is the one *mutable* authority
    here, so its write path is the crown jewel. ``ClientDeploymentBindingResolver``
-   (read-only ``is_bound``) is the ONLY surface the runtime plane is given;
-   grants/revocations live on ``ClientDeploymentBindingWriter``, exercised only
-   by the human-authorized control-plane deployment/release path. The runtime
-   app-role identity must have read-only data-plane access to the index (see the
-   IaC RBAC for the durable adapter); it can never write a binding, so an
-   attacker who can land a mapping cannot also land a binding.
+   (read-only ``current_revision``) is the ONLY surface the runtime plane is
+   given; grants/revocations live on ``ClientDeploymentBindingWriter``, exercised
+   only by the human-authorized control-plane deployment/release path. The
+   runtime app-role identity must have read-only data-plane access to the index
+   (see the IaC RBAC for the durable adapter); it can never write a binding, so
+   an attacker who can land a mapping cannot also land a binding.
 5. **Fail-closed ordering (no cross-container atomicity).** Binding partition is
    ``client_app_id`` and mapping partition is ``deployment_id``; no Cosmos
    transactional batch spans them. ``grant_access`` writes the mapping FIRST then
@@ -63,18 +63,27 @@ AuthorizedMappingLoader = Callable[[str, str], RuntimeDeploymentMapping | None]
 
 
 class ClientDeploymentBindingResolver(Protocol):
-    """Read-only authority the runtime plane depends on: exact membership only."""
+    """Read-only authority the runtime plane depends on: exact membership only.
 
-    def is_bound(self, client_app_id: str, deployment_id: str) -> bool:
-        """True iff ``client_app_id`` is server-bound to exactly ``deployment_id``."""
+    Under the revision model the binding also holds the pointer to the CURRENT
+    revision of the bound deployment. ``current_revision`` still performs an
+    exact-membership test on ``(client_app_id, deployment_id)`` -- it answers
+    "is this pair bound, and if so which revision is current?", and returns
+    ``None`` for an unbound pair. It never selects a deployment for the caller:
+    the caller always asserts ``deployment_id``; the index only supplies WHICH
+    revision, never WHICH deployment.
+    """
+
+    def current_revision(self, client_app_id: str, deployment_id: str) -> str | None:
+        """Current revision id iff ``client_app_id`` is bound to exactly ``deployment_id``, else ``None``."""
         ...
 
 
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
-    def grant(self, client_app_id: str, deployment_id: str) -> None:
-        """Bind ``client_app_id`` to ``deployment_id`` (mapping must already exist)."""
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
+        """Bind ``client_app_id`` to ``deployment_id`` at ``revision_id`` (mapping revision must already exist)."""
         ...
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
@@ -83,29 +92,30 @@ class ClientDeploymentBindingWriter(Protocol):
 
 
 class InMemoryClientDeploymentBindingIndex:
-    """In-memory client->deployment binding index (tests/local).
+    """In-memory client->deployment->revision binding index (tests/local).
 
     Implements both the read-only resolver and the control-plane writer; the
-    runtime is only ever handed the ``is_bound`` surface (typed as
+    runtime is only ever handed the ``current_revision`` surface (typed as
     ``ClientDeploymentBindingResolver``), never this concrete writer. A client
-    may hold multiple bindings; authorization is exact membership.
+    may hold multiple deployment bindings; authorization is exact membership and
+    each binding carries the pointer to the current revision.
     """
 
     def __init__(self) -> None:
-        self._bindings: dict[str, set[str]] = {}
+        self._bindings: dict[str, dict[str, str]] = {}
 
-    def grant(self, client_app_id: str, deployment_id: str) -> None:
-        self._bindings.setdefault(client_app_id, set()).add(deployment_id)
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
+        self._bindings.setdefault(client_app_id, {})[deployment_id] = revision_id
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
         deployments = self._bindings.get(client_app_id)
         if deployments is not None:
-            deployments.discard(deployment_id)
+            deployments.pop(deployment_id, None)
             if not deployments:
                 del self._bindings[client_app_id]
 
-    def is_bound(self, client_app_id: str, deployment_id: str) -> bool:
-        return deployment_id in self._bindings.get(client_app_id, frozenset())
+    def current_revision(self, client_app_id: str, deployment_id: str) -> str | None:
+        return self._bindings.get(client_app_id, {}).get(deployment_id)
 
 
 def build_authorized_mapping_loader(
@@ -116,14 +126,18 @@ def build_authorized_mapping_loader(
 
     Authorizes the ``(client, deployment)`` binding by exact membership FIRST; an
     unbound caller returns ``None`` immediately WITHOUT touching the mapping
-    container (constraint 3). Only a bound caller point-reads the mapping; a
-    binding pointing at an absent mapping also returns ``None`` (fail-closed
-    reconciliation, constraint 5). No selection, no default, no enumeration.
+    container (constraint 3 -- zero mapping reads for an unbound caller). Only a
+    bound caller point-reads the mapping, and it reads the EXACT current revision
+    the binding points at -- the index supplies WHICH revision, never WHICH
+    deployment. A binding pointing at an absent revision (binding-without-mapping)
+    also returns ``None`` (fail-closed reconciliation, constraint 5). No
+    selection, no default, no enumeration.
     """
 
     def _load(client_app_id: str, asserted_deployment_id: str) -> RuntimeDeploymentMapping | None:
-        if not resolver.is_bound(client_app_id, asserted_deployment_id):
+        revision_id = resolver.current_revision(client_app_id, asserted_deployment_id)
+        if revision_id is None:
             return None
-        return mapping_store.get(asserted_deployment_id)
+        return mapping_store.get(asserted_deployment_id, revision_id)
 
     return _load

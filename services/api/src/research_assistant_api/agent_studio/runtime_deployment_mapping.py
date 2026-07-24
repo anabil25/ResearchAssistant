@@ -363,6 +363,20 @@ class RuntimeDeploymentMapping(BaseModel):
         """Deterministic content digest over every authoritative field."""
         return compute_mapping_digest(self)
 
+    @property
+    def revision_id(self) -> str:
+        """Content-addressed revision identifier for this exact mapping content.
+
+        A mapping is immutable and content-addressed; a *lifecycle transition*
+        (ACTIVE -> REVOKED/RETIRED/SUPERSEDED) is effected by writing a NEW
+        revision, never by mutating an existing document. The revision id is the
+        hex tail of ``mapping_digest`` (stable per exact content), so two
+        revisions of one ``deployment_id`` coexist in the same partition under
+        distinct item ids and a superseding revision never collides with the
+        revision it supersedes.
+        """
+        return self.mapping_digest.rsplit(":", 1)[-1]
+
     def lifecycle_fault(self, now: datetime) -> str | None:
         """The specific reason the mapping is not currently valid authority, or
         ``None`` if it is effective at ``now``.

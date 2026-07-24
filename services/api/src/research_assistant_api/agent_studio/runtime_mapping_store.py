@@ -1,22 +1,32 @@
-"""Retrieval port for immutable ``RuntimeDeploymentMapping`` records.
+"""Retrieval port for immutable, content-addressed ``RuntimeDeploymentMapping``
+revisions.
 
-The runtime-control plane resolves a mapping by its **opaque, server-generated
-``deployment_id`` only** -- never by a caller-supplied tenant/project
-partition. The mapping's own ``tenant_id``/``project_id`` (inside the stored
-document) are the authoritative scope; a runtime cannot widen or redirect its
-request by choosing a partition, because it never names one. ``deployment_id``
-is therefore the partition/point-read key for this store.
+A mapping is immutable and **content-addressed**: the store item id carries the
+revision (``deployment_id::revision_id`` where ``revision_id`` is the hex tail of
+``mapping_digest``), so multiple revisions of one ``deployment_id`` coexist in
+the same ``/deployment_id`` partition under distinct ids. This resolves the
+supersession/immutability tension: a lifecycle transition (ACTIVE ->
+REVOKED/RETIRED/SUPERSEDED) is effected by writing a **new revision** that
+records the transition, never by mutating an existing document, so
+``revoked_at`` staying inside the digest is coherent with create-only storage.
 
-Mappings are immutable and content-addressed by ``deployment_id``: putting the
-same ``deployment_id`` twice is idempotent **only** when the content
-(``mapping_digest``) is identical; a second put with different content for an
-already-present ``deployment_id`` is a hard conflict (fail closed) rather than
-a silent overwrite, so a released mapping can never be mutated in place.
+Consequences of the revision model (do not reinvent):
 
-This module defines the port plus an in-memory adapter for tests/local. A
-durable Cosmos point-read adapter (partitioned by ``deployment_id``, always a
-fresh read, never cache-first) is a separately-reviewed slice implementing the
-same ``RuntimeDeploymentMappingStore`` protocol.
+* **``get`` is an exact ``(deployment_id, revision_id)`` point read**, never a
+  scan or a "latest for this deployment" query. Authority over WHICH revision is
+  current lives in the binding index (partitioned by ``client_app_id``); this
+  store never chooses a revision for a caller. An absent/empty ``deployment_id``
+  is never a fallback -- the loader denies before it ever reaches this store.
+* **``put`` is create-only per revision.** Because the id carries the digest, a
+  superseding revision has a different id and never collides; re-putting the
+  identical revision (same id, same content) is idempotent, and the only way to
+  observe a 409 is a byte-identical re-put. A 409 whose stored content diverges
+  from the intended content is an integrity violation (fail closed), never a
+  silent overwrite.
+
+This module defines the port plus an in-memory adapter for tests/local. The
+Cosmos adapter partitions by ``/deployment_id`` and always performs a fresh
+point ``read_item`` (never cache-first).
 """
 
 from __future__ import annotations
@@ -34,79 +44,92 @@ class RuntimeDeploymentMappingStoreError(RuntimeError):
 
 
 class RuntimeMappingConflictError(RuntimeDeploymentMappingStoreError):
-    """Raised when a ``deployment_id`` is re-put with different content.
+    """Raised when a revision id is re-put with different content.
 
-    Content-addressed immutability: a mapping is keyed by its opaque
-    ``deployment_id`` and, once stored, its content may never change. A second
-    put with a diverging ``mapping_digest`` for the same ``deployment_id`` is
-    an integrity violation, not an update.
+    Content-addressed immutability: a revision is keyed by
+    ``deployment_id::revision_id`` where ``revision_id`` is the mapping's own
+    content digest. A stored revision's content therefore can never diverge from
+    its id, so a 409 with diverging content is an integrity violation, not an
+    update.
     """
 
 
+def _revision_item_id(deployment_id: str, revision_id: str) -> str:
+    """Compose the content-addressed store item id for a mapping revision."""
+    return f"{deployment_id}::{revision_id}"
+
+
 class RuntimeDeploymentMappingStore(Protocol):
-    """Domain port for storing and point-reading runtime deployment mappings."""
+    """Domain port for storing and point-reading runtime deployment mapping revisions."""
 
     def put(self, mapping: RuntimeDeploymentMapping) -> RuntimeDeploymentMapping:
-        """Persist ``mapping``; idempotent for identical content, conflict otherwise."""
+        """Persist ``mapping`` as an immutable revision; idempotent for identical content."""
         ...
 
-    def get(self, deployment_id: str) -> RuntimeDeploymentMapping | None:
-        """Fresh point read of the mapping for ``deployment_id`` (or ``None``)."""
+    def get(self, deployment_id: str, revision_id: str) -> RuntimeDeploymentMapping | None:
+        """Fresh exact point read of the ``(deployment_id, revision_id)`` revision (or ``None``)."""
         ...
 
 
 class InMemoryRuntimeDeploymentMappingStore:
-    """In-memory adapter keyed by opaque ``deployment_id`` (tests/local only)."""
+    """In-memory adapter keyed by the content-addressed item id (tests/local only).
+
+    Because the item id is derived from the content digest, two puts under the
+    same id are the same revision by construction; a re-put is therefore
+    idempotent (the first-stored revision is retained and returned). Divergent
+    content under one id is only reachable via a hash collision, which this
+    layer does not defend against.
+    """
 
     def __init__(self) -> None:
-        self._by_deployment_id: dict[str, RuntimeDeploymentMapping] = {}
+        self._by_item_id: dict[str, RuntimeDeploymentMapping] = {}
 
     def put(self, mapping: RuntimeDeploymentMapping) -> RuntimeDeploymentMapping:
-        existing = self._by_deployment_id.get(mapping.deployment_id)
-        if existing is not None and existing.mapping_digest != mapping.mapping_digest:
-            raise RuntimeMappingConflictError(
-                f"A runtime deployment mapping for deployment_id '{mapping.deployment_id}' "
-                "already exists with different content; mappings are immutable."
-            )
-        self._by_deployment_id[mapping.deployment_id] = mapping
+        item_id = _revision_item_id(mapping.deployment_id, mapping.revision_id)
+        existing = self._by_item_id.get(item_id)
+        if existing is not None:
+            return existing
+        self._by_item_id[item_id] = mapping
         return mapping
 
-    def get(self, deployment_id: str) -> RuntimeDeploymentMapping | None:
-        return self._by_deployment_id.get(deployment_id)
+    def get(self, deployment_id: str, revision_id: str) -> RuntimeDeploymentMapping | None:
+        return self._by_item_id.get(_revision_item_id(deployment_id, revision_id))
 
 
 #: Cosmos ``documentType`` discriminator and partition-key path for the
 #: dedicated runtime deployment mapping container. The container is
-#: partitioned by ``/deployment_id`` (the opaque, server-generated key) so a
-#: runtime point-read is always a single-partition ``read_item`` by that id --
-#: never a scope-keyed lookup (a runtime never supplies a scope) and never a
-#: cross-partition query.
+#: partitioned by ``/deployment_id`` so every revision of one deployment shares
+#: a partition and a runtime point-read is always a single-partition
+#: ``read_item`` by the content-addressed item id -- never a scope-keyed lookup
+#: (a runtime never supplies a scope) and never a cross-partition query.
 RUNTIME_MAPPING_DOCUMENT_TYPE = "runtimeDeploymentMappingV1"
 RUNTIME_MAPPING_PARTITION_KEY_PATH = "/deployment_id"
 
 
 class CosmosRuntimeDeploymentMappingStore:
-    """Durable adapter: one immutable document per mapping, partitioned by
-    ``/deployment_id``.
+    """Durable adapter: one immutable document per mapping **revision**,
+    partitioned by ``/deployment_id``.
 
-    Writes use ``create_item`` (never ``upsert``) so Cosmos itself is the
-    atomic create-if-absent primitive: a duplicate ``deployment_id`` is
-    rejected server-side with 409. A 409 whose already-stored content is
-    byte-identical (same ``mapping_digest``) is treated as an idempotent
-    re-put; a 409 whose stored content diverges is a hard
-    ``RuntimeMappingConflictError`` -- an immutable mapping can never be
-    overwritten. ``get`` is always a fresh point ``read_item`` (404 -> None),
-    never a cache-first return.
+    Writes use ``create_item`` (never ``upsert``) so Cosmos itself is the atomic
+    create-if-absent primitive. Because the item id carries the revision digest,
+    a superseding revision is a *new* item (different id) that never 409s; the
+    only 409 is a byte-identical re-put of the same revision, treated as
+    idempotent. A 409 whose stored content diverges is a hard
+    ``RuntimeMappingConflictError``. ``get`` is always a fresh exact point
+    ``read_item`` of the ``(deployment_id, revision_id)`` item (404 -> None),
+    never a cache-first return and never a "latest revision" query.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
         self._container = container
 
     def put(self, mapping: RuntimeDeploymentMapping) -> RuntimeDeploymentMapping:
+        item_id = _revision_item_id(mapping.deployment_id, mapping.revision_id)
         document = {
-            "id": mapping.deployment_id,
+            "id": item_id,
             "documentType": RUNTIME_MAPPING_DOCUMENT_TYPE,
             "deployment_id": mapping.deployment_id,
+            "revision_id": mapping.revision_id,
             # Denormalized index fields for governance queries; the authoritative
             # values always live inside ``payload``.
             "mapping_digest": mapping.mapping_digest,
@@ -121,18 +144,19 @@ class CosmosRuntimeDeploymentMappingStore:
         except CosmosHttpResponseError as exc:
             if exc.status_code != 409:
                 raise
-            existing = self.get(mapping.deployment_id)
+            existing = self.get(mapping.deployment_id, mapping.revision_id)
             if existing is None or existing.mapping_digest != mapping.mapping_digest:
                 raise RuntimeMappingConflictError(
-                    f"A runtime deployment mapping for deployment_id '{mapping.deployment_id}' "
-                    "already exists with different content; mappings are immutable."
+                    f"A runtime deployment mapping revision '{item_id}' already exists "
+                    "with different content; mapping revisions are immutable."
                 ) from exc
             return existing
         return mapping
 
-    def get(self, deployment_id: str) -> RuntimeDeploymentMapping | None:
+    def get(self, deployment_id: str, revision_id: str) -> RuntimeDeploymentMapping | None:
+        item_id = _revision_item_id(deployment_id, revision_id)
         try:
-            document = dict(self._container.read_item(item=deployment_id, partition_key=deployment_id))
+            document = dict(self._container.read_item(item=item_id, partition_key=deployment_id))
         except CosmosResourceNotFoundError:
             return None
         return RuntimeDeploymentMapping.model_validate(document["payload"])

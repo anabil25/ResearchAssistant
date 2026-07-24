@@ -197,9 +197,13 @@ def _client(
     if mapping is not None:
         store.put(mapping)
     # The authenticated runtime client is server-bound to exactly this
-    # deployment (or "dep-1" when there is no mapping, to exercise the
-    # bound-client-but-no-mapping path).
-    resolver.grant(CLIENT_APP_ID, mapping.deployment_id if mapping is not None else "dep-1")
+    # deployment's current revision (or "dep-1"/a placeholder revision when there
+    # is no mapping, to exercise the bound-client-but-no-mapping path).
+    resolver.grant(
+        CLIENT_APP_ID,
+        mapping.deployment_id if mapping is not None else "dep-1",
+        mapping.revision_id if mapping is not None else "no-such-revision",
+    )
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
     app = build_runtime_control_app(
         mapping_store=store,
