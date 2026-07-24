@@ -8,8 +8,11 @@ from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_client_binding import (
     AuthorizedMappingLoader,
+    BindingResolution,
+    ClientDeploymentBindingResolver,
     CosmosClientDeploymentBindingIndex,
     InMemoryClientDeploymentBindingIndex,
+    RuntimeBindingStatus,
     build_authorized_mapping_loader,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
@@ -57,66 +60,76 @@ def _mapping(*, deployment_id: str = "dep-1", backend_version: str = "1.2.3") ->
 REV = _mapping().revision_id
 
 
-# --- exact-membership resolver (now carrying the current revision) ----------
+# --- exact-membership resolver (one-to-one, carrying the current revision) ---
 
 
-def test_unbound_client_has_no_current_revision() -> None:
+def test_unbound_client_resolves_to_none() -> None:
     index = InMemoryClientDeploymentBindingIndex()
-    assert index.current_revision("nobody", "dep-1") is None
+    assert index.resolve_binding("nobody", "dep-1") is None
 
 
 def test_grant_binds_exact_pair_to_a_revision() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     index.grant(CLIENT, "dep-1", REV)
-    assert index.current_revision(CLIENT, "dep-1") == REV
-    # Exact membership: a different deployment for the same client is unbound.
-    assert index.current_revision(CLIENT, "dep-2") is None
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution == BindingResolution(deployment_id="dep-1", revision_id=REV, status=RuntimeBindingStatus.ACTIVE)
 
 
-def test_grant_repoints_to_new_current_revision() -> None:
-    # A superseding grant repoints the binding to the new current revision.
+def test_resolve_wrong_deployment_is_none() -> None:
+    # Exact membership: the asserted deployment must match the bound one.
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1", REV)
+    assert index.resolve_binding(CLIENT, "dep-2") is None
+
+
+def test_grant_is_one_to_one_and_replaces() -> None:
+    # One client -> exactly one deployment; a new grant replaces the old binding.
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-2", "revision-2")
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+    resolution = index.resolve_binding(CLIENT, "dep-2")
+    assert resolution is not None
+    assert resolution.deployment_id == "dep-2"
+    assert resolution.revision_id == "revision-2"
+
+
+def test_regrant_same_deployment_repoints_revision() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     index.grant(CLIENT, "dep-1", REV)
     index.grant(CLIENT, "dep-1", "revision-2")
-    assert index.current_revision(CLIENT, "dep-1") == "revision-2"
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.revision_id == "revision-2"
 
 
-def test_client_may_hold_multiple_deployment_bindings() -> None:
-    index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-2", "revision-2")
-    assert index.current_revision(CLIENT, "dep-1") == REV
-    assert index.current_revision(CLIENT, "dep-2") == "revision-2"
-    assert index.current_revision(CLIENT, "dep-3") is None
-
-
-def test_revoke_removes_only_that_pair() -> None:
-    index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-2", "revision-2")
-    index.revoke(CLIENT, "dep-1")
-    assert index.current_revision(CLIENT, "dep-1") is None
-    assert index.current_revision(CLIENT, "dep-2") == "revision-2"
-
-
-def test_revoke_last_binding_drops_the_client() -> None:
+def test_revoke_removes_matching_binding() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     index.grant(CLIENT, "dep-1", REV)
     index.revoke(CLIENT, "dep-1")
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+
+
+def test_revoke_mismatched_deployment_is_noop() -> None:
+    # A revoke targeting a deployment the client is not bound to must not clobber
+    # its actual binding (guards against clobbering a re-grant).
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1", REV)
+    index.revoke(CLIENT, "dep-2")
+    assert index.resolve_binding(CLIENT, "dep-1") is not None
 
 
 def test_revoke_unknown_client_is_noop() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     index.revoke("nobody", "dep-1")  # must not raise
-    assert index.current_revision("nobody", "dep-1") is None
+    assert index.resolve_binding("nobody", "dep-1") is None
 
 
 # --- authorized loader -----------------------------------------------------
 
 
 class _CountingStore(InMemoryRuntimeDeploymentMappingStore):
-    """Store spy that counts point-reads, to prove unbound callers read zero."""
+    """Store spy that counts point-reads, to prove denied callers read zero."""
 
     def __init__(self) -> None:
         super().__init__()
@@ -156,7 +169,7 @@ def test_loader_returns_none_when_client_unbound_and_reads_zero_mappings() -> No
 def test_loader_returns_none_for_bound_client_but_wrong_deployment() -> None:
     load, _mapping, store = _loader()
     assert load(CLIENT, "dep-elsewhere") is None
-    assert store.get_calls == 0  # unbound pair short-circuits before any read
+    assert store.get_calls == 0  # wrong-deployment pair short-circuits before any read
 
 
 def test_loader_returns_none_when_bound_but_revision_absent() -> None:
@@ -167,10 +180,27 @@ def test_loader_returns_none_when_bound_but_revision_absent() -> None:
 
 
 def test_loader_returns_none_when_binding_points_at_stale_revision() -> None:
-    # The binding's current-revision pointer is stale/dangling (points at a
-    # revision id the store never stored): exact point read misses -> denial.
     load, _mapping, _store = _loader(bound_revision="revision-that-was-never-written")
     assert load(CLIENT, "dep-1") is None
+
+
+class _RevokedResolver:
+    """A resolver that returns a soft-revoked (tombstoned) binding."""
+
+    def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
+        return BindingResolution(
+            deployment_id=asserted_deployment_id, revision_id=REV, status=RuntimeBindingStatus.REVOKED
+        )
+
+
+def test_loader_denies_soft_revoked_binding_without_reading_mapping() -> None:
+    # A present-but-revoked binding denies, and denies WITHOUT a mapping read.
+    store = _CountingStore()
+    store.put(_mapping())
+    resolver: ClientDeploymentBindingResolver = _RevokedResolver()
+    load = build_authorized_mapping_loader(resolver, store)
+    assert load(CLIENT, "dep-1") is None
+    assert store.get_calls == 0
 
 
 # --- durable Cosmos binding adapter ----------------------------------------
@@ -187,55 +217,82 @@ class _FakeBindingContainer:
         return dict(body)
 
     def read_item(self, *, item: str, partition_key: str) -> dict[str, object]:
-        # Partitioned by /client_app_id; the item id begins with it.
-        assert item.startswith(f"{partition_key}::")
+        assert item == partition_key  # one item per client, id == client_app_id
         if item not in self.items:
             raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
         return dict(self.items[item])
 
     def delete_item(self, *, item: str, partition_key: str) -> None:
-        assert item.startswith(f"{partition_key}::")
-        if item not in self.items:
-            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        assert item == partition_key
         del self.items[item]
 
 
-def test_cosmos_binding_grant_then_current_revision() -> None:
+def test_cosmos_binding_grant_then_resolve() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.grant(CLIENT, "dep-1", REV)
-    assert index.current_revision(CLIENT, "dep-1") == REV
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution == BindingResolution(deployment_id="dep-1", revision_id=REV, status=RuntimeBindingStatus.ACTIVE)
 
 
-def test_cosmos_binding_unknown_pair_is_none() -> None:
+def test_cosmos_binding_unknown_client_is_none() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
 
 
-def test_cosmos_binding_grant_repoints_to_new_revision() -> None:
+def test_cosmos_binding_resolve_wrong_deployment_is_none() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-1", "revision-2")
-    assert index.current_revision(CLIENT, "dep-1") == "revision-2"
+    assert index.resolve_binding(CLIENT, "dep-2") is None
 
 
-def test_cosmos_binding_revoke_removes_pair() -> None:
+def test_cosmos_binding_grant_repoints_and_replaces() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-2", "revision-2")
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+    resolution = index.resolve_binding(CLIENT, "dep-2")
+    assert resolution is not None
+    assert resolution.revision_id == "revision-2"
+
+
+def test_cosmos_binding_revoke_removes_matching() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.grant(CLIENT, "dep-1", REV)
     index.revoke(CLIENT, "dep-1")
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+
+
+def test_cosmos_binding_revoke_mismatched_deployment_is_noop() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.grant(CLIENT, "dep-1", REV)
+    index.revoke(CLIENT, "dep-2")  # different deployment -> must not delete
+    assert index.resolve_binding(CLIENT, "dep-1") is not None
 
 
 def test_cosmos_binding_revoke_missing_is_idempotent_noop() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.revoke(CLIENT, "dep-1")  # must not raise
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+
+
+def test_cosmos_binding_soft_revoked_tombstone_resolves_revoked() -> None:
+    # A soft-revoked row (status=revoked) resolves with REVOKED so the loader
+    # denies; the durable adapter faithfully surfaces the tombstone status.
+    container = _FakeBindingContainer()
+    container.items[CLIENT] = {
+        "id": CLIENT,
+        "client_app_id": CLIENT,
+        "deployment_id": "dep-1",
+        "current_revision_id": REV,
+        "status": "revoked",
+    }
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is RuntimeBindingStatus.REVOKED
 
 
 def test_cosmos_binding_backs_the_authorized_loader() -> None:
-    # End-to-end: durable binding + in-memory store compose into the loader with
-    # the same exact-membership + current-revision semantics.
-    from research_assistant_api.agent_studio.runtime_mapping_store import InMemoryRuntimeDeploymentMappingStore
-
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping()

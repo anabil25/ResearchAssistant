@@ -82,7 +82,9 @@ def test_grant_writes_mapping_then_binds_current_revision() -> None:
     # Mapping revision landed first...
     assert store.get("dep-1", mapping.revision_id) is mapping
     # ...then the binding points at exactly that revision.
-    assert index.current_revision(CLIENT, "dep-1") == mapping.revision_id
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.revision_id == mapping.revision_id
 
 
 def test_grant_is_idempotent_for_identical_inputs() -> None:
@@ -93,7 +95,9 @@ def test_grant_is_idempotent_for_identical_inputs() -> None:
     producer.grant(_mapping())
     reconstructed = _mapping()
     producer.grant(reconstructed)
-    assert index.current_revision(CLIENT, "dep-1") == reconstructed.revision_id
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.revision_id == reconstructed.revision_id
     assert store.get("dep-1", reconstructed.revision_id) is not None
 
 
@@ -104,7 +108,7 @@ def test_grant_rejects_non_active_mapping() -> None:
         producer.grant(retired)
     # Nothing written, nothing bound (fail closed before any side effect).
     assert store.get("dep-1", retired.revision_id) is None
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
 
 
 def test_grant_rejects_revoked_mapping() -> None:
@@ -128,7 +132,7 @@ def test_revoke_unbinds_first_then_writes_retiring_revision() -> None:
     )
     persisted = producer.revoke(revoking, now=NOW)
     # Authority withdrawn: the binding is gone.
-    assert index.current_revision(CLIENT, "dep-1") is None
+    assert index.resolve_binding(CLIENT, "dep-1") is None
     # The revoking revision is a NEW immutable item (distinct revision id).
     assert revoking.revision_id != active.revision_id
     assert store.get("dep-1", revoking.revision_id) is persisted
