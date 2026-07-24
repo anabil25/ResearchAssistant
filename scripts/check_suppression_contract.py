@@ -10,7 +10,7 @@ import sys
 import tokenize
 import tomllib
 from collections import Counter, defaultdict
-from collections.abc import Generator, Iterable
+from collections.abc import Generator, Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -18,6 +18,15 @@ from typing import Any
 import yaml
 
 SCHEMA_VERSION = "research-assistant.suppression-contract.v1"
+MISSING_REASON_POLICY = (
+    "The reason requirement binds all new suppressions; pre-existing entries are a "
+    "pinned exception set that can only shrink. No semantic laundering."
+)
+INTEGRATION_REFRESH_REVIEW = (
+    "ONE-TIME INTEGRATION ONLY: verify every added grandfather member already existed "
+    "on an incoming integration tip. Never use this refresh for a newly introduced suppression."
+)
+INITIAL_MISSING_REASON_MAXIMUM = 74
 PYTHON_SUFFIXES = {".py", ".pyi"}
 JAVASCRIPT_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
@@ -426,7 +435,10 @@ def structural_exclusions(root: Path, files: Iterable[str]) -> list[StructuralEx
     return sorted(exclusions, key=lambda item: (item.path, item.symbol))
 
 
-def _counter_records(counter: Counter[tuple[str, ...]], fields: list[str]) -> list[dict[str, Any]]:
+def _counter_records(
+    counter: Mapping[Any, int],
+    fields: list[str],
+) -> list[dict[str, Any]]:
     records = []
     for key, count in sorted(counter.items()):
         record: dict[str, Any] = dict(zip(fields, key, strict=True))
@@ -528,10 +540,76 @@ def suppression_records(
     return records
 
 
+def missing_reason_records(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [
+        {
+            "path": record["path"],
+            "kind": record["kind"],
+            "scope": record["scope"],
+            "reason": record["reason"],
+            "count": record["count"],
+        }
+        for record in records
+        if not record["reason"]
+    ]
+
+
+def _missing_reason_counter(records: list[dict[str, Any]]) -> Counter[tuple[str, str, str, str]]:
+    return Counter(
+        {
+            (
+                record["path"],
+                record["kind"],
+                record["scope"],
+                record["reason"],
+            ): record["count"]
+            for record in records
+        }
+    )
+
+
+def missing_reason_policy(
+    records: list[dict[str, Any]],
+    previous: dict[str, Any] | None,
+    *,
+    integration_refresh: bool,
+) -> dict[str, Any]:
+    previous_policy = (previous or {}).get("missingReasonPolicy") or {}
+    previous_refresh = previous_policy.get("integrationRefresh") or {}
+    current = missing_reason_records(records)
+    refresh = {
+        "used": bool(previous_refresh.get("used", False)),
+        "maximumAfter": previous_refresh.get("maximumAfter"),
+        "addedGrandfathered": previous_refresh.get("addedGrandfathered", []),
+        "reviewRequirement": INTEGRATION_REFRESH_REVIEW,
+    }
+    if integration_refresh:
+        previous_counter = _missing_reason_counter(previous_policy.get("grandfathered", []))
+        current_counter = _missing_reason_counter(current)
+        added = current_counter - previous_counter
+        refresh = {
+            "used": True,
+            "maximumAfter": sum(current_counter.values()),
+            "addedGrandfathered": _counter_records(
+                added,
+                ["path", "kind", "scope", "reason"],
+            ),
+            "reviewRequirement": INTEGRATION_REFRESH_REVIEW,
+        }
+    return {
+        "requirement": MISSING_REASON_POLICY,
+        "initialMaximum": INITIAL_MISSING_REASON_MAXIMUM,
+        "grandfathered": current,
+        "integrationRefresh": refresh,
+    }
+
+
 def build_inventory(
     root: Path,
     coverage_json: Path,
     previous: dict[str, Any] | None = None,
+    *,
+    integration_refresh: bool = False,
 ) -> tuple[dict[str, Any], list[str]]:
     paths = tracked_files(root)
     suppressions = scan_suppressions(root, paths)
@@ -547,6 +625,7 @@ def build_inventory(
         for path in coverage_report["files"]
     )
 
+    source_suppressions = suppression_records(suppressions, production, previous)
     inventory = {
         "schemaVersion": SCHEMA_VERSION,
         "coverageConfig": config,
@@ -557,7 +636,12 @@ def build_inventory(
         "productionFiles": [
             {"path": path, "evidence": labels} for path, labels in production.items()
         ],
-        "sourceSuppressions": suppression_records(suppressions, production, previous),
+        "sourceSuppressions": source_suppressions,
+        "missingReasonPolicy": missing_reason_policy(
+            source_suppressions,
+            previous,
+            integration_refresh=integration_refresh,
+        ),
         "coverageStructuralExclusions": [
             {
                 "path": item.path,
@@ -570,6 +654,75 @@ def build_inventory(
         "coverageExcludedLines": excluded_lines,
     }
     return inventory, unknown
+
+
+def validate_missing_reason_policy(
+    inventory: dict[str, Any],
+    historical: dict[str, Any] | None,
+) -> list[str]:
+    errors: list[str] = []
+    policy = inventory["missingReasonPolicy"]
+    current = _missing_reason_counter(policy["grandfathered"])
+    current_total = sum(current.values())
+    refresh = policy["integrationRefresh"]
+
+    if policy["requirement"] != MISSING_REASON_POLICY:
+        errors.append("missing-reason policy must state the exact grandfather boundary")
+    if policy["initialMaximum"] != INITIAL_MISSING_REASON_MAXIMUM:
+        errors.append(
+            f"missing-reason initial maximum must remain {INITIAL_MISSING_REASON_MAXIMUM}"
+        )
+    if refresh["reviewRequirement"] != INTEGRATION_REFRESH_REVIEW:
+        errors.append("integration refresh review requirement must remain exact")
+
+    source_missing = _missing_reason_counter(
+        missing_reason_records(inventory["sourceSuppressions"])
+    )
+    if current != source_missing:
+        errors.append("missing-reason grandfather must exactly match current reasonless suppressions")
+
+    historical_policy = (historical or {}).get("missingReasonPolicy")
+    if not historical_policy:
+        if current_total > INITIAL_MISSING_REASON_MAXIMUM:
+            errors.append(
+                "initial missing-reason grandfather exceeds 74; "
+                "use the one-time reviewed integration refresh"
+            )
+        if refresh["used"] or refresh["maximumAfter"] is not None or refresh["addedGrandfathered"]:
+            errors.append("initial missing-reason grandfather cannot claim an integration refresh")
+        return errors
+
+    historical_counter = _missing_reason_counter(historical_policy["grandfathered"])
+    historical_refresh = historical_policy["integrationRefresh"]
+    added = current - historical_counter
+    refresh_transition = not historical_refresh["used"] and refresh["used"]
+
+    if added and not refresh_transition:
+        for path, kind, scope, _reason in sorted(added):
+            errors.append(
+                f"{MISSING_REASON_POLICY} New reasonless suppression is not grandfathered: "
+                f"{path}::{kind}[{scope}]"
+            )
+    if historical_refresh["used"] and not refresh["used"]:
+        errors.append("the one-time integration refresh cannot be reset")
+    if refresh_transition:
+        expected_added = _counter_records(
+            added,
+            ["path", "kind", "scope", "reason"],
+        )
+        if refresh["addedGrandfathered"] != expected_added:
+            errors.append("integration refresh must list the exact added grandfather multiset")
+        if refresh["maximumAfter"] != current_total:
+            errors.append("integration refresh maximumAfter must equal its reviewed census")
+        if not added:
+            errors.append("integration refresh cannot be consumed without added grandfather members")
+    elif refresh != historical_refresh:
+        errors.append("integration refresh metadata is immutable outside its one-time transition")
+
+    historical_total = sum(historical_counter.values())
+    if not refresh_transition and current_total > historical_total:
+        errors.append("missing-reason grandfather cardinality may only decrease")
+    return errors
 
 
 def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]) -> list[str]:
@@ -600,8 +753,6 @@ def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]
     }
     for record in inventory["sourceSuppressions"]:
         kind = record["kind"]
-        if not record["scope"] and not record["reason"]:
-            errors.append(f"suppression requires a scoped code or stated reason: {record['path']}")
         if kind in {"type-ignore", "noqa"} and not record["scope"]:
             errors.append(f"bare {kind} is forbidden: {record['path']}")
         if kind == "coverage-pragma" and not record["reason"]:
@@ -662,6 +813,12 @@ def census(inventory: dict[str, Any]) -> dict[str, Any]:
         "bare": bare,
         "scoped": scoped,
         "reasoned": reasoned,
+        "reasonMissing": sum(
+            record["count"] for record in inventory["sourceSuppressions"] if not record["reason"]
+        ),
+        "reasonMissingGrandfathered": sum(
+            record["count"] for record in inventory["missingReasonPolicy"]["grandfathered"]
+        ),
         "loadBearing": load_bearing,
         "coverageExcludedLines": sum(
             record["count"] for record in inventory["coverageExcludedLines"]
@@ -700,6 +857,35 @@ def _load_json(path: Path) -> dict[str, Any]:
     return payload
 
 
+def _baseline_at_ref(root: Path, baseline_path: Path, ref: str) -> dict[str, Any] | None:
+    relative = baseline_path.relative_to(root).as_posix()
+    verified = subprocess.run(
+        ["git", "rev-parse", "--verify", f"{ref}^{{commit}}"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if verified.returncode != 0:
+        raise ValueError(
+            f"cannot verify previous baseline ref {ref}; "
+            "history is required for the monotonic suppression ratchet"
+        )
+    completed = subprocess.run(
+        ["git", "show", f"{ref}:{relative}"],
+        cwd=root,
+        capture_output=True,
+        check=False,
+        text=True,
+    )
+    if completed.returncode != 0:
+        return None
+    payload = json.loads(completed.stdout)
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected a JSON object for {relative} at {ref}")
+    return payload
+
+
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
@@ -723,6 +909,8 @@ def main() -> int:
         default=Path("coverage/python/suppression-contract-report.json"),
     )
     parser.add_argument("--write-baseline", action="store_true")
+    parser.add_argument("--integration-refresh", action="store_true")
+    parser.add_argument("--previous-baseline-ref", default="HEAD")
     args = parser.parse_args()
 
     root = repository_root()
@@ -734,8 +922,21 @@ def main() -> int:
     previous = _load_json(baseline_path) if baseline_path.exists() else None
 
     try:
-        inventory, unknown = build_inventory(root, coverage_json, previous)
+        if args.integration_refresh and not args.write_baseline:
+            raise ValueError("--integration-refresh requires --write-baseline")
+        historical = _baseline_at_ref(
+            root,
+            baseline_path,
+            args.previous_baseline_ref,
+        )
+        inventory, unknown = build_inventory(
+            root,
+            coverage_json,
+            previous,
+            integration_refresh=args.integration_refresh,
+        )
         errors = validate_inventory(root, inventory, unknown)
+        errors.extend(validate_missing_reason_policy(inventory, historical))
     except (OSError, ValueError, KeyError, tokenize.TokenError, SyntaxError) as exc:
         _write_json(
             report_path,

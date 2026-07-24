@@ -585,6 +585,158 @@
     "services/connector_adapter/src/research_assistant_connector_adapter",
     "services/worker/src/research_assistant_worker"
   ],
+  "missingReasonPolicy": {
+    "grandfathered": [
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "agents/shared/runtime.py",
+        "reason": "",
+        "scope": "import-untyped"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "agents/shared/tools.py",
+        "reason": "",
+        "scope": "import-untyped"
+      },
+      {
+        "count": 4,
+        "kind": "type-ignore",
+        "path": "scripts/postprovision.py",
+        "reason": "",
+        "scope": "operator"
+      },
+      {
+        "count": 1,
+        "kind": "noqa",
+        "path": "scripts/smoke_connectors.py",
+        "reason": "",
+        "scope": "E402"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "services/api/src/research_assistant_api/orchestration.py",
+        "reason": "",
+        "scope": "import-untyped"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "services/worker/src/research_assistant_worker/runtime.py",
+        "reason": "",
+        "scope": "arg-type"
+      },
+      {
+        "count": 2,
+        "kind": "type-ignore",
+        "path": "services/worker/src/research_assistant_worker/runtime.py",
+        "reason": "",
+        "scope": "no-untyped-call"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_blob_sources.py",
+        "reason": "",
+        "scope": "arg-type"
+      },
+      {
+        "count": 4,
+        "kind": "type-ignore",
+        "path": "tests/test_config_api.py",
+        "reason": "",
+        "scope": "arg-type"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_connector_gateway.py",
+        "reason": "",
+        "scope": "method-assign"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_cosmos_workspace.py",
+        "reason": "",
+        "scope": "attr-defined"
+      },
+      {
+        "count": 2,
+        "kind": "type-ignore",
+        "path": "tests/test_cosmos_workspace.py",
+        "reason": "",
+        "scope": "comparison-overlap"
+      },
+      {
+        "count": 11,
+        "kind": "type-ignore",
+        "path": "tests/test_cosmos_workspace.py",
+        "reason": "",
+        "scope": "no-untyped-call"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_ingestion.py",
+        "reason": "",
+        "scope": "attr-defined"
+      },
+      {
+        "count": 7,
+        "kind": "type-ignore",
+        "path": "tests/test_orchestration.py",
+        "reason": "",
+        "scope": "arg-type"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_orchestration.py",
+        "reason": "",
+        "scope": "import-untyped"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_provisioning.py",
+        "reason": "",
+        "scope": "arg-type"
+      },
+      {
+        "count": 10,
+        "kind": "type-ignore",
+        "path": "tests/test_runtime.py",
+        "reason": "",
+        "scope": "attr-defined"
+      },
+      {
+        "count": 1,
+        "kind": "type-ignore",
+        "path": "tests/test_search_repository.py",
+        "reason": "",
+        "scope": "comparison-overlap"
+      },
+      {
+        "count": 22,
+        "kind": "type-ignore",
+        "path": "tests/test_worker.py",
+        "reason": "",
+        "scope": "arg-type"
+      }
+    ],
+    "initialMaximum": 74,
+    "integrationRefresh": {
+      "addedGrandfathered": [],
+      "maximumAfter": null,
+      "reviewRequirement": "ONE-TIME INTEGRATION ONLY: verify every added grandfather member already existed on an incoming integration tip. Never use this refresh for a newly introduced suppression.",
+      "used": false
+    },
+    "requirement": "The reason requirement binds all new suppressions; pre-existing entries are a pinned exception set that can only shrink. No semantic laundering."
+  },
   "moduleNames": [
     "coordinator.main",
     "dataset.main",
