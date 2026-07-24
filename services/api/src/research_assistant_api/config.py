@@ -179,6 +179,30 @@ class Settings(BaseSettings):
         default="demo-project",
         validation_alias="RESEARCH_WORKSPACE_PROJECT_ID",
     )
+    agent_studio_capability_provider_url: str | None = Field(
+        default=None,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_URL",
+        description=(
+            "Base URL of the provider integration's discovery HTTP surface "
+            "('GET /v1/providers', 'GET /v1/providers/{provider_id}/capabilities'), "
+            "translating the flat 'research-assistant.integration-provider.v7' wire "
+            "contract into this package's own CapabilityDescriptor/CapabilityInstance "
+            "domain types (see agent_studio.capability_discovery.HttpCapabilityDiscoverySource). "
+            "When unset, capability discovery is explicitly unavailable "
+            "(NullCapabilityDiscoverySource) rather than silently empty."
+        ),
+    )
+    agent_studio_capability_provider_token_scope: str | None = Field(
+        default=None,
+        validation_alias="RESEARCH_CAPABILITY_PROVIDER_TOKEN_SCOPE",
+        description=(
+            "OAuth scope requested via ManagedIdentityCredential when calling "
+            "agent_studio_capability_provider_url (e.g. "
+            "'https://management.azure.com/.default', matching the provider's own "
+            "ARM-audience GatewayTokenValidator). Only used when the provider URL is "
+            "also configured."
+        ),
+    )
 
     @field_validator("allowed_origins", mode="before")
     @classmethod
@@ -236,6 +260,21 @@ class Settings(BaseSettings):
             raise ValueError("Connector gateway URL must use HTTPS except for local loopback development")
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Connector gateway URL must not contain credentials, query, or fragment")
+        return value.rstrip("/")
+
+    @field_validator("agent_studio_capability_provider_url")
+    @classmethod
+    def validate_capability_provider_url(cls, value: str | None) -> str | None:
+        if not value:
+            return None
+        parsed = urlsplit(value)
+        local_http = parsed.scheme == "http" and parsed.hostname in {"127.0.0.1", "localhost"}
+        if parsed.scheme != "https" and not local_http:
+            raise ValueError(
+                "Capability provider URL must use HTTPS except for local loopback development"
+            )
+        if parsed.username or parsed.password or parsed.query or parsed.fragment:
+            raise ValueError("Capability provider URL must not contain credentials, query, or fragment")
         return value.rstrip("/")
 
     @model_validator(mode="after")
