@@ -32,6 +32,11 @@ from research_assistant_api.agent_studio.capability_registry import (
     seeded_test_registry,
 )
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.evaluation_runner import (
+    EvaluationRunner,
+    InMemoryEvaluationRunner,
+    UnavailableEvaluationRunner,
+)
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import InMemoryMemoryStore, MemoryService
 from research_assistant_api.agent_studio.model_discovery import (
@@ -186,6 +191,7 @@ def _build_app(
     memory_service: MemoryService | None,
     builder_service: BuilderService | None,
     audit_service: AuditService | None,
+    evaluation_runner: EvaluationRunner | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -216,6 +222,7 @@ def _build_app(
         StoreBackedReleaseAttestationPort(store) if store is not None else None
     )
     app.state.agent_studio_template_catalog = default_template_catalog()
+    app.state.agent_studio_evaluation_runner = evaluation_runner or UnavailableEvaluationRunner()
     return app
 
 
@@ -333,6 +340,43 @@ def unavailable_client(settings: Settings, registry: CapabilityRegistry) -> Iter
         memory_service=None,
         builder_service=None,
         audit_service=None,
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def evaluation_available_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+    audit_service: AuditService,
+) -> Iterator[TestClient]:
+    """A client with a real (in-memory, test-only) evaluation runner wired.
+
+    Distinct from the default ``client`` fixture, which mirrors production's
+    always-unavailable evaluation runner (see ``evaluation_runner`` module
+    docstring) -- this fixture exists only to exercise the run-creation
+    success path deterministically.
+    """
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=audit_service,
+        evaluation_runner=InMemoryEvaluationRunner(
+            lambda case_input, instructions: (f"echo: {case_input}", 1.0 if instructions else 0.5, True)
+        ),
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -1385,6 +1429,311 @@ def test_get_template_returns_404_for_unknown_id_or_version(client: TestClient) 
         headers=USER_HEADERS,
     )
     assert unknown_version.status_code == 404
+
+
+def _create_evaluation_suite(
+    client: TestClient,
+    logical_agent_id: str,
+    *,
+    headers: dict[str, str] = USER_HEADERS,
+    project_id: str = DEFAULT_PROJECT_ID,
+    name: str = "Smoke suite",
+    test_cases: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    response = client.post(
+        f"/v1/agent-studio/agents/{logical_agent_id}/evaluation-suites",
+        json=_body(
+            project_id,
+            name=name,
+            test_cases=test_cases
+            if test_cases is not None
+            else [{"id": "case-1", "name": "Case 1", "input": "What is 2+2?"}],
+        ),
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return cast("dict[str, Any]", response.json())
+
+
+def test_create_list_and_get_evaluation_suite(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-eval-suite", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(client, "agent-eval-suite")
+    assert suite["logical_agent_id"] == "agent-eval-suite"
+    assert suite["name"] == "Smoke suite"
+    assert [case["id"] for case in suite["test_cases"]] == ["case-1"]
+
+    listing = client.get(
+        "/v1/agent-studio/agents/agent-eval-suite/evaluation-suites",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert listing.status_code == 200
+    assert [item["id"] for item in listing.json()] == [suite["id"]]
+
+    fetched = client.get(
+        f"/v1/agent-studio/agents/agent-eval-suite/evaluation-suites/{suite['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == suite
+
+    # Wrong logical_agent_id in the path -- same store record, different
+    # agent segment -- must 404 rather than leak the suite.
+    wrong_agent = client.get(
+        f"/v1/agent-studio/agents/agent-does-not-exist/evaluation-suites/{suite['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert wrong_agent.status_code == 404
+
+    unknown_suite = client.get(
+        "/v1/agent-studio/agents/agent-eval-suite/evaluation-suites/missing-suite",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert unknown_suite.status_code == 404
+
+    other_agent_listing = client.get(
+        "/v1/agent-studio/agents/agent-does-not-exist/evaluation-suites",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert other_agent_listing.status_code == 200
+    assert other_agent_listing.json() == []
+
+
+def test_get_evaluation_suite_is_not_found_cross_project(
+    client: TestClient, store: AgentStudioStore
+) -> None:
+    _create_agent(
+        client, logical_agent_id="agent-eval-cross-scope", headers=MULTI_PROJECT_USER_HEADERS
+    )
+    _grant_role(
+        store,
+        logical_agent_id="agent-eval-cross-scope",
+        principal_id="user-1",
+        role=AgentRole.OWNER,
+    )
+    suite = _create_evaluation_suite(
+        client, "agent-eval-cross-scope", headers=MULTI_PROJECT_USER_HEADERS
+    )
+
+    cross_project = client.get(
+        f"/v1/agent-studio/agents/agent-eval-cross-scope/evaluation-suites/{suite['id']}",
+        params=_params(OTHER_PROJECT_ID),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project.status_code == 404
+
+
+def test_create_evaluation_suite_requires_contributor_role(client: TestClient) -> None:
+    _create_agent(client, logical_agent_id="agent-eval-guard", headers=USER_HEADERS)
+    forbidden = client.post(
+        "/v1/agent-studio/agents/agent-eval-guard/evaluation-suites",
+        json=_body(name="Blocked suite"),
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden.status_code == 403
+
+
+def test_create_evaluation_run_against_current_draft_with_in_memory_runner(
+    evaluation_available_client: TestClient,
+) -> None:
+    client = evaluation_available_client
+    _create_agent(client, logical_agent_id="agent-eval-run-draft", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(
+        client,
+        "agent-eval-run-draft",
+        test_cases=[
+            {"id": "case-1", "name": "Case 1", "input": "hello"},
+            {"id": "case-2", "name": "Case 2", "input": "world"},
+        ],
+    )
+
+    response = client.post(
+        f"/v1/agent-studio/agents/agent-eval-run-draft/evaluation-suites/{suite['id']}/runs",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["suite_id"] == suite["id"]
+    assert run["logical_agent_id"] == "agent-eval-run-draft"
+    assert run["version_id"] is None
+    assert run["status"] == "completed"
+    assert run["advisory"] is True
+    assert [result["test_case_id"] for result in run["results"]] == ["case-1", "case-2"]
+    assert run["completed_at"] is not None
+
+
+def test_create_evaluation_run_against_pinned_version(evaluation_available_client: TestClient) -> None:
+    client = evaluation_available_client
+    _create_agent(client, logical_agent_id="agent-eval-run-version", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(client, "agent-eval-run-version")
+    version = _cut_version(client, "agent-eval-run-version")
+
+    response = client.post(
+        f"/v1/agent-studio/agents/agent-eval-run-version/evaluation-suites/{suite['id']}/runs",
+        json=_body(version_id=version["id"]),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 201, response.text
+    run = response.json()
+    assert run["version_id"] == version["id"]
+    assert run["status"] == "completed"
+
+
+def test_create_evaluation_run_is_unavailable_without_a_wired_runner(client: TestClient) -> None:
+    """The default ``client`` fixture mirrors production: no evaluation
+    execution adapter is wired. Triggering a run must fail honestly (503)
+    and never persist a fabricated run record."""
+    _create_agent(client, logical_agent_id="agent-eval-run-unavailable", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(client, "agent-eval-run-unavailable")
+
+    response = client.post(
+        f"/v1/agent-studio/agents/agent-eval-run-unavailable/evaluation-suites/{suite['id']}/runs",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+    history = client.get(
+        "/v1/agent-studio/agents/agent-eval-run-unavailable/evaluation-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert history.status_code == 200
+    assert history.json() == []
+
+
+def test_create_evaluation_run_requires_contributor_role(evaluation_available_client: TestClient) -> None:
+    client = evaluation_available_client
+    _create_agent(client, logical_agent_id="agent-eval-run-guard", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(client, "agent-eval-run-guard")
+
+    forbidden = client.post(
+        f"/v1/agent-studio/agents/agent-eval-run-guard/evaluation-suites/{suite['id']}/runs",
+        json=_body(),
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden.status_code == 403
+
+
+def test_create_evaluation_run_returns_404_for_missing_suite_version_or_agent(
+    evaluation_available_client: TestClient,
+) -> None:
+    client = evaluation_available_client
+    _create_agent(client, logical_agent_id="agent-eval-run-missing", headers=USER_HEADERS)
+    suite = _create_evaluation_suite(client, "agent-eval-run-missing")
+
+    missing_suite = client.post(
+        "/v1/agent-studio/agents/agent-eval-run-missing/evaluation-suites/missing-suite/runs",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert missing_suite.status_code == 404
+
+    missing_version = client.post(
+        f"/v1/agent-studio/agents/agent-eval-run-missing/evaluation-suites/{suite['id']}/runs",
+        json=_body(version_id="version-does-not-exist"),
+        headers=USER_HEADERS,
+    )
+    assert missing_version.status_code == 404
+
+    # The actor holds no role on a logical_agent_id that never existed, so
+    # the role gate (checked before suite/draft lookups) rejects with 403
+    # rather than leaking existence via 404 -- matches other CONTRIBUTOR+
+    # gated write endpoints in this router.
+    missing_agent = client.post(
+        f"/v1/agent-studio/agents/agent-does-not-exist/evaluation-suites/{suite['id']}/runs",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert missing_agent.status_code == 403
+
+
+def test_create_evaluation_run_returns_404_when_draft_is_missing_for_authorized_role(
+    evaluation_available_client: TestClient, store: AgentStudioStore
+) -> None:
+    """The actor can hold a CONTRIBUTOR+ role on a logical_agent_id that has
+    no draft/agent record at all (e.g. granted defensively ahead of agent
+    creation); the run-creation draft lookup must still 404 rather than
+    dereference a missing draft."""
+    client = evaluation_available_client
+    _grant_role(
+        store,
+        logical_agent_id="agent-eval-no-draft",
+        principal_id="user-1",
+        role=AgentRole.OWNER,
+    )
+    suite = _create_evaluation_suite(client, "agent-eval-no-draft")
+
+    response = client.post(
+        f"/v1/agent-studio/agents/agent-eval-no-draft/evaluation-suites/{suite['id']}/runs",
+        json=_body(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_list_and_get_evaluation_runs_scoped_and_filtered_by_suite(
+    evaluation_available_client: TestClient,
+) -> None:
+    client = evaluation_available_client
+    _create_agent(client, logical_agent_id="agent-eval-history", headers=USER_HEADERS)
+    suite_a = _create_evaluation_suite(client, "agent-eval-history", name="Suite A")
+    suite_b = _create_evaluation_suite(client, "agent-eval-history", name="Suite B")
+
+    def _trigger(suite_id: str) -> dict[str, Any]:
+        response = client.post(
+            f"/v1/agent-studio/agents/agent-eval-history/evaluation-suites/{suite_id}/runs",
+            json=_body(),
+            headers=USER_HEADERS,
+        )
+        assert response.status_code == 201, response.text
+        return cast("dict[str, Any]", response.json())
+
+    run_a = _trigger(suite_a["id"])
+    run_b = _trigger(suite_b["id"])
+
+    all_runs = client.get(
+        "/v1/agent-studio/agents/agent-eval-history/evaluation-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert all_runs.status_code == 200
+    assert {item["id"] for item in all_runs.json()} == {run_a["id"], run_b["id"]}
+
+    filtered = client.get(
+        "/v1/agent-studio/agents/agent-eval-history/evaluation-runs",
+        params=_params(suite_id=suite_a["id"]),
+        headers=USER_HEADERS,
+    )
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()] == [run_a["id"]]
+
+    fetched = client.get(
+        f"/v1/agent-studio/agents/agent-eval-history/evaluation-runs/{run_a['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == run_a
+
+    wrong_agent = client.get(
+        f"/v1/agent-studio/agents/agent-does-not-exist/evaluation-runs/{run_a['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert wrong_agent.status_code == 404
+
+    unknown_run = client.get(
+        "/v1/agent-studio/agents/agent-eval-history/evaluation-runs/missing-run",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert unknown_run.status_code == 404
 
 
 def test_draft_routes_cover_get_update_and_missing_paths(

@@ -22,6 +22,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityDescriptor,
     CapabilityInstance,
     DeploymentEnvironment,
+    EvaluationTestCase,
     HealthStatus,
     MemoryScopeKind,
     ToolRegistrationKind,
@@ -257,6 +258,31 @@ class RegisterToolRequest(BaseModel):
     operation: str = Field(min_length=1, max_length=120)
     kind: ToolRegistrationKind
     handler_ref: str = Field(min_length=1, max_length=500)
+
+
+class CreateEvaluationSuiteRequest(BaseModel):
+    """Request body to create a new named ``EvaluationSuite`` for an agent."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=4000)
+    test_cases: tuple[EvaluationTestCase, ...] = Field(default_factory=tuple)
+
+
+class CreateEvaluationRunRequest(BaseModel):
+    """Request body to trigger one advisory evaluation run of a suite.
+
+    ``version_id`` pins an exact, immutable ``AgentVersion``; omitted, the
+    run targets the agent's current draft. Never a request to *modify* the
+    suite or the target -- purely which fixed content to run and score.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    version_id: str | None = None
 
 
 class BuilderMessageRequest(BaseModel):

@@ -54,6 +54,7 @@ from research_assistant_api.agent_studio.deployment_service import (
     DeploymentService,
     DeploymentServiceError,
 )
+from research_assistant_api.agent_studio.evaluation_runner import EvaluationRunner, EvaluationRunnerError
 from research_assistant_api.agent_studio.idempotency import (
     IdempotencyPort,
     IdempotencyResultMismatchError,
@@ -87,6 +88,9 @@ from research_assistant_api.agent_studio.models import (
     CapabilityInstance,
     DeploymentEnvironment,
     DeploymentRecord,
+    EvaluationRun,
+    EvaluationRunStatus,
+    EvaluationSuite,
     IdempotencyClaim,
     IdempotencyKey,
     IdempotencyRecord,
@@ -102,6 +106,7 @@ from research_assistant_api.agent_studio.models import (
     TemplateReadiness,
     ToolRegistrationSpec,
     role_at_least,
+    utc_now,
 )
 from research_assistant_api.agent_studio.release_attestation import (
     ReleaseAttestationOutcome,
@@ -129,6 +134,8 @@ from research_assistant_api.agent_studio.schemas import (
     ConsumeCapabilityApprovalRequest,
     CorrectMemoryRequest,
     CreateAgentRequest,
+    CreateEvaluationRunRequest,
+    CreateEvaluationSuiteRequest,
     DeployRequest,
     EscalationRequest,
     FailIdempotencyRequest,
@@ -207,6 +214,10 @@ def _model_discovery(request: Request) -> ModelDiscovery:
 
 def _template_catalog(request: Request) -> TemplateCatalog:
     return cast(TemplateCatalog, request.app.state.agent_studio_template_catalog)
+
+
+def _evaluation_runner(request: Request) -> EvaluationRunner:
+    return cast(EvaluationRunner, request.app.state.agent_studio_evaluation_runner)
 
 
 def _memory_service(request: Request) -> MemoryService:
@@ -743,6 +754,145 @@ def get_template(request: Request, template_id: str, version: str | None = None)
     if template is None:
         raise _not_found(f"Template {template_id!r} (version={version!r}) was not found.")
     return template
+
+
+@router.post(
+    "/agents/{logical_agent_id}/evaluation-suites",
+    response_model=EvaluationSuite,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_evaluation_suite(
+    request: Request, logical_agent_id: str, payload: CreateEvaluationSuiteRequest
+) -> EvaluationSuite:
+    """Create a durable, reusable advisory ``EvaluationSuite`` for an agent.
+
+    Requires ``CONTRIBUTOR`` or above -- a pure ``VIEWER`` may inspect
+    suites/runs but not author new ones. Never gates a release: see
+    ``EvaluationSuite``/``EvaluationRun`` docstrings.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    if not role_at_least(role, AgentRole.CONTRIBUTOR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role.value}' does not meet the minimum 'contributor'.",
+        )
+    suite = EvaluationSuite(
+        id=str(uuid4()),
+        logical_agent_id=logical_agent_id,
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        name=payload.name,
+        description=payload.description,
+        test_cases=payload.test_cases,
+        created_by=identity.user_id,
+    )
+    return _store(request).create_evaluation_suite(scope, suite)
+
+
+@router.get("/agents/{logical_agent_id}/evaluation-suites", response_model=list[EvaluationSuite])
+def list_evaluation_suites(request: Request, logical_agent_id: str, project_id: str) -> list[EvaluationSuite]:
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    return list(_store(request).list_evaluation_suites(scope, logical_agent_id))
+
+
+@router.get("/agents/{logical_agent_id}/evaluation-suites/{suite_id}", response_model=EvaluationSuite)
+def get_evaluation_suite(
+    request: Request, logical_agent_id: str, suite_id: str, project_id: str
+) -> EvaluationSuite:
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    suite = _store(request).get_evaluation_suite(scope, suite_id)
+    if suite is None or suite.logical_agent_id != logical_agent_id:
+        raise _not_found(f"Evaluation suite '{suite_id}' was not found.")
+    return suite
+
+
+@router.post(
+    "/agents/{logical_agent_id}/evaluation-suites/{suite_id}/runs",
+    response_model=EvaluationRun,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_evaluation_run(
+    request: Request,
+    logical_agent_id: str,
+    suite_id: str,
+    payload: CreateEvaluationRunRequest,
+) -> EvaluationRun:
+    """Trigger one advisory evaluation run of ``suite_id`` against either the
+    agent's current draft (``version_id`` omitted) or one exact, immutable
+    ``AgentVersion`` (``version_id`` set).
+
+    Honestly fails with 503 when no evaluation execution adapter is wired
+    (see ``evaluation_runner.UnavailableEvaluationRunner``) rather than
+    persisting or returning a fabricated ``COMPLETED`` run -- no run record
+    is created at all in that case, since there is nothing genuine to
+    record. Requires ``CONTRIBUTOR`` or above, matching suite creation.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    if not role_at_least(role, AgentRole.CONTRIBUTOR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role.value}' does not meet the minimum 'contributor'.",
+        )
+    store = _store(request)
+    suite = store.get_evaluation_suite(scope, suite_id)
+    if suite is None or suite.logical_agent_id != logical_agent_id:
+        raise _not_found(f"Evaluation suite '{suite_id}' was not found.")
+    if payload.version_id is not None:
+        version = store.get_version(scope, payload.version_id)
+        if version is None or version.logical_agent_id != logical_agent_id:
+            raise _not_found(f"Version '{payload.version_id}' was not found.")
+        instructions = version.manifest.instructions
+    else:
+        draft = store.get_draft(scope, logical_agent_id)
+        if draft is None:
+            raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+        instructions = draft.manifest.instructions
+    try:
+        results = _evaluation_runner(request).run_suite(suite, instructions=instructions)
+    except EvaluationRunnerError as exc:
+        raise _unavailable(str(exc)) from exc
+    run = EvaluationRun(
+        id=str(uuid4()),
+        suite_id=suite_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        version_id=payload.version_id,
+        status=EvaluationRunStatus.COMPLETED,
+        results=results,
+        requested_by=identity.user_id,
+        completed_at=utc_now(),
+    )
+    return store.create_evaluation_run(scope, run)
+
+
+@router.get("/agents/{logical_agent_id}/evaluation-runs", response_model=list[EvaluationRun])
+def list_evaluation_runs(
+    request: Request, logical_agent_id: str, project_id: str, suite_id: str | None = None
+) -> list[EvaluationRun]:
+    """History/trends read surface: every past run for an agent, optionally
+    filtered to one suite via ``suite_id``. Advisory only -- never consulted
+    by a release gate.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    return list(_store(request).list_evaluation_runs(scope, logical_agent_id, suite_id=suite_id))
+
+
+@router.get("/agents/{logical_agent_id}/evaluation-runs/{run_id}", response_model=EvaluationRun)
+def get_evaluation_run(request: Request, logical_agent_id: str, run_id: str, project_id: str) -> EvaluationRun:
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    run = _store(request).get_evaluation_run(scope, run_id)
+    if run is None or run.logical_agent_id != logical_agent_id:
+        raise _not_found(f"Evaluation run '{run_id}' was not found.")
+    return run
 
 
 @router.get("/agents/{logical_agent_id}/draft", response_model=AgentDraftView)

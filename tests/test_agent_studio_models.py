@@ -33,6 +33,11 @@ from research_assistant_api.agent_studio.models import (
     DeploymentEnvironment,
     DeploymentRecord,
     EvaluationRecord,
+    EvaluationRun,
+    EvaluationRunStatus,
+    EvaluationSuite,
+    EvaluationTestCase,
+    EvaluationTestResult,
     GateName,
     GateResult,
     GateStatus,
@@ -450,3 +455,48 @@ def test_release_gate_report_accepts_not_applicable_and_blocks_skipped_or_failed
         GateName.TEST,
         GateName.SECURITY,
     )
+
+
+def test_evaluation_suite_is_frozen_and_scoped_per_logical_agent() -> None:
+    suite = EvaluationSuite(
+        id="suite-1",
+        logical_agent_id="agent-1",
+        tenant_id="tenant-1",
+        project_id="project-1",
+        name="Regression suite",
+        test_cases=(EvaluationTestCase(id="case-1", name="Case 1", input="What is 2+2?"),),
+        created_by="user-1",
+    )
+    with pytest.raises(ValidationError):
+        suite.name = "mutated"  # type: ignore[misc]
+
+
+def test_evaluation_run_average_score_ignores_missing_scores_and_handles_empty_results() -> None:
+    scored_run = EvaluationRun(
+        id="run-1",
+        suite_id="suite-1",
+        logical_agent_id="agent-1",
+        tenant_id="tenant-1",
+        project_id="project-1",
+        status=EvaluationRunStatus.COMPLETED,
+        results=(
+            EvaluationTestResult(test_case_id="case-1", score=1.0, passed=True),
+            EvaluationTestResult(test_case_id="case-2", score=None, passed=None),
+            EvaluationTestResult(test_case_id="case-3", score=0.5, passed=False),
+        ),
+        requested_by="user-1",
+    )
+    assert scored_run.average_score == pytest.approx(0.75)
+    assert scored_run.advisory is True
+
+    empty_run = EvaluationRun(
+        id="run-2",
+        suite_id="suite-1",
+        logical_agent_id="agent-1",
+        tenant_id="tenant-1",
+        project_id="project-1",
+        status=EvaluationRunStatus.COMPLETED,
+        results=(),
+        requested_by="user-1",
+    )
+    assert empty_run.average_score is None

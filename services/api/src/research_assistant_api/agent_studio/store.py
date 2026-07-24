@@ -39,6 +39,8 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
+    EvaluationRun,
+    EvaluationSuite,
     IdempotencyClaim,
     IdempotencyClaimDisposition,
     IdempotencyKey,
@@ -152,6 +154,11 @@ class AgentStudioStore:
         self._tool_registrations_by_agent: dict[tuple[str, str], list[str]] = {}
         self._builder_proposals: dict[str, BuilderProposal] = {}
         self._builder_proposals_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._evaluation_suites: dict[str, EvaluationSuite] = {}
+        self._evaluation_suites_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._evaluation_runs: dict[str, EvaluationRun] = {}
+        self._evaluation_runs_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._evaluation_runs_by_suite: dict[tuple[str, str], list[str]] = {}
         self._idempotency_records: dict[tuple[str, str], IdempotencyRecord] = {}
         self._idempotency_results: dict[tuple[str, str], dict[str, Any]] = {}
         self._idempotency_lock = threading.Lock()
@@ -630,6 +637,50 @@ class AgentStudioStore:
             raise AgentStudioStoreError(f"Proposal '{proposal.id}' has already been decided.")
         self._builder_proposals[proposal.id] = proposal
         return proposal
+
+    # -- Advisory evaluations -------------------------------------------
+
+    def create_evaluation_suite(self, scope: ScopeContext, suite: EvaluationSuite) -> EvaluationSuite:
+        self._require_scope_match(scope, suite.tenant_id, suite.project_id)
+        self._evaluation_suites[suite.id] = suite
+        self._evaluation_suites_by_agent.setdefault((scope.scope_key, suite.logical_agent_id), []).append(suite.id)
+        return suite
+
+    def get_evaluation_suite(self, scope: ScopeContext, suite_id: str) -> EvaluationSuite | None:
+        suite = self._evaluation_suites.get(suite_id)
+        if suite is None or suite.tenant_id != scope.tenant_id or suite.project_id != scope.project_id:
+            return None
+        return suite
+
+    def list_evaluation_suites(self, scope: ScopeContext, logical_agent_id: str) -> tuple[EvaluationSuite, ...]:
+        ids = self._evaluation_suites_by_agent.get((scope.scope_key, logical_agent_id), [])
+        return tuple(self._evaluation_suites[suite_id] for suite_id in ids)
+
+    def create_evaluation_run(self, scope: ScopeContext, run: EvaluationRun) -> EvaluationRun:
+        self._require_scope_match(scope, run.tenant_id, run.project_id)
+        self._evaluation_runs[run.id] = run
+        self._evaluation_runs_by_agent.setdefault((scope.scope_key, run.logical_agent_id), []).append(run.id)
+        self._evaluation_runs_by_suite.setdefault((scope.scope_key, run.suite_id), []).append(run.id)
+        return run
+
+    def get_evaluation_run(self, scope: ScopeContext, run_id: str) -> EvaluationRun | None:
+        run = self._evaluation_runs.get(run_id)
+        if run is None or run.tenant_id != scope.tenant_id or run.project_id != scope.project_id:
+            return None
+        return run
+
+    def list_evaluation_runs(
+        self, scope: ScopeContext, logical_agent_id: str, *, suite_id: str | None = None
+    ) -> tuple[EvaluationRun, ...]:
+        if suite_id is not None:
+            ids = self._evaluation_runs_by_suite.get((scope.scope_key, suite_id), [])
+            return tuple(
+                self._evaluation_runs[run_id]
+                for run_id in ids
+                if self._evaluation_runs[run_id].logical_agent_id == logical_agent_id
+            )
+        ids = self._evaluation_runs_by_agent.get((scope.scope_key, logical_agent_id), [])
+        return tuple(self._evaluation_runs[run_id] for run_id in ids)
 
     # -- Durable idempotency (cross-instance-safe claim/lease/complete) ----
     #

@@ -31,6 +31,11 @@ from research_assistant_api.agent_studio.models import (
     DeploymentEnvironment,
     DeploymentHealth,
     DeploymentRecord,
+    EvaluationRun,
+    EvaluationRunStatus,
+    EvaluationSuite,
+    EvaluationTestCase,
+    EvaluationTestResult,
     GateName,
     GateResult,
     GateStatus,
@@ -371,6 +376,44 @@ def _proposal(
             requested_by=USER_ID,
         ),
         state=state,
+    )
+
+
+def _evaluation_suite(
+    *,
+    suite_id: str = "eval-suite-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    logical_agent_id: str = AGENT_ID,
+) -> EvaluationSuite:
+    return EvaluationSuite(
+        id=suite_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        name="Regression suite",
+        test_cases=(EvaluationTestCase(id="case-1", name="Case 1", input="What is 2+2?"),),
+        created_by=USER_ID,
+    )
+
+
+def _evaluation_run(
+    *,
+    run_id: str = "eval-run-1",
+    suite_id: str = "eval-suite-1",
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    logical_agent_id: str = AGENT_ID,
+) -> EvaluationRun:
+    return EvaluationRun(
+        id=run_id,
+        suite_id=suite_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        status=EvaluationRunStatus.COMPLETED,
+        results=(EvaluationTestResult(test_case_id="case-1", score=1.0, passed=True),),
+        requested_by=USER_ID,
     )
 
 
@@ -2377,6 +2420,78 @@ def test_save_builder_proposal_decision_handles_success_missing_decided_and_conf
             current.model_copy(update={"state": BuilderProposalState.APPLIED}),
         )
     container.fail_replace_status = None
+
+
+def test_evaluation_suites_create_list_get_and_scope_guards(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    first = _new_store(fake_client_factory)
+    suite = _evaluation_suite()
+    other_agent = _evaluation_suite(suite_id="eval-suite-2", logical_agent_id=OTHER_AGENT_ID)
+    assert first.create_evaluation_suite(SCOPE, suite) == suite
+    assert first.create_evaluation_suite(SCOPE, other_agent) == other_agent
+
+    reloaded = _new_store(fake_client_factory)
+    assert reloaded.list_evaluation_suites(SCOPE, AGENT_ID) == (suite,)
+    assert reloaded.list_evaluation_suites(SCOPE, AGENT_ID) == (suite,)
+    assert reloaded.list_evaluation_suites(SCOPE, OTHER_AGENT_ID) == (other_agent,)
+
+    getter = _new_store(fake_client_factory)
+    assert getter.get_evaluation_suite(SCOPE, suite.id) == suite
+    assert getter.get_evaluation_suite(SCOPE, suite.id) == suite
+    assert getter.get_evaluation_suite(SCOPE, "missing-suite") is None
+    assert getter.get_evaluation_suite(SAME_TENANT_OTHER_PROJECT_SCOPE, suite.id) is None
+    assert reloaded.list_evaluation_suites(SAME_TENANT_OTHER_PROJECT_SCOPE, AGENT_ID) == ()
+    assert getter.get_evaluation_suite(OTHER_TENANT_SAME_PROJECT_SCOPE, suite.id) is None
+    assert reloaded.list_evaluation_suites(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
+
+    container = _metadata_container(fake_client_factory)
+    mismatched = _evaluation_suite(suite_id="eval-suite-mismatch", project_id=OTHER_PROJECT)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id="evaluation_suite::eval-suite-mismatch",
+        document_type="evaluation_suite",
+        payload=mismatched.model_dump(mode="json"),
+    )
+    assert _new_store(fake_client_factory).get_evaluation_suite(SCOPE, "eval-suite-mismatch") is None
+
+
+def test_evaluation_runs_create_list_get_filter_and_scope_guards(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    first = _new_store(fake_client_factory)
+    run = _evaluation_run()
+    other_suite_run = _evaluation_run(run_id="eval-run-2", suite_id="eval-suite-2")
+    other_agent_run = _evaluation_run(
+        run_id="eval-run-3", suite_id="eval-suite-3", logical_agent_id=OTHER_AGENT_ID
+    )
+    assert first.create_evaluation_run(SCOPE, run) == run
+    assert first.create_evaluation_run(SCOPE, other_suite_run) == other_suite_run
+    assert first.create_evaluation_run(SCOPE, other_agent_run) == other_agent_run
+
+    reloaded = _new_store(fake_client_factory)
+    assert set(reloaded.list_evaluation_runs(SCOPE, AGENT_ID)) == {run, other_suite_run}
+    assert reloaded.list_evaluation_runs(SCOPE, AGENT_ID, suite_id=run.suite_id) == (run,)
+    assert reloaded.list_evaluation_runs(SCOPE, OTHER_AGENT_ID) == (other_agent_run,)
+
+    getter = _new_store(fake_client_factory)
+    assert getter.get_evaluation_run(SCOPE, run.id) == run
+    assert getter.get_evaluation_run(SCOPE, run.id) == run
+    assert getter.get_evaluation_run(SCOPE, "missing-run") is None
+    assert getter.get_evaluation_run(SAME_TENANT_OTHER_PROJECT_SCOPE, run.id) is None
+    assert reloaded.list_evaluation_runs(SAME_TENANT_OTHER_PROJECT_SCOPE, AGENT_ID) == ()
+    assert getter.get_evaluation_run(OTHER_TENANT_SAME_PROJECT_SCOPE, run.id) is None
+    assert reloaded.list_evaluation_runs(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
+
+    container = _metadata_container(fake_client_factory)
+    mismatched = _evaluation_run(run_id="eval-run-mismatch", project_id=OTHER_PROJECT)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id="evaluation_run::eval-run-mismatch",
+        document_type="evaluation_run",
+        payload=mismatched.model_dump(mode="json"),
+    )
+    assert _new_store(fake_client_factory).get_evaluation_run(SCOPE, "eval-run-mismatch") is None
 
 
 def test_build_agent_studio_store_raises_without_endpoint() -> None:

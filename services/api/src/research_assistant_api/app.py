@@ -46,6 +46,7 @@ from research_assistant_api.agent_studio.builder_service import (
 from research_assistant_api.agent_studio.capability_registry import default_registry
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.evaluation_runner import build_evaluation_runner
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import (
     MemoryService,
@@ -172,6 +173,11 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     # module docstring for why a built-in seed is legitimate here, unlike
     # the capability registry above).
     application.state.agent_studio_template_catalog = default_template_catalog()
+    # Advisory evaluation execution port. Always the explicit-unavailable
+    # adapter here -- see ``evaluation_runner`` module docstring: actual
+    # execution requires the harness-owned runtime invocation path, out of
+    # scope for this platform session.
+    application.state.agent_studio_evaluation_runner = build_evaluation_runner(settings)
     try:
         store = build_agent_studio_store(settings)
     except AgentStudioStoreError as exc:
