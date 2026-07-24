@@ -245,6 +245,32 @@ def test_is_effective_at_false_after_expiry() -> None:
     assert mapping.is_effective_at(datetime(2026, 2, 1, tzinfo=UTC)) is True
 
 
+def test_lifecycle_fault_reports_the_specific_cause() -> None:
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    assert _mapping().lifecycle_fault(now) is None
+    assert _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED).lifecycle_fault(now) == "superseded"
+    assert _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED).lifecycle_fault(now) == "retired"
+    revoked = _mapping().model_copy(update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC)})
+    assert revoked.lifecycle_fault(now) == "revoked"
+    expired = _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)})
+    assert expired.lifecycle_fault(now) == "expired"
+
+
+def test_lifecycle_fault_prioritizes_revocation_over_expiry() -> None:
+    now = datetime(2026, 6, 1, tzinfo=UTC)
+    mapping = _mapping().model_copy(
+        update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC), "expires_at": datetime(2026, 3, 1, tzinfo=UTC)}
+    )
+    assert mapping.lifecycle_fault(now) == "revoked"
+
+
+def test_created_at_is_required() -> None:
+    payload = _mapping().model_dump()
+    del payload["created_at"]
+    with pytest.raises(ValidationError):
+        RuntimeDeploymentMapping(**payload)
+
+
 def test_expiry_and_revocation_change_the_digest() -> None:
     base = _mapping().mapping_digest
     assert _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime, timedelta
+
 import pytest
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_authz import (
@@ -26,6 +28,7 @@ ISSUER = "https://login.microsoftonline.com/tenant-1/v2.0"
 AUDIENCE = "api://research-assistant-runtime"
 RUNTIME_ROLE = "research-assistant.runtime"
 CLIENT_APP_ID = "client-app-1"
+FIXED_NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _mapping(
@@ -60,6 +63,7 @@ def _mapping(
             else (AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),)
         ),
         lifecycle_state=lifecycle_state,
+        created_at=FIXED_NOW,
         created_by="release-service",
     )
 
@@ -128,6 +132,7 @@ def _authorize(
         "presented_mapping_ref": presented.mapping_ref,
         "presented_mapping_digest": presented.mapping_digest,
         "load_authorized_mapping": loader,
+        "now": FIXED_NOW,
     }
     kwargs.update(overrides)
     decision = authorize_runtime_request(**kwargs)  # type: ignore[arg-type]
@@ -180,23 +185,38 @@ def test_mapping_not_found_is_denied() -> None:
 def test_superseded_mapping_is_denied() -> None:
     mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
     decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
+    assert decision.reason is RuntimeAuthzReason.MAPPING_SUPERSEDED
 
 
-def test_expired_mapping_is_denied() -> None:
-    from datetime import UTC, datetime, timedelta
-
-    mapping = _mapping().model_copy(update={"expires_at": datetime.now(UTC) - timedelta(hours=1)})
+def test_retired_mapping_is_denied() -> None:
+    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED)
     decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
+    assert decision.reason is RuntimeAuthzReason.MAPPING_RETIRED
+
+
+def test_expired_mapping_is_denied_at_injected_now() -> None:
+    mapping = _mapping().model_copy(update={"expires_at": FIXED_NOW - timedelta(hours=1)})
+    decision, _ = _authorize(mapping)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_EXPIRED
+
+
+def test_not_yet_expired_mapping_passes_lifecycle_at_injected_now() -> None:
+    # The same mapping evaluated at an earlier injected instant is still valid,
+    # proving expiry is decided against the supplied now, not the wall clock.
+    mapping = _mapping().model_copy(update={"expires_at": FIXED_NOW + timedelta(hours=1)})
+    decision, _ = _authorize(mapping)
+    assert decision.authorized
 
 
 def test_revoked_mapping_is_denied() -> None:
-    from datetime import UTC, datetime
-
-    mapping = _mapping().model_copy(update={"revoked_at": datetime.now(UTC)})
+    mapping = _mapping().model_copy(update={"revoked_at": FIXED_NOW - timedelta(minutes=1)})
     decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
+    assert decision.reason is RuntimeAuthzReason.MAPPING_REVOKED
+
+
+def test_authorize_rejects_naive_now() -> None:
+    with pytest.raises(ValueError, match="must be timezone-aware"):
+        _authorize(_mapping(), now=datetime(2026, 6, 1, 12, 0, 0))
 
 
 def test_client_not_bound_is_uniform_not_found() -> None:
@@ -261,6 +281,7 @@ def test_enforce_returns_mapping_on_success() -> None:
         presented_mapping_ref=mapping.mapping_ref,
         presented_mapping_digest=mapping.mapping_digest,
         load_authorized_mapping=lambda _client, _dep: mapping,
+        now=FIXED_NOW,
     )
     assert returned is mapping
 
@@ -274,6 +295,7 @@ def test_enforce_raises_uniform_error_on_denial() -> None:
             presented_mapping_ref="x",
             presented_mapping_digest="y",
             load_authorized_mapping=lambda _client, _dep: _mapping(),
+            now=FIXED_NOW,
         )
     assert excinfo.value.decision.reason is RuntimeAuthzReason.MISSING_APP_ROLE
 

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi.testclient import TestClient
@@ -79,6 +80,7 @@ def _mapping(
             AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),
         ),
         lifecycle_state=lifecycle_state,
+        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="release-service",
     )
 
@@ -431,6 +433,24 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
             )
         )
     )
+    # distinct lifecycle faults (expired/revoked/superseded/retired) -- each a
+    # different internal audit reason but the SAME uniform external body.
+    past = datetime(2020, 1, 1, tzinfo=UTC)
+    for update in (
+        {"lifecycle_state": RuntimeMappingLifecycleState.SUPERSEDED},
+        {"lifecycle_state": RuntimeMappingLifecycleState.RETIRED},
+        {"revoked_at": past},
+        {"expires_at": past},
+    ):
+        faulted = _mapping().model_copy(update=update)
+        faulted_client = _client(faulted)
+        bodies.append(
+            _collect(
+                faulted_client.post(
+                    RETRIEVE_URL, json=_body(faulted), headers={"x-ms-client-principal": _principal_header()}
+                )
+            )
+        )
     assert len(set(bodies)) == 1, bodies
 
 

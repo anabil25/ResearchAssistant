@@ -166,10 +166,11 @@ def _seed(store: AgentStudioStore, **approval_overrides: object) -> None:
 
 
 def test_decision_revision_is_deterministic_and_not_version_id() -> None:
-    approved = _approval(state=ApprovalState.APPROVED)
+    decided = datetime(2026, 5, 1, tzinfo=UTC)
+    approved = _approval(state=ApprovalState.APPROVED, decided_at=decided)
     revision = compute_approval_decision_revision(approved)
     assert revision.startswith("approval-decision:v1:sha256:")
-    assert revision == compute_approval_decision_revision(_approval(state=ApprovalState.APPROVED))
+    assert revision == compute_approval_decision_revision(_approval(state=ApprovalState.APPROVED, decided_at=decided))
     # Never the pinned agent version_id.
     assert approved.version_id not in revision
 

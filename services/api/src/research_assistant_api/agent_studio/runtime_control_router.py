@@ -24,6 +24,8 @@ the existing ``approval_context``/``approval_consumption``/``idempotency``/
 
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from fastapi import FastAPI, Header, HTTPException, Request, status
 
 from research_assistant_api.agent_studio.approval_context import (
@@ -99,6 +101,7 @@ def build_runtime_control_app(
                 presented_mapping_ref=mapping_ref,
                 presented_mapping_digest=mapping_digest,
                 load_authorized_mapping=load_authorized_mapping,
+                now=datetime.now(UTC),
             )
         except RuntimeAuthorizationError as exc:
             raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=uniform_denial()) from exc

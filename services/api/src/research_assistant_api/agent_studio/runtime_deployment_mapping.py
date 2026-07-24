@@ -47,7 +47,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from research_assistant_api.agent_studio.models import DeploymentEnvironment, utc_now
+from research_assistant_api.agent_studio.models import DeploymentEnvironment
 
 
 def _require_aware_utc(value: datetime, *, field_name: str) -> datetime:
@@ -285,7 +285,13 @@ class RuntimeDeploymentMapping(BaseModel):
     #: permanently invalid authority regardless of lifecycle/expiry.
     revoked_at: datetime | None = None
 
-    created_at: datetime = Field(default_factory=utc_now)
+    #: Aware-UTC creation timestamp. REQUIRED (no default): a mapping is
+    #: authoritative content whose ``created_at`` is inside the digest, so the
+    #: control-plane must construct the object ONCE with a deterministic
+    #: timestamp and persist/retry that exact payload -- never re-materialize
+    #: per write attempt with a fresh ``utc_now()`` (which would change the
+    #: digest and make an idempotent retry look like a divergent conflict).
+    created_at: datetime
     created_by: str = Field(min_length=1, max_length=200)
 
     @field_validator("created_at", "expires_at", "revoked_at")
@@ -338,17 +344,30 @@ class RuntimeDeploymentMapping(BaseModel):
         """Deterministic content digest over every authoritative field."""
         return compute_mapping_digest(self)
 
-    def is_effective_at(self, now: datetime) -> bool:
-        """True iff the mapping is currently valid authority at ``now``.
+    def lifecycle_fault(self, now: datetime) -> str | None:
+        """The specific reason the mapping is not currently valid authority, or
+        ``None`` if it is effective at ``now``.
 
-        Requires an ``ACTIVE`` lifecycle, no revocation, and (if an expiry is
-        set) that ``now`` is at or before it. ``now`` must be aware UTC.
+        Returns exactly one distinct fault -- ``"revoked"``, ``"superseded"``,
+        ``"retired"``, or ``"expired"`` -- so authorization can record a precise
+        audit reason (revocation is a deliberate act, distinct from a lapsed
+        expiry) even though the external response stays uniform. Revocation
+        takes priority, then lifecycle state, then expiry. ``now`` must be aware
+        UTC.
         """
-        if self.lifecycle_state is not RuntimeMappingLifecycleState.ACTIVE:
-            return False
         if self.revoked_at is not None:
-            return False
-        return not (self.expires_at is not None and now > self.expires_at)
+            return "revoked"
+        if self.lifecycle_state is RuntimeMappingLifecycleState.SUPERSEDED:
+            return "superseded"
+        if self.lifecycle_state is RuntimeMappingLifecycleState.RETIRED:
+            return "retired"
+        if self.expires_at is not None and now > self.expires_at:
+            return "expired"
+        return None
+
+    def is_effective_at(self, now: datetime) -> bool:
+        """True iff the mapping is currently valid authority at ``now`` (aware UTC)."""
+        return self.lifecycle_fault(now) is None
 
 
 def compute_mapping_digest(mapping: RuntimeDeploymentMapping) -> str:

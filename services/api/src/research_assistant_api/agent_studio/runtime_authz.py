@@ -38,7 +38,7 @@ from __future__ import annotations
 
 import hmac
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
 
 from research_assistant_api.agent_studio.runtime_client_binding import AuthorizedMappingLoader
@@ -57,10 +57,22 @@ class RuntimeAuthzReason(StrEnum):
     AUDIENCE_MISMATCH = "audience_mismatch"
     MISSING_APP_ROLE = "missing_app_role"
     MAPPING_NOT_FOUND = "mapping_not_found"
-    MAPPING_NOT_ACTIVE = "mapping_not_active"
+    MAPPING_EXPIRED = "mapping_expired"
+    MAPPING_REVOKED = "mapping_revoked"
+    MAPPING_SUPERSEDED = "mapping_superseded"
+    MAPPING_RETIRED = "mapping_retired"
     CLIENT_NOT_ALLOWED = "client_not_allowed"
     MAPPING_REF_MISMATCH = "mapping_ref_mismatch"
     MAPPING_DIGEST_MISMATCH = "mapping_digest_mismatch"
+
+
+#: Map a mapping ``lifecycle_fault`` string to its distinct audit reason.
+_LIFECYCLE_FAULT_REASONS = {
+    "revoked": RuntimeAuthzReason.MAPPING_REVOKED,
+    "superseded": RuntimeAuthzReason.MAPPING_SUPERSEDED,
+    "retired": RuntimeAuthzReason.MAPPING_RETIRED,
+    "expired": RuntimeAuthzReason.MAPPING_EXPIRED,
+}
 
 
 @dataclass(frozen=True, slots=True)
@@ -131,8 +143,14 @@ def authorize_runtime_request(
     presented_mapping_ref: str,
     presented_mapping_digest: str,
     load_authorized_mapping: AuthorizedMappingLoader,
+    now: datetime,
 ) -> RuntimeAuthzDecision:
     """Resolve the runtime authorization order for a single request.
+
+    ``now`` (required, aware UTC) is the instant the lifecycle/expiry decision
+    is evaluated against; it is supplied by the composition root, never read
+    from the wall clock inside this function, so expiry/revocation are
+    deterministic and testable at a chosen instant.
 
     ``load_authorized_mapping`` is invoked only after issuer/audience/role pass,
     and it is responsible for authorizing the authenticated client's binding to
@@ -144,6 +162,9 @@ def authorize_runtime_request(
     deployment ids. All ref/digest comparisons are constant-time.
     """
 
+    if now.tzinfo is None:
+        raise ValueError("now must be timezone-aware (UTC).")
+
     if principal.issuer != policy.expected_issuer:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.ISSUER_MISMATCH)
     if policy.expected_audience not in principal.audiences:
@@ -154,8 +175,9 @@ def authorize_runtime_request(
     mapping = load_authorized_mapping(principal.client_app_id, presented_deployment_id)
     if mapping is None:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_FOUND)
-    if not mapping.is_effective_at(datetime.now(UTC)):
-        return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_ACTIVE)
+    fault = mapping.lifecycle_fault(now)
+    if fault is not None:
+        return RuntimeAuthzDecision(reason=_LIFECYCLE_FAULT_REASONS[fault])
 
     if not _client_is_allowlisted(principal, mapping):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.CLIENT_NOT_ALLOWED)
@@ -193,11 +215,13 @@ def enforce_runtime_authorization(
     presented_mapping_ref: str,
     presented_mapping_digest: str,
     load_authorized_mapping: AuthorizedMappingLoader,
+    now: datetime,
 ) -> RuntimeDeploymentMapping:
     """Fail-closed wrapper: return the authorized mapping or raise.
 
     Raises ``RuntimeAuthorizationError`` (which a router renders as the single
-    uniform forbidden/not-found response) on any non-authorized outcome.
+    uniform forbidden/not-found response) on any non-authorized outcome. ``now``
+    (aware UTC) is passed through for the deterministic lifecycle/expiry check.
     """
 
     decision = authorize_runtime_request(
@@ -207,6 +231,7 @@ def enforce_runtime_authorization(
         presented_mapping_ref=presented_mapping_ref,
         presented_mapping_digest=presented_mapping_digest,
         load_authorized_mapping=load_authorized_mapping,
+        now=now,
     )
     if decision.authorized and decision.mapping is not None:
         return decision.mapping

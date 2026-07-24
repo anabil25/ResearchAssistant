@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_client_binding import (
     AuthorizedMappingLoader,
@@ -43,6 +45,7 @@ def _mapping(*, deployment_id: str = "dep-1") -> RuntimeDeploymentMapping:
         allowed_client_app_role_bindings=(
             AllowedClientAppRoleBinding(client_app_id=CLIENT, app_role="research-assistant.runtime"),
         ),
+        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="release-service",
     )
 
