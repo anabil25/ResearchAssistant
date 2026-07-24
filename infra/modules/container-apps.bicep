@@ -37,6 +37,54 @@ param connectorGatewayUrl string
 param connectorGatewayTokenScope string
 param warmReplicaCount int = 1
 
+@description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
+param entraTenantId string = ''
+
+@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. This registration is not created by this template -- see the module header comment.')
+param entraApiClientId string = ''
+
+@description('Enable Azure Container Apps built-in authentication (EasyAuth), enforcing a valid Entra ID bearer token on every ingress request to the api container app before it is invoked. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId. The api container always reports the true value of this flag to itself via RESEARCH_ENTRA_AUTH_ENFORCED, rather than assuming enforcement is active on faith.')
+param enableEntraAuth bool = false
+
+@description('Key Vault URI (e.g. https://<vault>.vault.azure.net/) from which the api container sources the attestation signing key/version as Container Apps Key-Vault-backed secrets. Required when attestationSigningSecretsProvisioned is true.')
+param attestationKeyVaultUri string = ''
+
+@description('Whether an operator has already populated the attestation signing key secret versions in the Key Vault referenced by attestationKeyVaultUri (an explicit out-of-band step -- see modules/keyvault.bicep). When false (default) the api container runs without a signing key, and research_assistant_api.config\'s fail-closed startup validator refuses to boot with the unsigned sha256-digest fallback outside its known-safe local/dev/test environments.')
+param attestationSigningSecretsProvisioned bool = false
+
+// Container Apps Key-Vault-backed secret references for the attestation
+// signing key/version, only emitted once an operator has confirmed (via
+// attestationSigningSecretsProvisioned) that real secret values exist at
+// these Key Vault secret names -- otherwise the api container app would be
+// pinned to a non-existent secret version and fail to start.
+var attestationSecretRefs = attestationSigningSecretsProvisioned
+  ? [
+      {
+        name: 'agent-studio-attestation-signing-key'
+        keyVaultUrl: '${attestationKeyVaultUri}secrets/agent-studio-attestation-signing-key'
+        identity: apiIdentityResourceId
+      }
+      {
+        name: 'agent-studio-attestation-signing-key-version'
+        keyVaultUrl: '${attestationKeyVaultUri}secrets/agent-studio-attestation-signing-key-version'
+        identity: apiIdentityResourceId
+      }
+    ]
+  : []
+
+var attestationEnvVars = attestationSigningSecretsProvisioned
+  ? [
+      {
+        name: 'AGENT_STUDIO_ATTESTATION_SIGNING_KEY'
+        secretRef: 'agent-studio-attestation-signing-key'
+      }
+      {
+        name: 'AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION'
+        secretRef: 'agent-studio-attestation-signing-key-version'
+      }
+    ]
+  : []
+
 var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -188,6 +236,7 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      secrets: attestationSecretRefs
       ingress: {
         allowInsecure: false
         external: false
@@ -206,10 +255,11 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
         {
           name: 'api'
           image: placeholderImage
-          env: [
-            {
-              name: 'RESEARCH_ENVIRONMENT'
-              value: '${name}-azure'
+          env: concat(
+            [
+              {
+                name: 'RESEARCH_ENVIRONMENT'
+                value: '${name}-azure'
             }
             {
               name: 'RESEARCH_EXECUTION_MODE'
@@ -315,7 +365,13 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               name: 'OTEL_SERVICE_NAME'
               value: 'research-assistant-api'
             }
-          ]
+            {
+              name: 'RESEARCH_ENTRA_AUTH_ENFORCED'
+              value: string(enableEntraAuth)
+            }
+            ],
+            attestationEnvVars
+          )
           probes: [
             {
               type: 'Startup'
@@ -366,6 +422,44 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
             }
           }
         ]
+      }
+    }
+  }
+}
+
+// Azure Container Apps built-in authentication (EasyAuth). When enabled,
+// this validates the Entra ID bearer token (audience/issuer/signature) on
+// every ingress request to the api container app *before* the request
+// reaches the container, and injects the `x-ms-client-principal` header
+// that `research_assistant_api.identity.resolve_identity` trusts -- see
+// that module's docstring and `config.Settings.entra_auth_enforced` for the
+// corresponding app-level trust boundary and fail-closed startup guard.
+// Gated behind enableEntraAuth (default false) because it requires an
+// operator to have first created the Entra App Registration referenced by
+// entraApiClientId -- an out-of-band step this template does not perform.
+resource apiAuthConfig 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (enableEntraAuth) {
+  parent: api
+  name: 'current'
+  properties: {
+    platform: {
+      enabled: true
+    }
+    globalValidation: {
+      unauthenticatedClientAction: 'Return401'
+    }
+    identityProviders: {
+      azureActiveDirectory: {
+        enabled: true
+        registration: {
+          openIdIssuer: '${az.environment().authentication.loginEndpoint}${entraTenantId}/v2.0'
+          clientId: entraApiClientId
+        }
+        validation: {
+          allowedAudiences: [
+            'api://${entraApiClientId}'
+            entraApiClientId
+          ]
+        }
       }
     }
   }

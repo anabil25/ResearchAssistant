@@ -72,6 +72,21 @@ param apimPublisherName string = 'Research Assistant Accelerator'
 @description('Publisher contact email for API Management.')
 param apimPublisherEmail string = 'noreply@example.invalid'
 
+@description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
+param entraTenantId string = ''
+
+@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. Not created by this template.')
+param entraApiClientId string = ''
+
+@description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId.')
+param enableEntraAuth bool = false
+
+@description('Provision a Key Vault so an operator can deliver the Agent Studio ReleaseAttestation signing key to the api container app via Container Apps secrets.')
+param includeAttestationKeyVault bool = false
+
+@description('Whether an operator has already populated the attestation signing key secret versions in the provisioned Key Vault (an explicit out-of-band step). Only takes effect when includeAttestationKeyVault is true.')
+param attestationSigningSecretsProvisioned bool = false
+
 // Resources
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' = {
@@ -95,6 +110,11 @@ module resources 'modules/resources.bicep' = {
     principalType: principalType
     apimPublisherName: apimPublisherName
     apimPublisherEmail: apimPublisherEmail
+    entraTenantId: entraTenantId
+    entraApiClientId: entraApiClientId
+    enableEntraAuth: enableEntraAuth
+    includeAttestationKeyVault: includeAttestationKeyVault
+    attestationSigningSecretsProvisioned: attestationSigningSecretsProvisioned
   }
 }
 
@@ -135,6 +155,8 @@ output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = resources.outputs.AZ
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = resources.outputs.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
 output AZURE_DURABLE_TASK_ENDPOINT string = resources.outputs.AZURE_DURABLE_TASK_ENDPOINT
 output AZURE_DURABLE_TASK_HUB string = resources.outputs.AZURE_DURABLE_TASK_HUB
+output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI string = resources.outputs.AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI
+output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME string = resources.outputs.AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME
 output WEB_URL string = resources.outputs.WEB_URL
 output API_URL string = resources.outputs.API_URL
 output SERVICE_API_NAME string = resources.outputs.API_NAME

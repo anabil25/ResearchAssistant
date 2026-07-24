@@ -34,6 +34,27 @@ DEMO_IDENTITY_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "tes
 #: controls can never accidentally share, or be coupled through, one name.
 ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
+#: Environment names (case-insensitive, whitespace-trimmed) in which
+#: ``Settings.trust_platform_identity_headers`` may be enabled without a
+#: confirmed ``entra_auth_enforced=True``. ``resolve_identity`` trusts the
+#: platform-injected ``x-ms-client-principal`` header outright -- by design,
+#: because Azure Container Apps' built-in authentication (EasyAuth /
+#: ``authConfigs``) is meant to have already validated the incoming
+#: ``Authorization`` bearer token and rejected unauthenticated requests
+#: before this process ever sees them; this process deliberately does not
+#: re-parse the bearer token itself. That trust is only sound once
+#: Container Apps ``authConfigs`` is actually deployed and enforcing.
+#: ``entra_auth_enforced`` is populated from the infra-controlled
+#: ``RESEARCH_ENTRA_AUTH_ENFORCED`` env var (set by
+#: ``infra/modules/container-apps.bicep``'s ``enableEntraAuth`` parameter),
+#: letting the running app self-report whether that infra boundary is
+#: really active rather than assuming it on faith. This is a deliberately
+#: independent constant from ``DEMO_IDENTITY_SAFE_ENVIRONMENTS`` /
+#: ``ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS`` (even though the values
+#: currently match) so the three unrelated security controls can never
+#: accidentally share, or be coupled through, one name.
+ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -170,6 +191,23 @@ class Settings(BaseSettings):
     trust_platform_identity_headers: bool = Field(
         default=False,
         validation_alias="RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS",
+    )
+    entra_auth_enforced: bool = Field(
+        default=False,
+        validation_alias="RESEARCH_ENTRA_AUTH_ENFORCED",
+        description=(
+            "Self-reported confirmation that Azure Container Apps built-in "
+            "authentication (EasyAuth / authConfigs) is actually deployed and "
+            "enforcing Entra ID bearer tokens ahead of this process. Set from the "
+            "infra-controlled RESEARCH_ENTRA_AUTH_ENFORCED env var (see "
+            "infra/modules/container-apps.bicep's enableEntraAuth parameter), never "
+            "asserted by this process itself. resolve_identity's trust of the "
+            "platform-injected x-ms-client-principal header (gated on "
+            "trust_platform_identity_headers) is only sound when this is true; "
+            "outside ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS, enabling "
+            "trust_platform_identity_headers without this confirmed is refused at "
+            "startup -- see _forbid_unenforced_platform_identity_trust_outside_safe_environments."
+        ),
     )
     workspace_tenant_id: str = Field(
         default="demo",
@@ -336,6 +374,46 @@ class Settings(BaseSettings):
                 f"environment={self.environment!r}."
             )
         return self
+
+    @model_validator(mode="after")
+    def _forbid_unenforced_platform_identity_trust_outside_safe_environments(self) -> Settings:
+        """Fail closed at startup, not at request time.
+
+        ``trust_platform_identity_headers=True`` tells
+        ``identity.resolve_identity`` to trust the platform-injected
+        ``x-ms-client-principal`` header outright, without independently
+        re-parsing or validating the incoming ``Authorization`` bearer token
+        itself -- by design, because Azure Container Apps' built-in
+        authentication (EasyAuth / ``authConfigs``) is meant to have already
+        validated that token and rejected unauthenticated requests before
+        this process ever sees them. That design is only sound once
+        Container Apps ``authConfigs`` is actually deployed and enforcing; if
+        it is not (e.g. missing infra wiring, or the deployment is reachable
+        by a path that bypasses it), a forged ``x-ms-client-principal``
+        header would be trusted as if it were a real Entra identity.
+        ``entra_auth_enforced`` lets the running app self-report whether that
+        infra-level enforcement is really active, sourced from the
+        infra-controlled ``RESEARCH_ENTRA_AUTH_ENFORCED`` env var rather than
+        asserted by this process itself. Refuse to construct ``Settings`` at
+        all when platform identity headers are trusted but Entra enforcement
+        is not confirmed and ``environment`` is not one of the known-safe
+        local/dev/test names -- the same fail-closed shape as the
+        demo-identity and attestation-signing-key guards above.
+        """
+        if (
+            self.trust_platform_identity_headers
+            and not self.entra_auth_enforced
+            and self.environment.strip().lower() not in ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS
+        ):
+            raise ValueError(
+                "RESEARCH_ENTRA_AUTH_ENFORCED must be true whenever "
+                "RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS is enabled outside of "
+                f"{sorted(ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS)} environments; refusing to "
+                "start with an unconfirmed Container Apps authConfigs boundary and "
+                f"environment={self.environment!r}."
+            )
+        return self
+
 
 @lru_cache
 def get_settings() -> Settings:

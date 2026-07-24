@@ -124,7 +124,23 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
 
     assert "searchLocation" not in parameters["parameters"]
     assert "-v2" not in container_apps
-    assert "keyVault" not in resources
+    # ``resources.bicep`` intentionally re-introduces a Key Vault module, but
+    # only as an explicit, RBAC-authorized, opt-in delivery mechanism for the
+    # Agent Studio release-attestation signing key (see
+    # ``tests/test_apim_infrastructure.py::
+    # test_resources_module_wires_key_vault_and_threads_entra_params_through``
+    # and ``infra/modules/keyvault.bicep``). Guard against a regression back
+    # to an unconditional/default template Key Vault by requiring exactly one
+    # module declaration, gated on ``includeAttestationKeyVault`` (default
+    # false), with every other reference limited to that same symbol's
+    # conditional outputs.
+    assert resources.count("module keyVault ") == 1
+    assert "module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault)" in resources
+    assert all(
+        "keyVault!.outputs." in line or "module keyVault " in line
+        for line in resources.splitlines()
+        if "keyVault" in line
+    )
 
 
 def test_accelerator_private_data_and_ci_principal_contracts() -> None:

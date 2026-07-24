@@ -84,6 +84,29 @@ def _has_group_overage(payload: dict[str, Any]) -> bool:
 
 
 def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
+    """Resolve the caller's identity from platform-injected or demo signals.
+
+    ``trust_platform_identity_headers`` gates trusting the
+    ``x-ms-client-principal`` header that Azure Container Apps' built-in
+    authentication (EasyAuth / ``Microsoft.App/containerApps/authConfigs``)
+    injects *after* it has independently validated the incoming
+    ``Authorization`` bearer token (audience/issuer/signature) and rejected
+    unauthenticated requests. This function deliberately does not re-parse
+    or validate the ``Authorization`` header itself -- that is the whole
+    point of relying on the platform's built-in authentication rather than
+    duplicating JWT/JWKS validation here.
+
+    That trust is only sound once Container Apps ``authConfigs`` is
+    actually deployed and enforcing (see
+    ``infra/modules/container-apps.bicep``'s ``enableEntraAuth`` parameter
+    and the ``authConfigs`` child resource it emits). ``Settings`` fails
+    closed at startup (``config._forbid_unenforced_platform_identity_trust_outside_safe_environments``)
+    when ``trust_platform_identity_headers`` is enabled without a
+    self-reported ``entra_auth_enforced=True`` outside known-safe
+    local/dev/test environments, so a deployment cannot silently trust a
+    forged ``x-ms-client-principal`` header in production because the infra
+    wiring was forgotten.
+    """
     encoded = request.headers.get("x-ms-client-principal")
     if settings.trust_platform_identity_headers and encoded and (payload := _decode_client_principal(encoded)):
         claims = _claim_values(payload)

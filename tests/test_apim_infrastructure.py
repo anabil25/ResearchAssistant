@@ -128,3 +128,113 @@ def test_api_container_never_enables_demo_identity_and_has_unsafe_environment_va
     # could make the deployed ``RESEARCH_ENVIRONMENT`` collide with a safe
     # environment even if ``allow_demo_identity`` were forcibly overridden.
     assert not any(safe_name.endswith("-azure") for safe_name in DEMO_IDENTITY_SAFE_ENVIRONMENTS)
+
+
+# --- Harness integration blocker #2: MI authentication composition ---------
+
+
+def test_container_apps_declares_conditional_entra_auth_config_and_reports_it() -> None:
+    """Covers the harness-flagged gap: ``container-apps.bicep`` had no
+    ``authConfigs`` resource enforcing Entra ID bearer tokens, and the API
+    process had no way to independently confirm that infra-level boundary
+    was really active (see ``config.Settings.entra_auth_enforced`` /
+    ``identity.resolve_identity``). The authConfigs resource must be gated
+    behind ``enableEntraAuth`` (default false, since it depends on an
+    out-of-band Entra App Registration), while the reporting env var must
+    always be emitted so the app never has to assume enforcement on faith.
+    """
+    container_apps = (
+        ROOT / "infra" / "modules" / "container-apps.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "param enableEntraAuth bool = false" in container_apps
+    assert "param entraTenantId string = ''" in container_apps
+    assert "param entraApiClientId string = ''" in container_apps
+    assert "Microsoft.App/containerApps/authConfigs@" in container_apps
+    assert "resource apiAuthConfig" in container_apps
+    assert "if (enableEntraAuth)" in container_apps
+    assert "unauthenticatedClientAction: 'Return401'" in container_apps
+    assert "azureActiveDirectory" in container_apps
+    # The reporting env var is unconditional (not wrapped in a `concat`
+    # gated array) so the running app can always read the true value of
+    # enableEntraAuth, never a value that silently disappears when the
+    # feature is off.
+    assert "name: 'RESEARCH_ENTRA_AUTH_ENFORCED'" in container_apps
+    assert "value: string(enableEntraAuth)" in container_apps
+
+
+def test_container_apps_sources_attestation_signing_key_from_key_vault_only_when_provisioned() -> None:
+    """Harness blocker #3 (authentic signing key deployment) is code-complete
+    at the application layer (``release_attestation.py`` HMAC signing +
+    ``config._forbid_unversioned_or_missing_attestation_signing_key`` fail
+    closed); the remaining gap was infra-level secret delivery. This proves
+    the Key-Vault-backed ``secretRef`` wiring is present and gated behind an
+    explicit ``attestationSigningSecretsProvisioned`` confirmation -- never
+    a plaintext env var, and never assumed present by default."""
+    container_apps = (
+        ROOT / "infra" / "modules" / "container-apps.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "param attestationSigningSecretsProvisioned bool = false" in container_apps
+    assert "param attestationKeyVaultUri string = ''" in container_apps
+    assert "agent-studio-attestation-signing-key" in container_apps
+    assert "agent-studio-attestation-signing-key-version" in container_apps
+    assert "secretRef: 'agent-studio-attestation-signing-key'" in container_apps
+    assert "secretRef: 'agent-studio-attestation-signing-key-version'" in container_apps
+    # No plaintext value ever assigned for the signing key itself.
+    assert "value: attestationKeyVaultUri" not in container_apps
+    assert "secrets: attestationSecretRefs" in container_apps
+
+
+def test_keyvault_module_uses_rbac_authorization_and_never_mints_secret_values() -> None:
+    """The Key Vault module must never generate the actual signing-key
+    *value* through Bicep/ARM (deployment-time randomness is not a suitable
+    cryptographic key source); populating it is an explicit out-of-band
+    operational step. It must also use RBAC authorization (not legacy
+    access policies) and grant the API identity read-only Secrets User,
+    matching this repo's existing RBAC-first convention for every other
+    module (see ``resources.bicep``'s role-definition-id variables)."""
+    key_vault = (
+        ROOT / "infra" / "modules" / "keyvault.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "Microsoft.KeyVault/vaults@" in key_vault
+    assert "enableRbacAuthorization: true" in key_vault
+    assert "enablePurgeProtection: true" in key_vault
+    # Key Vault Secrets User (data-plane read-only) built-in role id.
+    assert "4633458b-17de-408a-b874-0445c86b69e6" in key_vault
+    # Key Vault Secrets Officer (operator write access) built-in role id.
+    assert "b86a8fe4-44ce-4948-aee5-eccb2c155cd7" in key_vault
+    assert "output vaultUri string" in key_vault
+    assert "output vaultName string" in key_vault
+    # No secret *value* resource exists anywhere in this module -- secret
+    # population is an explicit out-of-band operational step, never minted
+    # by Bicep/ARM deployment-time randomness.
+    assert "Microsoft.KeyVault/vaults/secrets" not in key_vault
+
+
+def test_resources_module_wires_key_vault_and_threads_entra_params_through() -> None:
+    resources = (
+        ROOT / "infra" / "modules" / "resources.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "param includeAttestationKeyVault bool = false" in resources
+    assert "module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault)" in resources
+    assert "entraTenantId: entraTenantId" in resources
+    assert "entraApiClientId: entraApiClientId" in resources
+    assert "enableEntraAuth: enableEntraAuth" in resources
+    assert "attestationKeyVaultUri: includeAttestationKeyVault ? keyVault!.outputs.vaultUri : ''" in resources
+
+
+def test_main_bicep_defaults_entra_and_keyvault_params_off_for_backward_compatibility() -> None:
+    """New top-level params must default to false/empty so every existing
+    deployment definition (with no knowledge of these new params) continues
+    to provision exactly as before -- the Entra App Registration and Key
+    Vault secret population are explicit, out-of-band operator steps."""
+    main = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+
+    assert "param enableEntraAuth bool = false" in main
+    assert "param entraTenantId string = ''" in main
+    assert "param entraApiClientId string = ''" in main
+    assert "param includeAttestationKeyVault bool = false" in main
+    assert "param attestationSigningSecretsProvisioned bool = false" in main

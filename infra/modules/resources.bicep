@@ -64,6 +64,21 @@ param apimPublisherName string
 @description('Publisher contact email for API Management.')
 param apimPublisherEmail string
 
+@description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
+param entraTenantId string = ''
+
+@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. Not created by this template -- see modules/container-apps.bicep.')
+param entraApiClientId string = ''
+
+@description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false; see modules/container-apps.bicep for the full trust-boundary rationale.')
+param enableEntraAuth bool = false
+
+@description('Provision a Key Vault (see modules/keyvault.bicep) so an operator can deliver the Agent Studio ReleaseAttestation signing key to the api container app via Container Apps secrets, instead of a plaintext env var.')
+param includeAttestationKeyVault bool = false
+
+@description('Whether an operator has already populated the attestation signing key secret versions in the provisioned Key Vault (an explicit out-of-band step). Only takes effect when includeAttestationKeyVault is true.')
+param attestationSigningSecretsProvisioned bool = false
+
 // Variables
 
 var resourceToken = empty(resourceTokenSalt)
@@ -240,6 +255,18 @@ module appPrivateNetwork 'app-private-network.bicep' = if (includeAcr) {
   }
 }
 
+module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault) {
+  name: 'research-attestation-keyvault'
+  params: {
+    name: 'kv-${take(resourceToken, 17)}'
+    location: location
+    tags: tags
+    apiPrincipalId: identities.outputs.apiPrincipalId
+    principalId: principalId
+    principalType: principalType
+  }
+}
+
 module documentIntelligence 'document-intelligence.bicep' = {
   name: 'document-intelligence'
   params: {
@@ -319,6 +346,11 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     workspaceProjectId: foundryAccount::project.name
     connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors/v1'
     connectorGatewayTokenScope: '${environment().resourceManager}.default'
+    entraTenantId: entraTenantId
+    entraApiClientId: entraApiClientId
+    enableEntraAuth: enableEntraAuth
+    attestationKeyVaultUri: includeAttestationKeyVault ? keyVault!.outputs.vaultUri : ''
+    attestationSigningSecretsProvisioned: includeAttestationKeyVault && attestationSigningSecretsProvisioned
   }
 }
 
@@ -440,6 +472,8 @@ output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = cosmos.outputs.agent
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = documentIntelligence.outputs.endpoint
 output AZURE_DURABLE_TASK_ENDPOINT string = durableTask.outputs.endpoint
 output AZURE_DURABLE_TASK_HUB string = durableTask.outputs.taskHubName
+output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI string = includeAttestationKeyVault ? keyVault!.outputs.vaultUri : ''
+output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME string = includeAttestationKeyVault ? keyVault!.outputs.vaultName : ''
 output WEB_URL string = includeAcr ? containerApps!.outputs.webUrl : ''
 output API_URL string = includeAcr ? containerApps!.outputs.apiUrl : ''
 output API_NAME string = includeAcr ? containerApps!.outputs.apiName : ''

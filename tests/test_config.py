@@ -20,6 +20,7 @@ from pydantic import ValidationError
 from research_assistant_api.config import (
     ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS,
     DEMO_IDENTITY_SAFE_ENVIRONMENTS,
+    ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS,
     Settings,
 )
 
@@ -115,3 +116,91 @@ def test_configured_signing_key_without_version_is_always_refused() -> None:
             agent_studio_attestation_signing_key="operator-key",
             agent_studio_attestation_signing_key_version=None,
         )
+
+
+# --- Entra auth enforcement guard on trust_platform_identity_headers -------
+
+
+def test_default_settings_do_not_trust_platform_headers_or_claim_entra_enforcement() -> None:
+    settings = Settings()
+    assert settings.trust_platform_identity_headers is False
+    assert settings.entra_auth_enforced is False
+
+
+@pytest.mark.parametrize("environment", sorted(ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS))
+def test_trusting_platform_headers_without_entra_enforcement_is_permitted_in_every_safe_environment(
+    environment: str,
+) -> None:
+    settings = Settings(
+        environment=environment,
+        trust_platform_identity_headers=True,
+        entra_auth_enforced=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
+    assert settings.trust_platform_identity_headers is True
+    assert settings.entra_auth_enforced is False
+    assert settings.environment == environment
+
+
+@pytest.mark.parametrize("environment", sorted(ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS))
+def test_entra_enforcement_safe_environment_names_are_case_and_whitespace_insensitive(
+    environment: str,
+) -> None:
+    settings = Settings(
+        environment=f"  {environment.upper()}  ",
+        trust_platform_identity_headers=True,
+        entra_auth_enforced=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
+    assert settings.trust_platform_identity_headers is True
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "staging", "PRODUCTION", "unknown-env"])
+def test_trusting_platform_headers_without_entra_enforcement_is_refused_outside_safe_environments(
+    environment: str,
+) -> None:
+    with pytest.raises(ValidationError, match="RESEARCH_ENTRA_AUTH_ENFORCED"):
+        Settings(
+            environment=environment,
+            trust_platform_identity_headers=True,
+            entra_auth_enforced=False,
+            allow_demo_identity=False,
+            agent_studio_attestation_signing_key="operator-key",
+            agent_studio_attestation_signing_key_version="v1",
+        )
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "staging", "unknown-env"])
+def test_trusting_platform_headers_with_confirmed_entra_enforcement_is_permitted_in_every_environment(
+    environment: str,
+) -> None:
+    settings = Settings(
+        environment=environment,
+        trust_platform_identity_headers=True,
+        entra_auth_enforced=True,
+        allow_demo_identity=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
+    assert settings.entra_auth_enforced is True
+    assert settings.environment == environment
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "staging", "unknown-env"])
+def test_untrusted_platform_headers_are_always_permitted_regardless_of_entra_enforcement(
+    environment: str,
+) -> None:
+    # trust_platform_identity_headers stays at its default (False), so the
+    # guard must not fire even though entra_auth_enforced is also left
+    # unset/False and the environment is production-like -- there is no
+    # header-trust boundary in play to confirm.
+    settings = Settings(
+        environment=environment,
+        allow_demo_identity=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
+    assert settings.trust_platform_identity_headers is False
+    assert settings.entra_auth_enforced is False

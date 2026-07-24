@@ -9,6 +9,7 @@ from uuid import uuid4
 
 from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.openapi.utils import get_openapi
 from research_assistant_core import (
     WORKFLOW_BLUEPRINTS,
     Capability,
@@ -293,6 +294,44 @@ app.add_middleware(
 )
 
 app.include_router(agent_studio_router)
+
+
+def custom_openapi() -> dict[str, Any]:
+    """Declare the Entra ID / Container Apps EasyAuth bearer-token boundary.
+
+    This process does not itself validate the incoming ``Authorization``
+    bearer token -- see ``research_assistant_api.identity.resolve_identity``
+    and ``config.Settings.entra_auth_enforced`` -- it trusts the
+    platform-injected ``x-ms-client-principal`` header once Azure Container
+    Apps' built-in authentication (EasyAuth / ``authConfigs``) has already
+    validated that token. Declaring the security scheme here is honest
+    documentation of that boundary for API consumers/tooling (e.g. the
+    harness's hosted-agent HTTP adapter) that must supply a bearer token
+    satisfying the deployed Container Apps ``authConfigs`` audience; it is
+    not an assertion that this process performs the validation itself.
+    """
+    if app.openapi_schema:
+        return app.openapi_schema
+    schema = get_openapi(title=app.title, version=app.version, routes=app.routes)
+    schema.setdefault("components", {}).setdefault("securitySchemes", {})["entraManagedIdentity"] = {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": (
+            "Azure Entra ID bearer token, validated by Azure Container Apps' built-in "
+            "authentication (EasyAuth, Microsoft.App/containerApps/authConfigs) before the "
+            "request reaches this API. This process trusts only the resulting "
+            "x-ms-client-principal header injected by that platform-level validation (see "
+            "research_assistant_api.identity.resolve_identity); it does not independently "
+            "re-parse or validate the Authorization header itself."
+        ),
+    }
+    schema["security"] = [{"entraManagedIdentity": []}]
+    app.openapi_schema = schema
+    return app.openapi_schema
+
+
+app.openapi = custom_openapi  # type: ignore[method-assign]
 
 CAPABILITY_AGENTS = {
     Capability.LITERATURE: "literature-agent",

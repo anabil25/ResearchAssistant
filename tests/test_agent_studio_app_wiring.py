@@ -92,3 +92,36 @@ def test_init_agent_studio_leaves_collaborators_none_when_store_unavailable(
     assert application.state.agent_studio_idempotency_port is None
     assert application.state.agent_studio_approval_context_resolver is None
     assert application.state.agent_studio_release_attestation_port is None
+
+
+# --- OpenAPI Entra ID / Container Apps EasyAuth security-scheme documentation
+
+
+def test_custom_openapi_declares_entra_bearer_security_scheme() -> None:
+    """Harness integration blocker #2 flagged: "OpenAPI has no security scheme".
+
+    This asserts the generated OpenAPI document honestly documents the
+    Entra ID bearer-token boundary that Azure Container Apps' built-in
+    authentication (EasyAuth / ``authConfigs``) is responsible for
+    enforcing -- see ``research_assistant_api.identity.resolve_identity``
+    and ``config.Settings.entra_auth_enforced`` for the corresponding
+    request/startup-time trust boundary this documents.
+    """
+    application = app_module.app
+    application.openapi_schema = None  # force regeneration for this test
+    schema = application.openapi()
+
+    scheme = schema["components"]["securitySchemes"]["entraManagedIdentity"]
+    assert scheme["type"] == "http"
+    assert scheme["scheme"] == "bearer"
+    assert scheme["bearerFormat"] == "JWT"
+    assert schema["security"] == [{"entraManagedIdentity": []}]
+
+
+def test_custom_openapi_caches_the_generated_schema() -> None:
+    application = app_module.app
+    application.openapi_schema = None
+    first = application.openapi()
+    second = application.openapi()
+    assert first is second
+    application.openapi_schema = None
