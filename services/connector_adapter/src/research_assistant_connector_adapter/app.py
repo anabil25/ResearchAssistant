@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 from collections.abc import Callable
 from typing import Annotated, cast
 from urllib.error import HTTPError, URLError
@@ -12,7 +13,9 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from research_assistant_connectors import ResearchConnectorRegistry, connector_catalog
-from research_assistant_connectors.providers import ProviderError, ProviderRegistry
+from research_assistant_connectors.providers import ProviderError
+from research_assistant_connectors.providers._http import base64_encoded_length
+from research_assistant_connectors.providers.config import DEFAULT_UPLOAD_BYTES
 from research_assistant_core.connector_gateway import (
     ConnectorCatalogResponse,
     ConnectorDescriptor,
@@ -24,30 +27,117 @@ from research_assistant_core.connector_gateway import (
     PublicConnectorSource,
 )
 from starlette.middleware.base import RequestResponseEndpoint
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from research_assistant_connector_adapter.auth import (
     GatewayAuthorizationError,
     build_gateway_validator,
 )
 from research_assistant_connector_adapter.provider_api import (
-    ProviderService,
     provider_error_response,
 )
 from research_assistant_connector_adapter.provider_api import (
     router as provider_router,
 )
+from research_assistant_connector_adapter.provider_runtime import (
+    build_provider_runtime,
+)
 
 logger = logging.getLogger(__name__)
 RegistryFactory = Callable[[], ResearchConnectorRegistry]
+REQUEST_BODY_LIMIT_ENV = "CONNECTOR_ADAPTER_MAX_REQUEST_BODY_BYTES"
+REQUEST_JSON_OVERHEAD_BYTES = 64 * 1024
+DEFAULT_MAX_REQUEST_BODY_BYTES = (
+    base64_encoded_length(DEFAULT_UPLOAD_BYTES) + REQUEST_JSON_OVERHEAD_BYTES
+)
+_REQUEST_TOO_LARGE_BODY = b'{"detail":"Request body too large."}'
+
+
+class RequestBodyTooLargeError(Exception):
+    pass
+
+
+def request_body_limit_from_environment() -> int:
+    configured = os.getenv(REQUEST_BODY_LIMIT_ENV)
+    if configured is None:
+        return DEFAULT_MAX_REQUEST_BODY_BYTES
+    try:
+        limit = int(configured)
+    except ValueError as exc:
+        raise ValueError(f"{REQUEST_BODY_LIMIT_ENV} must be an integer") from exc
+    if limit <= 0:
+        raise ValueError(f"{REQUEST_BODY_LIMIT_ENV} must be positive")
+    return limit
+
+
+async def _send_request_too_large(send: Send) -> None:
+    await send(
+        {
+            "type": "http.response.start",
+            "status": 413,
+            "headers": [
+                (b"content-type", b"application/json"),
+                (b"content-length", str(len(_REQUEST_TOO_LARGE_BODY)).encode("ascii")),
+            ],
+        }
+    )
+    await send({"type": "http.response.body", "body": _REQUEST_TOO_LARGE_BODY})
+
+
+class RequestBodyLimitMiddleware:
+    def __init__(self, app: ASGIApp, *, max_body_bytes: int) -> None:
+        if max_body_bytes <= 0:
+            raise ValueError("Request body limit must be positive")
+        self._app = app
+        self._max_body_bytes = max_body_bytes
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self._app(scope, receive, send)
+            return
+        for name, value in scope.get("headers", ()):
+            if name.lower() != b"content-length":
+                continue
+            try:
+                declared_length = int(value)
+            except ValueError:
+                continue
+            if declared_length > self._max_body_bytes:
+                await _send_request_too_large(send)
+                return
+
+        received_bytes = 0
+
+        async def limited_receive() -> Message:
+            nonlocal received_bytes
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                scope.setdefault("state", {})["provider_cancelled"] = True
+            if message["type"] == "http.request":
+                received_bytes += len(message.get("body", b""))
+                if received_bytes > self._max_body_bytes:
+                    raise RequestBodyTooLargeError
+            return message
+
+        try:
+            await self._app(scope, limited_receive, send)
+        except RequestBodyTooLargeError:
+            await _send_request_too_large(send)
+
 
 app = FastAPI(
     title="Research Assistant Connector Adapter",
     description="Bounded public metadata operations for APIM and MCP exposure.",
     version="1.0.0",
 )
+app.add_middleware(
+    RequestBodyLimitMiddleware,
+    max_body_bytes=request_body_limit_from_environment(),
+)
 app.state.registry_factory = ResearchConnectorRegistry
 app.state.gateway_validator = build_gateway_validator()
-app.state.provider_service = ProviderService(ProviderRegistry())
+app.state.provider_runtime = build_provider_runtime()
+app.state.provider_service = app.state.provider_runtime.service
 app.include_router(provider_router, include_in_schema=False)
 
 
@@ -65,9 +155,11 @@ async def add_security_headers(
     call_next: RequestResponseEndpoint,
 ) -> Response:
     request_id = request.headers.get("X-Request-ID") or f"req-{uuid4().hex[:16]}"
+    request.state.request_id = request_id
+    request.state.provider_cancelled = False
     if request.url.path.startswith("/v1/") and request.app.state.gateway_validator:
         try:
-            request.app.state.gateway_validator.validate(
+            request.state.authenticated_principal_id = request.app.state.gateway_validator.validate(
                 request.headers.get("Authorization")
             )
         except GatewayAuthorizationError as exc:

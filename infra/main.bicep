@@ -72,6 +72,11 @@ param apimPublisherName string = 'Research Assistant Accelerator'
 @description('Publisher contact email for API Management.')
 param apimPublisherEmail string = 'noreply@example.invalid'
 
+@description('Maximum connector-adapter HTTP request body in bytes. Default covers a 4 MiB base64 upload plus bounded JSON overhead; use streaming/upload sessions for larger files.')
+@minValue(65536)
+@maxValue(333398872)
+param connectorAdapterMaxRequestBodyBytes int = 5657944
+
 // Resources
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' = {
@@ -93,6 +98,7 @@ module resources 'modules/resources.bicep' = {
     includeAcr: includeAcr
     principalId: principalId
     principalType: principalType
+    connectorAdapterMaxRequestBodyBytes: connectorAdapterMaxRequestBodyBytes
     apimPublisherName: apimPublisherName
     apimPublisherEmail: apimPublisherEmail
   }

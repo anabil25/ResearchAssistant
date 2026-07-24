@@ -177,6 +177,9 @@ def _repo_capability(
         selected_auth_mode=auth.mode,
         connection_id=auth.connection_ref,
         connection_scopes=auth.connection_scopes,
+        connection_version=auth.connection_version,
+        connection_identity_mode=auth.effective_identity_mode,
+        connection_roles=auth.authorized_roles,
     )
 
 
@@ -254,6 +257,9 @@ class GitHubProvider:
                     selected_auth_mode=self._config.auth.mode,
                     connection_id=self._config.auth.connection_ref,
                     connection_scopes=self._config.auth.connection_scopes,
+                    connection_version=self._config.auth.connection_version,
+                    connection_identity_mode=self._config.auth.effective_identity_mode,
+                    connection_roles=self._config.auth.authorized_roles,
                 ),
             )
         path = f"/orgs/{quote(self._config.owner, safe='')}/repos" if self._config.owner else "/user/repos"
@@ -318,7 +324,8 @@ class GitHubProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -330,7 +337,8 @@ class GitHubProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:

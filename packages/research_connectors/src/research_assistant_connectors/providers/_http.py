@@ -37,19 +37,29 @@ RETRY_WAIT_SLICE_SECONDS = 0.1
 
 
 def binding_safe_endpoint(value: str | None, *, invalid_label: str) -> tuple[str, str]:
-    raw_value = value or invalid_label
-    digest = canonical_json_hash(raw_value)
+    invalid = (invalid_label, canonical_json_hash(invalid_label))
+    if not value:
+        return invalid
     try:
-        parsed = urlsplit(raw_value)
-        _ = parsed.port
+        parsed = urlsplit(value)
+        port = parsed.port
     except ValueError:
-        return invalid_label, digest
-    if parsed.scheme not in {"https", "http"} or not parsed.netloc:
-        return invalid_label, digest
+        return invalid
+    if (
+        parsed.scheme not in {"https", "http"}
+        or not parsed.netloc
+        or parsed.hostname is None
+        or parsed.username is not None
+        or parsed.password is not None
+    ):
+        return invalid
+    host = parsed.hostname.lower()
+    host_literal = f"[{host}]" if ":" in host else host
+    netloc = f"{host_literal}:{port}" if port is not None else host_literal
     sanitized = urlunsplit(
-        (parsed.scheme, parsed.netloc.rsplit("@", 1)[-1], "", "", "")
+        (parsed.scheme.lower(), netloc, parsed.path.rstrip("/"), "", "")
     ).rstrip("/")
-    return sanitized, digest
+    return sanitized, canonical_json_hash(sanitized)
 
 
 def safe_url(base_url: str, path: str) -> str:

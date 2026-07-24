@@ -146,6 +146,8 @@ def test_live_provider_discovery_and_health() -> None:
             correlation_id="provider-integration-test",
             trace_id="provider-integration-test",
             sleep=time.sleep,
+            release_id="provider-integration-test",
+            invocation_id="provider-integration-test",
         )
         capabilities = provider.discover(context)
         assert capabilities.instances, "Live provider discovery returned no capability instances"

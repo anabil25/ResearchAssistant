@@ -4,11 +4,27 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any
+from urllib.parse import urlsplit
 
 from .contracts import ApprovalPolicy, AuthMode, Idempotency, Maturity, OperationClass
 
 DEFAULT_UPLOAD_BYTES = 4 * 1024 * 1024
 GRAPH_SIMPLE_UPLOAD_MAX_BYTES = 250_000_000
+
+
+def validate_configured_url(value: str | None) -> None:
+    if value is None:
+        return
+    try:
+        parsed = urlsplit(value)
+    except ValueError:
+        return
+    if parsed.username is not None or parsed.password is not None:
+        raise ValueError("Configured provider URLs cannot contain userinfo")
+    try:
+        _ = parsed.port
+    except ValueError:
+        return
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,17 +34,38 @@ class AuthConfig:
     secret_name: str | None = None
     header_name: str | None = None
     connection_ref: str | None = None
+    connection_version: str = "1"
+    identity_mode: str | None = None
+    authorized_roles: tuple[str, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.connection_version or self.identity_mode == "":
+            raise ValueError("Connection version and configured identity mode must be non-empty")
+        if any(not role for role in self.authorized_roles) or len(set(self.authorized_roles)) != len(
+            self.authorized_roles
+        ):
+            raise ValueError("Authorized connection roles must be non-empty and unique")
 
     @property
     def connection_scopes(self) -> tuple[str, ...]:
         return (self.token_scope,) if self.token_scope else ()
+
+    @property
+    def effective_identity_mode(self) -> str:
+        return self.identity_mode or self.mode.value
 
 
 @dataclass(frozen=True, slots=True)
 class FoundryConfig:
     endpoint: str | None
     tenant_id: str | None
-    auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://ai.azure.com/.default")
+    auth: AuthConfig = AuthConfig(
+        AuthMode.MANAGED_IDENTITY,
+        "https://ai.azure.com/.default",
+        connection_ref="foundry-project-managed-identity",
+        identity_mode="managed_identity",
+        authorized_roles=("Azure AI User",),
+    )
     models_path: str | None = None
     deployments_path: str | None = None
     agents_path: str | None = None
@@ -37,13 +74,25 @@ class FoundryConfig:
     responses_path: str | None = None
     api_version: str = "2025-05-01"
 
+    def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
+
 
 @dataclass(frozen=True, slots=True)
 class SearchConfig:
     endpoint: str | None
     tenant_id: str | None
-    auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://search.azure.com/.default")
+    auth: AuthConfig = AuthConfig(
+        AuthMode.MANAGED_IDENTITY,
+        "https://search.azure.com/.default",
+        connection_ref="azure-search-managed-identity",
+        identity_mode="managed_identity",
+        authorized_roles=("Search Index Data Reader",),
+    )
     api_version: str = "2025-09-01"
+
+    def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
 
 
 @dataclass(frozen=True, slots=True)
@@ -66,16 +115,27 @@ class FunctionsConfig:
     invoke_path_template: str = "/api/{name}"
     function_policies: tuple[FunctionPolicy, ...] = ()
 
+    def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
+        validate_configured_url(self.discovery_url)
+
 
 @dataclass(frozen=True, slots=True)
 class BlobConfig:
     endpoint: str | None
     tenant_id: str | None
-    auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://storage.azure.com/.default")
+    auth: AuthConfig = AuthConfig(
+        AuthMode.MANAGED_IDENTITY,
+        "https://storage.azure.com/.default",
+        connection_ref="azure-blob-managed-identity",
+        identity_mode="managed_identity",
+        authorized_roles=("Storage Blob Data Contributor",),
+    )
     api_version: str = "2023-11-03"
     max_upload_bytes: int = DEFAULT_UPLOAD_BYTES
 
     def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
         if self.max_upload_bytes <= 0:
             raise ValueError("Blob max_upload_bytes must be positive")
 
@@ -97,6 +157,9 @@ class MCPConfig:
     protocol_version: str = "2025-06-18"
     tool_policies: tuple[MCPToolPolicy, ...] = ()
 
+    def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
+
 
 @dataclass(frozen=True, slots=True)
 class OpenAPIConfig:
@@ -107,6 +170,10 @@ class OpenAPIConfig:
     document_auth: AuthConfig = AuthConfig(AuthMode.NONE)
     document: dict[str, Any] | None = field(default=None, repr=False)
     operation_policies: tuple[OpenAPIOperationPolicy, ...] = ()
+
+    def __post_init__(self) -> None:
+        validate_configured_url(self.base_url)
+        validate_configured_url(self.document_url)
 
 
 @dataclass(frozen=True, slots=True)
@@ -129,6 +196,9 @@ class WebhookConfig:
     signature_header: str = "X-Signature"
     health_method: str | None = "HEAD"
 
+    def __post_init__(self) -> None:
+        validate_configured_url(self.destination_url)
+
 
 @dataclass(frozen=True, slots=True)
 class GitHubConfig:
@@ -138,17 +208,27 @@ class GitHubConfig:
     owner: str | None = None
     api_version: str = "2022-11-28"
 
+    def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
+
 
 @dataclass(frozen=True, slots=True)
 class GraphConfig:
     endpoint: str | None
     tenant_id: str | None
-    auth: AuthConfig = AuthConfig(AuthMode.MANAGED_IDENTITY, "https://graph.microsoft.com/.default")
+    auth: AuthConfig = AuthConfig(
+        AuthMode.MANAGED_IDENTITY,
+        "https://graph.microsoft.com/.default",
+        connection_ref="microsoft-graph-managed-identity",
+        identity_mode="managed_identity",
+        authorized_roles=("Sites.Selected",),
+    )
     sites_path: str = "/sites?search=*"
     discover_items: bool = True
     max_upload_bytes: int = DEFAULT_UPLOAD_BYTES
 
     def __post_init__(self) -> None:
+        validate_configured_url(self.endpoint)
         if not 0 < self.max_upload_bytes <= GRAPH_SIMPLE_UPLOAD_MAX_BYTES:
             raise ValueError("Graph max_upload_bytes must be between 1 and the 250 MB simple-upload limit")
 

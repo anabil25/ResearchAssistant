@@ -1,0 +1,157 @@
+{
+  "canonicalization_version": "research-assistant.canonical-json.v1",
+  "rules": {
+    "algorithm": "RFC 8785 JSON Canonicalization Scheme",
+    "encoding": "UTF-8",
+    "finite_numbers_only": true,
+    "number_serialization": "ECMAScript-compatible RFC 8785 serialization",
+    "object_keys": "RFC 8785 UTF-16 code-unit order",
+    "separators": {
+      "item": ",",
+      "key": ":"
+    },
+    "string_escaping": "JSON escaping with non-ASCII characters encoded directly as UTF-8"
+  },
+  "evidence": {
+    "format": "Language-neutral JSON input, canonical UTF-8 bytes as lowercase hex, and SHA-256",
+    "digest_algorithm": "SHA-256",
+    "accepted_vector_result": "Every runtime must produce exactly canonical_utf8_hex before hashing",
+    "rejected_vector_result": "Every runtime must reject before producing canonical bytes or a digest"
+  },
+  "vectors": [
+    {
+      "name": "empty-object",
+      "input": {},
+      "canonical_utf8_hex": "7b7d",
+      "sha256": "44136fa355b3678a1146ad16f7e8649e94fb4fc21fe77e8310c060f61caaff8a"
+    },
+    {
+      "name": "empty-array",
+      "input": [],
+      "canonical_utf8_hex": "5b5d",
+      "sha256": "4f53cda18c2baa0c0354bb5f9a3ecbe5ed12ab4d8e11ba873c2f11161202b945"
+    },
+    {
+      "name": "null",
+      "input": null,
+      "canonical_utf8_hex": "6e756c6c",
+      "sha256": "74234e98afe7498fb5daf1f36ac2d78acc339464f950703b8c019892f982b90b"
+    },
+    {
+      "name": "object-order-and-unicode",
+      "input": {
+        "b": 2,
+        "a": "é"
+      },
+      "canonical_utf8_hex": "7b2261223a22c3a9222c2262223a327d",
+      "sha256": "06c264c46ad5ada9493abd3aa2383fb205ae99d7d0bad40b03a43bfec8a1b8de"
+    },
+    {
+      "name": "nested-finite-values",
+      "input": {
+        "z": {
+          "β": "雪"
+        },
+        "nested": [
+          true,
+          null,
+          -7,
+          1.5
+        ]
+      },
+      "canonical_utf8_hex": "7b226e6573746564223a5b747275652c6e756c6c2c2d372c312e355d2c227a223a7b22ceb2223a22e99baa227d7d",
+      "sha256": "be7fe068d0a0b6a5a280b44439646781df74cf3782ee0c52af804a1b7c1bc3ab"
+    },
+    {
+      "name": "integral-float",
+      "input": {
+        "value": 1.0
+      },
+      "canonical_utf8_hex": "7b2276616c7565223a317d",
+      "sha256": "48208f9428d64634bd8e28ff345bf0eab60d53c18fa2fbdb0b9bc1e84df2b5f6"
+    },
+    {
+      "name": "negative-zero",
+      "input": {
+        "value": -0.0
+      },
+      "canonical_utf8_hex": "7b2276616c7565223a307d",
+      "sha256": "23d7b286bd429460b92a2a1c21b6afc34110446c5034c17363fda363aa0a7c5d"
+    },
+    {
+      "name": "small-exponent",
+      "input": {
+        "value": 1e-7
+      },
+      "canonical_utf8_hex": "7b2276616c7565223a31652d377d",
+      "sha256": "910750038eb30a40d06da88009b6259aabaf3751b3cb212c616d51abb6b008a4"
+    },
+    {
+      "name": "plain-number-threshold",
+      "input": {
+        "value": 1e-6
+      },
+      "canonical_utf8_hex": "7b2276616c7565223a302e3030303030317d",
+      "sha256": "bc1c982dd4e677d72ff5821cc67554e045e838a31ddc55fa0fdb1a32d5a1dce9"
+    },
+    {
+      "name": "large-exponent",
+      "input": {
+        "value": 1e21
+      },
+      "canonical_utf8_hex": "7b2276616c7565223a31652b32317d",
+      "sha256": "776bf0d292f3767fdfca3fdc9683d0ba51886b8e6e79cd228a41bafcfa9a1a6f"
+    },
+    {
+      "name": "unicode-control-and-order",
+      "input": {
+        "€": "$",
+        "\r": "\n",
+        "1": "one"
+      },
+      "canonical_utf8_hex": "7b225c72223a225c6e222c2231223a226f6e65222c22e282ac223a2224227d",
+      "sha256": "3e44aa3655f236eb0b329c21eb79bb68cda2c88f584ec3020c128636eb6bd63a"
+    },
+    {
+      "name": "utf16-order-discriminator",
+      "input": {
+        "": "bmp",
+        "😀": "supplementary"
+      },
+      "canonical_utf8_hex": "7b22f09f9880223a22737570706c656d656e74617279222c22ee8080223a22626d70227d",
+      "sha256": "2205660ff8355b1fa92489e103967a9b65b0bab6cfdf1690c692d33231168cca"
+    }
+  ],
+  "rejected_vectors": [
+    {
+      "name": "not-a-number",
+      "runtime_inputs": {
+        "ecmascript": "Number.NaN",
+        "python": "float('nan')"
+      },
+      "canonical_utf8_hex": null,
+      "sha256": null,
+      "expected_error": "hash_input must contain finite JSON numbers"
+    },
+    {
+      "name": "positive-infinity",
+      "runtime_inputs": {
+        "ecmascript": "Number.POSITIVE_INFINITY",
+        "python": "float('inf')"
+      },
+      "canonical_utf8_hex": null,
+      "sha256": null,
+      "expected_error": "hash_input must contain finite JSON numbers"
+    },
+    {
+      "name": "negative-infinity",
+      "runtime_inputs": {
+        "ecmascript": "Number.NEGATIVE_INFINITY",
+        "python": "float('-inf')"
+      },
+      "canonical_utf8_hex": null,
+      "sha256": null,
+      "expected_error": "hash_input must contain finite JSON numbers"
+    }
+  ]
+}

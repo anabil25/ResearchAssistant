@@ -52,6 +52,11 @@ param deployments deploymentsType = []
 @description('Include an Azure Container Registry. Set true when any agent uses docker:.')
 param includeAcr bool = false
 
+@description('Maximum connector-adapter HTTP request body in bytes.')
+@minValue(65536)
+@maxValue(333398872)
+param connectorAdapterMaxRequestBodyBytes int = 5657944
+
 @description('Object id of the developer running azd. When set, grants Cognitive Services User on the project. Empty disables the role assignment so headless / CI runs do not fail.')
 param principalId string = ''
 
@@ -293,6 +298,8 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     openAIEndpoint: 'https://${foundryAccount.name}.openai.azure.com/'
     apiIdentityResourceId: identities.outputs.apiResourceId
     apiIdentityClientId: identities.outputs.apiClientId
+    apiIdentityPrincipalId: identities.outputs.apiPrincipalId
+    foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     workerIdentityResourceId: identities.outputs.workerResourceId
     workerIdentityClientId: identities.outputs.workerClientId
     acrResourceId: acr!.outputs.resourceId
@@ -313,6 +320,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     workspaceProjectId: foundryAccount::project.name
     connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors/v1'
     connectorGatewayTokenScope: '${environment().resourceManager}.default'
+    connectorAdapterMaxRequestBodyBytes: connectorAdapterMaxRequestBodyBytes
   }
 }
 

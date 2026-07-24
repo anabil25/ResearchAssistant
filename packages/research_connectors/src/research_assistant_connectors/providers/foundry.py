@@ -96,7 +96,7 @@ def _operation(
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id=operation_id,
-        version="1.0.0",
+        operation_version="1.0.0",
         maturity=maturity,
         input_schema=input_schema,
         output_schema=OBJECT_SCHEMA,
@@ -173,6 +173,9 @@ def _capability(
         selected_auth_mode=config.auth.mode,
         connection_id=config.auth.connection_ref,
         connection_scopes=config.auth.connection_scopes,
+        connection_version=config.auth.connection_version,
+        connection_identity_mode=config.auth.effective_identity_mode,
+        connection_roles=config.auth.authorized_roles,
     )
 
 
@@ -454,7 +457,8 @@ class FoundryProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -466,7 +470,8 @@ class FoundryProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:

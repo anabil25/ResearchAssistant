@@ -72,11 +72,11 @@ def _operation(
     input_schema: dict[str, Any],
     idempotency: Idempotency,
     *,
-    version: str = "1.0.0",
+    operation_version: str = "1.0.0",
 ) -> OperationDescriptor:
     return OperationDescriptor(
         operation_id,
-        version,
+        operation_version,
         Maturity.GA,
         input_schema,
         {},
@@ -127,7 +127,7 @@ def _put_operation(max_upload_bytes: int) -> OperationDescriptor:
             "additionalProperties": False,
         },
         Idempotency.PROVIDER_NATIVE,
-        version="1.1.0",
+        operation_version="1.1.0",
     )
 
 
@@ -181,7 +181,15 @@ def _container_capability(
         selected_auth_mode=auth.mode,
         connection_id=auth.connection_ref,
         connection_scopes=auth.connection_scopes,
-        descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}},
+        connection_version=auth.connection_version,
+        connection_identity_mode=auth.effective_identity_mode,
+        connection_roles=auth.authorized_roles,
+        descriptor_metadata={
+            "request_limits": {
+                "max_upload_bytes": max_upload_bytes,
+                "max_encoded_upload_bytes": base64_encoded_length(max_upload_bytes),
+            }
+        },
         descriptor_version="1.1.0",
     )
 
@@ -311,7 +319,8 @@ class AzureBlobProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
         return ValidationReport(
             instance.readiness,
@@ -327,7 +336,8 @@ class AzureBlobProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
         return HealthReport(instance.health or instance.readiness, instance.status_evidence)
 

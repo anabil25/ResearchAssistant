@@ -3,7 +3,11 @@
 from __future__ import annotations
 
 import copy
+import hashlib
+import re
+from collections import Counter
 from collections.abc import Mapping
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote
 
@@ -55,6 +59,30 @@ PROVENANCE = official_provenance(
     last_verified_at="2026-07-23T08:37:02Z",
 )
 HTTP_METHODS = ("get", "post", "put", "patch", "delete", "head")
+_WIRE_OPERATION_ID = re.compile(r"^[A-Za-z][A-Za-z0-9_.-]{1,127}$")
+
+
+@dataclass(frozen=True, slots=True)
+class _DiscoveredOperation:
+    operation_id: str
+    source_operation_id: str
+    method: str
+    path: str
+    input_schema: dict[str, Any]
+
+
+def _dispatch_identity_digest(source_operation_id: str, method: str, path: str) -> str:
+    digest = hashlib.sha256()
+    for value in (source_operation_id, method, path):
+        encoded = value.encode("utf-8")
+        digest.update(len(encoded).to_bytes(8, "big"))
+        digest.update(encoded)
+    return digest.hexdigest()
+
+
+def _collision_safe_operation_id(base_id: str, dispatch_digest: str) -> str:
+    suffix = dispatch_digest[:16]
+    return f"{base_id[: 127 - len(suffix)]}.{suffix}"
 
 
 def _resolve(document: Mapping[str, Any], value: Any) -> Any:
@@ -167,7 +195,7 @@ class OpenAPIProvider:
         )
         return json_object(response, provider_id=PROVIDER_ID)
 
-    def _operations(self, context: InvocationContext) -> tuple[tuple[str, str, str, dict[str, Any]], ...]:
+    def _operations(self, context: InvocationContext) -> tuple[_DiscoveredOperation, ...]:
         document = self._load_document(context)
         version = document.get("openapi")
         if not isinstance(version, str) or not (version.startswith("3.0.") or version.startswith("3.1.")):
@@ -175,8 +203,7 @@ class OpenAPIProvider:
         paths = document.get("paths")
         if not isinstance(paths, Mapping):
             raise ProviderValidationError("OpenAPI document must contain a paths object", provider_id=PROVIDER_ID)
-        discovered = []
-        seen: set[str] = set()
+        candidates: list[tuple[str, str, str, str, dict[str, Any]]] = []
         for path, raw_path_item in paths.items():
             if not isinstance(path, str) or not path.startswith("/") or ".." in path or "://" in path:
                 continue
@@ -187,14 +214,52 @@ class OpenAPIProvider:
                 operation = path_item.get(method)
                 if not isinstance(operation, Mapping):
                     continue
-                operation_id = operation.get("operationId")
-                if not isinstance(operation_id, str) or not operation_id or operation_id in seen:
+                source_operation_id = operation.get("operationId")
+                if not isinstance(source_operation_id, str) or not source_operation_id:
                     continue
-                seen.add(operation_id)
-                discovered.append(
-                    (operation_id, method.upper(), path, _argument_schema(document, path_item, operation))
+                operation_id = (
+                    source_operation_id
+                    if _WIRE_OPERATION_ID.fullmatch(source_operation_id)
+                    else stable_resource_id("openapi.operation", source_operation_id)
                 )
-        return tuple(discovered)
+                candidates.append(
+                    (
+                        operation_id,
+                        source_operation_id,
+                        method.upper(),
+                        path,
+                        _argument_schema(document, path_item, operation),
+                    )
+                )
+        base_id_counts = Counter(candidate[0] for candidate in candidates)
+        discovered = []
+        for base_id, source_operation_id, method, path, input_schema in candidates:
+            dispatch_digest = _dispatch_identity_digest(source_operation_id, method, path)
+            operation_id = (
+                base_id
+                if base_id_counts[base_id] == 1
+                else _collision_safe_operation_id(base_id, dispatch_digest)
+            )
+            discovered.append(
+                _DiscoveredOperation(
+                    operation_id,
+                    source_operation_id,
+                    method,
+                    path,
+                    input_schema,
+                )
+            )
+        return tuple(
+            sorted(
+                discovered,
+                key=lambda item: (
+                    item.operation_id,
+                    item.method,
+                    item.path,
+                    item.source_operation_id,
+                ),
+            )
+        )
 
     def _discover_instances(self, context: InvocationContext) -> tuple[CapabilityRecord, ...]:
         validation = self._validate_configuration(context)
@@ -241,11 +306,17 @@ class OpenAPIProvider:
                     selected_auth_mode=self._config.auth.mode,
                     connection_id=self._config.auth.connection_ref,
                     connection_scopes=self._config.auth.connection_scopes,
+                    connection_version=self._config.auth.connection_version,
+                    connection_identity_mode=self._config.auth.effective_identity_mode,
+                    connection_roles=self._config.auth.authorized_roles,
                 ),
             )
         policies = {policy.operation_id: policy for policy in self._config.operation_policies}
         capabilities = []
-        for operation_id, method, path, schema in self._operations(context):
+        for discovered_operation in self._operations(context):
+            operation_id = discovered_operation.operation_id
+            method = discovered_operation.method
+            path = discovered_operation.path
             default_class = OperationClass.READ if method in {"GET", "HEAD"} else OperationClass.PRIVILEGED
             policy = policies.get(
                 operation_id,
@@ -282,7 +353,7 @@ class OpenAPIProvider:
                             operation_id,
                             "1.0.0",
                             policy.maturity,
-                            schema,
+                            discovered_operation.input_schema,
                             {},
                             policy.operation_class,
                             policy.approval_policy,
@@ -302,6 +373,7 @@ class OpenAPIProvider:
                     configuration={
                         "method": method,
                         "path": path,
+                        "source_operation_id": discovered_operation.source_operation_id,
                         "provider_endpoint": safe_endpoint,
                         "provider_endpoint_digest": endpoint_digest,
                         "auth_header_name": self._config.auth.header_name,
@@ -310,6 +382,9 @@ class OpenAPIProvider:
                     selected_auth_mode=self._config.auth.mode,
                     connection_id=self._config.auth.connection_ref,
                     connection_scopes=self._config.auth.connection_scopes,
+                    connection_version=self._config.auth.connection_version,
+                    connection_identity_mode=self._config.auth.effective_identity_mode,
+                    connection_roles=self._config.auth.authorized_roles,
                 )
             )
         return tuple(capabilities)
@@ -330,7 +405,8 @@ class OpenAPIProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -342,7 +418,8 @@ class OpenAPIProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     @staticmethod

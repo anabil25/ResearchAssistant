@@ -9,6 +9,9 @@ from typing import Any
 
 import httpx
 from research_assistant_connectors.providers import (
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+    ApprovalConsumptionStatus,
     ApprovalPolicy,
     AuthConfig,
     AuthMode,
@@ -29,6 +32,16 @@ from research_assistant_connectors.providers import (
     WebhookProvider,
     approval_decision,
 )
+
+
+async def consume_approval(
+    _request: ApprovalConsumptionRequest,
+) -> ApprovalConsumptionResult:
+    return ApprovalConsumptionResult(
+        ApprovalConsumptionStatus.CONSUMED,
+        "consumption-record",
+        "2026-07-23T14:00:00Z",
+    )
 
 
 class ProtocolHandler(BaseHTTPRequestHandler):
@@ -163,7 +176,10 @@ def invocation_context(client: httpx.Client) -> InvocationContext:
         correlation_id="correlation",
         trace_id="trace",
         sleep=lambda _: None,
-        consume_approval=lambda _: True,
+        release_id="release-1",
+        invocation_id="invocation-1",
+        consume_approval=consume_approval,
+        logical_agent_id="agent-1",
     )
 
 

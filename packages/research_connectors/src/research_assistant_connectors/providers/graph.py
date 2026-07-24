@@ -194,11 +194,22 @@ def _capability(
         provenance=PROVENANCE,
         status_evidence=("Resource returned by a successful Microsoft Graph v1.0 request.",),
         configuration=configuration,
-        descriptor_metadata={"request_limits": {"max_upload_bytes": max_upload_bytes}} if has_upload else {},
+        descriptor_metadata={
+            "request_limits": {
+                "max_upload_bytes": max_upload_bytes,
+                "max_encoded_upload_bytes": base64_encoded_length(max_upload_bytes),
+                "large_upload_protocol": "microsoft_graph_upload_session",
+            }
+        }
+        if has_upload
+        else {},
         descriptor_version="1.1.0" if has_upload else "1.0.0",
         selected_auth_mode=auth.mode,
         connection_id=auth.connection_ref,
         connection_scopes=auth.connection_scopes,
+        connection_version=auth.connection_version,
+        connection_identity_mode=auth.effective_identity_mode,
+        connection_roles=auth.authorized_roles,
     )
 
 
@@ -227,6 +238,9 @@ class MicrosoftGraphProvider:
             selected_auth_mode=config.auth.mode,
             connection_id=config.auth.connection_ref,
             connection_scopes=config.auth.connection_scopes,
+            connection_version=config.auth.connection_version,
+            connection_identity_mode=config.auth.effective_identity_mode,
+            connection_roles=config.auth.authorized_roles,
         )
         self._descriptor = ProviderDescriptor(
             PROVIDER_ID,
@@ -302,6 +316,9 @@ class MicrosoftGraphProvider:
                     selected_auth_mode=self._config.auth.mode,
                     connection_id=self._config.auth.connection_ref,
                     connection_scopes=self._config.auth.connection_scopes,
+                    connection_version=self._config.auth.connection_version,
+                    connection_identity_mode=self._config.auth.effective_identity_mode,
+                    connection_roles=self._config.auth.authorized_roles,
                 ),
             )
         capabilities: list[CapabilityRecord] = [self._work_iq]
@@ -387,7 +404,8 @@ class MicrosoftGraphProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -399,7 +417,8 @@ class MicrosoftGraphProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     @staticmethod

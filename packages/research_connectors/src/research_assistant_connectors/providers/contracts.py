@@ -2,10 +2,11 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
-import json
 import math
-from collections.abc import Awaitable, Callable, Iterator, Mapping, Sequence
+import re
+from collections.abc import Awaitable, Callable, Coroutine, Iterator, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime
 from enum import StrEnum
@@ -13,9 +14,14 @@ from types import MappingProxyType
 from typing import Any, Protocol, runtime_checkable
 
 import httpx
+import rfc8785
 
 JsonValue = None | bool | int | float | str | list["JsonValue"] | dict[str, "JsonValue"]
 JsonSchema = Mapping[str, Any]
+PROVIDER_CONTRACT_VERSION = "research-assistant.integration-provider.v7"
+CANONICALIZATION_VERSION = "research-assistant.canonical-json.v1"
+POLICY_REFERENCE_VERSION = "1.0.0"
+_MAX_SAFE_INTEGER = (1 << 53) - 1
 
 
 class Maturity(StrEnum):
@@ -59,6 +65,23 @@ class ApprovalDecisionStatus(StrEnum):
     REVOKED = "revoked"
 
 
+class ApprovalUsePolicy(StrEnum):
+    ONE_TIME = "one_time"
+    BOUNDED_REUSABLE = "bounded_reusable"
+
+
+class ApprovalConsumptionStatus(StrEnum):
+    CONSUMED = "consumed"
+    ALREADY_CONSUMED_BY_SAME_IDEMPOTENT_INVOCATION = (
+        "already_consumed_by_same_idempotent_invocation"
+    )
+    EXPIRED = "expired"
+    REVOKED = "revoked"
+    DENIED = "denied"
+    MISMATCH = "mismatch"
+    UNAVAILABLE = "unavailable"
+
+
 class Idempotency(StrEnum):
     NONE = "none"
     CALLER_KEY = "caller_key"
@@ -94,7 +117,11 @@ def plain_json(value: Any) -> Any:
 
 
 def _validate_json_value(value: Any, *, path: str) -> None:
-    if value is None or isinstance(value, bool | int | str):
+    if value is None or isinstance(value, bool | str):
+        return
+    if isinstance(value, int):
+        if not -_MAX_SAFE_INTEGER <= value <= _MAX_SAFE_INTEGER:
+            raise ValueError(f"{path} integers must be within the RFC 8785 portable range")
         return
     if isinstance(value, float):
         if not math.isfinite(value):
@@ -113,16 +140,14 @@ def _validate_json_value(value: Any, *, path: str) -> None:
     raise ValueError(f"{path} contains a non-JSON value")
 
 
-def canonical_json_hash(value: Any) -> str:
+def canonical_json_bytes(value: Any) -> bytes:
+    """Encode finite JSON with the RFC 8785 profile named by the provider contract."""
     _validate_json_value(value, path="hash_input")
-    encoded = json.dumps(
-        plain_json(value),
-        sort_keys=True,
-        separators=(",", ":"),
-        ensure_ascii=True,
-        allow_nan=False,
-    ).encode()
-    return hashlib.sha256(encoded).hexdigest()
+    return rfc8785.dumps(plain_json(value))
+
+
+def canonical_json_hash(value: Any) -> str:
+    return hashlib.sha256(canonical_json_bytes(value)).hexdigest()
 
 
 def _validate_sha256(value: str, *, path: str) -> None:
@@ -159,6 +184,7 @@ _BINDING_SAFE_CONFIGURATION_KEYS = frozenset(
         "signing_algorithm",
         "site_id",
         "source",
+        "source_operation_id",
         "tool_name",
         "untrusted_tool_metadata_digest",
         "vector_stores_path_digest",
@@ -227,7 +253,7 @@ def official_provenance(
 @dataclass(frozen=True, slots=True)
 class OperationDescriptor:
     operation_id: str
-    version: str
+    operation_version: str
     maturity: Maturity
     input_schema: JsonSchema
     output_schema: JsonSchema
@@ -243,10 +269,15 @@ class OperationDescriptor:
     least_privilege_roles: tuple[str, ...] = ()
     docs: tuple[str, ...] = ()
     audit_events: tuple[str, ...] = ("provider.invoke",)
-    policy_exception_ref: str | None = None
+    policy_exception_ref: PolicyRef | None = None
 
     def __post_init__(self) -> None:
-        if not self.operation_id or not self.version or self.timeout_seconds <= 0 or not 0 <= self.max_retries <= 5:
+        if (
+            not self.operation_id
+            or not self.operation_version
+            or self.timeout_seconds <= 0
+            or not 0 <= self.max_retries <= 5
+        ):
             raise ValueError("Operation identifiers, versions, timeouts, and retries must be valid")
         if any(not destination for destination in self.side_effect_destinations):
             raise ValueError("Side-effect destinations cannot be empty")
@@ -275,10 +306,6 @@ class OperationDescriptor:
         _validate_json_value(self.output_schema, path="output_schema")
         object.__setattr__(self, "input_schema", _freeze(self.input_schema))
         object.__setattr__(self, "output_schema", _freeze(self.output_schema))
-
-    @property
-    def provider_version(self) -> str:
-        return self.version
 
     @property
     def input_schema_digest(self) -> str:
@@ -336,7 +363,7 @@ def capability_descriptor_digest(descriptor: CapabilityDescriptor) -> str:
                 _operation_governance_payload(operation)
                 for operation in sorted(
                     descriptor.operations,
-                    key=lambda item: (item.operation_id, item.version),
+                    key=lambda item: (item.operation_id, item.operation_version),
                 )
             ],
             "provenance": [
@@ -365,7 +392,7 @@ def capability_descriptor_digest(descriptor: CapabilityDescriptor) -> str:
 def _operation_governance_payload(operation: OperationDescriptor) -> dict[str, Any]:
     return {
         "operation_id": operation.operation_id,
-        "operation_version": operation.version,
+        "operation_version": operation.operation_version,
         "maturity": operation.maturity.value,
         "lifecycle": operation.lifecycle.value,
         "input_schema_digest": operation.input_schema_digest,
@@ -381,7 +408,15 @@ def _operation_governance_payload(operation: OperationDescriptor) -> dict[str, A
         "least_privilege_roles": sorted(operation.least_privilege_roles),
         "docs": sorted(operation.docs),
         "audit_events": sorted(operation.audit_events),
-        "policy_exception_ref": operation.policy_exception_ref,
+        "policy_exception_ref": (
+            {
+                "policy_id": operation.policy_exception_ref.policy_id,
+                "policy_version": operation.policy_exception_ref.policy_version,
+                "policy_digest": operation.policy_exception_ref.policy_digest,
+            }
+            if operation.policy_exception_ref is not None
+            else None
+        ),
     }
 
 
@@ -391,9 +426,165 @@ def capability_operations_digest(descriptor: CapabilityDescriptor) -> str:
             _operation_governance_payload(operation)
             for operation in sorted(
                 descriptor.operations,
-                key=lambda item: (item.operation_id, item.version),
+                key=lambda item: (item.operation_id, item.operation_version),
             )
         ]
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class DescriptorRef:
+    descriptor_id: str
+    descriptor_version: str
+    descriptor_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.descriptor_id or not self.descriptor_version:
+            raise ValueError("Descriptor reference identity and version are required")
+        _validate_sha256(self.descriptor_digest, path="descriptor_ref.descriptor_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class OperationRef:
+    operation_id: str
+    operation_version: str
+    input_schema_digest: str
+    output_schema_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.operation_id or not self.operation_version:
+            raise ValueError("Operation reference identity and version are required")
+        _validate_sha256(self.input_schema_digest, path="operation_ref.input_schema_digest")
+        _validate_sha256(self.output_schema_digest, path="operation_ref.output_schema_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class InstanceRef:
+    provider_id: str
+    instance_id: str
+    discovered_version: str
+    instance_fingerprint: str
+
+    def __post_init__(self) -> None:
+        if not self.provider_id or not self.instance_id or not self.discovered_version:
+            raise ValueError("Instance reference provider, identity, and discovered version are required")
+        _validate_sha256(self.instance_fingerprint, path="instance_ref.instance_fingerprint")
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigurationRef:
+    configuration_digest: str
+    configuration_id: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.configuration_id == "":
+            raise ValueError("Configuration reference ID cannot be empty")
+        _validate_sha256(self.configuration_digest, path="configuration_ref.configuration_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectionRef:
+    connection_id: str
+    auth_mode: AuthMode
+    authorization_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.connection_id:
+            raise ValueError("Connection reference ID is required")
+        _validate_sha256(self.authorization_digest, path="connection_ref.authorization_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class PolicyRef:
+    policy_id: str
+    policy_version: str
+    policy_digest: str
+
+    def __post_init__(self) -> None:
+        if not self.policy_id or not self.policy_version:
+            raise ValueError("Policy reference identity and version are required")
+        _validate_sha256(self.policy_digest, path="policy_ref.policy_digest")
+
+
+@dataclass(frozen=True, slots=True)
+class AllowedDestinationsRef:
+    constraints: tuple[str, ...]
+    constraints_digest: str
+
+    def __post_init__(self) -> None:
+        if any(not constraint for constraint in self.constraints) or len(set(self.constraints)) != len(
+            self.constraints
+        ):
+            raise ValueError("Allowed destination constraints must be non-empty and unique")
+        object.__setattr__(self, "constraints", tuple(sorted(self.constraints)))
+        _validate_sha256(self.constraints_digest, path="allowed_destinations_ref.constraints_digest")
+        if canonical_json_hash(list(self.constraints)) != self.constraints_digest:
+            raise ValueError("Allowed destination constraints digest does not match canonical constraints")
+
+
+def descriptor_ref(descriptor: CapabilityDescriptor) -> DescriptorRef:
+    return DescriptorRef(
+        descriptor_id=descriptor.descriptor_id,
+        descriptor_version=descriptor.descriptor_version,
+        descriptor_digest=descriptor.descriptor_digest,
+    )
+
+
+def operation_ref(operation: OperationDescriptor) -> OperationRef:
+    return OperationRef(
+        operation_id=operation.operation_id,
+        operation_version=operation.operation_version,
+        input_schema_digest=operation.input_schema_digest,
+        output_schema_digest=operation.output_schema_digest,
+    )
+
+
+def configuration_ref(instance: CapabilityInstance) -> ConfigurationRef:
+    return ConfigurationRef(
+        configuration_digest=instance.config_fingerprint,
+        configuration_id=instance.configuration_id,
+    )
+
+
+def authorization_digest(instance: CapabilityInstance) -> str:
+    return canonical_json_hash(
+        {
+            "connection_id": instance.connection_ref or "none",
+            "connection_version": instance.connection_version,
+            "auth_mode": instance.auth_mode.value,
+            "identity_mode": instance.connection_identity_mode,
+            "authorized_scopes": sorted(instance.connection_scopes),
+            "authorized_roles": sorted(instance.connection_roles),
+        }
+    )
+
+
+def connection_ref(instance: CapabilityInstance) -> ConnectionRef:
+    return ConnectionRef(
+        connection_id=instance.connection_ref or "none",
+        auth_mode=instance.auth_mode,
+        authorization_digest=authorization_digest(instance),
+    )
+
+
+def policy_reference(policy_id: str, *, policy_version: str = POLICY_REFERENCE_VERSION) -> PolicyRef:
+    return PolicyRef(
+        policy_id=policy_id,
+        policy_version=policy_version,
+        policy_digest=canonical_json_hash(
+            {
+                "policy_id": policy_id,
+                "policy_version": policy_version,
+            }
+        ),
+    )
+
+
+def allowed_destinations_ref(constraints: Sequence[str]) -> AllowedDestinationsRef:
+    canonical_constraints = tuple(sorted(constraints))
+    return AllowedDestinationsRef(
+        constraints=canonical_constraints,
+        constraints_digest=canonical_json_hash(list(canonical_constraints)),
     )
 
 
@@ -412,13 +603,17 @@ class CapabilityInstance:
     discovered_provider_version: str
     discovered_resource_version: str | None
     connection_ref: str | None
+    connection_version: str
     auth_mode: AuthMode
+    connection_identity_mode: str
     health: Readiness
     last_checked_at: str
     configuration: Mapping[str, Any] = field(default_factory=dict)
     config_fingerprint: str = ""
+    configuration_id: str | None = None
     config_validated: bool = True
     connection_scopes: tuple[str, ...] = ()
+    connection_roles: tuple[str, ...] = ()
     allowed_destination_constraints: tuple[str, ...] = ()
     status_evidence: tuple[str, ...] = ()
     unavailable_reason: str | None = None
@@ -436,6 +631,8 @@ class CapabilityInstance:
                 self.project_id,
                 self.provider_resource_id,
                 self.discovered_provider_version,
+                self.connection_version,
+                self.connection_identity_mode,
             )
         ):
             raise ValueError("Capability instance identity is required")
@@ -447,6 +644,8 @@ class CapabilityInstance:
             raise ValueError("Non-ready capability instances require an unavailable reason")
         _validate_json_value(self.configuration, path="instance.configuration")
         _validate_binding_safe_configuration(self.configuration)
+        if self.configuration_id == "":
+            raise ValueError("Capability instance configuration identity cannot be empty")
         object.__setattr__(self, "configuration", _freeze(self.configuration))
         fingerprint = canonical_json_hash(self.configuration)
         if self.config_fingerprint and self.config_fingerprint != fingerprint:
@@ -458,7 +657,12 @@ class CapabilityInstance:
             self.connection_scopes
         ):
             raise ValueError("Instance connection scopes must be non-empty and unique")
+        if any(not role for role in self.connection_roles) or len(set(self.connection_roles)) != len(
+            self.connection_roles
+        ):
+            raise ValueError("Instance connection roles must be non-empty and unique")
         object.__setattr__(self, "connection_scopes", tuple(sorted(self.connection_scopes)))
+        object.__setattr__(self, "connection_roles", tuple(sorted(self.connection_roles)))
         object.__setattr__(
             self,
             "allowed_destination_constraints",
@@ -603,10 +807,14 @@ def capability_instance(
     configuration: Mapping[str, Any] | None = None,
     selected_auth_mode: AuthMode | None = None,
     connection_scopes: tuple[str, ...] = (),
+    connection_version: str = "1",
+    connection_identity_mode: str | None = None,
+    connection_roles: tuple[str, ...] = (),
     descriptor_id: str | None = None,
     descriptor_metadata: Mapping[str, Any] | None = None,
     resource_id: str | None = None,
     connection_id: str | None = None,
+    configuration_id: str | None = None,
     health: Readiness | None = None,
     discovered_version: str | None = None,
     descriptor_version: str = "1.0.0",
@@ -628,7 +836,7 @@ def capability_instance(
         provenance=provenance,
         metadata=descriptor_metadata or {},
     )
-    operation_versions = {operation.version for operation in descriptor.operations}
+    operation_versions = {operation.operation_version for operation in descriptor.operations}
     resolved_version = discovered_version or (operation_versions.pop() if len(operation_versions) == 1 else "multiple")
     instance = CapabilityInstance(
         provider_id=provider_id,
@@ -644,11 +852,15 @@ def capability_instance(
         discovered_provider_version=resolved_version,
         discovered_resource_version=resolved_version,
         connection_ref=connection_id,
+        connection_version=connection_version,
         auth_mode=selected_auth_mode,
+        connection_identity_mode=connection_identity_mode or selected_auth_mode.value,
         health=health or readiness,
         last_checked_at=last_checked_at or utc_now(),
         configuration=configuration or {},
+        configuration_id=configuration_id,
         connection_scopes=connection_scopes,
+        connection_roles=connection_roles,
         allowed_destination_constraints=allowed_destination_constraints,
         status_evidence=status_evidence,
         unavailable_reason=unavailable_reason,
@@ -660,7 +872,7 @@ def capability_instance_fingerprint(
     instance: CapabilityInstance,
     descriptor: CapabilityDescriptor,
     *,
-    policy_ref: str,
+    policy_ref: str | PolicyRef,
 ) -> str:
     if (
         instance.descriptor_id != descriptor.descriptor_id
@@ -668,9 +880,11 @@ def capability_instance_fingerprint(
         or instance.descriptor_digest != descriptor.descriptor_digest
     ):
         raise ValueError("Capability fingerprint descriptor reference does not match the instance")
-    if not policy_ref:
-        raise ValueError("Capability fingerprint policy reference is required")
+    resolved_policy_ref = (
+        policy_ref if isinstance(policy_ref, PolicyRef) else policy_reference(policy_ref)
+    )
     payload = {
+        "canonicalization_version": CANONICALIZATION_VERSION,
         "provider": {"provider_id": instance.provider_id},
         "descriptor": {
             "descriptor_id": descriptor.descriptor_id,
@@ -682,7 +896,7 @@ def capability_instance_fingerprint(
             _operation_governance_payload(operation)
             for operation in sorted(
                 descriptor.operations,
-                key=lambda item: (item.operation_id, item.version),
+                key=lambda item: (item.operation_id, item.operation_version),
             )
         ],
         "instance": {
@@ -696,13 +910,22 @@ def capability_instance_fingerprint(
             "project_id": instance.project_id,
         },
         "connection": {
-            "connection_ref": instance.connection_ref,
+            "connection_id": instance.connection_ref,
+            "connection_version": instance.connection_version,
             "auth_mode": instance.auth_mode.value,
+            "identity_mode": instance.connection_identity_mode,
             "connection_scopes": sorted(instance.connection_scopes),
+            "connection_roles": sorted(instance.connection_roles),
+            "authorization_digest": authorization_digest(instance),
         },
         "allowed_destination_constraints": sorted(instance.allowed_destination_constraints),
-        "policy_ref": policy_ref,
+        "policy_ref": {
+            "policy_id": resolved_policy_ref.policy_id,
+            "policy_version": resolved_policy_ref.policy_version,
+            "policy_digest": resolved_policy_ref.policy_digest,
+        },
         "configuration": plain_json(instance.configuration),
+        "configuration_id": instance.configuration_id,
     }
     return canonical_json_hash(payload)
 
@@ -710,133 +933,163 @@ def capability_instance_fingerprint(
 @dataclass(frozen=True, slots=True)
 class CapabilityBinding:
     binding_id: str
-    provider_id: str
-    descriptor_id: str
-    descriptor_version: str
-    descriptor_digest: str
+    logical_agent_id: str
+    provider_contract_version: str
+    canonicalization_version: str
+    descriptor_ref: DescriptorRef
+    operation_ref: OperationRef
+    instance_ref: InstanceRef
+    configuration_ref: ConfigurationRef
+    connection_ref: ConnectionRef
+    policy_ref: PolicyRef
     operations_digest: str
-    operation_id: str
-    operation_version: str
-    instance_id: str
     provider_resource_id: str
-    tenant_id: str
-    project_id: str
-    instance_discovered_version: str
-    instance_discovered_resource_version: str | None
-    input_schema_digest: str
-    output_schema_digest: str
-    config: Mapping[str, Any]
-    config_hash: str
-    connection_ref: str | None
-    auth_mode: AuthMode
+    discovered_resource_version: str | None
+    configuration: Mapping[str, Any]
+    connection_version: str
+    connection_identity_mode: str
     connection_scopes: tuple[str, ...]
-    policy_ref: str
+    connection_roles: tuple[str, ...]
     allowed_destination_constraints: tuple[str, ...]
-    instance_fingerprint: str
+    allowed_destinations_digest: str
+    tenant_scope: str
+    project_scope: str
 
     def __post_init__(self) -> None:
         if not all(
             (
                 self.binding_id,
-                self.provider_id,
-                self.descriptor_id,
-                self.descriptor_version,
-                self.operation_id,
-                self.operation_version,
-                self.instance_id,
+                self.logical_agent_id,
                 self.provider_resource_id,
-                self.tenant_id,
-                self.project_id,
-                self.instance_discovered_version,
-                self.config_hash,
-                self.policy_ref,
-                self.instance_fingerprint,
+                self.connection_version,
+                self.connection_identity_mode,
+                self.tenant_scope,
+                self.project_scope,
             )
         ):
-            raise ValueError("Capability binding identifiers, versions, fingerprints, and references are required")
-        for field_name, value in (
-            ("input_schema_digest", self.input_schema_digest),
-            ("output_schema_digest", self.output_schema_digest),
-            ("descriptor_digest", self.descriptor_digest),
-            ("operations_digest", self.operations_digest),
-            ("config_hash", self.config_hash),
-            ("instance_fingerprint", self.instance_fingerprint),
-        ):
-            _validate_sha256(value, path=f"binding.{field_name}")
-        _validate_json_value(self.config, path="binding.config")
-        _validate_binding_safe_configuration(self.config)
-        object.__setattr__(self, "config", _freeze(self.config))
-        if canonical_json_hash(self.config) != self.config_hash:
+            raise ValueError("Capability binding identity and tenant/project scopes are required")
+        if self.provider_contract_version != PROVIDER_CONTRACT_VERSION:
+            raise ValueError("Capability binding provider contract version is unsupported")
+        if self.canonicalization_version != CANONICALIZATION_VERSION:
+            raise ValueError("Capability binding canonicalization version is unsupported")
+        _validate_sha256(self.operations_digest, path="binding.operations_digest")
+        _validate_json_value(self.configuration, path="binding.configuration")
+        _validate_binding_safe_configuration(self.configuration)
+        object.__setattr__(self, "configuration", _freeze(self.configuration))
+        if canonical_json_hash(self.configuration) != self.configuration_ref.configuration_digest:
             raise ValueError("Capability binding config hash does not match canonical config")
+        if any(not scope for scope in self.connection_scopes) or len(
+            set(self.connection_scopes)
+        ) != len(self.connection_scopes):
+            raise ValueError("Capability binding connection scopes must be non-empty and unique")
+        if any(not role for role in self.connection_roles) or len(
+            set(self.connection_roles)
+        ) != len(self.connection_roles):
+            raise ValueError("Capability binding connection roles must be non-empty and unique")
+        object.__setattr__(self, "connection_scopes", tuple(sorted(self.connection_scopes)))
+        object.__setattr__(self, "connection_roles", tuple(sorted(self.connection_roles)))
         if any(not constraint for constraint in self.allowed_destination_constraints) or len(
             set(self.allowed_destination_constraints)
         ) != len(self.allowed_destination_constraints):
             raise ValueError("Capability binding destination constraints must be non-empty and unique")
-        if any(not scope for scope in self.connection_scopes) or len(set(self.connection_scopes)) != len(
-            self.connection_scopes
-        ):
-            raise ValueError("Capability binding connection scopes must be non-empty and unique")
-        object.__setattr__(self, "connection_scopes", tuple(sorted(self.connection_scopes)))
         object.__setattr__(
             self,
             "allowed_destination_constraints",
             tuple(sorted(self.allowed_destination_constraints)),
         )
+        _validate_sha256(
+            self.allowed_destinations_digest,
+            path="binding.allowed_destinations_digest",
+        )
+        if (
+            canonical_json_hash(list(self.allowed_destination_constraints))
+            != self.allowed_destinations_digest
+        ):
+            raise ValueError("Capability binding allowed destinations digest does not match constraints")
 
-    @property
-    def provider_version(self) -> str:
-        return self.operation_version
 
-    @property
-    def instance_ref(self) -> str:
-        return self.instance_id
-
-    @property
-    def pinned_provider_version(self) -> str:
-        return self.operation_version
-
-    @property
-    def config_ref(self) -> str:
-        return self.config_hash
+def capability_binding_payload(binding: CapabilityBinding) -> dict[str, Any]:
+    has_connection = binding.connection_ref.connection_id != "none"
+    return {
+        "binding_id": binding.binding_id,
+        "provider_contract_version": binding.provider_contract_version,
+        "canonicalization_version": binding.canonicalization_version,
+        "provider_id": binding.instance_ref.provider_id,
+        "tenant_id": binding.tenant_scope,
+        "project_id": binding.project_scope,
+        "descriptor_id": binding.descriptor_ref.descriptor_id,
+        "descriptor_version": binding.descriptor_ref.descriptor_version,
+        "descriptor_digest": binding.descriptor_ref.descriptor_digest,
+        "operation_id": binding.operation_ref.operation_id,
+        "operation_version": binding.operation_ref.operation_version,
+        "input_schema_digest": binding.operation_ref.input_schema_digest,
+        "output_schema_digest": binding.operation_ref.output_schema_digest,
+        "instance_id": binding.instance_ref.instance_id,
+        "discovered_provider_version": binding.instance_ref.discovered_version,
+        "discovered_resource_version": binding.discovered_resource_version,
+        "instance_fingerprint": binding.instance_ref.instance_fingerprint,
+        "configuration_id": binding.configuration_ref.configuration_id,
+        "configuration_digest": binding.configuration_ref.configuration_digest,
+        "connection_id": (
+            binding.connection_ref.connection_id if has_connection else None
+        ),
+        "connection_auth_mode": (
+            binding.connection_ref.auth_mode.value if has_connection else None
+        ),
+        "connection_authorization_digest": (
+            binding.connection_ref.authorization_digest if has_connection else None
+        ),
+        "policy_id": binding.policy_ref.policy_id,
+        "policy_version": binding.policy_ref.policy_version,
+        "policy_digest": binding.policy_ref.policy_digest,
+        "allowed_destination_constraints": list(binding.allowed_destination_constraints),
+        "allowed_destinations_digest": binding.allowed_destinations_digest,
+    }
 
 
 def capability_binding(
     *,
     binding_id: str,
+    logical_agent_id: str,
     instance: CapabilityInstance,
     descriptor: CapabilityDescriptor,
     operation: OperationDescriptor,
-    policy_ref: str,
+    policy_ref: PolicyRef,
 ) -> CapabilityBinding:
+    destinations = instance.allowed_destination_constraints or operation.side_effect_destinations
+    fingerprint = capability_instance_fingerprint(
+        instance,
+        descriptor,
+        policy_ref=policy_ref,
+    )
     binding = CapabilityBinding(
         binding_id=binding_id,
-        provider_id=instance.provider_id,
-        descriptor_id=descriptor.descriptor_id,
-        descriptor_version=descriptor.descriptor_version,
-        descriptor_digest=descriptor.descriptor_digest,
-        operations_digest=capability_operations_digest(descriptor),
-        operation_id=operation.operation_id,
-        operation_version=operation.version,
-        instance_id=instance.instance_id,
-        provider_resource_id=instance.provider_resource_id,
-        tenant_id=instance.tenant_id,
-        project_id=instance.project_id,
-        instance_discovered_version=instance.discovered_provider_version,
-        instance_discovered_resource_version=instance.discovered_resource_version,
-        input_schema_digest=operation.input_schema_digest,
-        output_schema_digest=operation.output_schema_digest,
-        config=instance.configuration,
-        config_hash=instance.config_fingerprint,
-        connection_ref=instance.connection_ref,
-        auth_mode=instance.auth_mode,
-        connection_scopes=instance.connection_scopes,
-        policy_ref=policy_ref,
-        allowed_destination_constraints=instance.allowed_destination_constraints or operation.side_effect_destinations,
-        instance_fingerprint=capability_instance_fingerprint(
-            instance,
-            descriptor,
-            policy_ref=policy_ref,
+        logical_agent_id=logical_agent_id,
+        provider_contract_version=PROVIDER_CONTRACT_VERSION,
+        canonicalization_version=CANONICALIZATION_VERSION,
+        descriptor_ref=descriptor_ref(descriptor),
+        operation_ref=operation_ref(operation),
+        instance_ref=InstanceRef(
+            provider_id=instance.provider_id,
+            instance_id=instance.instance_id,
+            discovered_version=instance.discovered_provider_version,
+            instance_fingerprint=fingerprint,
         ),
+        configuration_ref=configuration_ref(instance),
+        connection_ref=connection_ref(instance),
+        policy_ref=policy_ref,
+        operations_digest=capability_operations_digest(descriptor),
+        provider_resource_id=instance.provider_resource_id,
+        discovered_resource_version=instance.discovered_resource_version,
+        configuration=instance.configuration,
+        connection_version=instance.connection_version,
+        connection_identity_mode=instance.connection_identity_mode,
+        connection_scopes=instance.connection_scopes,
+        connection_roles=instance.connection_roles,
+        allowed_destination_constraints=tuple(destinations),
+        allowed_destinations_digest=canonical_json_hash(list(sorted(destinations))),
+        tenant_scope=instance.tenant_id,
+        project_scope=instance.project_id,
     )
     validate_binding(instance, descriptor, binding)
     return binding
@@ -916,6 +1169,7 @@ class RequestSigningCredential(Protocol):
 class ApprovalDecision:
     decision_id: str
     status: ApprovalDecisionStatus
+    provider_contract_version: str
     tenant_id: str
     actor_id: str
     instance_id: str
@@ -923,31 +1177,37 @@ class ApprovalDecision:
     provider_resource_id: str
     instance_fingerprint: str
     descriptor_id: str
+    descriptor_version: str
     operation_id: str
     operation_version: str
     arguments_hash: str
     destination_hash: str
     issued_at: str
     expires_at: str
-    policy_release: str
+    policy_ref: PolicyRef
     binding_id: str | None = None
+    use_policy: ApprovalUsePolicy = ApprovalUsePolicy.ONE_TIME
+    max_uses: int = 1
 
     def __post_init__(self) -> None:
         if not all(
             (
                 self.decision_id,
+                self.provider_contract_version,
                 self.tenant_id,
                 self.actor_id,
                 self.instance_id,
                 self.project_id,
                 self.provider_resource_id,
                 self.descriptor_id,
+                self.descriptor_version,
                 self.operation_id,
                 self.operation_version,
-                self.policy_release,
             )
         ):
             raise ValueError("Approval decision identity and policy bindings are required")
+        if self.provider_contract_version != PROVIDER_CONTRACT_VERSION:
+            raise ValueError("Approval decision provider contract version is unsupported")
         for field_name, value in (
             ("instance_fingerprint", self.instance_fingerprint),
             ("arguments_hash", self.arguments_hash),
@@ -961,6 +1221,99 @@ class ApprovalDecision:
             self.expires_at.replace("Z", "+00:00")
         ):
             raise ValueError("Approval decision expiry must be after issuance")
+        if (
+            (self.use_policy is ApprovalUsePolicy.ONE_TIME
+            and self.max_uses != 1)
+            or (self.use_policy is ApprovalUsePolicy.BOUNDED_REUSABLE
+            and self.max_uses < 2)
+        ):
+            raise ValueError("Approval decision use policy and maximum uses are inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalConsumptionRequest:
+    decision_id: str
+    provider_contract_version: str
+    tenant_id: str
+    project_id: str
+    principal_id: str
+    binding_id: str | None
+    instance_fingerprint: str
+    descriptor_id: str
+    descriptor_version: str
+    operation_id: str
+    operation_version: str
+    arguments_hash: str
+    resolved_destination_hash: str
+    policy_ref: PolicyRef
+    release_id: str
+    invocation_id: str
+    idempotency_key: str | None
+    use_policy: ApprovalUsePolicy
+    max_uses: int
+
+    def __post_init__(self) -> None:
+        if not all(
+            (
+                self.decision_id,
+                self.provider_contract_version,
+                self.tenant_id,
+                self.project_id,
+                self.principal_id,
+                self.instance_fingerprint,
+                self.descriptor_id,
+                self.descriptor_version,
+                self.operation_id,
+                self.operation_version,
+                self.release_id,
+                self.invocation_id,
+            )
+        ):
+            raise ValueError("Approval consumption request identity and release bindings are required")
+        if self.provider_contract_version != PROVIDER_CONTRACT_VERSION:
+            raise ValueError("Approval consumption request provider contract version is unsupported")
+        for field_name, value in (
+            ("instance_fingerprint", self.instance_fingerprint),
+            ("arguments_hash", self.arguments_hash),
+            ("resolved_destination_hash", self.resolved_destination_hash),
+        ):
+            _validate_sha256(value, path=f"approval_consumption.{field_name}")
+        if (
+            (self.use_policy is ApprovalUsePolicy.ONE_TIME
+            and self.max_uses != 1)
+            or (self.use_policy is ApprovalUsePolicy.BOUNDED_REUSABLE
+            and self.max_uses < 2)
+        ):
+            raise ValueError("Approval consumption use policy and maximum uses are inconsistent")
+
+
+@dataclass(frozen=True, slots=True)
+class ApprovalConsumptionResult:
+    status: ApprovalConsumptionStatus
+    consumption_record_id: str | None = None
+    consumed_at: str | None = None
+
+    def __post_init__(self) -> None:
+        successful = self.status in {
+            ApprovalConsumptionStatus.CONSUMED,
+            ApprovalConsumptionStatus.ALREADY_CONSUMED_BY_SAME_IDEMPOTENT_INVOCATION,
+        }
+        if successful != bool(self.consumption_record_id and self.consumed_at):
+            raise ValueError("Approval consumption results require immutable evidence only on success")
+        if self.consumed_at is not None:
+            _validate_utc_timestamp(self.consumed_at, path="approval_consumption.consumed_at")
+
+
+ApprovalConsumptionPort = Callable[
+    [ApprovalConsumptionRequest],
+    Coroutine[Any, Any, ApprovalConsumptionResult],
+]
+
+
+async def _unavailable_approval_consumption(
+    _request: ApprovalConsumptionRequest,
+) -> ApprovalConsumptionResult:
+    return ApprovalConsumptionResult(ApprovalConsumptionStatus.UNAVAILABLE)
 
 
 @dataclass(frozen=True, slots=True)
@@ -973,11 +1326,18 @@ class InvocationContext:
     correlation_id: str
     trace_id: str
     sleep: Callable[[float], None]
+    release_id: str
+    invocation_id: str
     approval_decisions: tuple[ApprovalDecision, ...] = ()
-    policy_release: str = "agent-studio-v1"
+    authorized_policy_exceptions: tuple[PolicyRef, ...] = ()
+    policy_ref: PolicyRef = field(default_factory=lambda: policy_reference("agent-studio-v1"))
     deadline_at: str | None = None
     is_cancelled: Callable[[], bool] = field(default=lambda: False, repr=False)
-    consume_approval: Callable[[str], bool] = field(default=lambda _: False, repr=False)
+    consume_approval: ApprovalConsumptionPort = field(
+        default=_unavailable_approval_consumption,
+        repr=False,
+    )
+    logical_agent_id: str | None = None
 
     def __post_init__(self) -> None:
         if not all(
@@ -987,14 +1347,17 @@ class InvocationContext:
                 self.project_id,
                 self.correlation_id,
                 self.trace_id,
-                self.policy_release,
+                self.release_id,
+                self.invocation_id,
             )
         ):
             raise ValueError(
-                "Tenant, principal, project, correlation, trace, and policy release identifiers are required"
+                "Tenant, principal, project, correlation, trace, release, and invocation identifiers are required"
             )
         if self.deadline_at is not None:
             _validate_utc_timestamp(self.deadline_at, path="invocation.deadline_at")
+        if self.logical_agent_id == "":
+            raise ValueError("Invocation logical agent identity cannot be empty")
         now = datetime.now(UTC)
         if any(
             decision.status is not ApprovalDecisionStatus.APPROVED
@@ -1002,6 +1365,8 @@ class InvocationContext:
             for decision in self.approval_decisions
         ):
             raise ValueError("Executable invocation contexts may contain only active approved decisions")
+        if len(set(self.authorized_policy_exceptions)) != len(self.authorized_policy_exceptions):
+            raise ValueError("Authorized policy exception references must be unique")
 
     def raise_if_cancelled_or_expired(self, *, provider_id: str, instance_id: str | None = None) -> None:
         if self.is_cancelled():
@@ -1037,7 +1402,10 @@ class InvocationRequest:
     def __post_init__(self) -> None:
         if not isinstance(self.target, CapabilityInstance | CapabilityBinding) or not self.operation_id:
             raise ValueError("Capability instance and operation identifiers are required")
-        if isinstance(self.target, CapabilityBinding) and self.target.operation_id != self.operation_id:
+        if (
+            isinstance(self.target, CapabilityBinding)
+            and self.target.operation_ref.operation_id != self.operation_id
+        ):
             raise ValueError("Invocation operation must match the capability binding")
         if self.idempotency_key is not None and (
             not 1 <= len(self.idempotency_key) <= 256
@@ -1254,6 +1622,53 @@ def validate_json(schema: JsonSchema, value: Any, *, path: str = "$") -> None:
             raise ValueError(f"{path} must be {expected}")
     if "enum" in schema and value not in schema["enum"]:
         raise ValueError(f"{path} must be one of the declared values")
+    if isinstance(value, str):
+        length_constraints: tuple[
+            tuple[str, Callable[[int, int], bool], str], ...
+        ] = (
+            ("minLength", lambda actual, limit: actual >= limit, "at least"),
+            ("maxLength", lambda actual, limit: actual <= limit, "at most"),
+        )
+        for keyword, comparison, description in length_constraints:
+            if keyword not in schema:
+                continue
+            limit = schema[keyword]
+            if not isinstance(limit, int) or isinstance(limit, bool) or limit < 0:
+                raise ValueError(f"{path} has an invalid {keyword} schema constraint")
+            if not comparison(len(value), limit):
+                raise ValueError(f"{path} must contain {description} {limit} characters")
+        if "pattern" in schema:
+            pattern = schema["pattern"]
+            max_length = schema.get("maxLength")
+            if (
+                not isinstance(pattern, str)
+                or len(pattern) > 256
+                or not isinstance(max_length, int)
+                or isinstance(max_length, bool)
+                or not 0 <= max_length <= 4096
+                or re.search(r"[(){}]|\\[1-9gk]|\\[AbBZ]|\\p|\(\?", pattern)
+            ):
+                raise ValueError(f"{path} has an unsupported pattern schema constraint")
+            try:
+                matched = re.search(pattern, value) is not None
+            except re.error as exc:
+                raise ValueError(f"{path} has an invalid pattern schema constraint") from exc
+            if not matched:
+                raise ValueError(f"{path} does not match the declared pattern")
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        for keyword, comparison, description in (
+            ("minimum", lambda actual, limit: actual >= limit, "at least"),
+            ("maximum", lambda actual, limit: actual <= limit, "at most"),
+            ("exclusiveMinimum", lambda actual, limit: actual > limit, "greater than"),
+            ("exclusiveMaximum", lambda actual, limit: actual < limit, "less than"),
+        ):
+            if keyword not in schema:
+                continue
+            limit = schema[keyword]
+            if not isinstance(limit, int | float) or isinstance(limit, bool) or not math.isfinite(limit):
+                raise ValueError(f"{path} has an invalid {keyword} schema constraint")
+            if not comparison(value, limit):
+                raise ValueError(f"{path} must be {description} {limit}")
     if isinstance(value, Mapping):
         required = schema.get("required", ())
         for key in required:
@@ -1280,7 +1695,7 @@ def bindability_decisions(
     *,
     tenant_id: str,
     project_id: str | None,
-    policy_ref: str | None,
+    policy_ref: PolicyRef | None,
 ) -> tuple[BindabilityDecision, ...]:
     descriptor = discovery.descriptor_for(instance)
     decisions: list[BindabilityDecision] = []
@@ -1323,14 +1738,16 @@ def validate_binding(
     descriptor: CapabilityDescriptor,
     binding: CapabilityBinding,
     *,
-    policy_ref: str | None = None,
+    policy_ref: PolicyRef | None = None,
+    logical_agent_id: str | None = None,
 ) -> OperationDescriptor:
     active_policy_ref = policy_ref or binding.policy_ref
     operation = next(
         (
             item
             for item in descriptor.operations
-            if item.operation_id == binding.operation_id and item.version == binding.operation_version
+            if item.operation_id == binding.operation_ref.operation_id
+            and item.operation_version == binding.operation_ref.operation_version
         ),
         None,
     )
@@ -1339,38 +1756,36 @@ def validate_binding(
         descriptor,
         policy_ref=active_policy_ref,
     )
-    if binding.instance_fingerprint != current_fingerprint:
+    if binding.instance_ref.instance_fingerprint != current_fingerprint:
         categories: list[BindingChangeCategory] = []
-        if binding.provider_id != instance.provider_id:
+        if binding.instance_ref.provider_id != instance.provider_id:
             categories.append(BindingChangeCategory.PROVIDER)
-        descriptor_changed = (
-            binding.descriptor_id != instance.descriptor_id
-            or binding.descriptor_version != instance.descriptor_version
-            or binding.descriptor_digest != instance.descriptor_digest
-            or descriptor.descriptor_digest != instance.descriptor_digest
-        )
-        if descriptor_changed:
+        if binding.descriptor_ref != descriptor_ref(descriptor):
             categories.append(BindingChangeCategory.DESCRIPTOR)
         if (
             binding.operations_digest != capability_operations_digest(descriptor)
             or operation is None
-            or binding.input_schema_digest != operation.input_schema_digest
-            or binding.output_schema_digest != operation.output_schema_digest
+            or binding.operation_ref != operation_ref(operation)
         ):
             categories.append(BindingChangeCategory.OPERATIONS)
         if (
-            binding.instance_id != instance.instance_id
+            binding.instance_ref.instance_id != instance.instance_id
+            or binding.instance_ref.discovered_version != instance.discovered_provider_version
             or binding.provider_resource_id != instance.provider_resource_id
-            or binding.instance_discovered_version != instance.discovered_provider_version
-            or binding.instance_discovered_resource_version != instance.discovered_resource_version
+            or binding.discovered_resource_version != instance.discovered_resource_version
         ):
             categories.append(BindingChangeCategory.INSTANCE)
-        if binding.tenant_id != instance.tenant_id or binding.project_id != instance.project_id:
+        if (
+            binding.tenant_scope != instance.tenant_id
+            or binding.project_scope != instance.project_id
+        ):
             categories.append(BindingChangeCategory.BOUNDARY)
         if (
-            binding.connection_ref != instance.connection_ref
-            or binding.auth_mode is not instance.auth_mode
-            or set(binding.connection_scopes) != set(instance.connection_scopes)
+            binding.connection_ref != connection_ref(instance)
+            or binding.connection_version != instance.connection_version
+            or binding.connection_identity_mode != instance.connection_identity_mode
+            or binding.connection_scopes != instance.connection_scopes
+            or binding.connection_roles != instance.connection_roles
         ):
             categories.append(BindingChangeCategory.CONNECTION)
         effective_destinations = instance.allowed_destination_constraints or (
@@ -1380,14 +1795,17 @@ def validate_binding(
             categories.append(BindingChangeCategory.DESTINATIONS)
         if binding.policy_ref != active_policy_ref:
             categories.append(BindingChangeCategory.POLICY)
-        if binding.config_hash != instance.config_fingerprint or binding.config != instance.configuration:
+        if (
+            binding.configuration_ref != configuration_ref(instance)
+            or binding.configuration != instance.configuration
+        ):
             categories.append(BindingChangeCategory.CONFIGURATION)
         if not categories:
-            categories.append(BindingChangeCategory.DESCRIPTOR)
+            categories.append(BindingChangeCategory.INSTANCE)
         raise StaleBindingError(
             provider_id=instance.provider_id,
             instance_id=instance.instance_id,
-            old_fingerprint=binding.instance_fingerprint,
+            old_fingerprint=binding.instance_ref.instance_fingerprint,
             new_fingerprint=current_fingerprint,
             changed_categories=tuple(categories),
         )
@@ -1399,41 +1817,50 @@ def validate_binding(
         raise ValueError("Capability binding requires validated configuration")
     if instance.auth_mode not in descriptor.auth_modes:
         raise ValueError("Capability binding authentication mode is not supported by the descriptor")
-    if binding.provider_id != instance.provider_id:
-        raise ValueError("Capability binding belongs to a different provider")
-    if binding.instance_id != instance.instance_id:
-        raise ValueError("Capability binding belongs to a different instance")
+    if instance.auth_mode is not AuthMode.NONE and not instance.connection_ref:
+        raise ValueError("Capability binding requires a stable authorized connection identity")
+    if logical_agent_id is not None and binding.logical_agent_id != logical_agent_id:
+        raise ValueError("Capability binding belongs to a different logical agent")
     if (
-        binding.descriptor_id != instance.descriptor_id
-        or binding.descriptor_version != instance.descriptor_version
-        or binding.descriptor_digest != instance.descriptor_digest
+        binding.tenant_scope != instance.tenant_id
+        or binding.project_scope != instance.project_id
     ):
+        raise ValueError("Capability binding tenant or project scope does not match")
+    if binding.instance_ref.provider_id != instance.provider_id:
+        raise ValueError("Capability binding belongs to a different provider")
+    if binding.instance_ref.instance_id != instance.instance_id:
+        raise ValueError("Capability binding belongs to a different instance")
+    if binding.descriptor_ref != descriptor_ref(descriptor):
         raise ValueError("Capability binding belongs to a different descriptor")
     if binding.operations_digest != capability_operations_digest(descriptor):
         raise ValueError("Capability binding operation set digest does not match")
+    if binding.instance_ref.discovered_version != instance.discovered_provider_version:
+        raise ValueError("Capability binding resource identity or discovered instance version does not match")
     if (
         binding.provider_resource_id != instance.provider_resource_id
-        or binding.instance_discovered_version != instance.discovered_provider_version
-        or binding.instance_discovered_resource_version != instance.discovered_resource_version
+        or binding.discovered_resource_version != instance.discovered_resource_version
     ):
         raise ValueError("Capability binding resource identity or discovered instance version does not match")
-    if binding.tenant_id != instance.tenant_id or binding.project_id != instance.project_id:
-        raise ValueError("Capability binding tenant or project boundary does not match")
     if (
-        binding.connection_ref != instance.connection_ref
-        or binding.auth_mode is not instance.auth_mode
-        or set(binding.connection_scopes) != set(instance.connection_scopes)
+        binding.connection_ref != connection_ref(instance)
+        or binding.connection_version != instance.connection_version
+        or binding.connection_identity_mode != instance.connection_identity_mode
+        or binding.connection_scopes != instance.connection_scopes
+        or binding.connection_roles != instance.connection_roles
     ):
         raise ValueError("Capability binding connection reference or authorization scope does not match")
-    if binding.config_hash != instance.config_fingerprint or binding.config != instance.configuration:
+    if (
+        binding.configuration_ref != configuration_ref(instance)
+        or binding.configuration != instance.configuration
+    ):
         raise ValueError("Capability binding configuration reference does not match")
     if binding.policy_ref != active_policy_ref:
         raise ValueError("Capability binding policy reference does not match")
     if operation is None:
         raise ValueError("Capability binding operation or version is not declared")
-    if binding.input_schema_digest != operation.input_schema_digest:
+    if binding.operation_ref.input_schema_digest != operation.input_schema_digest:
         raise ValueError("Capability binding input schema digest does not match")
-    if binding.output_schema_digest != operation.output_schema_digest:
+    if binding.operation_ref.output_schema_digest != operation.output_schema_digest:
         raise ValueError("Capability binding output schema digest does not match")
     if operation.maturity is not Maturity.GA:
         raise ValueError("Only GA operations can be bound")
@@ -1452,25 +1879,36 @@ def resolve_capability_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
-    policy_ref: str | None = None,
+    policy_ref: PolicyRef | None = None,
+    logical_agent_id: str | None = None,
 ) -> tuple[CapabilityInstance, CapabilityBinding | None]:
+    target_instance_id = (
+        target.instance_ref.instance_id if isinstance(target, CapabilityBinding) else target.instance_id
+    )
     current = next(
-        (instance for instance in discovery.instances if instance.instance_id == target.instance_id),
+        (instance for instance in discovery.instances if instance.instance_id == target_instance_id),
         None,
     )
     if current is None:
         raise UnavailableError(
             "Capability instance is not present in current provider discovery",
             provider_id=provider_id,
-            instance_id=target.instance_id,
+            instance_id=target_instance_id,
         )
     if isinstance(target, CapabilityBinding):
+        if logical_agent_id is None:
+            raise PolicyError(
+                "Bound capability resolution requires a trusted logical agent identity",
+                provider_id=provider_id,
+                instance_id=current.instance_id,
+            )
         try:
             validate_binding(
                 current,
                 discovery.descriptor_for(current),
                 target,
                 policy_ref=policy_ref,
+                logical_agent_id=logical_agent_id,
             )
         except StaleBindingError:
             raise
@@ -1482,7 +1920,7 @@ def resolve_capability_target(
             ) from exc
         return current, target
     descriptor = discovery.descriptor_for(current)
-    active_policy_ref = policy_ref or "unbound"
+    active_policy_ref = policy_ref or policy_reference("unbound")
     current_fingerprint = capability_instance_fingerprint(
         current,
         descriptor,
@@ -1505,11 +1943,19 @@ def resolve_capability_target(
                 "discovered_resource_version": target.discovered_resource_version,
                 "tenant_id": target.tenant_id,
                 "project_id": target.project_id,
-                "connection_ref": target.connection_ref,
+                "connection_id": target.connection_ref,
+                "connection_version": target.connection_version,
                 "auth_mode": target.auth_mode.value,
+                "identity_mode": target.connection_identity_mode,
                 "connection_scopes": sorted(target.connection_scopes),
+                "connection_roles": sorted(target.connection_roles),
+                "authorization_digest": authorization_digest(target),
                 "allowed_destination_constraints": sorted(target.allowed_destination_constraints),
-                "policy_ref": active_policy_ref,
+                "policy_ref": {
+                    "policy_id": active_policy_ref.policy_id,
+                    "policy_version": active_policy_ref.policy_version,
+                    "policy_digest": active_policy_ref.policy_digest,
+                },
                 "configuration": plain_json(target.configuration),
             }
         )
@@ -1539,8 +1985,11 @@ def resolve_capability_target(
             categories.append(BindingChangeCategory.BOUNDARY)
         if (
             current.connection_ref != target.connection_ref
+            or current.connection_version != target.connection_version
             or current.auth_mode is not target.auth_mode
+            or current.connection_identity_mode != target.connection_identity_mode
             or set(current.connection_scopes) != set(target.connection_scopes)
+            or set(current.connection_roles) != set(target.connection_roles)
         ):
             categories.append(BindingChangeCategory.CONNECTION)
         if set(current.allowed_destination_constraints) != set(target.allowed_destination_constraints):
@@ -1562,13 +2011,15 @@ def validation_for_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
-    policy_ref: str | None = None,
+    policy_ref: PolicyRef | None = None,
+    logical_agent_id: str | None = None,
 ) -> ValidationReport:
     instance, _ = resolve_capability_target(
         discovery,
         target,
         provider_id=provider_id,
         policy_ref=policy_ref,
+        logical_agent_id=logical_agent_id,
     )
     return ValidationReport(
         instance.readiness,
@@ -1581,13 +2032,15 @@ def health_for_target(
     target: CapabilityInstance | CapabilityBinding,
     *,
     provider_id: str,
-    policy_ref: str | None = None,
+    policy_ref: PolicyRef | None = None,
+    logical_agent_id: str | None = None,
 ) -> HealthReport:
     instance, _ = resolve_capability_target(
         discovery,
         target,
         provider_id=provider_id,
         policy_ref=policy_ref,
+        logical_agent_id=logical_agent_id,
     )
     return HealthReport(instance.health or instance.readiness, instance.status_evidence)
 
@@ -1604,6 +2057,12 @@ def approval_decision(
     expires_at: str,
     status: ApprovalDecisionStatus = ApprovalDecisionStatus.APPROVED,
 ) -> ApprovalDecision:
+    if isinstance(target, CapabilityBinding) and context.logical_agent_id != target.logical_agent_id:
+        raise PolicyError(
+            "Approval context does not match the capability binding logical agent",
+            provider_id=instance.provider_id,
+            instance_id=instance.instance_id,
+        )
     if context.tenant_id != instance.tenant_id or context.project_id != instance.project_id:
         raise PolicyError(
             "Approval scope is outside the capability tenant or project boundary",
@@ -1621,6 +2080,7 @@ def approval_decision(
     return ApprovalDecision(
         decision_id=decision_id,
         status=status,
+        provider_contract_version=PROVIDER_CONTRACT_VERSION,
         tenant_id=context.tenant_id,
         actor_id=context.principal_id,
         instance_id=instance.instance_id,
@@ -1629,16 +2089,17 @@ def approval_decision(
         instance_fingerprint=capability_instance_fingerprint(
             instance,
             descriptor,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
         ),
         descriptor_id=instance.descriptor_id,
+        descriptor_version=instance.descriptor_version,
         operation_id=operation.operation_id,
-        operation_version=operation.version,
+        operation_version=operation.operation_version,
         arguments_hash=canonical_json_hash(arguments),
         destination_hash=canonical_json_hash(destinations),
         issued_at=utc_now(),
         expires_at=expires_at,
-        policy_release=context.policy_release,
+        policy_ref=context.policy_ref,
         binding_id=target.binding_id if isinstance(target, CapabilityBinding) else None,
     )
 
@@ -1696,20 +2157,121 @@ def _approval_matches(
         and decision.instance_id == instance.instance_id
         and decision.project_id == instance.project_id
         and decision.provider_resource_id == instance.provider_resource_id
+        and decision.provider_contract_version == PROVIDER_CONTRACT_VERSION
         and decision.instance_fingerprint
         == capability_instance_fingerprint(
             instance,
             descriptor,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
         )
         and decision.descriptor_id == instance.descriptor_id
+        and decision.descriptor_version == instance.descriptor_version
         and decision.operation_id == operation.operation_id
-        and decision.operation_version == operation.version
+        and decision.operation_version == operation.operation_version
         and decision.arguments_hash == canonical_json_hash(request.arguments)
         and decision.destination_hash == canonical_json_hash(resolved_destinations)
-        and decision.policy_release == context.policy_release
+        and decision.policy_ref == context.policy_ref
         and decision.binding_id == (binding.binding_id if binding else None)
         and expires_at > datetime.now(UTC)
+    )
+
+
+def _validate_approval_consumption(
+    result: ApprovalConsumptionResult,
+    consumption_request: ApprovalConsumptionRequest,
+    *,
+    operation: OperationDescriptor,
+    provider_id: str,
+    instance_id: str,
+) -> None:
+    if result.status is ApprovalConsumptionStatus.CONSUMED:
+        return
+    if (
+        result.status
+        is ApprovalConsumptionStatus.ALREADY_CONSUMED_BY_SAME_IDEMPOTENT_INVOCATION
+        and consumption_request.idempotency_key is not None
+        and operation.idempotency is not Idempotency.NONE
+        and operation.operation_class is not OperationClass.WRITE_IRREVERSIBLE
+    ):
+        return
+    raise PolicyError(
+        f"Approval consumption failed: {result.status.value}",
+        provider_id=provider_id,
+        instance_id=instance_id,
+    )
+
+
+async def _consume_approval_decision_async(
+    context: InvocationContext,
+    consumption_request: ApprovalConsumptionRequest,
+    *,
+    operation: OperationDescriptor,
+    provider_id: str,
+    instance_id: str,
+) -> None:
+    timeout_seconds = context.remaining_seconds(
+        provider_id=provider_id,
+        instance_id=instance_id,
+    )
+    if timeout_seconds is None:
+        timeout_seconds = operation.timeout_seconds
+    try:
+        result = await asyncio.wait_for(
+            context.consume_approval(consumption_request),
+            timeout=timeout_seconds,
+        )
+    except TimeoutError as exc:
+        raise ProviderTimeoutError(
+            "Approval consumption exceeded the invocation deadline",
+            provider_id=provider_id,
+            instance_id=instance_id,
+        ) from exc
+    except OSError as exc:
+        raise PolicyError(
+            "Approval consumption store is unavailable",
+            provider_id=provider_id,
+            instance_id=instance_id,
+        ) from exc
+    if not isinstance(result, ApprovalConsumptionResult):
+        raise PolicyError(
+            "Approval consumption store returned an invalid result",
+            provider_id=provider_id,
+            instance_id=instance_id,
+        )
+    _validate_approval_consumption(
+        result,
+        consumption_request,
+        operation=operation,
+        provider_id=provider_id,
+        instance_id=instance_id,
+    )
+
+
+def _consume_approval_decision(
+    context: InvocationContext,
+    consumption_request: ApprovalConsumptionRequest,
+    *,
+    operation: OperationDescriptor,
+    provider_id: str,
+    instance_id: str,
+) -> None:
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(
+            _consume_approval_decision_async(
+                context,
+                consumption_request,
+                operation=operation,
+                provider_id=provider_id,
+                instance_id=instance_id,
+            )
+        )
+        return
+    raise PolicyError(
+        "Async provider invocation must await find_operation_async",
+        provider_id=provider_id,
+        instance_id=instance_id,
     )
 
 
@@ -1727,7 +2289,8 @@ def find_operation(
         discovery,
         request.target,
         provider_id=provider_id,
-        policy_ref=context.policy_release,
+        policy_ref=context.policy_ref,
+        logical_agent_id=context.logical_agent_id,
     )
     if context.tenant_id != instance.tenant_id:
         raise PolicyError(
@@ -1766,12 +2329,21 @@ def find_operation(
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )
+    if instance.auth_mode is not AuthMode.NONE and not instance.connection_ref:
+        raise PolicyError(
+            "Capability requires a stable authorized connection identity",
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
     operation = next(
         (
             item
             for item in descriptor.operations
             if item.operation_id == request.operation_id
-            and (binding is None or item.version == binding.operation_version)
+            and (
+                binding is None
+                or item.operation_version == binding.operation_ref.operation_version
+            )
         ),
         None,
     )
@@ -1806,11 +2378,28 @@ def find_operation(
         instance,
         operation,
         request.arguments,
-        destination_constraints=(binding.allowed_destination_constraints if binding is not None else None),
+        destination_constraints=(
+            binding.allowed_destination_constraints if binding is not None else None
+        ),
     )
     if operation.idempotency is Idempotency.CALLER_KEY and not request.idempotency_key:
         raise PolicyError(
             "An idempotency key is required",
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
+    if operation.idempotency is not Idempotency.CALLER_KEY and request.idempotency_key is not None:
+        raise PolicyError(
+            "This operation does not accept a caller idempotency key",
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
+    if (
+        operation.policy_exception_ref is not None
+        and operation.policy_exception_ref not in context.authorized_policy_exceptions
+    ):
+        raise PolicyError(
+            "The operation policy exception is not independently authorized",
             provider_id=provider_id,
             instance_id=instance.instance_id,
         )
@@ -1838,13 +2427,66 @@ def find_operation(
                 provider_id=provider_id,
                 instance_id=instance.instance_id,
             )
-        if not context.consume_approval(decision.decision_id):
-            raise PolicyError(
-                "Approval decision is unavailable or has already been consumed",
-                provider_id=provider_id,
-                instance_id=instance.instance_id,
-            )
+        _consume_approval_decision(
+            context,
+            ApprovalConsumptionRequest(
+                decision_id=decision.decision_id,
+                provider_contract_version=PROVIDER_CONTRACT_VERSION,
+                tenant_id=context.tenant_id,
+                project_id=context.project_id,
+                principal_id=context.principal_id,
+                binding_id=binding.binding_id if binding is not None else None,
+                instance_fingerprint=decision.instance_fingerprint,
+                descriptor_id=descriptor.descriptor_id,
+                descriptor_version=descriptor.descriptor_version,
+                operation_id=operation.operation_id,
+                operation_version=operation.operation_version,
+                arguments_hash=canonical_json_hash(request.arguments),
+                resolved_destination_hash=canonical_json_hash(resolved_destinations),
+                policy_ref=context.policy_ref,
+                release_id=context.release_id,
+                invocation_id=context.invocation_id,
+                idempotency_key=request.idempotency_key,
+                use_policy=decision.use_policy,
+                max_uses=decision.max_uses,
+            ),
+            operation=operation,
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
+        context.raise_if_cancelled_or_expired(
+            provider_id=provider_id,
+            instance_id=instance.instance_id,
+        )
     return instance, operation
+
+
+async def find_operation_async(
+    discovery: DiscoveryResult,
+    request: InvocationRequest,
+    context: InvocationContext,
+    *,
+    provider_id: str,
+    tenant_id: str | None,
+) -> tuple[CapabilityInstance, OperationDescriptor]:
+    remaining = context.remaining_seconds(provider_id=provider_id)
+    authorization = asyncio.to_thread(
+        find_operation,
+        discovery,
+        request,
+        context,
+        provider_id=provider_id,
+        tenant_id=tenant_id,
+    )
+    try:
+        if remaining is None:
+            return await authorization
+        return await asyncio.wait_for(authorization, timeout=remaining)
+    except TimeoutError as exc:
+        raise ProviderTimeoutError(
+            "Provider authorization exceeded the invocation deadline",
+            provider_id=provider_id,
+        ) from exc
 
 
 def audit_metadata(

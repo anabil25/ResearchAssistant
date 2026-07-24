@@ -186,9 +186,7 @@ class WebhookProvider:
                 unavailable_reason=reason,
                 configuration={
                     "provider_endpoint": self._sanitized_destination,
-                    "provider_endpoint_digest": canonical_json_hash(
-                        self._config.destination_url or "unconfigured:webhook-destination"
-                    ),
+                    "provider_endpoint_digest": canonical_json_hash(self._sanitized_destination),
                     "method": self._config.method,
                     "health_method": self._config.health_method,
                     "signing_algorithm": self._config.signing_algorithm,
@@ -199,6 +197,9 @@ class WebhookProvider:
                 selected_auth_mode=self._config.auth.mode,
                 connection_id=self._config.auth.connection_ref,
                 connection_scopes=self._config.auth.connection_scopes,
+                connection_version=self._config.auth.connection_version,
+                connection_identity_mode=self._config.auth.effective_identity_mode,
+                connection_roles=self._config.auth.authorized_roles,
             ),
         )
 
@@ -218,7 +219,8 @@ class WebhookProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def _request_headers(self, context: InvocationContext, payload: bytes) -> dict[str, str]:
@@ -244,7 +246,8 @@ class WebhookProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
         if instance.readiness is not Readiness.READY or self._config.health_method is None:
             return HealthReport(

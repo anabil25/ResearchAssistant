@@ -71,7 +71,7 @@ def _function_capability(
     )
     route_digest = canonical_json_hash(
         {
-            "endpoint": destination,
+            "endpoint": safe_destination,
             "invoke_path_template": invoke_path_template,
         }
     )
@@ -89,7 +89,7 @@ def _function_capability(
         operations=(
             OperationDescriptor(
                 operation_id="functions.http.invoke",
-                version="1.0.0",
+                operation_version="1.0.0",
                 maturity=policy.maturity,
                 input_schema={"type": "object"},
                 output_schema={},
@@ -117,6 +117,9 @@ def _function_capability(
         selected_auth_mode=auth.mode,
         connection_id=auth.connection_ref,
         connection_scopes=auth.connection_scopes,
+        connection_version=auth.connection_version,
+        connection_identity_mode=auth.effective_identity_mode,
+        connection_roles=auth.authorized_roles,
     )
 
 
@@ -235,7 +238,8 @@ class AzureFunctionsProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -247,7 +251,8 @@ class AzureFunctionsProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:

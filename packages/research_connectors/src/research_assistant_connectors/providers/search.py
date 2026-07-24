@@ -97,7 +97,7 @@ def _search_capability(
         operations=(
             OperationDescriptor(
                 operation_id="search.documents.query",
-                version="1.0.0",
+                operation_version="1.0.0",
                 maturity=Maturity.GA,
                 input_schema=SEARCH_INPUT,
                 output_schema={"type": "object"},
@@ -123,6 +123,9 @@ def _search_capability(
         selected_auth_mode=auth.mode,
         connection_id=auth.connection_ref,
         connection_scopes=auth.connection_scopes,
+        connection_version=auth.connection_version,
+        connection_identity_mode=auth.effective_identity_mode,
+        connection_roles=auth.authorized_roles,
     )
 
 
@@ -218,7 +221,8 @@ class AzureAISearchProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def health(
@@ -230,7 +234,8 @@ class AzureAISearchProvider:
             self.discover(context),
             target,
             provider_id=PROVIDER_ID,
-            policy_ref=context.policy_release,
+            policy_ref=context.policy_ref,
+            logical_agent_id=context.logical_agent_id,
         )
 
     def invoke(self, request: InvocationRequest, context: InvocationContext) -> InvocationResult:

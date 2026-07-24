@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import re
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import replace
 from threading import Barrier, Lock
@@ -11,6 +12,9 @@ import httpx
 import pytest
 from research_assistant_connectors.providers import (
     AccessToken,
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+    ApprovalConsumptionStatus,
     ApprovalPolicy,
     AuthConfig,
     AuthMode,
@@ -50,6 +54,16 @@ from research_assistant_connectors.providers import (
     approval_decision,
 )
 from research_assistant_connectors.providers.mcp import _safe_input_schema
+
+
+async def consume_approval(
+    _request: ApprovalConsumptionRequest,
+) -> ApprovalConsumptionResult:
+    return ApprovalConsumptionResult(
+        ApprovalConsumptionStatus.CONSUMED,
+        "consumption-record",
+        "2026-07-23T14:00:00Z",
+    )
 
 
 class Credential:
@@ -92,7 +106,10 @@ def make_context(
         correlation_id="correlation",
         trace_id="trace",
         sleep=(sleeps if sleeps is not None else []).append,
-        consume_approval=lambda _: True,
+        release_id="release-1",
+        invocation_id="invocation-1",
+        consume_approval=consume_approval,
+        logical_agent_id="agent-1",
     )
 
 
@@ -162,7 +179,7 @@ def test_foundry_dynamic_discovery_invocation_and_preview_policy() -> None:
     assert responses_operation.operation_class is OperationClass.PRIVILEGED
     assert responses_operation.approval_policy is ApprovalPolicy.REQUIRED
     assert responses_operation.side_effect_destinations[0].startswith(
-        "https://foundry.test#url-sha256="
+        "https://foundry.test/project#url-sha256="
     )
     response_arguments = {
         "model": "deployment-1",
@@ -355,7 +372,12 @@ def test_functions_admin_discovery_policy_and_json_and_text_invocation() -> None
     config = FunctionsConfig(
         "https://functions.test",
         "tenant",
-        AuthConfig(AuthMode.API_KEY, secret_name="function-key", header_name="x-functions-key"),
+        AuthConfig(
+            AuthMode.API_KEY,
+            secret_name="function-key",
+            header_name="x-functions-key",
+            connection_ref="functions-api-key",
+        ),
         "https://functions.test/admin/functions",
         "admin",
         function_policies=(
@@ -472,7 +494,7 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
     )
     assert put_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
     assert put_operation.approval_policy is ApprovalPolicy.REQUIRED
-    assert put_operation.version == "1.1.0"
+    assert put_operation.operation_version == "1.1.0"
     assert put_operation.input_schema["properties"]["content_base64"]["maxLength"] == 4
     assert capability.configuration["max_upload_bytes"] == 3
     assert put_operation.side_effect_destinations[0].startswith(
@@ -508,7 +530,7 @@ def test_blob_discovery_list_get_put_and_shared_key_headers() -> None:
         BlobConfig(
             "https://account.blob.core.windows.net",
             "tenant",
-            AuthConfig(AuthMode.SHARED_KEY),
+            AuthConfig(AuthMode.SHARED_KEY, connection_ref="blob-shared-key"),
         )
     )
     shared_context = make_context(handler)
@@ -578,7 +600,7 @@ def test_blob_validation_xml_path_and_content_failures() -> None:
     )
     for content in (b"ab", b"abcd"):
         oversized = {"blob": "a", "content_base64": base64.b64encode(content).decode()}
-        with pytest.raises(ProviderValidationError, match="upload limit"):
+        with pytest.raises(ProviderValidationError, match=r"at most|upload limit"):
             provider.invoke(
                 InvocationRequest(capability, "blob.put", oversized),
                 approve(valid_ctx, valid_capabilities, capability, "blob.put", oversized),
@@ -659,7 +681,7 @@ def test_mcp_protocol_session_untrusted_annotations_and_tool_call() -> None:
     assert tuple(capabilities.descriptor_for(capability).operations[0].input_schema["required"]) == ("value",)
     arguments = {"value": "x"}
     result = provider.invoke(
-        InvocationRequest(capability, "mcp.tools.call", arguments, "idempotency"),
+        InvocationRequest(capability, "mcp.tools.call", arguments),
         approve(ctx, capabilities, capability, "mcp.tools.call", arguments),
     )
     assert result.output["content"][0]["text"] == "done"
@@ -1010,7 +1032,7 @@ def test_openapi_discovery_fixed_destination_policy_and_invocation() -> None:
     assert update_operation.operation_class is OperationClass.WRITE_IRREVERSIBLE
     assert update_operation.approval_policy is ApprovalPolicy.REQUIRED
     assert update_operation.side_effect_destinations[0].startswith(
-        "https://api.test#url-sha256="
+        "https://api.test/v1#url-sha256="
     )
     with pytest.raises(PolicyError):
         provider.invoke(
@@ -1043,6 +1065,25 @@ def test_openapi_document_retrieval_validation_and_reference_failures() -> None:
     assert provider.discover(ctx)[0].name == "ping"
     assert provider.discover(ctx)[0].name == "pong"
     assert fetches == 2
+    invalid_id_document = {
+        "openapi": "3.1.0",
+        "paths": {
+            "/invalid": {"get": {"operationId": "1bad/op name"}},
+            "/long": {"get": {"operationId": "x" * 200}},
+        },
+    }
+    normalized = OpenAPIProvider(
+        OpenAPIConfig("https://api.test", "tenant", document=invalid_id_document)
+    ).discover(ctx)
+    normalized_ids = {
+        normalized.descriptor_for(instance).operations[0].operation_id for instance in normalized
+    }
+    assert len(normalized_ids) == 2
+    assert all(re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,127}", value) for value in normalized_ids)
+    assert {instance.configuration["source_operation_id"] for instance in normalized} == {
+        "1bad/op name",
+        "x" * 200,
+    }
     missing = OpenAPIProvider(OpenAPIConfig(None, "tenant"))
     assert missing.discover(ctx)[0].readiness is Readiness.MISCONFIGURED
     assert missing.health(missing.discover(ctx)[0], ctx).readiness is Readiness.MISCONFIGURED
@@ -1084,7 +1125,7 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
             "https://hooks.test/events",
             "tenant",
             "publish",
-            AuthConfig(AuthMode.SIGNATURE),
+            AuthConfig(AuthMode.SIGNATURE, connection_ref="webhook-signing-key"),
             signing_algorithm="hmac-sha256",
         )
     )
@@ -1111,7 +1152,11 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
             "https://hooks.test/oauth",
             "tenant",
             "send",
-            AuthConfig(AuthMode.OAUTH, "webhook.scope"),
+            AuthConfig(
+                AuthMode.OAUTH,
+                "webhook.scope",
+                connection_ref="webhook-oauth",
+            ),
             signing_algorithm="hmac-sha256",
         )
     )
@@ -1134,7 +1179,12 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
             "https://hooks.test/key",
             "tenant",
             "send",
-            AuthConfig(AuthMode.API_KEY, secret_name="webhook-key", header_name="x-api-key"),
+            AuthConfig(
+                AuthMode.API_KEY,
+                secret_name="webhook-key",
+                header_name="x-api-key",
+                connection_ref="webhook-api-key",
+            ),
             signing_algorithm="hmac-sha256",
         )
     )
@@ -1149,12 +1199,17 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
     for config in (
         WebhookConfig(None, "tenant", "send"),
         WebhookConfig("https://hooks.test", "tenant", "send", method="GET"),
-        WebhookConfig("https://hooks.test", "tenant", "send", AuthConfig(AuthMode.SIGNATURE)),
         WebhookConfig(
             "https://hooks.test",
             "tenant",
             "send",
-            AuthConfig(AuthMode.SIGNATURE),
+            AuthConfig(AuthMode.SIGNATURE, connection_ref="webhook-signature"),
+        ),
+        WebhookConfig(
+            "https://hooks.test",
+            "tenant",
+            "send",
+            AuthConfig(AuthMode.SIGNATURE, connection_ref="webhook-signature"),
             signing_algorithm="hmac-sha256",
             signature_header="Content-Type",
         ),
@@ -1162,7 +1217,12 @@ def test_webhook_fixed_url_signing_health_idempotency_and_validation() -> None:
             "https://hooks.test",
             "tenant",
             "send",
-            AuthConfig(AuthMode.API_KEY, secret_name="key", header_name="X-Signature"),
+            AuthConfig(
+                AuthMode.API_KEY,
+                secret_name="key",
+                header_name="X-Signature",
+                connection_ref="webhook-api-key",
+            ),
             signing_algorithm="hmac-sha256",
         ),
         WebhookConfig(
@@ -1211,7 +1271,11 @@ def test_github_dynamic_repositories_read_write_rate_and_consent() -> None:
         GitHubConfig(
             "https://api.github.test",
             "tenant",
-            AuthConfig(AuthMode.GITHUB_APP, "github"),
+            AuthConfig(
+                AuthMode.GITHUB_APP,
+                "github",
+                connection_ref="github-app-installation",
+            ),
             owner="acme",
         )
     )
@@ -1242,7 +1306,6 @@ def test_github_dynamic_repositories_read_write_rate_and_consent() -> None:
             write,
             "github.issues.create",
             create_arguments,
-            "issue-1",
         ),
         approve(ctx, capabilities, write, "github.issues.create", create_arguments),
     )
@@ -1253,7 +1316,6 @@ def test_github_dynamic_repositories_read_write_rate_and_consent() -> None:
             write,
             "github.issue_comments.create",
             comment_arguments,
-            "comment-1",
         ),
         approve(ctx, capabilities, write, "github.issue_comments.create", comment_arguments),
     )
@@ -1346,11 +1408,11 @@ def test_graph_sites_drives_items_ga_operations_and_work_iq_preview() -> None:
     )
     graph_write = capabilities.descriptor_for(write).operations[0]
     assert graph_write.operation_class is OperationClass.WRITE_IRREVERSIBLE
-    assert graph_write.version == "1.1.0"
+    assert graph_write.operation_version == "1.1.0"
     assert graph_write.input_schema["properties"]["content_base64"]["maxLength"] == 8
     assert write.configuration["max_upload_bytes"] == 5
     assert graph_write.side_effect_destinations[0].startswith(
-        "https://graph.microsoft.test/drives/drive-1/root#endpoint-sha256="
+        "https://graph.microsoft.test/v1.0/drives/drive-1/root#endpoint-sha256="
     )
     write_arguments = {
         "path": "folder/paper.txt",
@@ -1399,8 +1461,8 @@ def test_graph_validation_no_item_discovery_and_write_validation() -> None:
     for arguments, message in (
         ({"path": "../bad", "content_base64": "YQ=="}, "safe relative"),
         ({"path": "good", "content_base64": "***"}, "invalid"),
-        ({"path": "good", "content_base64": base64.b64encode(b"ab").decode()}, "upload limit"),
-        ({"path": "good", "content_base64": base64.b64encode(b"abcd").decode()}, "upload limit"),
+        ({"path": "good", "content_base64": base64.b64encode(b"ab").decode()}, "at most|upload limit"),
+        ({"path": "good", "content_base64": base64.b64encode(b"abcd").decode()}, "at most|upload limit"),
     ):
         with pytest.raises(ProviderValidationError, match=message):
             provider.invoke(

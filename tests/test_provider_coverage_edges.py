@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import base64
 import json
+import re
 from dataclasses import replace
 from typing import Any
 
@@ -8,6 +10,9 @@ import httpx
 import pytest
 from research_assistant_connectors.providers import (
     AccessToken,
+    ApprovalConsumptionRequest,
+    ApprovalConsumptionResult,
+    ApprovalConsumptionStatus,
     ApprovalPolicy,
     AuthConfig,
     AuthMode,
@@ -43,10 +48,20 @@ from research_assistant_connectors.providers import (
     approval_decision,
     capability_instance_fingerprint,
 )
-from research_assistant_connectors.providers._http import require_endpoint
+from research_assistant_connectors.providers._http import decode_base64_limited, require_endpoint
 from research_assistant_connectors.providers.contracts import _freeze, plain_json, validate_json
 from research_assistant_connectors.providers.mcp import _safe_input_schema
 from research_assistant_connectors.providers.openapi import _argument_schema
+
+
+async def consume_approval(
+    _request: ApprovalConsumptionRequest,
+) -> ApprovalConsumptionResult:
+    return ApprovalConsumptionResult(
+        ApprovalConsumptionStatus.CONSUMED,
+        "consumption-record",
+        "2026-07-23T14:00:00Z",
+    )
 
 
 class Token:
@@ -64,7 +79,10 @@ def ctx(handler: Any, *, credential: object | None = None) -> InvocationContext:
         correlation_id="correlation",
         trace_id="trace",
         sleep=lambda _: None,
-        consume_approval=lambda _: True,
+        release_id="release-1",
+        invocation_id="invocation-1",
+        consume_approval=consume_approval,
+        logical_agent_id="agent-1",
     )
 
 
@@ -101,12 +119,26 @@ def test_contract_and_http_edges() -> None:
     validate_json({"type": "array"}, [])
     with pytest.raises(ValueError, match="not configured"):
         require_endpoint(None)
+    with pytest.raises(ProviderValidationError, match="upload limit"):
+        decode_base64_limited(
+            base64.b64encode(b"too-large").decode(),
+            max_bytes=1,
+            provider_id="provider",
+        )
 
 
 def test_remaining_provider_validation_edges() -> None:
     context = ctx(lambda _: httpx.Response(200, json={}))
     no_credential = replace(context, credential=object())
-    oauth = AuthConfig(AuthMode.OAUTH, "scope")
+    oauth = AuthConfig(AuthMode.OAUTH, "scope", connection_ref="oauth-connection")
+    with pytest.raises(ValueError, match="Connection version"):
+        AuthConfig(AuthMode.OAUTH, connection_version="")
+    with pytest.raises(ValueError, match="configured identity"):
+        AuthConfig(AuthMode.OAUTH, identity_mode="")
+    with pytest.raises(ValueError, match="connection roles"):
+        AuthConfig(AuthMode.OAUTH, authorized_roles=("role", "role"))
+    with pytest.raises(ValueError, match="connection roles"):
+        AuthConfig(AuthMode.OAUTH, authorized_roles=("",))
     providers = (
         FoundryProvider(FoundryConfig("ftp://bad", "tenant", models_path="/models")),
         FoundryProvider(FoundryConfig("https://foundry.test", "tenant", oauth, models_path="/models")),
@@ -297,7 +329,15 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
         return httpx.Response(503)
 
     provider = GitHubProvider(
-        GitHubConfig("https://github.test", "tenant", AuthConfig(AuthMode.OAUTH, "github.scope"))
+        GitHubConfig(
+            "https://github.test",
+            "tenant",
+            AuthConfig(
+                AuthMode.OAUTH,
+                "github.scope",
+                connection_ref="github-oauth",
+            ),
+        )
     )
     context = ctx(handler)
     github_discovery = provider.discover(context)
@@ -309,7 +349,6 @@ def test_github_writes_do_not_retry_when_an_idempotency_header_is_unsupported() 
                 write,
                 "github.issues.create",
                 arguments,
-                "unsupported-key",
             ),
             approve(context, github_discovery, write, "github.issues.create", arguments),
         )
@@ -352,23 +391,14 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
         AzureBlobProvider(BlobConfig("https://two.blob.test", "tenant")).discover(blob_context),
     )
     blob_fingerprints = tuple(fingerprint(discovered, discovered[0]) for discovered in blob_discoveries)
-    secret_blob_discovery = AzureBlobProvider(
+    with pytest.raises(ValueError, match="cannot contain userinfo") as blob_userinfo_error:
         BlobConfig(
             "https://user:password@blob.test/container?sig=secret",
             "tenant",
         )
-    ).discover(blob_context)
-    secret_blob = secret_blob_discovery[0]
-    secret_blob_serialized = json.dumps(
-        {
-            "destinations": secret_blob_discovery.descriptor_for(
-                secret_blob
-            ).operations[-1].side_effect_destinations,
-            "configuration": plain_json(secret_blob.configuration),
-        }
-    )
-    assert "password" not in secret_blob_serialized
-    assert "sig=secret" not in secret_blob_serialized
+    assert str(blob_userinfo_error.value) == "Configured provider URLs cannot contain userinfo"
+    assert "password" not in str(blob_userinfo_error.value)
+    assert "secret" not in str(blob_userinfo_error.value)
 
     github_context = ctx(lambda _: httpx.Response(200, json=[{"full_name": "owner/repo"}]))
     github_fingerprints = []
@@ -438,31 +468,19 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
         )
         assert signature not in serialized
         signed_webhook_fingerprints.append(fingerprint(discovered, instance))
-    userinfo_provider = WebhookProvider(
+    with pytest.raises(ValueError, match="cannot contain userinfo") as userinfo_error:
         WebhookConfig(
             "https://user:password@hooks.test/events?sig=secret",
             "tenant",
             "publish",
             health_method=None,
         )
-    )
-    userinfo_discovery = userinfo_provider.discover(ctx(lambda _: httpx.Response(200)))
-    userinfo_instance = userinfo_discovery[0]
-    userinfo_serialized = json.dumps(
-        {
-            "destinations": userinfo_discovery.descriptor_for(
-                userinfo_instance
-            ).operations[0].side_effect_destinations,
-            "configuration": plain_json(userinfo_instance.configuration),
-            "resource_id": userinfo_instance.provider_resource_id,
-        }
-    )
-    assert "user" not in userinfo_serialized
-    assert "password" not in userinfo_serialized
-    assert "secret" not in userinfo_serialized
+    assert str(userinfo_error.value) == "Configured provider URLs cannot contain userinfo"
+    assert "password" not in str(userinfo_error.value)
+    assert "secret" not in str(userinfo_error.value)
     path_secret_provider = WebhookProvider(
         WebhookConfig(
-            "https://hooks.test/services/path-token/path-secret",
+            "https://hooks.test/services/path-one",
             "tenant",
             "publish",
             health_method=None,
@@ -481,8 +499,7 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
             "resource_id": path_secret_instance.provider_resource_id,
         }
     )
-    assert "path-token" not in path_secret_serialized
-    assert "path-secret" not in path_secret_serialized
+    assert "path-one" in path_secret_serialized
     malformed_webhook = WebhookProvider(
         WebhookConfig("https://[", "tenant", "publish", health_method=None)
     ).discover(ctx(lambda _: httpx.Response(200)))
@@ -596,7 +613,7 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
                 secret,
                 GitHubProvider(
                     GitHubConfig(
-                        f"https://user:password@service.test/private/{secret}?token={secret}",
+                        f"https://service.test/private/resource?token={secret}",
                         "tenant",
                         AuthConfig(AuthMode.NONE),
                     )
@@ -609,7 +626,7 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
                 secret,
                 MicrosoftGraphProvider(
                     GraphConfig(
-                        f"https://user:password@service.test/private/{secret}?token={secret}",
+                        f"https://service.test/private/resource?token={secret}",
                         "tenant",
                     )
                 ),
@@ -620,7 +637,14 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
     for provider_group in fallback_providers:
         provider_fingerprints = []
         for secret, provider in provider_group:
-            discovered = provider.discover(ctx(lambda _: httpx.Response(200)))
+            response_payload: Any = (
+                [{"full_name": "owner/repo"}]
+                if isinstance(provider, GitHubProvider)
+                else {"value": []}
+            )
+            discovered = provider.discover(
+                ctx(lambda _, payload=response_payload: httpx.Response(200, json=payload))
+            )
             instance = next(
                 (
                     candidate
@@ -647,15 +671,15 @@ def test_write_instance_fingerprints_pin_configured_origins() -> None:
         ("github", github_fingerprints),
         ("graph", graph_fingerprints),
         ("webhook", webhook_fingerprints),
-        ("signed-webhook", signed_webhook_fingerprints),
         ("openapi", openapi_fingerprints),
         ("foundry", foundry_fingerprints),
         ("functions", function_fingerprints),
-        ("github-fallback", fallback_fingerprints[0]),
-        ("graph-fallback", fallback_fingerprints[1]),
     )
     for label, fingerprints in fingerprint_groups:
         assert fingerprints[0] != fingerprints[1], label
+    assert signed_webhook_fingerprints[0] == signed_webhook_fingerprints[1]
+    assert fallback_fingerprints[0][0] == fallback_fingerprints[0][1]
+    assert fallback_fingerprints[1][0] == fallback_fingerprints[1][1]
 
 
 def test_provider_fingerprints_pin_auth_routing_and_protocol_versions() -> None:
@@ -923,7 +947,7 @@ def test_mcp_tools_shape_long_name_and_tool_error() -> None:
     assert mcp_discovery.descriptor_for(capability).operations[0].max_retries == 0
     with pytest.raises(UpstreamError, match="execution error"):
         provider.invoke(
-            InvocationRequest(capability, "mcp.tools.call", {}, "key"),
+            InvocationRequest(capability, "mcp.tools.call", {}),
             approve(context, mcp_discovery, capability, "mcp.tools.call", {}),
         )
 
@@ -960,7 +984,71 @@ def test_openapi_schema_validation_and_render_edges() -> None:
         },
     }
     provider = OpenAPIProvider(OpenAPIConfig("https://api.test", "tenant", document=duplicate_document))
-    assert len(provider.discover(ctx(lambda _: httpx.Response(200)))) == 1
+    discovered = provider.discover(ctx(lambda _: httpx.Response(200)))
+    assert len(discovered) == 2
+    operation_mapping = {
+        instance.configuration["path"]: (
+            discovered.descriptor_for(instance).operations[0].operation_id,
+            instance.configuration["source_operation_id"],
+        )
+        for instance in discovered
+    }
+    assert operation_mapping["/one"][1] == operation_mapping["/two"][1] == "same"
+    assert operation_mapping["/one"][0] != operation_mapping["/two"][0]
+    reversed_document = {
+        "openapi": "3.1.0",
+        "paths": {
+            "/two": {"get": {"operationId": "same"}},
+            "/one": {"post": {"operationId": None}, "get": {"operationId": "same"}},
+            "/none": None,
+        },
+    }
+    reversed_discovery = OpenAPIProvider(
+        OpenAPIConfig("https://api.test", "tenant", document=reversed_document)
+    ).discover(ctx(lambda _: httpx.Response(200)))
+    assert {
+        instance.configuration["path"]: (
+            reversed_discovery.descriptor_for(instance).operations[0].operation_id,
+            instance.configuration["source_operation_id"],
+        )
+        for instance in reversed_discovery
+    } == operation_mapping
+    assert all(
+        re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{1,127}", operation_id)
+        for operation_id, _ in operation_mapping.values()
+    )
+    dispatched_paths: list[str] = []
+
+    def dispatch_handler(request: httpx.Request) -> httpx.Response:
+        dispatched_paths.append(request.url.path)
+        return httpx.Response(200, json={"path": request.url.path})
+
+    configured_provider = OpenAPIProvider(
+        OpenAPIConfig(
+            "https://api.test",
+            "tenant",
+            document=duplicate_document,
+            operation_policies=tuple(
+                OpenAPIOperationPolicy(
+                    operation_id,
+                    OperationClass.READ,
+                    ApprovalPolicy.NEVER,
+                    maturity=Maturity.GA,
+                )
+                for operation_id, _ in operation_mapping.values()
+            ),
+        )
+    )
+    dispatch_context = ctx(dispatch_handler)
+    configured_discovery = configured_provider.discover(dispatch_context)
+    for instance in configured_discovery:
+        operation_id = configured_discovery.descriptor_for(instance).operations[0].operation_id
+        result = configured_provider.invoke(
+            InvocationRequest(instance, operation_id, {}),
+            dispatch_context,
+        )
+        assert result.output == {"path": instance.configuration["path"]}
+    assert set(dispatched_paths) == {"/one", "/two"}
     with pytest.raises(ProviderValidationError, match="required"):
         OpenAPIProvider._render_path("/x/{id}", {})
     with pytest.raises(ProviderValidationError, match="malformed"):
