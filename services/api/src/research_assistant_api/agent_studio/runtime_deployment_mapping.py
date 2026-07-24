@@ -330,6 +330,25 @@ class RuntimeDeploymentMapping(BaseModel):
             raise ValueError("supersedes_deployment_id must not equal deployment_id.")
         return self
 
+    @model_validator(mode="after")
+    def _validity_window_is_coherent(self) -> RuntimeDeploymentMapping:
+        """Structural coherence of the [created_at, expires_at] window and revocation.
+
+        Both window bounds are inclusive (see ``lifecycle_fault``). An empty
+        window (``expires_at < created_at``) is rejected; the degenerate
+        single-instant window (``expires_at == created_at``) is permitted. A
+        ``revoked_at`` before ``created_at`` is rejected -- revocation records an
+        act that happened at or after creation (a revoking *revision* is born at
+        the revocation instant), never before it. "Not future-dated" (revoked_at
+        must be <= the write instant) is a producer-level check where an injected
+        ``now`` is available; the model enforces the created_at lower bound.
+        """
+        if self.expires_at is not None and self.expires_at < self.created_at:
+            raise ValueError("expires_at must not be before created_at (empty validity window).")
+        if self.revoked_at is not None and self.revoked_at < self.created_at:
+            raise ValueError("revoked_at must not be before created_at.")
+        return self
+
     @property
     def mapping_ref(self) -> str:
         """Opaque, stable reference a runtime echoes back in every request.

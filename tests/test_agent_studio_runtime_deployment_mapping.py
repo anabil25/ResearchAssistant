@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -263,6 +263,50 @@ def test_lifecycle_fault_not_yet_effective_before_created_at() -> None:
     assert future.lifecycle_fault(datetime(2026, 6, 1, tzinfo=UTC)) == "not_yet_effective"
     # At/after created_at it is effective again.
     assert future.lifecycle_fault(datetime(2026, 12, 1, tzinfo=UTC)) is None
+
+
+def test_validity_window_bounds_are_inclusive() -> None:
+    created = datetime(2026, 3, 1, tzinfo=UTC)
+    expires = datetime(2026, 9, 1, tzinfo=UTC)
+    mapping = _mapping().model_copy(update={"created_at": created, "expires_at": expires})
+    # now == created_at (lower bound) is effective.
+    assert mapping.lifecycle_fault(created) is None
+    # now == expires_at (upper bound) is effective.
+    assert mapping.lifecycle_fault(expires) is None
+    # Just outside each bound denies.
+    assert mapping.lifecycle_fault(created - timedelta(microseconds=1)) == "not_yet_effective"
+    assert mapping.lifecycle_fault(expires + timedelta(microseconds=1)) == "expired"
+
+
+def test_rejects_empty_validity_window() -> None:
+    created = datetime(2026, 3, 1, tzinfo=UTC)
+    with pytest.raises(ValidationError, match="empty validity window"):
+        RuntimeDeploymentMapping(
+            **{**_mapping().model_dump(), "created_at": created, "expires_at": created - timedelta(seconds=1)}
+        )
+
+
+def test_permits_single_instant_window() -> None:
+    created = datetime(2026, 3, 1, tzinfo=UTC)
+    mapping = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created, "expires_at": created})
+    assert mapping.lifecycle_fault(created) is None
+
+
+def test_rejects_revoked_before_created() -> None:
+    created = datetime(2026, 3, 1, tzinfo=UTC)
+    with pytest.raises(ValidationError, match="revoked_at must not be before created_at"):
+        RuntimeDeploymentMapping(
+            **{**_mapping().model_dump(), "created_at": created, "revoked_at": created - timedelta(seconds=1)}
+        )
+
+
+def test_same_inputs_produce_identical_digest() -> None:
+    # The positive proof the default-factory defect class is gone: two same-input
+    # constructions digest identically.
+    created = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+    a = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created})
+    b = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": created})
+    assert a.mapping_digest == b.mapping_digest
 
 
 def test_lifecycle_fault_prioritizes_revocation_over_expiry() -> None:
