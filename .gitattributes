@@ -1,4 +1,35 @@
-# DO NOT REMOVE THIS EXEMPTION, and do not let a later `* text=auto` override it.
+# Repository-wide line-ending policy.
+#
+# ORDERING IS LOAD-BEARING: in .gitattributes THE LAST MATCHING LINE WINS. The
+# golden exemption below must therefore stay AFTER the `*` rule, never before
+# it. Verified empirically, with core.autocrlf=true:
+#     exemption placed BEFORE `* text=auto` -> `git check-attr text` = "auto"
+#                                              (exemption OVERRIDDEN, file
+#                                               normalized, transport pin broken)
+#     exemption placed AFTER  `* text=auto` -> `git check-attr text` = "unset"
+#                                              (exemption holds)
+# Do not reorder these lines. The ordering is machine-enforced by
+# test_golden_exemption_survives_repo_wide_normalization in
+# tests/test_agent_studio_capability_discovery_golden.py, so a reordering fails
+# the suite rather than silently reverting a pin.
+#
+# `eol=lf` is deliberate and not cosmetic. `text=auto` alone normalizes what is
+# STORED; `eol=lf` also forces LF in the WORKING TREE. That is what actually
+# prevents the original defect class here -- development on Windows with
+# core.autocrlf=true, validated on Linux CI -- and it is required for the
+# shell scripts under scripts/, which break outright with CRLF.
+#
+# Landing this is byte-safe: a sweep of the union of all non-dependabot branch
+# tips (793 unique blobs) found ZERO stored-CRLF text files, so this rule is a
+# no-op on stored bytes at every tip and cannot break an existing digest pin.
+* text=auto eol=lf
+
+# The only genuine binary in the tree. Marked explicitly rather than relying on
+# git's content-detection heuristic, for the same reason the golden below
+# carries an explicit rule: "probably detected correctly" is not a control.
+*.ico binary
+
+# DO NOT REMOVE THIS EXEMPTION, AND DO NOT MOVE IT ABOVE THE `*` RULE.
 #
 # tests/golden/provider-adapter-openapi.v7.json is a pinned snapshot of the
 # integration provider's public flat-v7 OpenAPI contract (provider commit
@@ -9,16 +40,15 @@
 #     recorded it;
 #   * semantic pin -- a content-canonical (parsed, sorted-key) digest.
 #
-# The provider stores that contract with LF endings. This repository is
-# developed on Windows where `core.autocrlf = true` and validated in CI on
-# Linux, so WITHOUT the `-text` rule below git would rewrite this file to CRLF
-# on a Windows checkout. That silently changes its bytes, changes the transport
-# pin from 7a484f39... to 4b3830bc..., and makes the golden test report drift
-# against the provider that does not actually exist.
+# The provider stores that contract with LF endings. Because this repository is
+# developed on Windows where core.autocrlf=true and validated in CI on Linux,
+# WITHOUT this `-text` rule git would rewrite the file on checkout. That
+# silently changes its bytes, moves the transport pin from 7a484f39... to
+# 4b3830bc..., and makes the golden test report drift against the provider that
+# does not actually exist -- while appearing to pass against a baseline that is
+# merely an artifact of the recording checkout.
 #
-# `-text` therefore means: git must never perform end-of-line conversion on this
-# file in either direction. It is a deliberate correctness control, not an
-# oversight or a stray inconsistency. If a repository-wide normalization rule
-# (e.g. `* text=auto`) is introduced later, this exemption must be preserved
-# ahead of it; normalizing this file WILL break the pin.
+# `-text` means: git must never perform end-of-line conversion on this file in
+# either direction. It is a deliberate correctness control, not an oversight or
+# a stray inconsistency to be tidied away.
 tests/golden/provider-adapter-openapi.v7.json -text

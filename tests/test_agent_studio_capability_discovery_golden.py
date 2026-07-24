@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import subprocess
 from pathlib import Path
 from typing import Any
 
@@ -85,6 +86,37 @@ def test_golden_transport_pin_matches_the_provider_blob_digest() -> None:
     """Byte identity against the provider's own source, not against our checkout."""
 
     assert hashlib.sha256(_golden_bytes()).hexdigest() == GOLDEN_V7_OPENAPI_TRANSPORT_SHA256
+
+
+def test_golden_exemption_survives_repo_wide_normalization() -> None:
+    """The `-text` exemption must actually be in effect, not merely present.
+
+    `.gitattributes` resolves by LAST MATCHING LINE, so the golden's `-text` rule
+    only holds while it sits AFTER the repository-wide `* text=auto eol=lf` rule.
+    Placing it before -- which reads like the natural way to give an exemption
+    priority -- silently yields `text: auto`, normalizes the artifact on a
+    Windows checkout, and moves the transport pin from 7a484f39... to
+    4b3830bc..., i.e. back to the self-referential baseline that was rejected.
+
+    Asserting the resolved attribute makes that ordering machine-enforced. A
+    comment can only ask the next maintainer to be careful; this fails the suite.
+    """
+
+    repo_root = Path(__file__).resolve().parents[1]
+    result = subprocess.run(
+        ["git", "check-attr", "text", "--", "tests/golden/provider-adapter-openapi.v7.json"],
+        cwd=repo_root,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+
+    # Expected: "...: text: unset". Anything else (notably "auto") means the
+    # exemption has been reordered, weakened, or removed.
+    assert result.stdout.strip().endswith(": text: unset"), (
+        f"golden -text exemption is not in effect ({result.stdout.strip()!r}); check that it appears "
+        "AFTER the '* text=auto eol=lf' rule in .gitattributes -- last matching line wins"
+    )
 
 
 def test_golden_semantic_pin_matches_canonical_content_digest() -> None:
