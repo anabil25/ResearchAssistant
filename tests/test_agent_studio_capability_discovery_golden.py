@@ -8,9 +8,32 @@ imports the provider's Python package (or any GPL/unlicensed source), so the
 backend's field mapping stays verified against the frozen public contract
 without coupling to provider-internal code.
 
-The artifact is committed byte-for-byte (CRLF, treated as binary via
-``.gitattributes``) so its SHA-256 stays byte-identical to the provider-owner
-pin on every platform.
+**Identity is pinned as a PAIR, because neither pin alone is sufficient.**
+
+* The **transport pin** is the SHA-256 of the artifact's exact bytes. It equals
+  the digest of the provider's own blob at ``b2745459`` (``7a484f39...``), so the
+  baseline is independently verifiable against provider source rather than being
+  an artifact of whoever's checkout recorded it. This is what makes the golden a
+  *correctness* control rather than merely a *consistency* one.
+* The **semantic pin** is a content-canonical digest (parsed JSON, sorted keys,
+  compact separators). It is immune to line endings and whitespace, so it cannot
+  raise a false alarm from a representation change alone.
+
+The transport pin alone would report phantom drift on any EOL change; the
+semantic pin alone would stop detecting real byte-level drift such as key
+reordering or duplicate keys (``json.loads`` silently keeps the last duplicate).
+Together they distinguish "the contract changed" from "only its representation
+changed", and a reviewer can tell which occurred from *which* pin fails.
+
+This file reads only the committed wire-contract JSON and this backend's own
+adapter -- it never imports the provider's Python package (or any
+GPL/unlicensed source), so the field mapping stays verified against the frozen
+public contract without coupling to provider-internal code.
+
+``.gitattributes`` marks the artifact ``-text`` so git performs no EOL
+conversion in either direction. That rule is what keeps the transport pin valid
+on Windows (``core.autocrlf = true``) as well as on Linux CI; see the rationale
+recorded in that file.
 """
 
 from __future__ import annotations
@@ -32,10 +55,19 @@ from research_assistant_api.agent_studio.models import InstanceReadiness, Operat
 from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
 
-#: The exact provider-owner pin for the flat-v7 OpenAPI artifact (SHA-256 of the
-#: committed CRLF bytes). Authoritative source: provider commit
-#: b2745459bfdeae1625f35a9503e5b5fcc3478c9d.
-GOLDEN_V7_OPENAPI_SHA256 = "4b3830bcbddb97e9379c1f464d0167ea65c379da429ef33a93bb4cb509620495"
+#: TRANSPORT pin: SHA-256 of the artifact's exact bytes. Independently
+#: verifiable -- this is the digest of the provider's own blob at commit
+#: b2745459bfdeae1625f35a9503e5b5fcc3478c9d, so anyone hashing provider source
+#: computes this same value. Detects byte-level drift the semantic pin cannot
+#: see (key reordering, duplicate keys, whitespace).
+GOLDEN_V7_OPENAPI_TRANSPORT_SHA256 = "7a484f394289994572ac99e48296edf6ec5b727c51d4d1d404aafe9dd4f7f76b"
+
+#: SEMANTIC pin: content-canonical digest (parsed, sorted keys, compact
+#: separators) -- the same canonicalization this package uses for every other
+#: content digest. EOL- and whitespace-immune, so a representation-only change
+#: fails the transport pin while this one still passes, making the two
+#: distinguishable.
+GOLDEN_V7_OPENAPI_CANONICAL_DIGEST = "sha256:878db3f8bd03a413bd7be214495cc89bbbce947e38969d16b2566c413d3600d8"
 
 GOLDEN_PATH = Path(__file__).parent / "golden" / "provider-adapter-openapi.v7.json"
 
@@ -44,9 +76,62 @@ def _golden_bytes() -> bytes:
     return GOLDEN_PATH.read_bytes()
 
 
-def test_golden_artifact_matches_provider_owner_pinned_sha256() -> None:
-    digest = hashlib.sha256(_golden_bytes()).hexdigest()
-    assert digest == GOLDEN_V7_OPENAPI_SHA256
+def _canonical_digest(raw: bytes) -> str:
+    canonical = json.dumps(json.loads(raw), sort_keys=True, separators=(",", ":"))
+    return "sha256:" + hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def test_golden_transport_pin_matches_the_provider_blob_digest() -> None:
+    """Byte identity against the provider's own source, not against our checkout."""
+
+    assert hashlib.sha256(_golden_bytes()).hexdigest() == GOLDEN_V7_OPENAPI_TRANSPORT_SHA256
+
+
+def test_golden_semantic_pin_matches_canonical_content_digest() -> None:
+    assert _canonical_digest(_golden_bytes()) == GOLDEN_V7_OPENAPI_CANONICAL_DIGEST
+
+
+def test_golden_is_stored_with_provider_line_endings() -> None:
+    """The `-text` .gitattributes rule must keep this file exactly as published.
+
+    If repository-wide EOL normalization ever rewrites the artifact, this fails
+    with a precise cause instead of surfacing as an opaque digest mismatch.
+    """
+
+    raw = _golden_bytes()
+    assert b"\r\n" not in raw, (
+        "golden was rewritten to CRLF -- the `-text` rule in .gitattributes was removed or overridden; "
+        "this changes the transport pin and will report provider drift that does not exist"
+    )
+
+
+def test_semantic_pin_is_eol_immune_while_transport_pin_is_not() -> None:
+    """Documents precisely what each pin does and does not catch."""
+
+    as_lf = _golden_bytes()
+    as_crlf = as_lf.replace(b"\n", b"\r\n")
+
+    assert as_lf != as_crlf
+    # Representation-only change: semantic pin holds, transport pin moves.
+    assert _canonical_digest(as_crlf) == GOLDEN_V7_OPENAPI_CANONICAL_DIGEST
+    assert hashlib.sha256(as_crlf).hexdigest() != GOLDEN_V7_OPENAPI_TRANSPORT_SHA256
+
+
+def test_transport_pin_catches_byte_drift_the_semantic_pin_cannot() -> None:
+    """Why the pins are a pair rather than a substitution.
+
+    Key reordering and duplicate keys survive canonicalization -- ``json.loads``
+    silently keeps the last duplicate -- so the semantic pin alone would not
+    detect them. The transport pin does.
+    """
+
+    reordered = json.dumps(json.loads(_golden_bytes()), sort_keys=True).encode("utf-8")
+    assert _canonical_digest(reordered) == GOLDEN_V7_OPENAPI_CANONICAL_DIGEST  # semantic pin blind to it
+    assert hashlib.sha256(reordered).hexdigest() != GOLDEN_V7_OPENAPI_TRANSPORT_SHA256  # transport catches it
+
+    duplicated = b'{"a": 1, "a": 2}'
+    assert json.loads(duplicated) == {"a": 2}  # duplicate key silently collapses
+    assert hashlib.sha256(duplicated).hexdigest() != hashlib.sha256(b'{"a": 2}').hexdigest()
 
 
 def test_golden_artifact_declares_the_contract_generation_the_adapter_translates() -> None:

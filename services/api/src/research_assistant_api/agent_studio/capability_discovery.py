@@ -45,7 +45,8 @@ from __future__ import annotations
 import asyncio
 import json
 import re
-from collections.abc import Mapping
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from datetime import datetime
 from typing import Any, Protocol, TypeGuard
 
@@ -857,6 +858,21 @@ _ProviderDiscoveryOutcome = tuple[
     tuple[str, ...],
 ]
 
+def _duplicates[HasId: (CapabilityDescriptor, CapabilityInstance)](
+    items: Iterable[HasId],
+) -> list[HasId]:
+    """Every item whose ``id`` occurs more than once, order-independently.
+
+    Used to fail closed on ambiguous identities: because the result depends only
+    on *which* ids repeat and never on the order they arrived in, any permutation
+    of the wire payload yields the same rejection set.
+    """
+
+    counts: Counter[str] = Counter()
+    materialized = list(items)
+    counts.update(item.id for item in materialized)
+    return [item for item in materialized if counts[item.id] > 1]
+
 
 class HttpCapabilityDiscoverySource:
     """Authenticated HTTP adapter over the provider integration's flat v7 wire contract.
@@ -1083,13 +1099,9 @@ class HttpCapabilityDiscoverySource:
             return_exceptions=True,
         )
 
-        descriptors: list[CapabilityDescriptor] = []
-        instances: list[CapabilityInstance] = []
-        descriptor_pins: list[ProviderDescriptorPins] = []
-        instance_pins: list[ProviderInstancePins] = []
         warnings: list[str] = list(catalog_warnings) + entry_warnings
-        seen_descriptor_ids: set[str] = set()
-        seen_instance_ids: set[str] = set()
+        collected_descriptors: list[tuple[str, CapabilityDescriptor, ProviderDescriptorPins]] = []
+        collected_instances: list[tuple[str, CapabilityInstance, ProviderInstancePins]] = []
 
         for provider_id, outcome in zip(provider_ids, outcomes, strict=True):
             if isinstance(outcome, BaseException):
@@ -1106,31 +1118,57 @@ class HttpCapabilityDiscoverySource:
             for descriptor, descriptor_pin in zip(
                 provider_descriptors, provider_descriptor_pins, strict=True
             ):
-                if descriptor.id in seen_descriptor_ids:
-                    warnings.append(
-                        f"Provider {provider_id} descriptor id {descriptor.id!r} collided with an "
-                        "already-discovered descriptor; skipped."
-                    )
-                    continue
-                seen_descriptor_ids.add(descriptor.id)
-                descriptors.append(descriptor)
-                descriptor_pins.append(descriptor_pin)
+                collected_descriptors.append((provider_id, descriptor, descriptor_pin))
             for instance, instance_pin in zip(provider_instances, provider_instance_pins, strict=True):
-                if instance.descriptor_id not in seen_descriptor_ids:
-                    warnings.append(
-                        f"Provider {provider_id} instance id {instance.id!r} references descriptor "
-                        f"{instance.descriptor_id!r} which was not discovered/kept; skipped."
-                    )
-                    continue
-                if instance.id in seen_instance_ids:
-                    warnings.append(
-                        f"Provider {provider_id} instance id {instance.id!r} collided with an "
-                        "already-discovered instance; skipped."
-                    )
-                    continue
-                seen_instance_ids.add(instance.id)
-                instances.append(instance)
-                instance_pins.append(instance_pin)
+                collected_instances.append((provider_id, instance, instance_pin))
+
+        # Duplicate identity resolution must be deterministic on *content*, never
+        # on arrival position. A keep-first (or keep-last) rule would let the
+        # provider's array ordering decide which descriptor is retained -- and
+        # therefore decide every downstream digest and whether a given instance
+        # correlates and becomes bindable at all. So every occurrence of a
+        # duplicated identity is rejected (fail closed): the outcome is identical
+        # under any permutation of the wire payload.
+        duplicate_descriptor_ids = {
+            descriptor.id
+            for descriptor in _duplicates(descriptor for _, descriptor, _ in collected_descriptors)
+        }
+        duplicate_instance_ids = {
+            instance.id for instance in _duplicates(instance for _, instance, _ in collected_instances)
+        }
+        for descriptor_id in sorted(duplicate_descriptor_ids):
+            warnings.append(
+                f"Descriptor id {descriptor_id!r} was declared more than once; every occurrence was "
+                "rejected because the correct one cannot be determined from content."
+            )
+        for instance_id in sorted(duplicate_instance_ids):
+            warnings.append(
+                f"Instance id {instance_id!r} was declared more than once; every occurrence was "
+                "rejected because the correct one cannot be determined from content."
+            )
+
+        descriptors: list[CapabilityDescriptor] = []
+        descriptor_pins: list[ProviderDescriptorPins] = []
+        for _, descriptor, descriptor_pin in collected_descriptors:
+            if descriptor.id in duplicate_descriptor_ids:
+                continue
+            descriptors.append(descriptor)
+            descriptor_pins.append(descriptor_pin)
+        kept_descriptor_ids = {descriptor.id for descriptor in descriptors}
+
+        instances: list[CapabilityInstance] = []
+        instance_pins: list[ProviderInstancePins] = []
+        for provider_id, instance, instance_pin in collected_instances:
+            if instance.id in duplicate_instance_ids:
+                continue
+            if instance.descriptor_id not in kept_descriptor_ids:
+                warnings.append(
+                    f"Provider {provider_id} instance id {instance.id!r} references descriptor "
+                    f"{instance.descriptor_id!r} which was not discovered/kept; skipped."
+                )
+                continue
+            instances.append(instance)
+            instance_pins.append(instance_pin)
 
         return CapabilityDiscoveryResult(
             descriptors=tuple(descriptors),
@@ -1213,13 +1251,16 @@ class HttpCapabilityDiscoverySource:
         # Correlate each instance back to its descriptor's verbatim pins so a
         # provider that ships an instance disagreeing with its own descriptor's
         # pinned version/digest is caught instead of being silently masked when
-        # the registry later stamps the current descriptor digest. Keep the
-        # *first* pin per raw descriptor id to stay consistent with the
-        # keep-first collision handling in ``_discover`` -- so an instance is
-        # always validated against the exact descriptor that will be retained.
-        descriptor_pin_by_raw_id: dict[str, ProviderDescriptorPins] = {}
-        for descriptor_pin in descriptor_pins:
-            descriptor_pin_by_raw_id.setdefault(descriptor_pin.descriptor_id, descriptor_pin)
+        # the registry later stamps the current descriptor digest. Only
+        # unambiguous ids get a correlation entry: a raw id declared more than
+        # once has no single correct pin, so picking either would reintroduce
+        # arrival-order dependence. Those descriptors are rejected wholesale at
+        # aggregation, and their instances fall out via the
+        # "references descriptor which was not discovered/kept" guard.
+        pin_counts: Counter[str] = Counter(pin.descriptor_id for pin in descriptor_pins)
+        descriptor_pin_by_raw_id = {
+            pin.descriptor_id: pin for pin in descriptor_pins if pin_counts[pin.descriptor_id] == 1
+        }
         for instance_payload in instances_payload:
             try:
                 instance, instance_pin = _map_instance(

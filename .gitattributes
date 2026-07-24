@@ -1,4 +1,24 @@
-# Pinned provider wire-contract golden: preserve exact bytes (CRLF) on every
-# platform so its SHA-256 stays byte-identical to the provider-owner pin,
-# regardless of core.autocrlf. Treated as binary; git must never convert EOLs.
+# DO NOT REMOVE THIS EXEMPTION, and do not let a later `* text=auto` override it.
+#
+# tests/golden/provider-adapter-openapi.v7.json is a pinned snapshot of the
+# integration provider's public flat-v7 OpenAPI contract (provider commit
+# b2745459). Its test asserts two pins:
+#   * transport pin -- SHA-256 of the exact bytes, which must equal the digest
+#     of the provider's own blob (7a484f39...) so the baseline is independently
+#     verifiable against provider source rather than against whoever's checkout
+#     recorded it;
+#   * semantic pin -- a content-canonical (parsed, sorted-key) digest.
+#
+# The provider stores that contract with LF endings. This repository is
+# developed on Windows where `core.autocrlf = true` and validated in CI on
+# Linux, so WITHOUT the `-text` rule below git would rewrite this file to CRLF
+# on a Windows checkout. That silently changes its bytes, changes the transport
+# pin from 7a484f39... to 4b3830bc..., and makes the golden test report drift
+# against the provider that does not actually exist.
+#
+# `-text` therefore means: git must never perform end-of-line conversion on this
+# file in either direction. It is a deliberate correctness control, not an
+# oversight or a stray inconsistency. If a repository-wide normalization rule
+# (e.g. `* text=auto`) is introduced later, this exemption must be preserved
+# ahead of it; normalizing this file WILL break the pin.
 tests/golden/provider-adapter-openapi.v7.json -text

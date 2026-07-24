@@ -1385,24 +1385,33 @@ async def test_discover_reports_unavailable_on_non_200_catalog_status() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discover_collapses_duplicate_descriptor_ids_within_a_provider_to_a_warning() -> None:
+async def test_discover_rejects_every_occurrence_of_a_duplicate_descriptor_id() -> None:
+    """Duplicate identities are resolved on content, not arrival position.
+
+    Keeping the first (or last) occurrence would let wire ordering decide which
+    descriptor is retained and therefore every downstream digest, so every
+    occurrence is rejected instead."""
+
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/providers":
             return httpx.Response(200, json=_catalog_payload(["foundry"]))
-        descriptors = [_descriptor_payload(descriptor_id="dup"), _descriptor_payload(descriptor_id="dup")]
+        descriptors = [
+            _descriptor_payload(descriptor_id="dup", descriptor_digest="a" * 64),
+            _descriptor_payload(descriptor_id="dup", descriptor_digest="b" * 64),
+        ]
         return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=descriptors, instances=[]))
 
     source, client = _source(handler)
     result = await source.discover(_request())
     await client.aclose()
 
-    assert len(result.descriptors) == 1
-    assert len(result.descriptor_pins) == 1
-    assert any("collided with an already-discovered descriptor" in warning for warning in result.warnings)
+    assert result.descriptors == ()
+    assert result.descriptor_pins == ()
+    assert any("declared more than once" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
-async def test_discover_collapses_duplicate_instance_ids_within_a_provider_to_a_warning() -> None:
+async def test_discover_rejects_every_occurrence_of_a_duplicate_instance_id() -> None:
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/providers":
             return httpx.Response(200, json=_catalog_payload(["foundry"]))
@@ -1413,9 +1422,48 @@ async def test_discover_collapses_duplicate_instance_ids_within_a_provider_to_a_
     result = await source.discover(_request())
     await client.aclose()
 
-    assert len(result.instances) == 1
-    assert len(result.instance_pins) == 1
-    assert any("collided with an already-discovered instance" in warning for warning in result.warnings)
+    assert result.instances == ()
+    assert result.instance_pins == ()
+    assert any("declared more than once" in warning for warning in result.warnings)
+
+
+def _duplicate_descriptor_capabilities(reverse: bool) -> dict[str, Any]:
+    """Two same-id descriptors differing in content, plus an instance matching
+    only the second one. Ordering is the single variable under test."""
+
+    first = _descriptor_payload(descriptor_id="dup", descriptor_digest="a" * 64, name="Alpha")
+    second = _descriptor_payload(descriptor_id="dup", descriptor_digest="b" * 64, name="Bravo")
+    descriptors = [second, first] if reverse else [first, second]
+    instance = _instance_payload(descriptor_id="dup", descriptor_digest="b" * 64)
+    return _capabilities_payload("foundry", descriptors=descriptors, instances=[instance])
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_discover_duplicate_resolution_is_independent_of_wire_order(reverse: bool) -> None:
+    """Regression lock for an arrival-order nondeterminism.
+
+    Under the previous keep-first rule this exact payload retained a different
+    descriptor per ordering -- and, worse, the instance became bindable in one
+    ordering and was dropped in the other. Both orderings must now produce the
+    identical (empty, fail-closed) outcome."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        return httpx.Response(200, json=_duplicate_descriptor_capabilities(reverse))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert result.descriptor_pins == ()
+    # The instance must not become bindable just because the duplicate it agreed
+    # with happened to arrive first.
+    assert result.instances == ()
+    assert result.instance_pins == ()
+    assert any("declared more than once" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
@@ -1519,20 +1567,20 @@ async def test_discover_filters_catalog_entries_without_a_string_provider_id() -
 
 
 @pytest.mark.asyncio
-async def test_discover_validates_instance_against_the_retained_duplicate_descriptor() -> None:
-    """When a provider ships two descriptors sharing a raw id, the first is
-    retained; an instance that matches only the *dropped* second descriptor
-    must be skipped (never mis-bound to the retained first one)."""
+async def test_discover_skips_instance_disagreeing_with_its_unambiguous_descriptor() -> None:
+    """The descriptor-correlation guard still applies for non-duplicate ids.
+
+    (Superseded the old keep-first "retained duplicate" test: duplicate ids are
+    now rejected wholesale, so correlation only ever runs against an
+    unambiguous descriptor.)"""
 
     async def handler(request: httpx.Request) -> httpx.Response:
         if request.url.path == "/v1/providers":
             return httpx.Response(200, json=_catalog_payload(["foundry"]))
-        first = _descriptor_payload(descriptor_id="dup", descriptor_digest="a" * 64)
-        second = _descriptor_payload(descriptor_id="dup", descriptor_digest="b" * 64)
-        # This instance agrees only with the dropped ``second`` descriptor.
-        instance = _instance_payload(descriptor_id="dup", descriptor_digest="b" * 64)
+        descriptor = _descriptor_payload(descriptor_id="solo", descriptor_digest="a" * 64)
+        instance = _instance_payload(descriptor_id="solo", descriptor_digest="b" * 64)
         return httpx.Response(
-            200, json=_capabilities_payload("foundry", descriptors=[first, second], instances=[instance])
+            200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[instance])
         )
 
     source, client = _source(handler)
@@ -1540,6 +1588,6 @@ async def test_discover_validates_instance_against_the_retained_duplicate_descri
     await client.aclose()
 
     assert len(result.descriptors) == 1
-    assert result.descriptor_pins[0].descriptor_digest == "a" * 64  # the retained first descriptor
+    assert result.descriptor_pins[0].descriptor_digest == "a" * 64
     assert result.instances == ()
     assert any("disagrees with its descriptor" in warning for warning in result.warnings)
