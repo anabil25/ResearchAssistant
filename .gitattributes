@@ -11,7 +11,9 @@
 # Do not reorder these lines. The ordering is machine-enforced by
 # test_golden_exemption_survives_repo_wide_normalization in
 # tests/test_agent_studio_capability_discovery_golden.py, so a reordering fails
-# the suite rather than silently reverting a pin.
+# the suite rather than silently reverting a pin. That test is the ONLY detector:
+# because `eol=lf` below forces LF in the working tree, a defeated exemption
+# produces no CRLF and no pin movement, so the byte-level checks cannot see it.
 #
 # `eol=lf` is deliberate and not cosmetic. `text=auto` alone normalizes what is
 # STORED; `eol=lf` also forces LF in the WORKING TREE. That is what actually

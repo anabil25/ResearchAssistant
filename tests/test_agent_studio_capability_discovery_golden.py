@@ -89,17 +89,38 @@ def test_golden_transport_pin_matches_the_provider_blob_digest() -> None:
 
 
 def test_golden_exemption_survives_repo_wide_normalization() -> None:
-    """The `-text` exemption must actually be in effect, not merely present.
+    """THIS IS THE ONLY DETECTOR OF A DEFEATED `-text` EXEMPTION. Do not remove
+    it as duplicative of the byte/CRLF check -- that check is blind here.
 
     `.gitattributes` resolves by LAST MATCHING LINE, so the golden's `-text` rule
     only holds while it sits AFTER the repository-wide `* text=auto eol=lf` rule.
     Placing it before -- which reads like the natural way to give an exemption
-    priority -- silently yields `text: auto`, normalizes the artifact on a
-    Windows checkout, and moves the transport pin from 7a484f39... to
-    4b3830bc..., i.e. back to the self-referential baseline that was rejected.
+    priority -- silently yields `text: auto`.
 
-    Asserting the resolved attribute makes that ordering machine-enforced. A
-    comment can only ask the next maintainer to be careful; this fails the suite.
+    WHY THE OUTCOME ASSERTION CANNOT SEE THAT, measured with the exemption in the
+    broken order and a real re-checkout forced:
+
+        git check-attr        -> text: auto, eol: lf   (exemption defeated)
+        CRLF present in file  -> False                 (symptom SUPPRESSED)
+        transport pin         -> still holds
+        outcome test          -> PASSES (blind)
+        this test             -> FAILS  (detects)
+
+    The `eol=lf` in the repo-wide rule forces LF in the WORKING TREE
+    unconditionally, so the CRLF symptom that
+    ``test_golden_is_stored_with_provider_line_endings`` watches for never
+    appears -- on any platform, at any `core.autocrlf` setting. The repo-wide
+    remediation prevents the bug AND suppresses the symptom, which blinds every
+    test watching for that symptom.
+
+    So a defeated exemption is currently SYMPTOMLESS: no CRLF, pin intact, and
+    nothing else failing. Its exposure is latent -- the `-text` rule is what
+    protects the artifact if `eol=lf` is ever changed or removed, and without
+    this assertion that protection could sit silently defeated until the day
+    something else changes and the pin moves with no obvious cause.
+
+    Prefer the outcome assertion in general -- unless another control has removed
+    the outcome's observability, which is exactly the case here.
     """
 
     repo_root = Path(__file__).resolve().parents[1]
@@ -126,8 +147,12 @@ def test_golden_semantic_pin_matches_canonical_content_digest() -> None:
 def test_golden_is_stored_with_provider_line_endings() -> None:
     """The `-text` .gitattributes rule must keep this file exactly as published.
 
-    If repository-wide EOL normalization ever rewrites the artifact, this fails
-    with a precise cause instead of surfacing as an opaque digest mismatch.
+    NOTE ON ITS LIMITS: this assertion is blind to a *defeated* `-text`
+    exemption, because the repo-wide `eol=lf` forces LF in the working tree and
+    so suppresses the CRLF symptom entirely. It catches a CRLF-producing change
+    only if `eol=lf` is also gone.
+    ``test_golden_exemption_survives_repo_wide_normalization`` is the detector
+    for the defeated-exemption case; the two are not redundant.
     """
 
     raw = _golden_bytes()
