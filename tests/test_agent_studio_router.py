@@ -65,6 +65,12 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
     utc_now,
 )
+from research_assistant_api.agent_studio.observability_provider import (
+    IN_MEMORY_SOURCE,
+    InMemoryObservabilityProvider,
+    ObservabilityProvider,
+    UnavailableObservabilityProvider,
+)
 from research_assistant_api.agent_studio.playground_invoker import (
     InMemoryPlaygroundInvoker,
     PlaygroundInvocationResult,
@@ -200,6 +206,7 @@ def _build_app(
     audit_service: AuditService | None,
     evaluation_runner: EvaluationRunner | None = None,
     playground_invoker: PlaygroundInvoker | None = None,
+    observability_provider: ObservabilityProvider | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -232,6 +239,7 @@ def _build_app(
     app.state.agent_studio_template_catalog = default_template_catalog()
     app.state.agent_studio_evaluation_runner = evaluation_runner or UnavailableEvaluationRunner()
     app.state.agent_studio_playground_invoker = playground_invoker or UnavailablePlaygroundInvoker()
+    app.state.agent_studio_observability_provider = observability_provider or UnavailableObservabilityProvider()
     return app
 
 
@@ -430,6 +438,42 @@ def playground_available_client(
                 tool_calls=(),
             )
         ),
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def observability_available_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+    audit_service: AuditService,
+) -> Iterator[TestClient]:
+    """A client with a real (in-memory, test-only) observability provider wired.
+
+    Distinct from the default ``client`` fixture, which mirrors production's
+    always-unavailable observability provider when no Application Insights
+    resource is configured (see ``observability_provider`` module
+    docstring) -- this fixture exists only to exercise the
+    summary-retrieval success path deterministically.
+    """
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=audit_service,
+        observability_provider=InMemoryObservabilityProvider(),
     )
     with TestClient(app) as test_client:
         yield test_client
@@ -3662,6 +3706,86 @@ def test_escalation_routes_cover_pending_approval_and_owner_only_decision(
         headers={**VIEWER_HEADERS, "If-Match": draft["etag"]},
     )
     assert update_response.status_code == 200
+
+
+def test_deployment_observability_unavailable_without_provider(
+    client: TestClient,
+) -> None:
+    _create_agent(client, logical_agent_id="agent-observe", headers=USER_HEADERS)
+    version = _cut_gated_version(client, "agent-observe", headers=USER_HEADERS)
+    deployment = _deploy_version(
+        client,
+        logical_agent_id="agent-observe",
+        version_id=version["id"],
+        headers=USER_HEADERS,
+    )
+
+    response = client.get(
+        f"/api/agent-studio/agents/agent-observe/deployments/{deployment['id']}/observability",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+
+def test_deployment_observability_returns_summary_when_provider_configured(
+    observability_available_client: TestClient,
+) -> None:
+    client = observability_available_client
+    _create_agent(client, logical_agent_id="agent-observe", headers=USER_HEADERS)
+    version = _cut_gated_version(client, "agent-observe", headers=USER_HEADERS)
+    deployment = _deploy_version(
+        client,
+        logical_agent_id="agent-observe",
+        version_id=version["id"],
+        headers=USER_HEADERS,
+    )
+
+    response = client.get(
+        f"/api/agent-studio/agents/agent-observe/deployments/{deployment['id']}/observability",
+        params=_params(window_hours=48),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 200
+    summary = response.json()
+    assert summary["deployment_id"] == deployment["id"]
+    assert summary["logical_agent_id"] == "agent-observe"
+    assert summary["source"] == IN_MEMORY_SOURCE
+
+    missing = client.get(
+        "/api/agent-studio/agents/agent-observe/deployments/missing/observability",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert missing.status_code == 404
+
+    wrong_agent = client.get(
+        f"/api/agent-studio/agents/some-other-agent/deployments/{deployment['id']}/observability",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert wrong_agent.status_code == 404
+
+    invalid_window_low = client.get(
+        f"/api/agent-studio/agents/agent-observe/deployments/{deployment['id']}/observability",
+        params=_params(window_hours=0),
+        headers=USER_HEADERS,
+    )
+    assert invalid_window_low.status_code == 422
+
+    invalid_window_high = client.get(
+        f"/api/agent-studio/agents/agent-observe/deployments/{deployment['id']}/observability",
+        params=_params(window_hours=721),
+        headers=USER_HEADERS,
+    )
+    assert invalid_window_high.status_code == 422
+
+    outside_project = client.get(
+        f"/api/agent-studio/agents/agent-observe/deployments/{deployment['id']}/observability",
+        params=_params(OTHER_PROJECT_ID),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert outside_project.status_code == 404
 
 
 def test_deployment_routes_cover_deploy_health_rollback_and_errors(

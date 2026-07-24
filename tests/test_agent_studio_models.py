@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 from pydantic import ValidationError
@@ -31,6 +31,8 @@ from research_assistant_api.agent_studio.models import (
     CitationPolicy,
     DelegationScope,
     DeploymentEnvironment,
+    DeploymentHealth,
+    DeploymentObservabilitySummary,
     DeploymentRecord,
     EvaluationRecord,
     EvaluationRun,
@@ -66,6 +68,7 @@ from research_assistant_api.agent_studio.models import (
     SpecialistPolicy,
     StudioApprovalRecord,
     TemplateProvenance,
+    ToolInvocationStat,
     ToolRegistrationKind,
     ToolRegistrationSpec,
     WorkspaceConnectionRef,
@@ -469,6 +472,85 @@ def test_evaluation_suite_is_frozen_and_scoped_per_logical_agent() -> None:
     )
     with pytest.raises(ValidationError):
         suite.name = "mutated"  # type: ignore[misc]
+
+
+def test_tool_invocation_stat_rejects_error_count_over_invocation_count() -> None:
+    ToolInvocationStat(tool_name="search", invocation_count=5, error_count=5)  # equal is fine
+    with pytest.raises(ValidationError, match="error_count cannot exceed invocation_count"):
+        ToolInvocationStat(tool_name="search", invocation_count=1, error_count=2)
+
+
+def test_deployment_observability_summary_valid_construction() -> None:
+    now = datetime.now(UTC)
+    summary = DeploymentObservabilitySummary(
+        deployment_id="deployment-1",
+        logical_agent_id="agent-1",
+        window_start=now - timedelta(hours=24),
+        window_end=now,
+        health=DeploymentHealth(status=HealthStatus.HEALTHY),
+        invocation_count=10,
+        error_count=2,
+        error_rate=0.2,
+        latency_p50_ms=120.0,
+        latency_p95_ms=450.0,
+        tool_stats=(ToolInvocationStat(tool_name="search", invocation_count=3, error_count=0),),
+        trace_links=("op-1", "op-2"),
+        estimated_cost_usd=None,
+        source="application-insights",
+    )
+    assert summary.error_rate == 0.2
+    assert summary.tool_stats[0].tool_name == "search"
+    assert summary.estimated_cost_usd is None
+
+
+def test_deployment_observability_summary_rejects_inverted_window() -> None:
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="window_end cannot precede window_start"):
+        DeploymentObservabilitySummary(
+            deployment_id="deployment-1",
+            logical_agent_id="agent-1",
+            window_start=now,
+            window_end=now - timedelta(hours=1),
+            health=DeploymentHealth(),
+            invocation_count=0,
+            error_count=0,
+            error_rate=0.0,
+            source="application-insights",
+        )
+
+
+def test_deployment_observability_summary_rejects_error_count_over_invocation_count() -> None:
+    now = datetime.now(UTC)
+    with pytest.raises(ValidationError, match="error_count cannot exceed invocation_count"):
+        DeploymentObservabilitySummary(
+            deployment_id="deployment-1",
+            logical_agent_id="agent-1",
+            window_start=now - timedelta(hours=1),
+            window_end=now,
+            health=DeploymentHealth(),
+            invocation_count=1,
+            error_count=2,
+            error_rate=1.0,
+            source="application-insights",
+        )
+
+
+def test_deployment_observability_summary_is_frozen() -> None:
+    now = datetime.now(UTC)
+    summary = DeploymentObservabilitySummary(
+        deployment_id="deployment-1",
+        logical_agent_id="agent-1",
+        window_start=now - timedelta(hours=1),
+        window_end=now,
+        health=DeploymentHealth(),
+        invocation_count=0,
+        error_count=0,
+        error_rate=0.0,
+        source="application-insights",
+    )
+    with pytest.raises(ValidationError):
+        summary.invocation_count = 5
+
 
 
 def test_evaluation_run_average_score_ignores_missing_scores_and_handles_empty_results() -> None:

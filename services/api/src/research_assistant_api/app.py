@@ -54,6 +54,7 @@ from research_assistant_api.agent_studio.memory_service import (
     build_memory_store,
 )
 from research_assistant_api.agent_studio.model_discovery import build_model_discovery
+from research_assistant_api.agent_studio.observability_provider import build_observability_provider
 from research_assistant_api.agent_studio.playground_invoker import build_playground_invoker
 from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
 from research_assistant_api.agent_studio.release_service import ReleaseService
@@ -187,6 +188,12 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     # as the evaluation runner above -- real invocation requires the
     # harness-owned runtime, out of scope for this platform session.
     application.state.agent_studio_playground_invoker = build_playground_invoker(settings)
+    # Deployment Observability/Monitor read surface. Unlike the evaluation
+    # runner/playground invoker above, this *is* wired to a real adapter
+    # when configured (mirrors ``model_discovery`` above) -- querying
+    # already-emitted Application Insights telemetry is this platform's own
+    # ownership, not the harness-owned runtime invocation path.
+    application.state.agent_studio_observability_provider = build_observability_provider(settings)
     try:
         store = build_agent_studio_store(settings)
     except AgentStudioStoreError as exc:

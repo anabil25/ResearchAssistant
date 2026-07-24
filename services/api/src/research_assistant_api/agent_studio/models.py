@@ -1979,6 +1979,73 @@ class LogicalAgentBinding(BaseModel):
 
 
 # --------------------------------------------------------------------------
+# Observability/Monitor read surface
+# --------------------------------------------------------------------------
+# A single ``DeploymentRecord.trace_ref`` field is not a Monitor tab. This
+# section adds a redacted, read-only aggregate the router exposes via
+# ``observability_provider.ObservabilityProvider`` (see that module's
+# docstring for the honest-unavailable-when-unconfigured contract). Nothing
+# here is persisted by this platform -- it is always freshly queried/derived
+# at request time from Application Insights (or a test double), never cached
+# or fabricated. Only aggregate counters/opaque IDs are surfaced; raw trace
+# content, tool arguments, or tool outputs never appear in this shape.
+
+
+class ToolInvocationStat(BaseModel):
+    """Redacted per-tool invocation counters for one deployment/window."""
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_name: str
+    invocation_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+
+    @model_validator(mode="after")
+    def _error_count_within_invocations(self) -> ToolInvocationStat:
+        if self.error_count > self.invocation_count:
+            raise ValueError("error_count cannot exceed invocation_count.")
+        return self
+
+
+class DeploymentObservabilitySummary(BaseModel):
+    """Redacted health/invocation/trace/cost aggregate for one deployment.
+
+    Distinct from ``DeploymentHealth`` (a single point-in-time status the
+    platform itself records via ``POST /deployments/{id}/health``): this is
+    a telemetry-derived read view over a ``[window_start, window_end)``
+    time window. ``trace_links`` are opaque correlation IDs (e.g. Application
+    Insights ``operation_Id`` values), never raw span/event content, and
+    ``estimated_cost_usd`` is honestly ``None`` (rather than a fabricated
+    number) whenever no real cost model backs the provider.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    deployment_id: str
+    logical_agent_id: str
+    window_start: datetime
+    window_end: datetime
+    health: DeploymentHealth
+    invocation_count: int = Field(ge=0)
+    error_count: int = Field(ge=0)
+    error_rate: float = Field(ge=0.0, le=1.0)
+    latency_p50_ms: float | None = Field(default=None, ge=0.0)
+    latency_p95_ms: float | None = Field(default=None, ge=0.0)
+    tool_stats: tuple[ToolInvocationStat, ...] = ()
+    trace_links: tuple[str, ...] = ()
+    estimated_cost_usd: float | None = Field(default=None, ge=0.0)
+    source: str
+
+    @model_validator(mode="after")
+    def _validate_window_and_counts(self) -> DeploymentObservabilitySummary:
+        if self.window_end < self.window_start:
+            raise ValueError("window_end cannot precede window_start.")
+        if self.error_count > self.invocation_count:
+            raise ValueError("error_count cannot exceed invocation_count.")
+        return self
+
+
+# --------------------------------------------------------------------------
 # Builder Agent: stored proposals (propose -> researcher review -> apply)
 # --------------------------------------------------------------------------
 # The conversational Builder Agent itself lives outside this codebase (owned

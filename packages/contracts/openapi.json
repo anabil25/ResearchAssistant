@@ -4138,6 +4138,117 @@
         "title": "DeploymentHealth",
         "type": "object"
       },
+      "DeploymentObservabilitySummary": {
+        "description": "Redacted health/invocation/trace/cost aggregate for one deployment.\n\nDistinct from ``DeploymentHealth`` (a single point-in-time status the\nplatform itself records via ``POST /deployments/{id}/health``): this is\na telemetry-derived read view over a ``[window_start, window_end)``\ntime window. ``trace_links`` are opaque correlation IDs (e.g. Application\nInsights ``operation_Id`` values), never raw span/event content, and\n``estimated_cost_usd`` is honestly ``None`` (rather than a fabricated\nnumber) whenever no real cost model backs the provider.",
+        "properties": {
+          "deployment_id": {
+            "title": "Deployment Id",
+            "type": "string"
+          },
+          "error_count": {
+            "minimum": 0.0,
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "error_rate": {
+            "maximum": 1.0,
+            "minimum": 0.0,
+            "title": "Error Rate",
+            "type": "number"
+          },
+          "estimated_cost_usd": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Estimated Cost Usd"
+          },
+          "health": {
+            "$ref": "#/components/schemas/DeploymentHealth"
+          },
+          "invocation_count": {
+            "minimum": 0.0,
+            "title": "Invocation Count",
+            "type": "integer"
+          },
+          "latency_p50_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P50 Ms"
+          },
+          "latency_p95_ms": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "number"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Latency P95 Ms"
+          },
+          "logical_agent_id": {
+            "title": "Logical Agent Id",
+            "type": "string"
+          },
+          "source": {
+            "title": "Source",
+            "type": "string"
+          },
+          "tool_stats": {
+            "default": [],
+            "items": {
+              "$ref": "#/components/schemas/ToolInvocationStat"
+            },
+            "title": "Tool Stats",
+            "type": "array"
+          },
+          "trace_links": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Trace Links",
+            "type": "array"
+          },
+          "window_end": {
+            "format": "date-time",
+            "title": "Window End",
+            "type": "string"
+          },
+          "window_start": {
+            "format": "date-time",
+            "title": "Window Start",
+            "type": "string"
+          }
+        },
+        "required": [
+          "deployment_id",
+          "logical_agent_id",
+          "window_start",
+          "window_end",
+          "health",
+          "invocation_count",
+          "error_count",
+          "error_rate",
+          "source"
+        ],
+        "title": "DeploymentObservabilitySummary",
+        "type": "object"
+      },
       "DeploymentRecord": {
         "additionalProperties": false,
         "properties": {
@@ -8662,6 +8773,32 @@
         "title": "TemplateReadiness",
         "type": "string"
       },
+      "ToolInvocationStat": {
+        "description": "Redacted per-tool invocation counters for one deployment/window.",
+        "properties": {
+          "error_count": {
+            "minimum": 0.0,
+            "title": "Error Count",
+            "type": "integer"
+          },
+          "invocation_count": {
+            "minimum": 0.0,
+            "title": "Invocation Count",
+            "type": "integer"
+          },
+          "tool_name": {
+            "title": "Tool Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "tool_name",
+          "invocation_count",
+          "error_count"
+        ],
+        "title": "ToolInvocationStat",
+        "type": "object"
+      },
       "ToolRegistrationKind": {
         "description": "How a bound capability operation is actually invoked at runtime.",
         "enum": [
@@ -9156,6 +9293,77 @@
           }
         },
         "summary": "Deploy",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/api/agent-studio/agents/{logical_agent_id}/deployments/{deployment_id}/observability": {
+      "get": {
+        "description": "Redacted health/invocation/trace/cost Monitor-tab read view.\n\nDistinct from ``GET .../deployments`` (which only ever exposes the\nsingle point-in-time ``DeploymentHealth``/``trace_ref`` recorded via\n``POST /deployments/{id}/health``): this aggregates invocation count,\nerror rate, p50/p95 latency, per-tool counters, and opaque trace\ncorrelation links over a caller-chosen window, sourced from\nApplication Insights via ``ObservabilityProvider`` (see that module's\ndocstring). Honestly fails with 503 when no Application Insights\nresource is configured (``UnavailableObservabilityProvider``) rather\nthan returning fabricated metrics. Read-only: requires only project\nmembership, matching every other GET route in this package.",
+        "operationId": "get_deployment_observability_api_agent_studio_agents__logical_agent_id__deployments__deployment_id__observability_get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "logical_agent_id",
+            "required": true,
+            "schema": {
+              "title": "Logical Agent Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "deployment_id",
+            "required": true,
+            "schema": {
+              "title": "Deployment Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "window_hours",
+            "required": false,
+            "schema": {
+              "default": 24,
+              "title": "Window Hours",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DeploymentObservabilitySummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Deployment Observability",
         "tags": [
           "agent-studio"
         ]

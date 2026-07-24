@@ -80,6 +80,37 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-studio/agents/{logical_agent_id}/deployments/{deployment_id}/observability": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Deployment Observability
+         * @description Redacted health/invocation/trace/cost Monitor-tab read view.
+         *
+         *     Distinct from ``GET .../deployments`` (which only ever exposes the
+         *     single point-in-time ``DeploymentHealth``/``trace_ref`` recorded via
+         *     ``POST /deployments/{id}/health``): this aggregates invocation count,
+         *     error rate, p50/p95 latency, per-tool counters, and opaque trace
+         *     correlation links over a caller-chosen window, sourced from
+         *     Application Insights via ``ObservabilityProvider`` (see that module's
+         *     docstring). Honestly fails with 503 when no Application Insights
+         *     resource is configured (``UnavailableObservabilityProvider``) rather
+         *     than returning fabricated metrics. Read-only: requires only project
+         *     membership, matching every other GET route in this package.
+         */
+        get: operations["get_deployment_observability_api_agent_studio_agents__logical_agent_id__deployments__deployment_id__observability_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-studio/agents/{logical_agent_id}/draft": {
         parameters: {
             query?: never;
@@ -3493,6 +3524,59 @@ export interface components {
             /** @default unknown */
             status: components["schemas"]["HealthStatus"];
         };
+        /**
+         * DeploymentObservabilitySummary
+         * @description Redacted health/invocation/trace/cost aggregate for one deployment.
+         *
+         *     Distinct from ``DeploymentHealth`` (a single point-in-time status the
+         *     platform itself records via ``POST /deployments/{id}/health``): this is
+         *     a telemetry-derived read view over a ``[window_start, window_end)``
+         *     time window. ``trace_links`` are opaque correlation IDs (e.g. Application
+         *     Insights ``operation_Id`` values), never raw span/event content, and
+         *     ``estimated_cost_usd`` is honestly ``None`` (rather than a fabricated
+         *     number) whenever no real cost model backs the provider.
+         */
+        DeploymentObservabilitySummary: {
+            /** Deployment Id */
+            deployment_id: string;
+            /** Error Count */
+            error_count: number;
+            /** Error Rate */
+            error_rate: number;
+            /** Estimated Cost Usd */
+            estimated_cost_usd?: number | null;
+            health: components["schemas"]["DeploymentHealth"];
+            /** Invocation Count */
+            invocation_count: number;
+            /** Latency P50 Ms */
+            latency_p50_ms?: number | null;
+            /** Latency P95 Ms */
+            latency_p95_ms?: number | null;
+            /** Logical Agent Id */
+            logical_agent_id: string;
+            /** Source */
+            source: string;
+            /**
+             * Tool Stats
+             * @default []
+             */
+            tool_stats: components["schemas"]["ToolInvocationStat"][];
+            /**
+             * Trace Links
+             * @default []
+             */
+            trace_links: string[];
+            /**
+             * Window End
+             * Format: date-time
+             */
+            window_end: string;
+            /**
+             * Window Start
+             * Format: date-time
+             */
+            window_start: string;
+        };
         /** DeploymentRecord */
         DeploymentRecord: {
             /**
@@ -5550,6 +5634,18 @@ export interface components {
          */
         TemplateReadiness: "ga" | "preview" | "deprecated";
         /**
+         * ToolInvocationStat
+         * @description Redacted per-tool invocation counters for one deployment/window.
+         */
+        ToolInvocationStat: {
+            /** Error Count */
+            error_count: number;
+            /** Invocation Count */
+            invocation_count: number;
+            /** Tool Name */
+            tool_name: string;
+        };
+        /**
          * ToolRegistrationKind
          * @description How a bound capability operation is actually invoked at runtime.
          * @enum {string}
@@ -5811,6 +5907,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeploymentRecord"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_deployment_observability_api_agent_studio_agents__logical_agent_id__deployments__deployment_id__observability_get: {
+        parameters: {
+            query: {
+                project_id: string;
+                window_hours?: number;
+            };
+            header?: never;
+            path: {
+                logical_agent_id: string;
+                deployment_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DeploymentObservabilitySummary"];
                 };
             };
             /** @description Validation Error */

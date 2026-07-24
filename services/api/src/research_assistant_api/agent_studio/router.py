@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from datetime import timedelta
 from typing import cast
 from uuid import uuid4
 
@@ -87,6 +88,7 @@ from research_assistant_api.agent_studio.models import (
     CapabilityDescriptor,
     CapabilityInstance,
     DeploymentEnvironment,
+    DeploymentObservabilitySummary,
     DeploymentRecord,
     EvaluationRun,
     EvaluationRunStatus,
@@ -109,6 +111,10 @@ from research_assistant_api.agent_studio.models import (
     ToolRegistrationSpec,
     role_at_least,
     utc_now,
+)
+from research_assistant_api.agent_studio.observability_provider import (
+    ObservabilityProvider,
+    ObservabilityProviderError,
 )
 from research_assistant_api.agent_studio.playground_invoker import PlaygroundInvocationError, PlaygroundInvoker
 from research_assistant_api.agent_studio.release_attestation import (
@@ -226,6 +232,10 @@ def _evaluation_runner(request: Request) -> EvaluationRunner:
 
 def _playground_invoker(request: Request) -> PlaygroundInvoker:
     return cast(PlaygroundInvoker, request.app.state.agent_studio_playground_invoker)
+
+
+def _observability_provider(request: Request) -> ObservabilityProvider:
+    return cast(ObservabilityProvider, request.app.state.agent_studio_observability_provider)
 
 
 def _memory_service(request: Request) -> MemoryService:
@@ -1745,6 +1755,48 @@ def deploy(request: Request, logical_agent_id: str, payload: DeployRequest) -> D
 def list_deployments(request: Request, logical_agent_id: str, project_id: str) -> list[DeploymentRecord]:
     identity = _identity(request)
     return list(_store(request).list_deployments(_scope(request, identity, project_id), logical_agent_id))
+
+
+@router.get(
+    "/agents/{logical_agent_id}/deployments/{deployment_id}/observability",
+    response_model=DeploymentObservabilitySummary,
+)
+def get_deployment_observability(
+    request: Request,
+    logical_agent_id: str,
+    deployment_id: str,
+    project_id: str,
+    window_hours: int = 24,
+) -> DeploymentObservabilitySummary:
+    """Redacted health/invocation/trace/cost Monitor-tab read view.
+
+    Distinct from ``GET .../deployments`` (which only ever exposes the
+    single point-in-time ``DeploymentHealth``/``trace_ref`` recorded via
+    ``POST /deployments/{id}/health``): this aggregates invocation count,
+    error rate, p50/p95 latency, per-tool counters, and opaque trace
+    correlation links over a caller-chosen window, sourced from
+    Application Insights via ``ObservabilityProvider`` (see that module's
+    docstring). Honestly fails with 503 when no Application Insights
+    resource is configured (``UnavailableObservabilityProvider``) rather
+    than returning fabricated metrics. Read-only: requires only project
+    membership, matching every other GET route in this package.
+    """
+    if not 1 <= window_hours <= 24 * 30:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="window_hours must be between 1 and 720.",
+        )
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    deployment = _store(request).get_deployment(scope, deployment_id)
+    if deployment is None or deployment.logical_agent_id != logical_agent_id:
+        raise _not_found(f"Deployment '{deployment_id}' was not found.")
+    try:
+        return _observability_provider(request).get_deployment_summary(
+            deployment, window=timedelta(hours=window_hours)
+        )
+    except ObservabilityProviderError as exc:
+        raise _unavailable(str(exc)) from exc
 
 
 @router.post("/deployments/{deployment_id}/health", response_model=DeploymentRecord)

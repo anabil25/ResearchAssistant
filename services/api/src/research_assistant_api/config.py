@@ -102,6 +102,19 @@ class Settings(BaseSettings):
             "cannot actually provide."
         ),
     )
+    agent_studio_app_insights_resource_id: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices(
+            "AGENT_STUDIO_APP_INSIGHTS_RESOURCE_ID", "APPLICATIONINSIGHTS_RESOURCE_ID"
+        ),
+        description=(
+            "ARM resource ID (e.g. '/subscriptions/<sid>/resourceGroups/<rg>/providers/"
+            "microsoft.insights/components/<name>') of the Application Insights component "
+            "queried by the deployment Observability/Monitor read surface via "
+            "azure-monitor-query's LogsQueryClient.query_resource. When unset, that surface "
+            "is explicitly unavailable (503) rather than silently degraded or fabricated."
+        ),
+    )
     search_endpoint: str | None = Field(
         default=None,
         validation_alias="AZURE_SEARCH_ENDPOINT",
@@ -172,6 +185,16 @@ class Settings(BaseSettings):
     def validate_search_endpoint(cls, value: str | None) -> str | None:
         if value and not value.startswith("https://"):
             raise ValueError("Azure AI Search endpoint must use HTTPS")
+        return value.rstrip("/") if value else None
+
+    @field_validator("agent_studio_app_insights_resource_id")
+    @classmethod
+    def validate_app_insights_resource_id(cls, value: str | None) -> str | None:
+        if value and not value.startswith("/subscriptions/"):
+            raise ValueError(
+                "Application Insights resource ID must be a full ARM resource ID starting "
+                "with '/subscriptions/'."
+            )
         return value.rstrip("/") if value else None
 
     @field_validator("connector_gateway_url")
