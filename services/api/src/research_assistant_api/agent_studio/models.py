@@ -28,7 +28,7 @@ def utc_now() -> datetime:
 
 #: Canonical JSON Schema version identifier for the persisted ``AgentManifest``
 #: shape. Consumers outside this codebase (e.g. the harness) resolve the
-#: manifest contract via ``GET /v1/agent-studio/schemas/agent-manifest``
+#: manifest contract via ``GET /api/agent-studio/schemas/agent-manifest``
 #: (JSON Schema + content digest), never by importing this Python class.
 AGENT_MANIFEST_SCHEMA_VERSION = "agent-studio.manifest.v1"
 

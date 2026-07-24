@@ -179,7 +179,7 @@ PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 #: than a direct ``identity.groups`` check.
 _DEFAULT_MEMBERSHIP_RESOLVER = ClaimsGroupMembershipResolver()
 
-router = APIRouter(prefix="/v1/agent-studio", tags=["agent-studio"])
+router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
 
 
 def _identity(request: Request) -> IdentityContext:
