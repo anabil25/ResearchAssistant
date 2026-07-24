@@ -1242,11 +1242,30 @@ class HttpCapabilityDiscoverySource:
     async def _discover_one_provider(
         self, provider_id: str, headers: dict[str, str], registered_by: str
     ) -> _ProviderDiscoveryOutcome:
-        # Defence in depth. ``_discover`` already rejects unsafe ids at the
-        # catalog boundary, so this is unreachable via ``discover()``; it is
-        # retained (and unit-tested directly) so that any future caller of this
-        # private method cannot reintroduce path injection by bypassing that
-        # boundary check.
+        # SECURITY BACKSTOP -- deliberately unreachable, deliberately retained.
+        #
+        # BACKSTOPS: the safe-identifier check in ``_discover``, which rejects
+        # unsafe provider ids at the *catalog boundary* so they never enter
+        # ``provider_ids``. While that boundary holds, this branch cannot be
+        # reached through the public ``discover()`` path.
+        #
+        # WHY IT STAYS: ``provider_id`` is interpolated directly into an
+        # authenticated URL on the next line. If the boundary check is ever
+        # relaxed, narrowed, or moved -- or if any future caller invokes this
+        # private method directly, bypassing ``_discover`` entirely -- this is the
+        # only thing standing between wire-controlled input and request-path
+        # construction.
+        #
+        # HOW IT IS PROTECTED: not by coverage. Coverage cannot defend it,
+        # because this guard and its dedicated test
+        # (``test_provider_id_guard_backstops_catalog_boundary_sanitization``)
+        # delete together in a single plausible-looking "remove dead code"
+        # change, leaving coverage at 100% and nothing failing. The protection is
+        # this rationale. Removing the *boundary* sanitization instead makes this
+        # branch reachable again and fails the boundary tests; removing *this
+        # guard* while the boundary stays has no mechanical defence, which is
+        # accepted for genuine defence in depth only because it is named here
+        # rather than assumed.
         if not _is_safe_provider_id(provider_id):
             raise CapabilityProviderProtocolError(
                 f"Provider id {provider_id!r} is not a safe opaque identifier; refusing to request it."

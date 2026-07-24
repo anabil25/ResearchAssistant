@@ -1328,9 +1328,20 @@ async def test_discover_refuses_to_request_an_unsafe_provider_id() -> None:
 
 
 @pytest.mark.asyncio
-async def test_discover_one_provider_rejects_unsafe_id_as_defence_in_depth() -> None:
-    """The catalog boundary makes this unreachable via ``discover()``; the guard
-    is retained so a future direct caller cannot reintroduce path injection."""
+async def test_provider_id_guard_backstops_catalog_boundary_sanitization() -> None:
+    """SECURITY BACKSTOP TEST -- do not delete as "testing dead code".
+
+    ``_discover_one_provider`` interpolates ``provider_id`` straight into an
+    authenticated URL. The catalog-boundary check in ``_discover`` normally stops
+    an unsafe id ever reaching it, which makes this guard unreachable via
+    ``discover()`` -- but unreachable is not the same as unnecessary: the guard is
+    what protects the URL if that boundary is relaxed, narrowed, or bypassed by a
+    future direct caller of this private method.
+
+    This test is the only thing exercising that guard, so the two delete together
+    in one plausible-looking cleanup with coverage still at 100%. It is retained
+    on the rationale sited at the guard itself, not on a coverage figure.
+    """
 
     async def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - never called
         raise AssertionError("no request may be issued for an unsafe provider id")
