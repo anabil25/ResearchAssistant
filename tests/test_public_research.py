@@ -6,7 +6,11 @@ from research_assistant_api.connector_gateway import (
     ConnectorGatewayError,
     DisabledConnectorGateway,
 )
-from research_assistant_api.public_research import retrieve_public_metadata
+from research_assistant_api.public_research import (
+    ConnectorAuthorizationError,
+    resolve_authorized_sources,
+    retrieve_public_metadata,
+)
 from research_assistant_api.workspace import WorkspaceStore
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
@@ -166,3 +170,130 @@ async def test_public_research_distinguishes_gateway_setup_from_provider_outage(
             "records": [],
         }
     ]
+
+
+def test_resolve_authorized_sources_passes_through_none_unchanged() -> None:
+    """No explicit client selection means the server-chosen defaults apply;
+    there is nothing client-supplied to validate."""
+    connectors = WorkspaceStore().connectors()
+
+    assert resolve_authorized_sources(Capability.LITERATURE, None, connectors) is None
+
+
+def test_resolve_authorized_sources_accepts_known_ready_connectors() -> None:
+    connectors = WorkspaceStore().connectors()
+
+    resolved = resolve_authorized_sources(
+        Capability.LITERATURE,
+        ["PubMed", "Europe PMC"],
+        connectors,
+    )
+
+    assert resolved == ["pubmed", "europe_pmc"]
+
+
+def test_resolve_authorized_sources_rejects_unknown_connector() -> None:
+    connectors = WorkspaceStore().connectors()
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(Capability.LITERATURE, ["not-a-real-connector"], connectors)
+
+    violation = excinfo.value.violations[0]
+    assert violation.requested == "not-a-real-connector"
+    assert violation.canonical_id is None
+    assert violation.reason == "unknown"
+    assert excinfo.value.is_authorization_failure is False
+
+
+def test_resolve_authorized_sources_rejects_duplicate_after_canonicalization() -> None:
+    connectors = WorkspaceStore().connectors()
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(Capability.LITERATURE, ["pubmed", "PubMed"], connectors)
+
+    violation = excinfo.value.violations[0]
+    assert violation.requested == "PubMed"
+    assert violation.canonical_id == "pubmed"
+    assert violation.reason == "duplicate"
+    assert excinfo.value.is_authorization_failure is False
+
+
+def test_resolve_authorized_sources_rejects_disabled_connector_as_authorization_failure() -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.enabled = False
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(Capability.LITERATURE, ["pubmed"], connectors)
+
+    violation = excinfo.value.violations[0]
+    assert violation.canonical_id == "pubmed"
+    assert violation.reason == "disabled"
+    assert excinfo.value.is_authorization_failure is True
+
+
+def test_resolve_authorized_sources_rejects_connector_not_assigned_to_capability() -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.assigned_agents = ["dataset"]
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(Capability.LITERATURE, ["pubmed"], connectors)
+
+    violation = excinfo.value.violations[0]
+    assert violation.canonical_id == "pubmed"
+    assert violation.reason == "not_assigned"
+    assert excinfo.value.is_authorization_failure is True
+
+
+def test_resolve_authorized_sources_honors_explicit_logical_agent_override() -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.assigned_agents = ["literature_online"]
+
+    resolved = resolve_authorized_sources(
+        Capability.LITERATURE,
+        ["pubmed"],
+        connectors,
+        logical_agent="literature_online",
+    )
+
+    assert resolved == ["pubmed"]
+
+
+@pytest.mark.parametrize("status", ["configuration_required", "unavailable"])
+def test_resolve_authorized_sources_rejects_connector_that_is_not_ready(status: str) -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.test_status = status
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(Capability.LITERATURE, ["pubmed"], connectors)
+
+    violation = excinfo.value.violations[0]
+    assert violation.canonical_id == "pubmed"
+    assert violation.reason == status
+    # Not-ready is a readiness problem, not a permissions problem.
+    assert excinfo.value.is_authorization_failure is False
+
+
+def test_resolve_authorized_sources_collects_every_violation_not_just_the_first() -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.enabled = False
+
+    with pytest.raises(ConnectorAuthorizationError) as excinfo:
+        resolve_authorized_sources(
+            Capability.LITERATURE,
+            ["pubmed", "not-a-real-connector", "pubmed"],
+            connectors,
+        )
+
+    reasons = {violation.reason for violation in excinfo.value.violations}
+    assert reasons == {"disabled", "unknown", "duplicate"}
+    assert len(excinfo.value.violations) == 3

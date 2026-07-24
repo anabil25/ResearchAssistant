@@ -88,7 +88,11 @@ from research_assistant_api.orchestration import (
     RunSchedulingError,
     build_run_scheduler,
 )
-from research_assistant_api.public_research import retrieve_public_metadata
+from research_assistant_api.public_research import (
+    ConnectorAuthorizationError,
+    resolve_authorized_sources,
+    retrieve_public_metadata,
+)
 from research_assistant_api.schemas import (
     AssistantRequest,
     AssistantResponse,
@@ -823,6 +827,92 @@ def agents(request: Request) -> list[AgentSetting]:
     return store.agents()
 
 
+_SOURCE_INPUT_KEYS: dict[Capability, tuple[str, ...]] = {
+    Capability.GRANT: ("sources", "funding_sources"),
+}
+_DEFAULT_SOURCE_INPUT_KEYS: tuple[str, ...] = ("sources",)
+
+
+def _requested_source_keys(capability: Capability) -> tuple[str, ...]:
+    return _SOURCE_INPUT_KEYS.get(capability, _DEFAULT_SOURCE_INPUT_KEYS)
+
+
+def _raw_requested_sources(capability: Capability, inputs: dict[str, Any]) -> list[str] | None:
+    """Merge every client-facing connector-selector input key applicable to
+    ``capability`` (e.g. both ``sources`` and, for GRANT, ``funding_sources``
+    -- the grant studio UI sends connector IDs under that name) into a single
+    ordered, de-duplicated raw list.
+
+    Returns ``None`` when none of the applicable keys are present as a list,
+    meaning the server-chosen default sources apply and there is nothing
+    client-supplied that needs validation.
+    """
+    merged: list[str] = []
+    seen: set[str] = set()
+    any_present = False
+    for key in _requested_source_keys(capability):
+        raw = inputs.get(key)
+        if not isinstance(raw, list):
+            continue
+        any_present = True
+        for item in raw:
+            text = str(item)
+            if text not in seen:
+                seen.add(text)
+                merged.append(text)
+    return merged if any_present else None
+
+
+def _authorize_requested_sources(
+    capability: Capability,
+    inputs: dict[str, Any],
+    connectors: list[ConnectorSetting],
+    *,
+    tenant_id: str,
+    project_id: str,
+) -> list[str] | None:
+    """Resolve and authorize client-requested connector sources for a studio
+    run before any live connector fetch executes.
+
+    Never trusts client-side filtering: the UI only offers "authorized"
+    connectors as a courtesy, but the request body is fully
+    attacker-controlled, so every requested identifier is re-validated here
+    against the tenant/project connector registry -- enabled, actually
+    ready, and assigned to this capability -- regardless of what the UI
+    would have allowed. Rejections are audited (structured warning log) and
+    raised as a 403 (authorization failure: disabled/not assigned) or 422
+    (request-shape/readiness failure: unknown/duplicate/not ready) *before*
+    any online research call is attempted.
+    """
+    raw_sources = _raw_requested_sources(capability, inputs)
+    try:
+        return resolve_authorized_sources(capability, raw_sources, connectors)
+    except ConnectorAuthorizationError as exc:
+        violations = [
+            {
+                "requested": violation.requested,
+                "connector_id": violation.canonical_id,
+                "reason": violation.reason,
+                "detail": violation.detail,
+            }
+            for violation in exc.violations
+        ]
+        logger.warning(
+            "Rejected unauthorized connector source request: tenant=%s project=%s capability=%s violations=%s",
+            tenant_id,
+            project_id,
+            capability.value,
+            violations,
+        )
+        raise HTTPException(
+            status_code=403 if exc.is_authorization_failure else 422,
+            detail={
+                "message": ("One or more requested connector sources failed authorization/readiness validation."),
+                "violations": violations,
+            },
+        ) from exc
+
+
 def _online_policy(capability: Capability, payload: StudioRunRequest) -> None:
     if not payload.online_research:
         return
@@ -1045,10 +1135,12 @@ async def run_studio(
                     ConnectorGateway,
                     request.app.state.connector_gateway,
                 ),
-                requested_sources=(
-                    [str(source) for source in payload.inputs.get("sources", [])]
-                    if isinstance(payload.inputs.get("sources"), list)
-                    else None
+                requested_sources=_authorize_requested_sources(
+                    capability,
+                    payload.inputs,
+                    store.connectors(),
+                    tenant_id=identity.tenant_id,
+                    project_id=store.project_id,
                 ),
             )
         gateway = cast(HostedAgentGateway, request.app.state.hosted)
@@ -1194,10 +1286,12 @@ async def run_capability(
                 ConnectorGateway,
                 request.app.state.connector_gateway,
             ),
-            requested_sources=(
-                [str(source) for source in studio_request.inputs.get("sources", [])]
-                if isinstance(studio_request.inputs.get("sources"), list)
-                else None
+            requested_sources=_authorize_requested_sources(
+                capability,
+                studio_request.inputs,
+                store.connectors(),
+                tenant_id=identity.tenant_id,
+                project_id=store.project_id,
             ),
         )
         if online

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+from collections.abc import Sequence
+from dataclasses import dataclass
 from typing import Any
 
 from research_assistant_core.models import Capability
@@ -11,6 +13,12 @@ from research_assistant_api.connector_gateway import (
     ConnectorGatewayNotConfiguredError,
 )
 from research_assistant_api.workspace import ConnectorSetting
+
+#: Connector ``test_status`` values that mean a connector is actually usable
+#: right now. Any other value (``"configuration_required"``, ``"unavailable"``,
+#: or an unrecognized future value) means the connector is not ready and must
+#: not be selected for a live run, regardless of ``enabled``/assignment.
+_READY_STATUSES = frozenset({"ready", "ready_with_key"})
 
 _DEFAULT_SOURCES: dict[Capability, tuple[str, ...]] = {
     Capability.LITERATURE: ("pubmed", "crossref", "openalex"),
@@ -58,6 +66,165 @@ _SOURCE_ALIASES = {
 }
 
 
+@dataclass(frozen=True)
+class ConnectorSourceViolation:
+    """One requested connector identifier that failed deterministic
+    authorization/readiness validation against the tenant/project connector
+    registry.
+
+    ``reason`` is one of the literal strings ``"unknown"`` (does not resolve
+    to a connector registered for this capability), ``"duplicate"`` (the
+    same canonical connector was requested more than once), ``"disabled"``
+    (registered but not enabled for this project), ``"not_assigned"``
+    (registered/enabled but not assigned to the target capability/agent),
+    or the connector's own actual ``test_status`` value (e.g.
+    ``"configuration_required"``/``"unavailable"``) when it resolves but is
+    not currently ready.
+    """
+
+    requested: str
+    canonical_id: str | None
+    reason: str
+    detail: str
+
+
+class ConnectorAuthorizationError(Exception):
+    """Raised when one or more client-requested connector sources fail
+    deterministic registry validation.
+
+    Carries every violation found (not just the first) so the caller can
+    return a single structured 4xx response describing all of them at once,
+    rather than round-tripping one rejection per request.
+    """
+
+    def __init__(self, violations: Sequence[ConnectorSourceViolation]) -> None:
+        self.violations: tuple[ConnectorSourceViolation, ...] = tuple(violations)
+        super().__init__("; ".join(f"{v.requested}: {v.reason}" for v in self.violations))
+
+    @property
+    def is_authorization_failure(self) -> bool:
+        """``True`` when at least one violation reflects that the caller is
+        not permitted to use the connector (disabled/not assigned), as
+        opposed to a pure request-shape problem (unknown/duplicate) or a
+        transient readiness problem (the connector's own persisted
+        status). Callers use this to choose HTTP 403 vs 422.
+        """
+        return any(violation.reason in {"disabled", "not_assigned"} for violation in self.violations)
+
+
+def resolve_authorized_sources(
+    capability: Capability,
+    requested_sources: list[str] | None,
+    connectors: list[ConnectorSetting],
+    *,
+    logical_agent: str | None = None,
+) -> list[str] | None:
+    """Deterministically resolve client-requested connector identifiers
+    against the tenant/project connector registry *before* any live
+    connector fetch runs.
+
+    This must never be skipped because the UI already filters which
+    connectors it shows: the request body is fully attacker-controlled, so
+    server-side re-validation against the authoritative registry is the only
+    trustworthy check.
+
+    Returns ``None`` unchanged when ``requested_sources`` is ``None`` --
+    that means the caller did not request an explicit subset, so the
+    capability's server-chosen defaults apply and there is nothing
+    client-supplied to validate. Otherwise returns the resolved, de-duplicated
+    list of canonical connector IDs the caller is authorized to query.
+
+    Raises ``ConnectorAuthorizationError`` (never partially -- every
+    violation is collected before raising) when any requested identifier:
+
+    * does not resolve to a connector registered for this capability
+      (``"unknown"``);
+    * is requested more than once after alias canonicalization
+      (``"duplicate"``);
+    * resolves to a connector that is not ``enabled`` for this project
+      (``"disabled"``);
+    * resolves to a connector not assigned to the target capability/agent
+      (``"not_assigned"``);
+    * resolves to a connector whose actual persisted ``test_status`` is not
+      ``ready``/``ready_with_key`` -- the literal status is echoed back as
+      the violation reason rather than collapsed into a generic one.
+
+    Authorized *consent* to make an external call at all is intentionally
+    not re-implemented here: it is already gated upstream by ``_online_policy``
+    (``online_research`` + an explicit ``public_research_acknowledged`` flag),
+    which callers must invoke before reaching this function.
+    """
+    if requested_sources is None:
+        return None
+
+    target_agent = logical_agent or capability.value
+    by_id = {connector.id: connector for connector in connectors}
+    known_ids = set(_CAPABILITY_SOURCES.get(capability, ()))
+
+    violations: list[ConnectorSourceViolation] = []
+    seen: set[str] = set()
+    resolved: list[str] = []
+    for raw in requested_sources:
+        canonical = _SOURCE_ALIASES.get(raw.casefold(), raw.casefold())
+        if canonical not in known_ids or canonical not in by_id:
+            violations.append(
+                ConnectorSourceViolation(
+                    requested=raw,
+                    canonical_id=None,
+                    reason="unknown",
+                    detail=f"'{raw}' does not resolve to a connector registered for {capability.value}.",
+                )
+            )
+            continue
+        if canonical in seen:
+            violations.append(
+                ConnectorSourceViolation(
+                    requested=raw,
+                    canonical_id=canonical,
+                    reason="duplicate",
+                    detail=f"'{raw}' (connector '{canonical}') was requested more than once.",
+                )
+            )
+            continue
+        seen.add(canonical)
+        connector = by_id[canonical]
+        if not connector.enabled:
+            violations.append(
+                ConnectorSourceViolation(
+                    requested=raw,
+                    canonical_id=canonical,
+                    reason="disabled",
+                    detail=f"Connector '{canonical}' is not enabled for this project.",
+                )
+            )
+            continue
+        if target_agent not in connector.assigned_agents:
+            violations.append(
+                ConnectorSourceViolation(
+                    requested=raw,
+                    canonical_id=canonical,
+                    reason="not_assigned",
+                    detail=f"Connector '{canonical}' is not assigned to '{target_agent}'.",
+                )
+            )
+            continue
+        if connector.test_status not in _READY_STATUSES:
+            violations.append(
+                ConnectorSourceViolation(
+                    requested=raw,
+                    canonical_id=canonical,
+                    reason=connector.test_status,
+                    detail=f"Connector '{canonical}' is not ready (status: {connector.test_status}).",
+                )
+            )
+            continue
+        resolved.append(canonical)
+
+    if violations:
+        raise ConnectorAuthorizationError(violations)
+    return resolved
+
+
 async def _retrieve_one(
     capability: Capability,
     source: str,
@@ -99,8 +266,18 @@ async def retrieve_public_metadata(
     requested_sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     logical_agent = capability.value
+    # Defense-in-depth: even when a caller forgets to invoke
+    # ``resolve_authorized_sources`` first, never select a connector that is
+    # disabled, unassigned to this capability/agent, or not actually ready
+    # (its persisted ``test_status`` is anything other than
+    # ready/ready_with_key) -- this must match the checks in
+    # ``resolve_authorized_sources`` exactly.
     enabled = {
-        connector.id for connector in connectors if connector.enabled and logical_agent in connector.assigned_agents
+        connector.id
+        for connector in connectors
+        if connector.enabled
+        and logical_agent in connector.assigned_agents
+        and connector.test_status in _READY_STATUSES
     }
     requested_ids = (
         {_SOURCE_ALIASES.get(source.casefold(), source.casefold()) for source in requested_sources}
@@ -130,3 +307,4 @@ async def retrieve_public_metadata(
             )
         )
     )
+

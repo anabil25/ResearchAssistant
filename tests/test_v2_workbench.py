@@ -7,10 +7,11 @@ from collections.abc import Iterator
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import HttpUrl
-from research_assistant_api.app import app
+from research_assistant_api.app import _authorize_requested_sources, _raw_requested_sources, app
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import DisabledConnectorGateway
 from research_assistant_api.studios import validate_agent_insight
+from research_assistant_api.workspace import WorkspaceStore
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
     PublicConnectorSource,
@@ -644,3 +645,181 @@ def test_hosted_agent_text_is_never_promoted_to_verified_evidence() -> None:
     assert insight.evidence_state == EvidenceState.MODEL_ANALYSIS
     assert insight.referenced_source_ids == ["paper-rag"]
     assert insight.unresolved_source_ids == ["invented-source"]
+
+
+def test_raw_requested_sources_merges_sources_and_funding_sources_for_grant() -> None:
+    """The grant studio UI sends connector IDs under ``funding_sources``;
+    it must be unioned with ``sources`` (de-duplicated, order-preserving) so
+    that field finally has real server-side effect."""
+    merged = _raw_requested_sources(
+        Capability.GRANT,
+        {
+            "sources": ["grants_gov", "nih_reporter"],
+            "funding_sources": ["nih_reporter", "crossref"],
+        },
+    )
+
+    assert merged == ["grants_gov", "nih_reporter", "crossref"]
+
+
+def test_raw_requested_sources_ignores_funding_sources_for_non_grant_capabilities() -> None:
+    assert _raw_requested_sources(Capability.LITERATURE, {"funding_sources": ["pubmed"]}) is None
+
+
+def test_raw_requested_sources_returns_none_when_no_applicable_key_present() -> None:
+    assert _raw_requested_sources(Capability.GRANT, {}) is None
+    assert _raw_requested_sources(Capability.GRANT, {"sources": "not-a-list"}) is None
+
+
+def test_raw_requested_sources_reads_sources_alone_when_funding_sources_absent() -> None:
+    assert _raw_requested_sources(Capability.GRANT, {"sources": ["grants_gov"]}) == ["grants_gov"]
+
+
+def test_authorize_requested_sources_raises_403_and_audits_disabled_connector(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    from fastapi import HTTPException
+
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "pubmed":
+            connector.enabled = False
+
+    with caplog.at_level("WARNING"), pytest.raises(HTTPException) as excinfo:
+        _authorize_requested_sources(
+            Capability.LITERATURE,
+            {"sources": ["pubmed"]},
+            connectors,
+            tenant_id="tenant-1",
+            project_id="project-1",
+        )
+
+    assert excinfo.value.status_code == 403
+    assert excinfo.value.detail["violations"][0]["reason"] == "disabled"
+    assert any("Rejected unauthorized connector source request" in record.message for record in caplog.records)
+
+
+def test_authorize_requested_sources_raises_422_for_unknown_connector() -> None:
+    from fastapi import HTTPException
+
+    with pytest.raises(HTTPException) as excinfo:
+        _authorize_requested_sources(
+            Capability.LITERATURE,
+            {"sources": ["not-a-real-connector"]},
+            WorkspaceStore().connectors(),
+            tenant_id="tenant-1",
+            project_id="project-1",
+        )
+
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["violations"][0]["reason"] == "unknown"
+
+
+def test_authorize_requested_sources_returns_resolved_list_when_authorized() -> None:
+    resolved = _authorize_requested_sources(
+        Capability.LITERATURE,
+        {"sources": ["PubMed"]},
+        WorkspaceStore().connectors(),
+        tenant_id="tenant-1",
+        project_id="project-1",
+    )
+
+    assert resolved == ["pubmed"]
+
+
+def test_authorize_requested_sources_passes_through_none_when_absent() -> None:
+    resolved = _authorize_requested_sources(
+        Capability.LITERATURE,
+        {},
+        WorkspaceStore().connectors(),
+        tenant_id="tenant-1",
+        project_id="project-1",
+    )
+
+    assert resolved is None
+
+
+def test_run_studio_rejects_unauthorized_connector_source_end_to_end() -> None:
+    """Confirms the resolver is actually wired into the live
+    ``/api/studios/{capability}/run`` online-research path (not just unit
+    tested in isolation): a crafted unknown connector id must be rejected
+    with a structured 422 before any hosted/connector call is attempted.
+    """
+    with TestClient(app) as test_client:
+        test_client.app.state.settings = Settings(execution_mode="hosted")
+        response = test_client.post(
+            "/api/studios/literature/run",
+            json={
+                "objective": "Research a current public question",
+                "online_research": True,
+                "inputs": {
+                    "public_search_query": "current public reproducibility guidance",
+                    "public_research_acknowledged": True,
+                    "sources": ["not-a-real-connector"],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["violations"][0]["reason"] == "unknown"
+
+
+def test_run_studio_rejects_disabled_connector_source_as_403(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector the client is not permitted to use (disabled for this
+    project) is a 403, not a 422 -- and it is rejected even though the
+    caller only ever saw an already-filtered connector list in the UI.
+    """
+    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    admin_headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
+
+    with TestClient(app) as test_client:
+        test_client.app.state.settings = Settings()
+        arxiv = next(item for item in test_client.get("/api/connectors").json() if item["id"] == "arxiv")
+        disable = test_client.put(
+            "/api/connectors/arxiv",
+            headers=admin_headers,
+            json={"enabled": False, "assigned_agents": arxiv["assigned_agents"]},
+        )
+        assert disable.status_code == 200
+
+        test_client.app.state.settings = Settings(execution_mode="hosted")
+        response = test_client.post(
+            "/api/studios/literature/run",
+            json={
+                "objective": "Research a current public question",
+                "online_research": True,
+                "inputs": {
+                    "public_search_query": "current public reproducibility guidance",
+                    "public_research_acknowledged": True,
+                    "sources": ["arxiv"],
+                },
+            },
+        )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["violations"][0]["reason"] == "disabled"
+
+
+def test_run_studio_grant_merges_funding_sources_into_authorization_check() -> None:
+    """The grant studio UI's connector-id picker sends ``funding_sources``;
+    this must now actually gate the live connector selection, not be
+    silently ignored server-side."""
+    with TestClient(app) as test_client:
+        test_client.app.state.settings = Settings(execution_mode="hosted")
+        response = test_client.post(
+            "/api/studios/grant/run",
+            json={
+                "objective": "Research a current public funding question",
+                "online_research": True,
+                "inputs": {
+                    "public_search_query": "current public grant opportunity guidance",
+                    "public_research_acknowledged": True,
+                    "funding_sources": ["not-a-real-connector"],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["violations"][0]["requested"] == "not-a-real-connector"
