@@ -215,8 +215,16 @@ def _client(
     return TestClient(app)
 
 
-def _body(mapping: RuntimeDeploymentMapping) -> dict[str, str]:
-    return {"mapping_ref": mapping.mapping_ref, "mapping_digest": mapping.mapping_digest}
+def _ref(mapping: RuntimeDeploymentMapping, *, digest: str | None = None) -> dict[str, str]:
+    return {
+        "id": mapping.deployment_id,
+        "schema_version": mapping.schema_version,
+        "digest": digest if digest is not None else mapping.mapping_digest,
+    }
+
+
+def _body(mapping: RuntimeDeploymentMapping) -> dict[str, object]:
+    return {"mapping_ref": _ref(mapping)}
 
 
 def test_retrieve_returns_runtime_safe_view_for_authorized_runtime() -> None:
@@ -259,7 +267,7 @@ def test_retrieve_unknown_deployment_is_uniform_404() -> None:
     client = _client(mapping=None)
     response = client.post(
         RETRIEVE_URL,
-        json={"mapping_ref": "runtime-deployment-mapping:v1:dep-1", "mapping_digest": "x"},
+        json={"mapping_ref": {"id": "dep-1", "schema_version": "runtime-deployment-mapping:v1", "digest": "x"}},
         headers={"x-ms-client-principal": _principal_header()},
     )
     assert response.status_code == 404
@@ -271,10 +279,24 @@ def test_retrieve_digest_mismatch_is_uniform_404() -> None:
     client = _client(mapping)
     response = client.post(
         RETRIEVE_URL,
-        json={"mapping_ref": mapping.mapping_ref, "mapping_digest": "runtime-deployment-mapping:v1:sha256:deadbeef"},
+        json={"mapping_ref": _ref(mapping, digest="runtime-deployment-mapping:v1:sha256:deadbeef")},
         headers={"x-ms-client-principal": _principal_header()},
     )
     assert response.status_code == 404
+
+
+def test_retrieve_ref_id_not_matching_path_is_uniform_404() -> None:
+    # Ruling A: the in-body mapping_ref.id must match the path deployment_id; a
+    # mismatch is the same uniform 404 (never a 400), so the body can never
+    # redirect the request to a different deployment than the path names.
+    mapping = _mapping()
+    client = _client(mapping)
+    ref = {"id": "dep-elsewhere", "schema_version": mapping.schema_version, "digest": mapping.mapping_digest}
+    response = client.post(
+        RETRIEVE_URL, json={"mapping_ref": ref}, headers={"x-ms-client-principal": _principal_header()}
+    )
+    assert response.status_code == 404
+    assert response.json()["detail"] == "The requested runtime deployment is not available."
 
 
 def test_retrieve_client_not_allowlisted_is_uniform_404() -> None:
@@ -304,20 +326,16 @@ def test_internal_routes_carry_the_internal_base_path() -> None:
 # --- context endpoint ------------------------------------------------------
 
 
-def _context_body(mapping: RuntimeDeploymentMapping, *, operation_id: str = "search") -> dict[str, str]:
+def _context_body(mapping: RuntimeDeploymentMapping, *, operation_id: str = "search") -> dict[str, object]:
     return {
-        "deployment_id": mapping.deployment_id,
-        "mapping_ref": mapping.mapping_ref,
+        "mapping_ref": _ref(mapping),
         "operation_id": operation_id,
         "request_digest": REQUEST_DIGEST,
     }
 
 
 def _context_headers(mapping: RuntimeDeploymentMapping) -> dict[str, str]:
-    return {
-        "x-ms-client-principal": _principal_header(),
-        "x-runtime-mapping-digest": mapping.mapping_digest,
-    }
+    return {"x-ms-client-principal": _principal_header()}
 
 
 def test_context_resolved_returns_mapping_derived_approval() -> None:
@@ -361,32 +379,36 @@ def test_context_unknown_release_is_uniform_404() -> None:
     assert response.status_code == 404
 
 
-def test_context_missing_digest_header_is_rejected() -> None:
+def test_context_missing_digest_in_ref_is_rejected() -> None:
+    # Ruling A: the digest lives inside the canonical mapping_ref object; a
+    # mapping_ref missing its digest is a schema violation (422), not a 404.
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver())
+    ref_no_digest = {"id": mapping.deployment_id, "schema_version": mapping.schema_version}
     response = client.post(
-        CONTEXT_URL, json=_context_body(mapping), headers={"x-ms-client-principal": _principal_header()}
+        CONTEXT_URL,
+        json={"mapping_ref": ref_no_digest, "operation_id": "search", "request_digest": REQUEST_DIGEST},
+        headers={"x-ms-client-principal": _principal_header()},
     )
     assert response.status_code == 422
 
 
-def test_context_wrong_digest_header_is_uniform_404() -> None:
+def test_context_wrong_digest_in_ref_is_uniform_404() -> None:
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver())
-    headers = {
-        "x-ms-client-principal": _principal_header(),
-        "x-runtime-mapping-digest": "runtime-deployment-mapping:v1:sha256:deadbeef",
+    body = {
+        "mapping_ref": _ref(mapping, digest="runtime-deployment-mapping:v1:sha256:deadbeef"),
+        "operation_id": "search",
+        "request_digest": REQUEST_DIGEST,
     }
-    response = client.post(CONTEXT_URL, json=_context_body(mapping), headers=headers)
+    response = client.post(CONTEXT_URL, json=body, headers={"x-ms-client-principal": _principal_header()})
     assert response.status_code == 404
 
 
 def test_context_without_principal_is_uniform_404() -> None:
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver())
-    response = client.post(
-        CONTEXT_URL, json=_context_body(mapping), headers={"x-runtime-mapping-digest": mapping.mapping_digest}
-    )
+    response = client.post(CONTEXT_URL, json=_context_body(mapping))
     assert response.status_code == 404
 
 
@@ -421,7 +443,7 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
         _collect(
             client.post(
                 RETRIEVE_URL,
-                json={"mapping_ref": mapping.mapping_ref, "mapping_digest": "runtime-deployment-mapping:v1:sha256:00"},
+                json={"mapping_ref": _ref(mapping, digest="runtime-deployment-mapping:v1:sha256:00")},
                 headers={"x-ms-client-principal": _principal_header()},
             )
         )
@@ -432,7 +454,7 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
         _collect(
             empty.post(
                 RETRIEVE_URL,
-                json={"mapping_ref": "runtime-deployment-mapping:v1:dep-1", "mapping_digest": "x"},
+                json={"mapping_ref": {"id": "dep-1", "schema_version": "runtime-deployment-mapping:v1", "digest": "x"}},
                 headers={"x-ms-client-principal": _principal_header()},
             )
         )

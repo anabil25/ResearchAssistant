@@ -26,7 +26,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 
-from fastapi import FastAPI, Header, HTTPException, Request, status
+from fastapi import FastAPI, HTTPException, Request, status
 
 from research_assistant_api.agent_studio.approval_context import (
     ApprovalContextOutcome,
@@ -58,11 +58,6 @@ from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
 RUNTIME_CONTROL_BASE_PATH = "/internal/v1/runtime"
-
-#: Header carrying the mapping digest a runtime must present as auth material
-#: for the strict-protocol endpoints (context/consume), keeping the b796 JSON
-#: request body free of any field beyond the operation facts.
-MAPPING_DIGEST_HEADER = "x-runtime-mapping-digest"
 
 
 def build_runtime_control_app(
@@ -110,11 +105,18 @@ def build_runtime_control_app(
     def retrieve_mapping(
         deployment_id: str, payload: RuntimeMappingRetrieveRequest, request: Request
     ) -> RuntimeMappingView:
+        # Ruling A: the mapping digest and ref id live in the single canonical
+        # body ``mapping_ref`` object. The path deployment_id and the ref id must
+        # agree; a mismatch collapses to the same uniform 404 as any other denial
+        # (never a distinguishable 400), so the object can never redirect the
+        # request to a different deployment than the path names.
+        if payload.mapping_ref.id != deployment_id:
+            raise _uniform_404()
         mapping = _authorize(
             request,
             deployment_id=deployment_id,
-            mapping_ref=payload.mapping_ref,
-            mapping_digest=payload.mapping_digest,
+            mapping_ref=payload.mapping_ref.flat_ref,
+            mapping_digest=payload.mapping_ref.digest,
         )
         return _mapping_view(mapping)
 
@@ -126,13 +128,15 @@ def build_runtime_control_app(
     async def resolve_context(
         payload: RuntimeContextRequest,
         request: Request,
-        x_runtime_mapping_digest: str = Header(...),
     ) -> RuntimeContextResponse:
+        # Ruling A: deployment id and digest both come from the single canonical
+        # body ``mapping_ref`` object -- no top-level deployment_id, no digest
+        # header.
         mapping = _authorize(
             request,
-            deployment_id=payload.deployment_id,
-            mapping_ref=payload.mapping_ref,
-            mapping_digest=x_runtime_mapping_digest,
+            deployment_id=payload.mapping_ref.id,
+            mapping_ref=payload.mapping_ref.flat_ref,
+            mapping_digest=payload.mapping_ref.digest,
         )
         # Scope/release/binding/operation are derived from the authorized
         # mapping -- never taken from the request. The request's operation_id is

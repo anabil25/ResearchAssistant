@@ -31,10 +31,39 @@ from research_assistant_api.agent_studio.models import (
     DeploymentEnvironment,
     utc_now,
 )
+from research_assistant_api.agent_studio.runtime_deployment_mapping import (
+    RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION,
+)
 
 #: Strict protocol identifier for the runtime-control wire. A runtime pins this
 #: exact string; the backend rejects any other value.
 RUNTIME_CONTROL_PROTOCOL: Literal["research-assistant.runtime-control.v1"] = "research-assistant.runtime-control.v1"
+
+
+class RuntimeMappingRef(BaseModel):
+    """Canonical, in-body mapping reference a runtime echoes on every request.
+
+    Ruling A: the mapping reference is a single structured object living *inside*
+    the request body -- one source of truth -- rather than a flat ``mapping_ref``
+    string paired with a separate ``x-runtime-mapping-digest`` header. It carries
+    the opaque deployment ``id``, the strict ``schema_version``, and the full
+    ``digest`` the runtime was issued. The backend reconstructs the flat ref
+    (``<schema_version>:<id>``) and matches BOTH ref and digest exactly against
+    the server-loaded mapping; nothing here is authority, only material the
+    server re-verifies.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=200)
+    schema_version: Literal["runtime-deployment-mapping:v1"] = RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION
+    #: Full prefixed mapping digest (``runtime-deployment-mapping:v1:sha256:...``).
+    digest: str = Field(min_length=1, max_length=200)
+
+    @property
+    def flat_ref(self) -> str:
+        """The flat ``<schema_version>:<id>`` ref the backend compares to ``mapping.mapping_ref``."""
+        return f"{self.schema_version}:{self.id}"
 
 
 class RuntimeContextRequest(BaseModel):
@@ -42,16 +71,18 @@ class RuntimeContextRequest(BaseModel):
 
     Excludes every authority field: no tenant/project (the mapping's stored
     scope is authoritative), no approval_id/invocation_id (server-chosen), no
-    release/binding/destination/url/key. ``request_digest`` is the runtime's
-    canonical digest of the exact local request facts, echoed so the backend
-    can bind the resolved context to this precise attempt.
+    release/binding/destination/url/key. The opaque deployment id and the
+    mapping digest both live inside the single canonical ``mapping_ref`` object
+    (Ruling A) -- there is no separate top-level ``deployment_id`` and no digest
+    header. ``request_digest`` is the runtime's canonical digest of the exact
+    local request facts, echoed so the backend can bind the resolved context to
+    this precise attempt.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
-    deployment_id: str = Field(min_length=1, max_length=200)
-    mapping_ref: str = Field(min_length=1, max_length=400)
+    mapping_ref: RuntimeMappingRef
     operation_id: str = Field(min_length=1, max_length=200)
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
@@ -117,16 +148,16 @@ class RuntimeMappingRetrieveRequest(BaseModel):
     """Body a runtime posts to retrieve its own deployment mapping view.
 
     The opaque ``deployment_id`` travels in the path; the runtime echoes the
-    exact ``mapping_ref``/``mapping_digest`` it was issued so the backend can
-    authorize and confirm the request targets the precise mapping the runtime
-    believes it is bound to.
+    single canonical ``mapping_ref`` object (Ruling A) -- carrying the id,
+    schema_version, and digest it was issued -- so the backend can authorize and
+    confirm the request targets the precise mapping the runtime believes it is
+    bound to. The path deployment_id and ``mapping_ref.id`` must agree.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
-    mapping_ref: str = Field(min_length=1, max_length=400)
-    mapping_digest: str = Field(min_length=1, max_length=200)
+    mapping_ref: RuntimeMappingRef
 
 
 class RuntimeBindingView(BaseModel):
@@ -208,8 +239,7 @@ class RuntimeConsumptionRequest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
-    deployment_id: str = Field(min_length=1, max_length=200)
-    mapping_ref: str = Field(min_length=1, max_length=400)
+    mapping_ref: RuntimeMappingRef
     approval_id: str = Field(min_length=1, max_length=200)
     invocation_id: str = Field(min_length=1, max_length=200)
     approval_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")

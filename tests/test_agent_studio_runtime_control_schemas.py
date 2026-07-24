@@ -17,6 +17,7 @@ from research_assistant_api.agent_studio.runtime_control_schemas import (
     RuntimeContextResponse,
     RuntimeControlError,
     RuntimeDestinationHash,
+    RuntimeMappingRef,
 )
 
 DIGEST = "a" * 64
@@ -24,8 +25,11 @@ DIGEST = "a" * 64
 
 def _request(**overrides: object) -> RuntimeContextRequest:
     kwargs: dict[str, object] = {
-        "deployment_id": "dep-1",
-        "mapping_ref": "runtime-deployment-mapping:v1:dep-1",
+        "mapping_ref": {
+            "id": "dep-1",
+            "schema_version": "runtime-deployment-mapping:v1",
+            "digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
+        },
         "operation_id": "search",
         "request_digest": DIGEST,
     }
@@ -58,6 +62,21 @@ def _response(**overrides: object) -> RuntimeContextResponse:
 # --- request ---------------------------------------------------------------
 
 
+def test_mapping_ref_object_defaults_schema_version_and_builds_flat_ref() -> None:
+    # Ruling A: the mapping reference is a single in-body object carrying id +
+    # schema_version + digest; the backend reconstructs the flat ref from it.
+    ref = RuntimeMappingRef(id="dep-1", digest="runtime-deployment-mapping:v1:sha256:" + DIGEST)
+    assert ref.schema_version == "runtime-deployment-mapping:v1"
+    assert ref.flat_ref == "runtime-deployment-mapping:v1:dep-1"
+
+
+def test_mapping_ref_object_is_strict_and_requires_digest() -> None:
+    with pytest.raises(ValidationError):
+        RuntimeMappingRef(id="dep-1")  # type: ignore[call-arg]
+    with pytest.raises(ValidationError):
+        RuntimeMappingRef(id="dep-1", digest="x" * 64, extra="nope")  # type: ignore[call-arg]
+
+
 def test_request_defaults_protocol_and_is_strict() -> None:
     request = _request()
     assert request.protocol == RUNTIME_CONTROL_PROTOCOL == "research-assistant.runtime-control.v1"
@@ -81,7 +100,7 @@ def test_request_forbids_extra_authority_fields() -> None:
 def test_request_is_frozen() -> None:
     request = _request()
     with pytest.raises(ValidationError):
-        request.deployment_id = "other"
+        request.operation_id = "other"
 
 
 # --- response --------------------------------------------------------------
@@ -131,8 +150,11 @@ IDEM_DIGEST = "c" * 64
 
 def _consumption_request(**overrides: object) -> RuntimeConsumptionRequest:
     kwargs: dict[str, object] = {
-        "deployment_id": "dep-1",
-        "mapping_ref": "runtime-deployment-mapping:v1:dep-1",
+        "mapping_ref": {
+            "id": "dep-1",
+            "schema_version": "runtime-deployment-mapping:v1",
+            "digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
+        },
         "approval_id": "appr-1",
         "invocation_id": "inv-1",
         "approval_request_digest": "a" * 64,
