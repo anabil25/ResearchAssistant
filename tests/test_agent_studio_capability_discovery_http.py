@@ -1952,3 +1952,98 @@ async def test_duplicate_with_failed_twin_is_still_permutation_invariant(reverse
     # Identical outcome in both orderings: content decides, not arrival position.
     assert [d.id for d in result.descriptors] == ["foundry:dup"]
     assert [p.descriptor_digest for p in result.descriptor_pins] == ["a" * 64]
+
+
+# --- advisory 5: no bare str() coercion left on wire data --------------------
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["name", "family", "resource_kind"])
+@pytest.mark.parametrize("value", [None, 7, True])
+async def test_discover_rejects_non_string_presentation_field(field: str, value: Any) -> None:
+    """These three are REQUIRED strings in flat-v7, and coercion fabricated:
+    a null ``name`` became the title ``'None'`` and description ``'None (None/None)'``.
+    Validated like every other wire string, so no exception remains for a future
+    reader to mistake for an oversight."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(**{field: value})
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any(f"{field} must be a non-empty string" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_rejects_non_string_discovered_provider_version() -> None:
+    """Feeds ``compute_instance_fingerprint``, so coercing 7 -> '7' would pin a
+    fabricated value into a content digest."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(discovered_provider_version=7)
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("discovered_provider_version must be a non-empty string" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_preserves_absent_discovered_provider_version_as_none() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(discovered_provider_version=None)
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.instances) == 1
+    assert result.instances[0].discovered_provider_version is None
+
+
+@pytest.mark.asyncio
+async def test_discover_rejects_non_string_last_checked_at() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(last_checked_at=1700000000)
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert any("last_checked_at must be a non-empty string" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_renders_non_string_warning_message_rather_than_dropping_it() -> None:
+    """The one deliberate str() coercion: diagnostic text is displayed, not
+    failed closed, because it never reaches an identity, digest or decision."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([], warnings=[{"reason_code": "x", "message": 12345, "provider_id": "p"}])
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert "12345" in result.warnings

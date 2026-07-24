@@ -525,6 +525,22 @@ def _is_hex_digest(value: Any) -> TypeGuard[str]:
     )
 
 
+def _verbatim_optional_text(value: Any, *, field: str) -> str | None:
+    """Preserve an optional provider string verbatim; ``None`` only when absent.
+
+    Absence is legitimate and preserved as ``None``; a *present* value must be a
+    non-empty string and is returned unchanged. A present-but-non-string value
+    fails closed rather than being ``str()``-coerced, because these values can
+    reach content digests -- ``discovered_provider_version`` is an input to
+    ``capability_registry.compute_instance_fingerprint``, so coercing ``7`` to
+    ``"7"`` would silently pin a fabricated value.
+    """
+
+    if value is None:
+        return None
+    return _verbatim_required_text(value, field=field)
+
+
 def _verbatim_required_digest(value: Any, *, field: str) -> str:
     """Preserve a required provider digest **exactly** as received, or fail closed.
 
@@ -587,6 +603,14 @@ def _wire_warnings(value: Any, *, source_label: str) -> tuple[str, ...]:
                 f"{source_label} warning #{position} was not a JSON object ({type(warning).__name__}); ignored."
             )
             continue
+        # THE ONLY DELIBERATE ``str()`` COERCION LEFT IN THIS MODULE, and it is
+        # deliberate rather than missed. This value is human-readable DIAGNOSTIC
+        # TEXT: it is never an identity, never a digest input, and never reaches
+        # a pin or a governance decision -- it is only ever displayed. So a
+        # provider that sends a non-string message should still have it
+        # rendered, not have its whole warning discarded. Every other wire string
+        # in this module goes through ``_verbatim_required_text`` /
+        # ``_verbatim_optional_text`` and fails closed instead.
         collected.append(
             str(warning.get("message") or warning.get("reason_code") or "unknown warning")
         )
@@ -753,14 +777,25 @@ def _descriptor_description(name: str, family: str, resource_kind: str) -> str:
 def _map_descriptor(
     payload: Mapping[str, Any], *, provider_id: str, max_operations: int
 ) -> tuple[CapabilityDescriptor, ProviderDescriptorPins]:
-    # The descriptor id is an identity string (it becomes half of the namespaced
-    # CapabilityDescriptor.id); require it rather than str()-coercing a null/int
-    # into a bogus identity like ``"None"``.
+    # EVERY wire string in this module goes through ``_verbatim_required_text``
+    # -- identities and presentation fields alike. No bare ``str()`` coercion
+    # remains, so a future reader never has to guess whether an exception was
+    # deliberate or missed.
+    #
+    # ``name``/``family``/``resource_kind`` are the weakest of these: they feed
+    # the descriptor's title/description, and ``family`` feeds only
+    # ``managed_foundry_native``, which fails safe to ``False``. They are
+    # nonetheless validated rather than coerced, for two reasons. First, all
+    # three are REQUIRED and typed ``string`` in the flat-v7 contract, so
+    # accepting a null or an int was never contract-conformant. Second, coercion
+    # fabricates: a null ``name`` became the title ``"None"`` and the description
+    # ``"None (None/None)"``, which is precisely the "never fabricates a value it
+    # cannot stand behind" property this adapter claims for itself.
     raw_descriptor_id = _verbatim_required_text(payload.get("descriptor_id"), field="descriptor_id")
     descriptor_version = _verbatim_required_text(payload.get("descriptor_version"), field="descriptor_version")
-    name = str(payload["name"])
-    family = str(payload["family"])
-    resource_kind = str(payload["resource_kind"])
+    name = _verbatim_required_text(payload.get("name"), field="name")
+    family = _verbatim_required_text(payload.get("family"), field="family")
+    resource_kind = _verbatim_required_text(payload.get("resource_kind"), field="resource_kind")
     operations_payload = payload.get("operations") or ()
     if not operations_payload:
         raise CapabilityProviderProtocolError("descriptor has no operations")
@@ -835,8 +870,9 @@ def _map_instance(
     if readiness != InstanceReadiness.READY and not unavailable_reason:
         evidence = _str_sequence(payload.get("status_evidence"), field="status_evidence")
         unavailable_reason = "; ".join(evidence) or f"Provider reported readiness={readiness.value}."
+    last_checked_at = _verbatim_required_text(payload.get("last_checked_at"), field="last_checked_at")
     try:
-        discovered_at = datetime.fromisoformat(str(payload["last_checked_at"]))
+        discovered_at = datetime.fromisoformat(last_checked_at)
     except ValueError as exc:
         raise CapabilityProviderProtocolError("last_checked_at is not a valid ISO-8601 timestamp") from exc
     # Identity strings (they become the namespaced instance/descriptor ids, and
@@ -860,9 +896,9 @@ def _map_instance(
         # backend-equivalent here -- it is preserved verbatim on the pins
         # instead, so this domain object is deliberately left unset.
         descriptor_digest=None,
-        discovered_provider_version=(str(payload["discovered_provider_version"]) or None)
-        if payload.get("discovered_provider_version")
-        else None,
+        discovered_provider_version=_verbatim_optional_text(
+            payload.get("discovered_provider_version"), field="discovered_provider_version"
+        ),
         readiness=readiness,
         health_status=health_status,
         # This backend's own canonical digest of the wire configuration, so
