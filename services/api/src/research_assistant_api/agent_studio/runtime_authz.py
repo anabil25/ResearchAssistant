@@ -57,6 +57,7 @@ class RuntimeAuthzReason(StrEnum):
     AUDIENCE_MISMATCH = "audience_mismatch"
     MISSING_APP_ROLE = "missing_app_role"
     MAPPING_NOT_FOUND = "mapping_not_found"
+    DEPLOYMENT_ID_MISMATCH = "deployment_id_mismatch"
     MAPPING_EXPIRED = "mapping_expired"
     MAPPING_REVOKED = "mapping_revoked"
     MAPPING_SUPERSEDED = "mapping_superseded"
@@ -175,6 +176,13 @@ def authorize_runtime_request(
     mapping = load_authorized_mapping(principal.client_app_id, presented_deployment_id)
     if mapping is None:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_FOUND)
+    # Defense-in-depth invariant: a correct loader returns the mapping for the
+    # asserted deployment, but authorize_runtime_request receives the loader as
+    # a closure -- a future refactor/test double could return a mapping for a
+    # different deployment. Re-verify (constant-time) rather than trusting the
+    # loader's contract; never removed by "the loader guarantees it".
+    if not hmac.compare_digest(mapping.deployment_id, presented_deployment_id):
+        return RuntimeAuthzDecision(reason=RuntimeAuthzReason.DEPLOYMENT_ID_MISMATCH)
     fault = mapping.lifecycle_fault(now)
     if fault is not None:
         return RuntimeAuthzDecision(reason=_LIFECYCLE_FAULT_REASONS[fault])

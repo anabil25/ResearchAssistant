@@ -238,6 +238,27 @@ def test_client_bound_to_other_deployment_is_uniform_not_found() -> None:
     assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_FOUND
 
 
+def test_misbehaving_loader_returning_wrong_deployment_is_denied() -> None:
+    # Defense in depth: a loader that ignores the binding and returns a mapping
+    # for a DIFFERENT deployment than asserted must still be caught by the
+    # authorization function's own constant-time invariant, not trusted.
+    other = _mapping(deployment_id="dep-OTHER")
+
+    def _bad_loader(_client: str, _deployment: str) -> RuntimeDeploymentMapping:
+        return other
+
+    decision = authorize_runtime_request(
+        policy=_policy(),
+        principal=_principal(),
+        presented_deployment_id="dep-1",
+        presented_mapping_ref=other.mapping_ref,
+        presented_mapping_digest=other.mapping_digest,
+        load_authorized_mapping=_bad_loader,
+        now=FIXED_NOW,
+    )
+    assert decision.reason is RuntimeAuthzReason.DEPLOYMENT_ID_MISMATCH
+
+
 def test_client_not_in_allowlist_is_denied() -> None:
     mapping = _mapping()
     decision, _ = _authorize(mapping, principal=_principal(client_app_id="unknown-client"))
