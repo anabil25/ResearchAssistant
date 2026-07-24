@@ -163,6 +163,23 @@ def test_container_apps_declares_conditional_entra_auth_config_and_reports_it() 
     assert "value: string(enableEntraAuth)" in container_apps
 
 
+def test_container_apps_trusts_platform_identity_header_only_when_easyauth_enforces() -> None:
+    """The API must trust the platform-injected ``x-ms-client-principal``
+    header exactly when Container Apps built-in authentication is enforcing.
+
+    ``RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS`` is therefore derived from the
+    same ``enableEntraAuth`` toggle that gates the ``authConfigs`` resource, so
+    the app never trusts a forgeable header when the platform is not validating
+    tokens -- and so the app's fail-closed startup guard
+    (``config._forbid_unenforced_platform_identity_trust_outside_safe_environments``)
+    is satisfied, since ``entra_auth_enforced`` is wired from the same value.
+    """
+    container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(encoding="utf-8")
+    assert "name: 'RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS'" in container_apps
+    # Both trust flags derive from the single enableEntraAuth toggle.
+    assert container_apps.count("value: string(enableEntraAuth)") >= 2
+
+
 def test_container_apps_sources_attestation_signing_key_from_key_vault_only_when_provisioned() -> None:
     """Harness blocker #3 (authentic signing key deployment) is code-complete
     at the application layer (``release_attestation.py`` HMAC signing +

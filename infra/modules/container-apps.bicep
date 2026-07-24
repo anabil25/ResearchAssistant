@@ -369,6 +369,20 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               name: 'RESEARCH_ENTRA_AUTH_ENFORCED'
               value: string(enableEntraAuth)
             }
+            {
+              // The API only trusts the platform-injected `x-ms-client-principal`
+              // header when Container Apps built-in authentication (EasyAuth) is
+              // actually enforcing on ingress. Deriving this flag from the same
+              // `enableEntraAuth` toggle that gates the `authConfigs` resource
+              // keeps the two in lockstep: the header is trusted exactly when,
+              // and only when, the platform is validating tokens and injecting
+              // it. This also satisfies the app's fail-closed startup guard
+              // (config._forbid_unenforced_platform_identity_trust_outside_safe_environments),
+              // which refuses trust_platform_identity_headers=True unless
+              // entra_auth_enforced (RESEARCH_ENTRA_AUTH_ENFORCED) is also True.
+              name: 'RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS'
+              value: string(enableEntraAuth)
+            }
             ],
             attestationEnvVars
           )
