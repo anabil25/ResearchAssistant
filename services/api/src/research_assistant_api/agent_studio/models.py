@@ -1396,6 +1396,90 @@ class EvaluationRun(BaseModel):
         return sum(scored) / len(scored)
 
 
+class PlaygroundRunStatus(StrEnum):
+    """Honest outcome of one playground/test-run attempt.
+
+    ``UNAVAILABLE`` is the explicit, non-fake state used when no
+    ``PlaygroundInvoker`` execution adapter is wired -- see
+    ``playground_invoker.py``. A run is never silently fabricated as
+    ``COMPLETED`` with an invented response.
+    """
+
+    COMPLETED = "completed"
+    FAILED = "failed"
+    UNAVAILABLE = "unavailable"
+
+
+class SideEffectPolicy(StrEnum):
+    """Deterministic, domain-owned side-effect policy for playground runs.
+
+    Playground/test invocations are diagnostic, not production traffic:
+    ``DRY_RUN`` is the only supported value today -- no
+    ``WRITE_REVERSIBLE``/``WRITE_IRREVERSIBLE``/``PRIVILEGED`` capability
+    operation may take real effect during a test run. This is an
+    application-owned policy, never left to model/runtime discretion.
+    """
+
+    DRY_RUN = "dry_run"
+
+
+class PlaygroundToolCall(BaseModel):
+    """One recorded tool invocation surfaced in a playground trace.
+
+    Sensitive tool inputs/outputs are redacted deterministically by the
+    domain (``redacted=True`` swaps ``input_summary``/``output_summary``
+    for a fixed placeholder) -- the Test/Playground surface must never
+    leak credential- or secret-shaped tool payloads into stored traces.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    tool_name: str
+    input_summary: str = ""
+    output_summary: str = ""
+    redacted: bool = False
+    succeeded: bool = True
+
+
+class PlaygroundTraceEvent(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    sequence: int
+    role: str
+    content: str = ""
+    tool_call: PlaygroundToolCall | None = None
+
+
+class PlaygroundTestRun(BaseModel):
+    """One ad hoc playground/test invocation of a single typed input
+    against either the current draft (``version_id=None``) or one exact,
+    immutable ``AgentVersion`` (``version_id`` set).
+
+    Distinct from ``EvaluationRun``: this is a single interactive
+    request/response exchange for manual inspection (trace, tool calls)
+    a researcher runs while iterating on a draft, not a scored batch
+    suite run consulted for trends.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    id: str
+    logical_agent_id: str
+    tenant_id: str = Field(min_length=1, max_length=200)
+    project_id: str = Field(min_length=1, max_length=200)
+    version_id: str | None = None
+    input: str
+    output: str | None = None
+    status: PlaygroundRunStatus
+    trace: tuple[PlaygroundTraceEvent, ...] = Field(default_factory=tuple)
+    tool_calls: tuple[PlaygroundToolCall, ...] = Field(default_factory=tuple)
+    side_effect_policy: SideEffectPolicy = SideEffectPolicy.DRY_RUN
+    detail: str = ""
+    requested_by: str
+    created_at: datetime = Field(default_factory=utc_now)
+    completed_at: datetime | None = None
+
+
 # --------------------------------------------------------------------------
 # Hard deterministic release gates
 # --------------------------------------------------------------------------

@@ -46,6 +46,8 @@ from research_assistant_api.agent_studio.models import (
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
+    PlaygroundRunStatus,
+    PlaygroundTestRun,
     ReleaseGateReport,
     ReleaseStatus,
     RuntimeTarget,
@@ -413,6 +415,27 @@ def _evaluation_run(
         project_id=project_id,
         status=EvaluationRunStatus.COMPLETED,
         results=(EvaluationTestResult(test_case_id="case-1", score=1.0, passed=True),),
+        requested_by=USER_ID,
+    )
+
+
+def _test_run(
+    *,
+    run_id: str = "test-run-1",
+    version_id: str | None = None,
+    tenant_id: str = TENANT,
+    project_id: str = PROJECT,
+    logical_agent_id: str = AGENT_ID,
+) -> PlaygroundTestRun:
+    return PlaygroundTestRun(
+        id=run_id,
+        logical_agent_id=logical_agent_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        version_id=version_id,
+        input="What is 2+2?",
+        output="4",
+        status=PlaygroundRunStatus.COMPLETED,
         requested_by=USER_ID,
     )
 
@@ -2492,6 +2515,42 @@ def test_evaluation_runs_create_list_get_filter_and_scope_guards(
         payload=mismatched.model_dump(mode="json"),
     )
     assert _new_store(fake_client_factory).get_evaluation_run(SCOPE, "eval-run-mismatch") is None
+
+
+def test_test_runs_create_list_get_filter_and_scope_guards(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    first = _new_store(fake_client_factory)
+    draft_run = _test_run()
+    version_run = _test_run(run_id="test-run-2", version_id="version-1")
+    other_agent_run = _test_run(run_id="test-run-3", logical_agent_id=OTHER_AGENT_ID)
+    assert first.create_test_run(SCOPE, draft_run) == draft_run
+    assert first.create_test_run(SCOPE, version_run) == version_run
+    assert first.create_test_run(SCOPE, other_agent_run) == other_agent_run
+
+    reloaded = _new_store(fake_client_factory)
+    assert set(reloaded.list_test_runs(SCOPE, AGENT_ID)) == {draft_run, version_run}
+    assert reloaded.list_test_runs(SCOPE, AGENT_ID, version_id="version-1") == (version_run,)
+    assert reloaded.list_test_runs(SCOPE, OTHER_AGENT_ID) == (other_agent_run,)
+
+    getter = _new_store(fake_client_factory)
+    assert getter.get_test_run(SCOPE, draft_run.id) == draft_run
+    assert getter.get_test_run(SCOPE, draft_run.id) == draft_run
+    assert getter.get_test_run(SCOPE, "missing-run") is None
+    assert getter.get_test_run(SAME_TENANT_OTHER_PROJECT_SCOPE, draft_run.id) is None
+    assert reloaded.list_test_runs(SAME_TENANT_OTHER_PROJECT_SCOPE, AGENT_ID) == ()
+    assert getter.get_test_run(OTHER_TENANT_SAME_PROJECT_SCOPE, draft_run.id) is None
+    assert reloaded.list_test_runs(OTHER_TENANT_SAME_PROJECT_SCOPE, AGENT_ID) == ()
+
+    container = _metadata_container(fake_client_factory)
+    mismatched = _test_run(run_id="test-run-mismatch", project_id=OTHER_PROJECT)
+    container.inject_document(
+        scope_key=SCOPE.scope_key,
+        document_id="test_run::test-run-mismatch",
+        document_type="test_run",
+        payload=mismatched.model_dump(mode="json"),
+    )
+    assert _new_store(fake_client_factory).get_test_run(SCOPE, "test-run-mismatch") is None
 
 
 def test_build_agent_studio_store_raises_without_endpoint() -> None:

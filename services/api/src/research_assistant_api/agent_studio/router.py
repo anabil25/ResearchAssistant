@@ -98,6 +98,8 @@ from research_assistant_api.agent_studio.models import (
     MemoryEntry,
     MemoryScopeKind,
     ModelDeploymentRef,
+    PlaygroundRunStatus,
+    PlaygroundTestRun,
     ReleaseAttestation,
     ReleaseGateReport,
     ResolvedAgentContract,
@@ -108,6 +110,7 @@ from research_assistant_api.agent_studio.models import (
     role_at_least,
     utc_now,
 )
+from research_assistant_api.agent_studio.playground_invoker import PlaygroundInvocationError, PlaygroundInvoker
 from research_assistant_api.agent_studio.release_attestation import (
     ReleaseAttestationOutcome,
     ReleaseAttestationPort,
@@ -136,6 +139,7 @@ from research_assistant_api.agent_studio.schemas import (
     CreateAgentRequest,
     CreateEvaluationRunRequest,
     CreateEvaluationSuiteRequest,
+    CreateTestRunRequest,
     DeployRequest,
     EscalationRequest,
     FailIdempotencyRequest,
@@ -218,6 +222,10 @@ def _template_catalog(request: Request) -> TemplateCatalog:
 
 def _evaluation_runner(request: Request) -> EvaluationRunner:
     return cast(EvaluationRunner, request.app.state.agent_studio_evaluation_runner)
+
+
+def _playground_invoker(request: Request) -> PlaygroundInvoker:
+    return cast(PlaygroundInvoker, request.app.state.agent_studio_playground_invoker)
 
 
 def _memory_service(request: Request) -> MemoryService:
@@ -892,6 +900,88 @@ def get_evaluation_run(request: Request, logical_agent_id: str, run_id: str, pro
     run = _store(request).get_evaluation_run(scope, run_id)
     if run is None or run.logical_agent_id != logical_agent_id:
         raise _not_found(f"Evaluation run '{run_id}' was not found.")
+    return run
+
+
+@router.post(
+    "/agents/{logical_agent_id}/test-runs",
+    response_model=PlaygroundTestRun,
+    status_code=status.HTTP_201_CREATED,
+)
+def create_test_run(
+    request: Request, logical_agent_id: str, payload: CreateTestRunRequest
+) -> PlaygroundTestRun:
+    """Invoke the agent once with a single typed input for the interactive
+    Test/Playground tab, against either the current draft (``version_id``
+    omitted) or one exact, immutable ``AgentVersion`` (``version_id`` set).
+
+    Honestly fails with 503 when no playground execution adapter is wired
+    (see ``playground_invoker.UnavailablePlaygroundInvoker``) rather than
+    persisting or returning a fabricated response -- no run record is
+    created at all in that case. Requires ``CONTRIBUTOR`` or above, matching
+    evaluation-run creation. Side effects are always the deterministic
+    ``SideEffectPolicy.DRY_RUN``.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    role = _actor_role(request, identity, logical_agent_id, scope.project_id)
+    if not role_at_least(role, AgentRole.CONTRIBUTOR):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role.value}' does not meet the minimum 'contributor'.",
+        )
+    store = _store(request)
+    if payload.version_id is not None:
+        version = store.get_version(scope, payload.version_id)
+        if version is None or version.logical_agent_id != logical_agent_id:
+            raise _not_found(f"Version '{payload.version_id}' was not found.")
+        instructions = version.manifest.instructions
+    else:
+        draft = store.get_draft(scope, logical_agent_id)
+        if draft is None:
+            raise _not_found(f"Agent '{logical_agent_id}' was not found.")
+        instructions = draft.manifest.instructions
+    try:
+        result = _playground_invoker(request).invoke(instructions=instructions, input_text=payload.input)
+    except PlaygroundInvocationError as exc:
+        raise _unavailable(str(exc)) from exc
+    run = PlaygroundTestRun(
+        id=str(uuid4()),
+        logical_agent_id=logical_agent_id,
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        version_id=payload.version_id,
+        input=payload.input,
+        output=result.output,
+        status=PlaygroundRunStatus.COMPLETED,
+        trace=result.trace,
+        tool_calls=result.tool_calls,
+        requested_by=identity.user_id,
+        completed_at=utc_now(),
+    )
+    return store.create_test_run(scope, run)
+
+
+@router.get("/agents/{logical_agent_id}/test-runs", response_model=list[PlaygroundTestRun])
+def list_test_runs(
+    request: Request, logical_agent_id: str, project_id: str, version_id: str | None = None
+) -> list[PlaygroundTestRun]:
+    """History read surface: every past playground/test run for an agent,
+    optionally filtered to one ``version_id``. Purely diagnostic -- never
+    consulted by a release gate.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    return list(_store(request).list_test_runs(scope, logical_agent_id, version_id=version_id))
+
+
+@router.get("/agents/{logical_agent_id}/test-runs/{run_id}", response_model=PlaygroundTestRun)
+def get_test_run(request: Request, logical_agent_id: str, run_id: str, project_id: str) -> PlaygroundTestRun:
+    identity = _identity(request)
+    scope = _scope(request, identity, project_id)
+    run = _store(request).get_test_run(scope, run_id)
+    if run is None or run.logical_agent_id != logical_agent_id:
+        raise _not_found(f"Test run '{run_id}' was not found.")
     return run
 
 

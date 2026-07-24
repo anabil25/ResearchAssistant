@@ -59,10 +59,17 @@ from research_assistant_api.agent_studio.models import (
     MemoryScopeKind,
     ModelDeploymentRef,
     OwnershipGrant,
+    PlaygroundTraceEvent,
     ReleaseGateReport,
     ReleaseStatus,
     StudioApprovalRecord,
     utc_now,
+)
+from research_assistant_api.agent_studio.playground_invoker import (
+    InMemoryPlaygroundInvoker,
+    PlaygroundInvocationResult,
+    PlaygroundInvoker,
+    UnavailablePlaygroundInvoker,
 )
 from research_assistant_api.agent_studio.policy_gates import GateEvidence
 from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
@@ -192,6 +199,7 @@ def _build_app(
     builder_service: BuilderService | None,
     audit_service: AuditService | None,
     evaluation_runner: EvaluationRunner | None = None,
+    playground_invoker: PlaygroundInvoker | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -223,6 +231,7 @@ def _build_app(
     )
     app.state.agent_studio_template_catalog = default_template_catalog()
     app.state.agent_studio_evaluation_runner = evaluation_runner or UnavailableEvaluationRunner()
+    app.state.agent_studio_playground_invoker = playground_invoker or UnavailablePlaygroundInvoker()
     return app
 
 
@@ -376,6 +385,50 @@ def evaluation_available_client(
         audit_service=audit_service,
         evaluation_runner=InMemoryEvaluationRunner(
             lambda case_input, instructions: (f"echo: {case_input}", 1.0 if instructions else 0.5, True)
+        ),
+    )
+    with TestClient(app) as test_client:
+        yield test_client
+
+
+@pytest.fixture
+def playground_available_client(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    release_service: ReleaseService,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+    audit_service: AuditService,
+) -> Iterator[TestClient]:
+    """A client with a real (in-memory, test-only) playground invoker wired.
+
+    Distinct from the default ``client`` fixture, which mirrors production's
+    always-unavailable playground invoker (see ``playground_invoker`` module
+    docstring) -- this fixture exists only to exercise the test-run-creation
+    success path deterministically.
+    """
+    app = _build_app(
+        settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=release_service,
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=audit_service,
+        playground_invoker=InMemoryPlaygroundInvoker(
+            lambda input_text, instructions: PlaygroundInvocationResult(
+                output=f"echo: {input_text}",
+                trace=(
+                    PlaygroundTraceEvent(sequence=0, role="user", content=input_text),
+                    PlaygroundTraceEvent(sequence=1, role="agent", content=f"echo: {input_text}"),
+                ),
+                tool_calls=(),
+            )
         ),
     )
     with TestClient(app) as test_client:
@@ -1730,6 +1783,247 @@ def test_list_and_get_evaluation_runs_scoped_and_filtered_by_suite(
 
     unknown_run = client.get(
         "/v1/agent-studio/agents/agent-eval-history/evaluation-runs/missing-run",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert unknown_run.status_code == 404
+
+
+def _create_test_run(
+    client: TestClient,
+    logical_agent_id: str,
+    *,
+    headers: dict[str, str] = USER_HEADERS,
+    project_id: str = DEFAULT_PROJECT_ID,
+    version_id: str | None = None,
+    input_text: str = "Hello there",
+) -> dict[str, Any]:
+    response = client.post(
+        f"/v1/agent-studio/agents/{logical_agent_id}/test-runs",
+        json=_body(project_id, version_id=version_id, input=input_text),
+        headers=headers,
+    )
+    assert response.status_code == 201, response.text
+    return cast("dict[str, Any]", response.json())
+
+
+def test_create_test_run_against_current_draft_with_in_memory_invoker(
+    playground_available_client: TestClient,
+) -> None:
+    client = playground_available_client
+    _create_agent(client, logical_agent_id="agent-test-run-draft", headers=USER_HEADERS)
+
+    run = _create_test_run(client, "agent-test-run-draft", input_text="What is 2+2?")
+    assert run["logical_agent_id"] == "agent-test-run-draft"
+    assert run["version_id"] is None
+    assert run["input"] == "What is 2+2?"
+    assert run["output"] == "echo: What is 2+2?"
+    assert run["status"] == "completed"
+    assert run["side_effect_policy"] == "dry_run"
+    assert [event["role"] for event in run["trace"]] == ["user", "agent"]
+
+    listing = client.get(
+        "/v1/agent-studio/agents/agent-test-run-draft/test-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert listing.status_code == 200
+    assert [item["id"] for item in listing.json()] == [run["id"]]
+
+    fetched = client.get(
+        f"/v1/agent-studio/agents/agent-test-run-draft/test-runs/{run['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == run
+
+    # Wrong logical_agent_id in the path -- same store record, different
+    # agent segment -- must 404 rather than leak the run.
+    wrong_agent = client.get(
+        f"/v1/agent-studio/agents/agent-does-not-exist/test-runs/{run['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert wrong_agent.status_code == 404
+
+    unknown_run = client.get(
+        "/v1/agent-studio/agents/agent-test-run-draft/test-runs/missing-run",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert unknown_run.status_code == 404
+
+    other_agent_listing = client.get(
+        "/v1/agent-studio/agents/agent-does-not-exist/test-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert other_agent_listing.status_code == 200
+    assert other_agent_listing.json() == []
+
+
+def test_create_test_run_against_pinned_version(playground_available_client: TestClient) -> None:
+    client = playground_available_client
+    _create_agent(client, logical_agent_id="agent-test-run-version", headers=USER_HEADERS)
+    version = _cut_version(client, "agent-test-run-version", headers=USER_HEADERS)
+
+    run = _create_test_run(client, "agent-test-run-version", version_id=version["id"])
+    assert run["version_id"] == version["id"]
+    assert run["status"] == "completed"
+
+
+def test_get_test_run_is_not_found_cross_project(
+    playground_available_client: TestClient, store: AgentStudioStore
+) -> None:
+    client = playground_available_client
+    _create_agent(
+        client, logical_agent_id="agent-test-run-cross-scope", headers=MULTI_PROJECT_USER_HEADERS
+    )
+    _grant_role(
+        store,
+        logical_agent_id="agent-test-run-cross-scope",
+        principal_id="user-1",
+        role=AgentRole.OWNER,
+    )
+    run = _create_test_run(
+        client, "agent-test-run-cross-scope", headers=MULTI_PROJECT_USER_HEADERS
+    )
+
+    cross_project = client.get(
+        f"/v1/agent-studio/agents/agent-test-run-cross-scope/test-runs/{run['id']}",
+        params=_params(OTHER_PROJECT_ID),
+        headers=MULTI_PROJECT_USER_HEADERS,
+    )
+    assert cross_project.status_code == 404
+
+
+def test_create_test_run_is_unavailable_without_a_wired_invoker(client: TestClient) -> None:
+    """The default ``client`` fixture mirrors production: no playground
+    execution adapter is wired. Triggering a run must fail honestly (503)
+    and never persist a fabricated run record."""
+    _create_agent(client, logical_agent_id="agent-test-run-unavailable", headers=USER_HEADERS)
+
+    response = client.post(
+        "/v1/agent-studio/agents/agent-test-run-unavailable/test-runs",
+        json=_body(input="hi"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 503
+
+    history = client.get(
+        "/v1/agent-studio/agents/agent-test-run-unavailable/test-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert history.status_code == 200
+    assert history.json() == []
+
+
+def test_create_test_run_requires_contributor_role(playground_available_client: TestClient) -> None:
+    client = playground_available_client
+    _create_agent(client, logical_agent_id="agent-test-run-guard", headers=USER_HEADERS)
+    forbidden = client.post(
+        "/v1/agent-studio/agents/agent-test-run-guard/test-runs",
+        json=_body(input="hi"),
+        headers=VIEWER_HEADERS,
+    )
+    assert forbidden.status_code == 403
+
+
+def test_create_test_run_returns_404_for_missing_version_or_agent(
+    playground_available_client: TestClient,
+) -> None:
+    client = playground_available_client
+    _create_agent(client, logical_agent_id="agent-test-run-missing", headers=USER_HEADERS)
+
+    missing_version = client.post(
+        "/v1/agent-studio/agents/agent-test-run-missing/test-runs",
+        json=_body(version_id="version-does-not-exist", input="hi"),
+        headers=USER_HEADERS,
+    )
+    assert missing_version.status_code == 404
+
+    # The actor holds no role on a logical_agent_id that never existed, so
+    # the role gate (checked before draft/version lookups) rejects with 403
+    # rather than leaking existence via 404 -- matches evaluation-run
+    # creation and other CONTRIBUTOR+ gated write endpoints in this router.
+    missing_agent = client.post(
+        "/v1/agent-studio/agents/agent-does-not-exist/test-runs",
+        json=_body(input="hi"),
+        headers=USER_HEADERS,
+    )
+    assert missing_agent.status_code == 403
+
+
+def test_create_test_run_returns_404_when_draft_is_missing_for_authorized_role(
+    playground_available_client: TestClient, store: AgentStudioStore
+) -> None:
+    """The actor can hold a CONTRIBUTOR+ role on a logical_agent_id that has
+    no draft/agent record at all (e.g. granted defensively ahead of agent
+    creation); the run-creation draft lookup must still 404 rather than
+    dereference a missing draft."""
+    client = playground_available_client
+    _grant_role(
+        store,
+        logical_agent_id="agent-test-run-no-draft",
+        principal_id="user-1",
+        role=AgentRole.OWNER,
+    )
+
+    response = client.post(
+        "/v1/agent-studio/agents/agent-test-run-no-draft/test-runs",
+        json=_body(input="hi"),
+        headers=USER_HEADERS,
+    )
+    assert response.status_code == 404
+
+
+def test_list_and_get_test_runs_scoped_and_filtered_by_version(
+    playground_available_client: TestClient,
+) -> None:
+    client = playground_available_client
+    _create_agent(client, logical_agent_id="agent-test-run-history", headers=USER_HEADERS)
+    version = _cut_version(client, "agent-test-run-history", headers=USER_HEADERS)
+
+    draft_run = _create_test_run(client, "agent-test-run-history", input_text="draft run")
+    version_run = _create_test_run(
+        client, "agent-test-run-history", version_id=version["id"], input_text="version run"
+    )
+
+    all_runs = client.get(
+        "/v1/agent-studio/agents/agent-test-run-history/test-runs",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert all_runs.status_code == 200
+    assert {item["id"] for item in all_runs.json()} == {draft_run["id"], version_run["id"]}
+
+    filtered = client.get(
+        "/v1/agent-studio/agents/agent-test-run-history/test-runs",
+        params=_params(version_id=version["id"]),
+        headers=USER_HEADERS,
+    )
+    assert filtered.status_code == 200
+    assert [item["id"] for item in filtered.json()] == [version_run["id"]]
+
+    fetched = client.get(
+        f"/v1/agent-studio/agents/agent-test-run-history/test-runs/{draft_run['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert fetched.status_code == 200
+    assert fetched.json() == draft_run
+
+    wrong_agent = client.get(
+        f"/v1/agent-studio/agents/agent-does-not-exist/test-runs/{draft_run['id']}",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert wrong_agent.status_code == 404
+
+    unknown_run = client.get(
+        "/v1/agent-studio/agents/agent-test-run-history/test-runs/missing-run",
         params=_params(),
         headers=USER_HEADERS,
     )

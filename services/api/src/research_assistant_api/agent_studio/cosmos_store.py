@@ -62,6 +62,7 @@ from research_assistant_api.agent_studio.models import (
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
+    PlaygroundTestRun,
     ReleaseGateReport,
     StudioApprovalRecord,
     ToolRegistrationSpec,
@@ -1321,6 +1322,51 @@ class CosmosAgentStudioStore(AgentStudioStore):
             if run.logical_agent_id == logical_agent_id:
                 self._cache_evaluation_run(scope, run)
         return super().list_evaluation_runs(scope, logical_agent_id, suite_id=suite_id)
+
+    # -- Test/playground runs --------------------------------------------
+
+    @staticmethod
+    def _test_run_id(run_id: str) -> str:
+        return f"test_run::{run_id}"
+
+    def create_test_run(self, scope: ScopeContext, run: PlaygroundTestRun) -> PlaygroundTestRun:
+        super().create_test_run(scope, run)
+        self._upsert(
+            scope.scope_key,
+            self._test_run_id(run.id),
+            "test_run",
+            run.model_dump(mode="json"),
+        )
+        return run
+
+    def _cache_test_run(self, scope: ScopeContext, run: PlaygroundTestRun) -> None:
+        self._test_runs[run.id] = run
+        agent_ids = self._test_runs_by_agent.setdefault((scope.scope_key, run.logical_agent_id), [])
+        if run.id not in agent_ids:
+            agent_ids.append(run.id)
+        version_ids = self._test_runs_by_version.setdefault((scope.scope_key, run.version_id), [])
+        if run.id not in version_ids:
+            version_ids.append(run.id)
+
+    def get_test_run(self, scope: ScopeContext, run_id: str) -> PlaygroundTestRun | None:
+        document = self._read(scope.scope_key, self._test_run_id(run_id))
+        if document is None:
+            return None
+        run = PlaygroundTestRun.model_validate(document["payload"])
+        if run.tenant_id != scope.tenant_id or run.project_id != scope.project_id:
+            return None
+        self._cache_test_run(scope, run)
+        return run
+
+    def list_test_runs(
+        self, scope: ScopeContext, logical_agent_id: str, *, version_id: str | None = None
+    ) -> tuple[PlaygroundTestRun, ...]:
+        documents = self._query_partition(scope.scope_key, "test_run")
+        for document in documents:
+            run = PlaygroundTestRun.model_validate(document["payload"])
+            if run.logical_agent_id == logical_agent_id:
+                self._cache_test_run(scope, run)
+        return super().list_test_runs(scope, logical_agent_id, version_id=version_id)
 
 
 def _credential(client_id: str | None) -> TokenCredential:

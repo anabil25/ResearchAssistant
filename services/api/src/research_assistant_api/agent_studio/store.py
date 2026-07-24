@@ -49,6 +49,7 @@ from research_assistant_api.agent_studio.models import (
     LineageEdge,
     LogicalAgentBinding,
     OwnershipGrant,
+    PlaygroundTestRun,
     ReleaseGateReport,
     StudioApprovalRecord,
     ToolRegistrationSpec,
@@ -159,6 +160,9 @@ class AgentStudioStore:
         self._evaluation_runs: dict[str, EvaluationRun] = {}
         self._evaluation_runs_by_agent: dict[tuple[str, str], list[str]] = {}
         self._evaluation_runs_by_suite: dict[tuple[str, str], list[str]] = {}
+        self._test_runs: dict[str, PlaygroundTestRun] = {}
+        self._test_runs_by_agent: dict[tuple[str, str], list[str]] = {}
+        self._test_runs_by_version: dict[tuple[str, str | None], list[str]] = {}
         self._idempotency_records: dict[tuple[str, str], IdempotencyRecord] = {}
         self._idempotency_results: dict[tuple[str, str], dict[str, Any]] = {}
         self._idempotency_lock = threading.Lock()
@@ -681,6 +685,34 @@ class AgentStudioStore:
             )
         ids = self._evaluation_runs_by_agent.get((scope.scope_key, logical_agent_id), [])
         return tuple(self._evaluation_runs[run_id] for run_id in ids)
+
+    # -- Test/playground runs --------------------------------------------
+
+    def create_test_run(self, scope: ScopeContext, run: PlaygroundTestRun) -> PlaygroundTestRun:
+        self._require_scope_match(scope, run.tenant_id, run.project_id)
+        self._test_runs[run.id] = run
+        self._test_runs_by_agent.setdefault((scope.scope_key, run.logical_agent_id), []).append(run.id)
+        self._test_runs_by_version.setdefault((scope.scope_key, run.version_id), []).append(run.id)
+        return run
+
+    def get_test_run(self, scope: ScopeContext, run_id: str) -> PlaygroundTestRun | None:
+        run = self._test_runs.get(run_id)
+        if run is None or run.tenant_id != scope.tenant_id or run.project_id != scope.project_id:
+            return None
+        return run
+
+    def list_test_runs(
+        self, scope: ScopeContext, logical_agent_id: str, *, version_id: str | None = None
+    ) -> tuple[PlaygroundTestRun, ...]:
+        if version_id is not None:
+            ids = self._test_runs_by_version.get((scope.scope_key, version_id), [])
+            return tuple(
+                self._test_runs[run_id]
+                for run_id in ids
+                if self._test_runs[run_id].logical_agent_id == logical_agent_id
+            )
+        ids = self._test_runs_by_agent.get((scope.scope_key, logical_agent_id), [])
+        return tuple(self._test_runs[run_id] for run_id in ids)
 
     # -- Durable idempotency (cross-instance-safe claim/lease/complete) ----
     #

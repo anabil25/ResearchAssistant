@@ -285,6 +285,22 @@ class CreateEvaluationRunRequest(BaseModel):
     version_id: str | None = None
 
 
+class CreateTestRunRequest(BaseModel):
+    """Request body to invoke the agent once in the interactive Test/Playground tab.
+
+    ``version_id`` pins an exact, immutable ``AgentVersion``; omitted, the
+    run targets the agent's current draft. Side effects during a run are
+    always the deterministic, domain-owned ``SideEffectPolicy.DRY_RUN`` --
+    never a client- or model-chosen behavior.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    version_id: str | None = None
+    input: str = Field(min_length=1, max_length=8000)
+
+
 class BuilderMessageRequest(BaseModel):
     """Request body for the Builder Agent's ``/builder/messages`` endpoint.
 
