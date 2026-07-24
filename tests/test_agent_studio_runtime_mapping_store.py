@@ -216,6 +216,7 @@ class _FakeContainer:
         self.items: dict[str, dict[str, Any]] = {}
         self._etag = 0
         self.force_batch_status = force_batch_status
+        self.batches: list[tuple[str, list[Any]]] = []
 
     def _bump(self, doc: dict[str, Any]) -> dict[str, Any]:
         self._etag += 1
@@ -245,6 +246,7 @@ class _FakeContainer:
         return docs
 
     def execute_item_batch(self, *, batch_operations: list[Any], partition_key: str) -> list[Any]:
+        self.batches.append((partition_key, list(batch_operations)))
         if self.force_batch_status is not None:
             raise CosmosHttpResponseError(status_code=self.force_batch_status, message="forced")  # type: ignore[no-untyped-call]
         staged: dict[str, dict[str, Any]] = {}
@@ -313,7 +315,38 @@ def test_cosmos_supersede_via_batch_advances_head() -> None:
     assert store.list_revisions("dep-1") == (1, 2)
 
 
-def test_cosmos_supersede_before_bootstrap_is_precondition_error() -> None:
+def test_cosmos_bootstrap_batch_shape_and_single_partition_key() -> None:
+    # SDK-CONTRACT-VERIFIED assumption is exercised at the SHAPE level only:
+    # bootstrap submits TWO create ops in ONE batch under a SINGLE partition key
+    # (create-only id uniqueness adjudicates concurrent bootstrap). We do NOT and
+    # cannot assert Cosmos applied both-or-neither from a container double.
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(deployment_id="dep-1"), expected_head_sequence=None)
+    assert len(container.batches) == 1
+    partition_key, ops = container.batches[0]
+    assert partition_key == "dep-1"  # ONE partition key
+    assert [op[0] for op in ops] == ["create", "create"]
+    # No precondition options on create ops (create is create-only by nature).
+    assert all(len(op) == 2 for op in ops)
+
+
+def test_cosmos_supersede_batch_shape_and_if_match_precondition() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1)
+    partition_key, ops = container.batches[-1]
+    assert partition_key == "dep-1"  # single partition key
+    assert [op[0] for op in ops] == ["create", "replace"]
+    # The head REPLACE carries an If-Match precondition (repoint), the revision
+    # CREATE does not (create-only).
+    create_op, replace_op = ops
+    assert len(create_op) == 2  # revision create: no precondition options
+    assert isinstance(replace_op[2], dict) and "if_match_etag" in replace_op[2]  # head replace: If-Match
+
+
+
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     with pytest.raises(RuntimeHeadPreconditionError, match="observed None"):

@@ -22,17 +22,19 @@ therefore:
   revision + digest, to revision + digest, actor, instant) via the established
   ``AuditService`` pattern (A4), so an illegitimate repoint is reconstructible
   afterwards even though the resulting state can be overwritten;
-* preserves the ratified fail-closed ordering across the two containers (no
-  Cosmos transactional batch spans the ``/deployment_id`` mapping partition and
-  the ``/client_app_id`` binding partition): GRANT writes the mapping revision
-  FIRST then repoints the binding(s); REVOKE removes the binding(s) FIRST
-  (authority withdrawn immediately) then writes the retiring revision;
-* completes a REVOKE whose retiring-revision write failed (D), and refuses to
+* preserves the ratified fail-closed ordering (GRANT writes the mapping revision
+  FIRST -- now as ONE atomic single-partition batch [create revision, create/
+  replace head] -- then repoints the binding(s); REVOKE is a single in-place CAS
+  status-flip of the binding to a REVOKED tombstone, no new mapping revision);
+* under contention retries the succession-head CAS a BOUNDED number of times
+  (re-reading the head and rebuilding the revision at the new ``N+1`` each time),
+  then fails TERMINAL and LOUD -- with NO non-atomic fallback -- and refuses to
   retire a revision a binding currently points at (retention interlock).
 """
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Protocol
 from uuid import uuid4
@@ -46,11 +48,23 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     RuntimeBindingStatus,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
-from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingControlPlane
+from research_assistant_api.agent_studio.runtime_mapping_store import (
+    RuntimeDeploymentMappingControlPlane,
+    RuntimeHeadPreconditionError,
+)
 
 #: Bounded CAS retry budget for a repoint racing a concurrent control-plane
 #: write. Each retry RE-READS the current pointer (never a blind retry).
 _MAX_REPOINT_ATTEMPTS = 5
+
+#: Bounded retry budget for the succession-head CAS when a SUPERSEDE races
+#: another superseder. Each retry RE-READS the head, rebuilds the revision at the
+#: new ``N+1``, and re-runs the full admission. On exhaustion the producer fails
+#: TERMINAL and LOUD (``SuccessionExhaustedError``) -- there is deliberately NO
+#: non-atomic fallback (splitting the batch into two sequential writes would
+#: silently destroy the single-batch atomicity guarantee), so persistent
+#: contention is surfaced, never worked around.
+_MAX_SUCCESSION_ATTEMPTS = 5
 
 
 class RuntimeDeploymentProducerError(RuntimeError):
@@ -68,6 +82,25 @@ class RollbackRepointError(RuntimeDeploymentProducerError):
 
 class RevisionStillReferencedError(RuntimeDeploymentProducerError):
     """Raised when retention is asked to retire a revision a binding still points at."""
+
+
+class SuccessionExhaustedError(RuntimeDeploymentProducerError):
+    """Raised when the succession-head CAS did not converge within the bounded budget.
+
+    Two superseders can each re-read the head, recompute ``N+1``, and retry, so
+    under persistent contention the batch can keep aborting. This is the TERMINAL,
+    LOUD failure on exhaustion: the control plane MUST surface it and re-drive the
+    operation, and MUST NOT fall back to a non-atomic path. Splitting the atomic
+    ``[create revision, create/replace head]`` batch into two sequential writes
+    would silently destroy the single-batch atomicity the whole succession design
+    rests on, so no such fallback exists.
+    """
+
+
+class SuccessionBuilderContractError(RuntimeDeploymentProducerError):
+    """Raised when a succession ``build_revision`` callback returns a mapping that
+    does not match the deployment/sequence it was asked to build (a programming
+    error in the caller, surfaced loudly rather than silently committed)."""
 
 
 class RuntimeBindingAuditRecorder(Protocol):
@@ -144,9 +177,64 @@ class RuntimeDeploymentProducer:
                     f"{head.current_sequence}, got {mapping.revision_sequence}."
                 )
             self._mapping_store.commit_revision(mapping, expected_head_sequence=head.current_sequence)
+        self._repoint_all_active(mapping, actor_id=actor_id, now=now)
+        return mapping
+
+    def grant_succession(
+        self,
+        deployment_id: str,
+        build_revision: Callable[[int], RuntimeDeploymentMapping],
+        *,
+        actor_id: str,
+        now: datetime,
+    ) -> RuntimeDeploymentMapping:
+        """Place the NEXT revision of ``deployment_id`` atomically, retrying head contention.
+
+        The control-plane derives ``next`` from the HEAD (the single source of
+        truth): ``next = current + 1`` (or ``1`` at bootstrap). It asks
+        ``build_revision(next)`` for the revision content at that sequence, then
+        commits it as ONE atomic single-partition batch ([create revision, create/
+        replace head]). If a concurrent superseder moved the head first, the batch
+        aborts (``RuntimeHeadPreconditionError``); this method RE-READS the head,
+        rebuilds at the new ``next``, and retries -- BOUNDED by
+        ``_MAX_SUCCESSION_ATTEMPTS`` -- then fails TERMINAL and LOUD with
+        ``SuccessionExhaustedError``. There is deliberately NO non-atomic fallback:
+        the only mapping write is the atomic batch inside ``commit_revision``, so
+        persistent contention is surfaced, never worked around by two sequential
+        writes. A ``RuntimeMappingConflictError`` (divergent content already at
+        that sequence -- a forgery) is NOT retried; it propagates. Only after the
+        atomic commit succeeds are the bindings CAS-repointed (their own bounded
+        retry + full admission, including terminal revocation).
+        """
+        now = _require_aware_utc_now(now)
+        for _attempt in range(_MAX_SUCCESSION_ATTEMPTS):
+            head = self._mapping_store.get_head(deployment_id)
+            next_sequence = 1 if head is None else head.current_sequence + 1
+            mapping = build_revision(next_sequence)
+            if mapping.deployment_id != deployment_id or mapping.revision_sequence != next_sequence:
+                raise SuccessionBuilderContractError(
+                    f"build_revision must return deployment '{deployment_id}' at sequence {next_sequence}, "
+                    f"got '{mapping.deployment_id}' at {mapping.revision_sequence}."
+                )
+            try:
+                self._mapping_store.commit_revision(
+                    mapping, expected_head_sequence=None if head is None else head.current_sequence
+                )
+            except RuntimeHeadPreconditionError:
+                # The head moved under us (a concurrent superseder won). Re-read,
+                # rebuild at the new next, retry -- never a blind or non-atomic retry.
+                continue
+            self._repoint_all_active(mapping, actor_id=actor_id, now=now)
+            return mapping
+        raise SuccessionExhaustedError(
+            f"succession for '{deployment_id}' did not converge within {_MAX_SUCCESSION_ATTEMPTS} attempts."
+        )
+
+    def _repoint_all_active(
+        self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
+    ) -> None:
         for binding in mapping.allowed_client_app_role_bindings:
             self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.ACTIVE, actor_id=actor_id, now=now)
-        return mapping
 
     def _cas_repoint(
         self,

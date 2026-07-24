@@ -21,12 +21,17 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_deployment_producer import (
+    _MAX_SUCCESSION_ATTEMPTS,
     RevisionStillReferencedError,
     RollbackRepointError,
     RuntimeDeploymentProducer,
+    SuccessionBuilderContractError,
+    SuccessionExhaustedError,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import (
     InMemoryRuntimeDeploymentMappingStore,
+    RuntimeDeploymentHead,
+    RuntimeHeadPreconditionError,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 
@@ -359,3 +364,116 @@ def test_grant_maps_cas_nonmonotonic_to_rollback() -> None:
     producer = RuntimeDeploymentProducer(store, _NonMonotonicWriter(), index, AuditService(InMemoryAuditStore()))
     with pytest.raises(RollbackRepointError):
         producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+
+
+# --- grant_succession: head-derived next + bounded atomic retry ------------
+
+
+def test_grant_succession_bootstraps_at_sequence_one() -> None:
+    producer, store, index, _audit = _producer()
+    result = producer.grant_succession(
+        "dep-1", lambda seq: _mapping(revision_sequence=seq), actor_id=ACTOR, now=NOW
+    )
+    assert result.revision_sequence == 1
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 1
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.status is RuntimeBindingStatus.ACTIVE
+
+
+def test_grant_succession_derives_next_from_head() -> None:
+    producer, store, _index, _audit = _producer()
+    producer.grant_succession("dep-1", lambda seq: _mapping(revision_sequence=seq), actor_id=ACTOR, now=NOW)
+    second = producer.grant_succession(
+        "dep-1", lambda seq: _mapping(revision_sequence=seq, backend_version="2.0.0"), actor_id=ACTOR, now=NOW
+    )
+    assert second.revision_sequence == 2
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 2
+
+
+def test_grant_succession_rejects_builder_contract_violation() -> None:
+    producer, _store, _index, _audit = _producer()
+    with pytest.raises(SuccessionBuilderContractError):
+        # Builder returns the wrong sequence for the head-derived next.
+        producer.grant_succession(
+            "dep-1", lambda _seq: _mapping(revision_sequence=7), actor_id=ACTOR, now=NOW
+        )
+
+
+class _ContendedControlPlane:
+    """Drives REAL head contention: on the first ``fail_times`` commits it lands a
+    rival revision at the same next-sequence (a genuine concurrent superseder) and
+    raises ``RuntimeHeadPreconditionError`` so the retry must re-read the advanced
+    head and rebuild at the new next; after that it delegates."""
+
+    def __init__(self, inner: InMemoryRuntimeDeploymentMappingStore, fail_times: int) -> None:
+        self._inner = inner
+        self._fail = fail_times
+
+    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
+        return self._inner.get(deployment_id, revision_sequence)
+
+    def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
+        return self._inner.get_head(deployment_id)
+
+    def list_revisions(self, deployment_id: str) -> tuple[int, ...]:
+        return self._inner.list_revisions(deployment_id)
+
+    def delete(self, deployment_id: str, revision_sequence: int) -> None:
+        self._inner.delete(deployment_id, revision_sequence)
+
+    def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
+        if self._fail > 0:
+            self._fail -= 1
+            head = self._inner.get_head(mapping.deployment_id)
+            current = 0 if head is None else head.current_sequence
+            rival = _mapping(revision_sequence=current + 1, backend_version=f"rival-{current + 1}")
+            self._inner.commit_revision(
+                rival, expected_head_sequence=None if head is None else head.current_sequence
+            )
+            raise RuntimeHeadPreconditionError("a concurrent superseder won the head CAS")
+        self._inner.commit_revision(mapping, expected_head_sequence=expected_head_sequence)
+
+
+def test_grant_succession_retries_under_contention_then_converges() -> None:
+    inner = InMemoryRuntimeDeploymentMappingStore()
+    contended = _ContendedControlPlane(inner, fail_times=2)
+    index = InMemoryClientDeploymentBindingIndex()
+    producer = RuntimeDeploymentProducer(contended, index, index, AuditService(InMemoryAuditStore()))
+    result = producer.grant_succession(
+        "dep-1", lambda seq: _mapping(revision_sequence=seq), actor_id=ACTOR, now=NOW
+    )
+    # Two rivals landed at sequences 1 and 2, so this grant converges at 3 -- it
+    # re-read the advanced head and rebuilt at the new next each time.
+    assert result.revision_sequence == 3
+    head = inner.get_head("dep-1")
+    assert head is not None and head.current_sequence == 3
+
+
+def test_grant_succession_fails_loud_on_exhaustion_without_fallback() -> None:
+    inner = InMemoryRuntimeDeploymentMappingStore()
+    contended = _ContendedControlPlane(inner, fail_times=_MAX_SUCCESSION_ATTEMPTS)
+    index = InMemoryClientDeploymentBindingIndex()
+    producer = RuntimeDeploymentProducer(contended, index, index, AuditService(InMemoryAuditStore()))
+    with pytest.raises(SuccessionExhaustedError):
+        producer.grant_succession("dep-1", lambda seq: _mapping(revision_sequence=seq), actor_id=ACTOR, now=NOW)
+    # No non-atomic fallback write: only the rivals' revisions exist; this grant
+    # never force-wrote its own revision after exhaustion.
+    assert inner.list_revisions("dep-1") == tuple(range(1, _MAX_SUCCESSION_ATTEMPTS + 1))
+    # And no binding was ever activated for the exhausted grant.
+    assert index.resolve_binding(CLIENT, "dep-1") is None
+
+
+def test_grant_succession_binding_admission_runs_after_commit() -> None:
+    # After the atomic commit, the binding repoint still runs the FULL admission:
+    # a client revoked beforehand cannot be resurrected by the succession grant.
+    producer, _store, index, _audit = _producer()
+    producer.grant_succession("dep-1", lambda seq: _mapping(revision_sequence=seq), actor_id=ACTOR, now=NOW)
+    producer.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    with pytest.raises(RevokedBindingResurrectionError):
+        producer.grant_succession(
+            "dep-1", lambda seq: _mapping(revision_sequence=seq, backend_version="2.0.0"), actor_id=ACTOR, now=NOW
+        )
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.status is RuntimeBindingStatus.REVOKED

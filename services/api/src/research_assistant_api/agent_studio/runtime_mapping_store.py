@@ -198,6 +198,19 @@ class CosmosRuntimeDeploymentMappingStore:
     never skip or collide). ``get`` is a fresh exact point read; ``get_head`` is a
     point read of the head item; ``list_revisions`` is the only query and lives on
     the control-plane port only.
+
+    SDK-CONTRACT-VERIFIED ASSUMPTION (do not overstate): the all-or-nothing
+    atomicity of the batch rests on ``ContainerProxy.execute_item_batch`` being
+    single-partition-scoped and honoring the per-op preconditions. That primitive
+    was verified against the PINNED ``azure-cosmos==4.16.2``
+    (``execute_item_batch(batch_operations, partition_key)`` exists and takes ONE
+    ``partition_key``; ``_format_batch_operations`` honors ``if_match_etag`` ->
+    ``ifMatch`` and ``if_none_match_etag`` -> ``ifNoneMatch``). Whether Cosmos
+    actually applies BOTH operations or NEITHER cannot be proven by a container
+    double -- only by a real service/emulator -- so tests here assert operation
+    SHAPES, PRECONDITIONS, and the single partition key, never "atomicity tested".
+    An ``azure-cosmos`` version bump INVALIDATES this verification and MUST re-run
+    it, because the whole succession design rests on this primitive's semantics.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
