@@ -194,6 +194,12 @@ def test_retired_mapping_is_denied() -> None:
     assert decision.reason is RuntimeAuthzReason.MAPPING_RETIRED
 
 
+def test_not_yet_effective_mapping_is_denied() -> None:
+    mapping = _mapping().model_copy(update={"created_at": FIXED_NOW + timedelta(days=1)})
+    decision, _ = _authorize(mapping)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_YET_EFFECTIVE
+
+
 def test_expired_mapping_is_denied_at_injected_now() -> None:
     mapping = _mapping().model_copy(update={"expires_at": FIXED_NOW - timedelta(hours=1)})
     decision, _ = _authorize(mapping)

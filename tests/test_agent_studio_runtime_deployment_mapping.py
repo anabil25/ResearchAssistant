@@ -256,6 +256,15 @@ def test_lifecycle_fault_reports_the_specific_cause() -> None:
     assert expired.lifecycle_fault(now) == "expired"
 
 
+def test_lifecycle_fault_not_yet_effective_before_created_at() -> None:
+    # created_at is caller-supplied, so a future window is expressible; a mapping
+    # is not valid authority before it begins.
+    future = _mapping().model_copy(update={"created_at": datetime(2026, 12, 1, tzinfo=UTC)})
+    assert future.lifecycle_fault(datetime(2026, 6, 1, tzinfo=UTC)) == "not_yet_effective"
+    # At/after created_at it is effective again.
+    assert future.lifecycle_fault(datetime(2026, 12, 1, tzinfo=UTC)) is None
+
+
 def test_lifecycle_fault_prioritizes_revocation_over_expiry() -> None:
     now = datetime(2026, 6, 1, tzinfo=UTC)
     mapping = _mapping().model_copy(

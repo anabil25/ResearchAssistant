@@ -58,6 +58,7 @@ class RuntimeAuthzReason(StrEnum):
     MISSING_APP_ROLE = "missing_app_role"
     MAPPING_NOT_FOUND = "mapping_not_found"
     DEPLOYMENT_ID_MISMATCH = "deployment_id_mismatch"
+    MAPPING_NOT_YET_EFFECTIVE = "mapping_not_yet_effective"
     MAPPING_EXPIRED = "mapping_expired"
     MAPPING_REVOKED = "mapping_revoked"
     MAPPING_SUPERSEDED = "mapping_superseded"
@@ -72,6 +73,7 @@ _LIFECYCLE_FAULT_REASONS = {
     "revoked": RuntimeAuthzReason.MAPPING_REVOKED,
     "superseded": RuntimeAuthzReason.MAPPING_SUPERSEDED,
     "retired": RuntimeAuthzReason.MAPPING_RETIRED,
+    "not_yet_effective": RuntimeAuthzReason.MAPPING_NOT_YET_EFFECTIVE,
     "expired": RuntimeAuthzReason.MAPPING_EXPIRED,
 }
 

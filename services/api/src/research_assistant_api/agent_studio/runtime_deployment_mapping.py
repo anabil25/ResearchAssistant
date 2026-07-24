@@ -349,11 +349,13 @@ class RuntimeDeploymentMapping(BaseModel):
         ``None`` if it is effective at ``now``.
 
         Returns exactly one distinct fault -- ``"revoked"``, ``"superseded"``,
-        ``"retired"``, or ``"expired"`` -- so authorization can record a precise
-        audit reason (revocation is a deliberate act, distinct from a lapsed
-        expiry) even though the external response stays uniform. Revocation
-        takes priority, then lifecycle state, then expiry. ``now`` must be aware
-        UTC.
+        ``"retired"``, ``"not_yet_effective"`` (``now`` is before ``created_at``,
+        possible now that ``created_at`` is caller-supplied), or ``"expired"`` --
+        so authorization can record a precise audit reason (revocation is a
+        deliberate act, distinct from a lapsed expiry or a not-yet-valid window)
+        even though the external response stays uniform. Revocation takes
+        priority, then lifecycle state, then the validity window
+        (not-yet-effective before expired). ``now`` must be aware UTC.
         """
         if self.revoked_at is not None:
             return "revoked"
@@ -361,6 +363,8 @@ class RuntimeDeploymentMapping(BaseModel):
             return "superseded"
         if self.lifecycle_state is RuntimeMappingLifecycleState.RETIRED:
             return "retired"
+        if now < self.created_at:
+            return "not_yet_effective"
         if self.expires_at is not None and now > self.expires_at:
             return "expired"
         return None

@@ -436,11 +436,13 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
     # distinct lifecycle faults (expired/revoked/superseded/retired) -- each a
     # different internal audit reason but the SAME uniform external body.
     past = datetime(2020, 1, 1, tzinfo=UTC)
+    future = datetime(2099, 1, 1, tzinfo=UTC)
     for update in (
         {"lifecycle_state": RuntimeMappingLifecycleState.SUPERSEDED},
         {"lifecycle_state": RuntimeMappingLifecycleState.RETIRED},
         {"revoked_at": past},
         {"expires_at": past},
+        {"created_at": future},  # not-yet-effective
     ):
         faulted = _mapping().model_copy(update=update)
         faulted_client = _client(faulted)
