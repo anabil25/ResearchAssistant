@@ -16,6 +16,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     CosmosClientDeploymentBindingIndex,
     InMemoryClientDeploymentBindingIndex,
     NonMonotonicRepointError,
+    RevokedBindingResurrectionError,
     RuntimeBindingStatus,
     build_authorized_mapping_loader,
 )
@@ -149,15 +150,42 @@ def test_one_to_one_replace_to_other_deployment() -> None:
 
 
 def test_revoke_is_a_tombstone_not_a_delete() -> None:
-    # REVOKE repoints to a REVOKED tombstone at the strict-successor sequence; the
-    # row is retained (counter + digest survive) and authorization denies.
+    # REVOKE is a single in-place CAS status-flip at the SAME (sequence, digest);
+    # the row is retained (counter + digest survive) and authorization denies.
     index = InMemoryClientDeploymentBindingIndex()
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
-    index.repoint(CLIENT, "dep-1", 2, REV2, REVOKED, expected_current_sequence=1)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is REVOKED
-    assert resolution.revision_sequence == 2  # counter preserved
+    assert resolution.revision_sequence == 1  # counter preserved in place
+
+
+def test_repoint_active_over_revoked_is_terminal() -> None:
+    # Revocation is TERMINAL: once a row is a REVOKED tombstone, no repoint may
+    # flip it back to ACTIVE -- even a valid monotonic advance N -> N+1. This is
+    # the fail-open a SUPERSEDE racing a REVOKE would otherwise walk into (REVOKE
+    # keeps the sequence, so the CAS/monotonic checks alone would accept N+1).
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(RevokedBindingResurrectionError):
+        index.repoint(CLIENT, "dep-1", 2, REV2, ACTIVE, expected_current_sequence=1)
+    # Revocation stands.
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is REVOKED
+
+
+def test_repoint_revoked_reaffirmation_is_allowed() -> None:
+    # An idempotent re-revoke (REVOKED -> REVOKED) is not a resurrection.
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is REVOKED
 
 
 # --- authorized loader -----------------------------------------------------
@@ -314,7 +342,21 @@ def test_cosmos_cas_advances() -> None:
 def test_cosmos_revoke_tombstone_is_retained() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
-    index.repoint(CLIENT, "dep-1", 2, REV2, REVOKED, expected_current_sequence=1)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is REVOKED
+
+
+def test_cosmos_repoint_active_over_revoked_is_terminal() -> None:
+    # The durable adapter enforces the same terminal-revocation rule: a REVOKE
+    # bumps the ETag, so a racing SUPERSEDE re-reads the tombstone and is refused
+    # rather than resurrecting it.
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(RevokedBindingResurrectionError):
+        index.repoint(CLIENT, "dep-1", 2, REV2, ACTIVE, expected_current_sequence=1)
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is REVOKED

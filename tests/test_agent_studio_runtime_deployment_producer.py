@@ -9,6 +9,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     BindingPreconditionError,
     InMemoryClientDeploymentBindingIndex,
     NonMonotonicRepointError,
+    RevokedBindingResurrectionError,
     RuntimeBindingStatus,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
@@ -188,18 +189,77 @@ def test_revoke_flips_binding_to_revoked_tombstone_in_place() -> None:
     assert len(applied) == 1
 
 
-def test_revoke_preserves_counter_for_later_re_grant() -> None:
-    # After revoke, the tombstone retains the sequence, so a later re-grant
-    # advances to N+1 (no sequence-1 collision, no latest-query needed).
+def test_supersede_grant_over_revoked_client_is_terminal() -> None:
+    # Revocation is TERMINAL: an ordinary supersede grant may NOT resurrect a
+    # revoked client's binding. The mapping revision still advances (mapping-first
+    # commit), but the binding stays a REVOKED tombstone -- an inspectable partial.
+    # The counter is preserved (sequence 1) so a future EXPLICIT re-grant (a
+    # separate reviewed control-plane operation) has a value to advance from.
     producer, store, index, _audit = _producer()
     producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
     producer.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
-    producer.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
+    with pytest.raises(RevokedBindingResurrectionError):
+        producer.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
-    assert resolution.status is RuntimeBindingStatus.ACTIVE
-    assert resolution.revision_sequence == 2
-    assert store.get("dep-1", 2) is not None
+    assert resolution.status is RuntimeBindingStatus.REVOKED
+    assert resolution.revision_sequence == 1  # counter preserved for a later explicit re-grant
+    assert store.get("dep-1", 2) is not None  # revision committed mapping-first; binding never repointed
+
+
+class _RevokeThenDelegateWriter:
+    """Drives the REAL retry interleaving the fail-open ruling targets.
+
+    On the FIRST repoint-to-ACTIVE attempt it performs a genuine in-place REVOKE
+    on the real index (as a concurrent REVOKE winning the CAS would) and raises
+    ``BindingPreconditionError`` -- so the producer's retry re-reads the now-REVOKED
+    row from the REAL index and must hit the terminal-revocation guard, not a
+    stubbed check. Subsequent attempts delegate to the real index.
+    """
+
+    def __init__(self, index: InMemoryClientDeploymentBindingIndex) -> None:
+        self._index = index
+        self._revoked = False
+
+    def repoint(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        status: RuntimeBindingStatus,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        if not self._revoked and status is RuntimeBindingStatus.ACTIVE:
+            self._revoked = True
+            current = self._index.resolve_binding(client_app_id, deployment_id)
+            assert current is not None
+            self._index.repoint(
+                client_app_id, deployment_id, current.revision_sequence, current.revision_id,
+                RuntimeBindingStatus.REVOKED, expected_current_sequence=current.revision_sequence,
+            )
+            raise BindingPreconditionError("a concurrent revoke won the CAS")
+        self._index.repoint(
+            client_app_id, deployment_id, revision_sequence, revision_id, status,
+            expected_current_sequence=expected_current_sequence,
+        )
+
+
+def test_supersede_retry_after_concurrent_revoke_is_terminal() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    RuntimeDeploymentProducer(store, index, index, AuditService(InMemoryAuditStore())).grant(
+        _mapping(revision_sequence=1), actor_id=ACTOR, now=NOW
+    )
+    racing = RuntimeDeploymentProducer(
+        store, _RevokeThenDelegateWriter(index), index, AuditService(InMemoryAuditStore())
+    )
+    with pytest.raises(RevokedBindingResurrectionError):
+        racing.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is RuntimeBindingStatus.REVOKED  # revocation stands after the retry
 
 
 def test_revoke_rejects_naive_now() -> None:

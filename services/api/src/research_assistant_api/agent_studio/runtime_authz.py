@@ -68,9 +68,12 @@ class RuntimeAuthzReason(StrEnum):
 
 #: Map a mapping ``lifecycle_fault`` string to its distinct audit reason. The
 #: immutable mapping expresses ONLY its creation-time validity window, so the
-#: only faults it produces are ``not_yet_effective`` and ``expired``; revocation
-#: and supersession are enforced by the mutable binding ``status`` (a revoked/
-#: superseded binding denies via the loader), not by the mapping.
+#: only faults it produces are ``not_yet_effective`` and ``expired``. Revocation
+#: and supersession are NOT mapping facts: a REVOKED binding denies at the loader
+#: (returns ``None`` -> MAPPING_NOT_FOUND) before any mapping read, and
+#: supersession-staleness (a presented revision behind the binding's current)
+#: denies here as ``MAPPING_REVISION_STALE``. There is no ``superseded`` binding
+#: status -- supersession REPOINTS a binding and leaves it ACTIVE.
 _LIFECYCLE_FAULT_REASONS = {
     "not_yet_effective": RuntimeAuthzReason.MAPPING_NOT_YET_EFFECTIVE,
     "expired": RuntimeAuthzReason.MAPPING_EXPIRED,

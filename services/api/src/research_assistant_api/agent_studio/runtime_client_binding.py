@@ -38,17 +38,21 @@ Ratified design constraints (do not reinvent):
    ``client_app_id`` and mapping partition is ``deployment_id``; no Cosmos
    transactional batch spans them. The producer's GRANT writes the mapping
    revision FIRST then repoints the binding (a binding never points at a missing
-   revision); REVOKE repoints the binding to a REVOKED tombstone FIRST (authority
-   withdrawn immediately) then writes the retiring revision. Revocation NEVER
-   hard-deletes the row -- deleting it would lose the succession counter and
-   force a sequence-1 collision or the forbidden latest-query on the next
-   re-grant; the tombstone retains the sequence + pinned digest and denies on
-   ``status != ACTIVE``, so the counter and audit chain survive.
+   revision); REVOKE is a SINGLE CAS status-flip of the binding to a REVOKED
+   tombstone (authority withdrawn immediately; no new mapping revision is
+   written). Revocation NEVER hard-deletes the row -- deleting it would lose the
+   succession counter and force a sequence-1 collision or the forbidden
+   latest-query on the next re-grant; the tombstone retains the sequence + pinned
+   digest and denies on ``status != ACTIVE``, so the counter and audit chain
+   survive. Revocation is also TERMINAL: no repoint may resurrect a REVOKED
+   binding to ACTIVE, so a SUPERSEDE racing a REVOKE on the same row can never
+   silently undo the revocation (see ``_validate_repoint_admission``).
 6. **Access is not usability.** A present binding authorizes *access* only.
-   After the binding check and mapping load, the full lifecycle evaluation still
-   applies (``lifecycle_fault``: not-yet-effective/expired/revoked/superseded/
-   retired all still deny); a binding never short-circuits any lifecycle check
-   (enforced in ``runtime_authz``).
+   After the binding check and mapping load, the mapping's creation-time window
+   still applies (``lifecycle_fault``: not-yet-effective/expired both still deny);
+   revocation and supersession-staleness are enforced by the binding (a non-ACTIVE
+   binding denies via the loader; a stale presented revision denies in
+   ``runtime_authz``). A binding never short-circuits any of these checks.
 
 This module defines the read-only resolver protocol, the control-plane writer
 protocol, the ``BindingResolution`` the resolver returns, an in-memory index
@@ -130,12 +134,27 @@ class BindingPreconditionError(RuntimeError):
 
 
 class NonMonotonicRepointError(RuntimeError):
-    """Raised when a repoint is not the strict successor of the observed current.
+    """Raised when a repoint is not a monotonic advance of the observed current.
 
-    A repoint may only advance a (client, deployment) binding to
-    ``observed + 1`` (or re-affirm the identical current revision, idempotently).
-    A lower, equal-but-different, or gapped sequence is refused -- this is the
-    rollback control, evaluated INSIDE the CAS against the observed current.
+    A repoint may only advance a (client, deployment) binding to a strictly
+    greater sequence (or re-affirm the identical current revision, idempotently).
+    A lower, or equal-but-different, sequence is refused -- this is the rollback
+    control, evaluated INSIDE the CAS against the observed current.
+    """
+
+
+class RevokedBindingResurrectionError(RuntimeError):
+    """Raised when a repoint would resurrect a REVOKED binding to ACTIVE.
+
+    Revocation is TERMINAL and wins all ties: once a binding row is a REVOKED
+    tombstone, no repoint may turn it back to ACTIVE. This closes a fail-open in
+    which a SUPERSEDE CAS races a REVOKE on the SAME binding row -- because REVOKE
+    keeps the sequence, a CAS/monotonic re-check alone would see current=N,
+    target=N+1 and write back an ACTIVE binding, silently undoing the revocation.
+    The full admission check (run on the first attempt AND every CAS retry) treats
+    a REVOKED current as terminal, so no retry path can resurrect it. Re-granting
+    a revoked client is an EXPLICIT control-plane GRANT with its own intent/audit,
+    never a side effect of a supersede or a retry.
     """
 
 
@@ -158,9 +177,12 @@ class ClientDeploymentBindingWriter(Protocol):
         deployment) equalling ``expected_current_sequence`` (``None`` meaning the
         caller expects no current binding for this deployment). Raises
         ``BindingPreconditionError`` if that precondition fails (concurrent
-        modification) and ``NonMonotonicRepointError`` if the new sequence is not
-        the strict successor of -- or an idempotent re-affirmation of -- the
-        observed current. Both checks happen atomically with the write.
+        modification), ``NonMonotonicRepointError`` if the new sequence is not a
+        monotonic advance of -- or an idempotent re-affirmation of -- the observed
+        current, and ``RevokedBindingResurrectionError`` if it would flip a
+        REVOKED tombstone back to ACTIVE (revocation is terminal). The FULL
+        admission check runs atomically with the write, and is re-run in its
+        entirety on every CAS retry -- never just the condition that failed.
 
         ``status`` is ``ACTIVE`` for a grant and ``REVOKED`` for a revocation
         TOMBSTONE. Revocation NEVER hard-deletes the row: deleting it would lose
@@ -187,26 +209,46 @@ class _StoredBinding:
         self.status = status
 
 
-def _validate_monotonic_repoint(
+def _validate_repoint_admission(
     *,
     observed_sequence: int | None,
     observed_revision_id: str | None,
+    observed_status: RuntimeBindingStatus | None,
     new_sequence: int,
     new_revision_id: str,
+    new_status: RuntimeBindingStatus,
 ) -> None:
-    """Enforce MONOTONIC ADVANCE (or idempotent re-affirmation) for a binding repoint.
+    """Run the FULL repoint admission check, atomically with the CAS.
 
-    A binding row answers only "which revision may THIS client see" and may
-    legitimately LAG the succession head during a partial multi-client repoint,
-    so it need not be a STRICT successor -- a client at N may jump straight to
-    N+2 if it missed a supersession. It may only ever ADVANCE, though: a first
-    binding (``observed_sequence is None``) may take any sequence; otherwise the
-    new sequence must be strictly greater than the observed one, unless it
-    re-affirms the identical current revision (same sequence AND same digest),
-    which is idempotent. A lower sequence, or an equal sequence with different
-    content, is a rollback and is refused. (Strict single-succession is enforced
-    at the head/succession record, not per binding.)
+    On the first attempt AND on every CAS retry, the caller re-reads the current
+    binding and re-runs this ENTIRE check -- never just the condition that failed.
+    Two rules, in order:
+
+    1. **Revocation is terminal (wins all ties).** If the observed current binding
+       is a REVOKED tombstone, the only permitted target is REVOKED again
+       (idempotent). Any repoint to ACTIVE is refused
+       (``RevokedBindingResurrectionError``). This is what stops a SUPERSEDE that
+       races a REVOKE on the same row from writing an ACTIVE binding back: because
+       REVOKE keeps the sequence, the monotonic check alone would accept N -> N+1
+       and silently undo the revocation. Re-granting a revoked client is an
+       explicit control-plane GRANT, never a retry/supersede side effect.
+    2. **Monotonic advance (or idempotent re-affirmation).** A binding row answers
+       only "which revision may THIS client see" and may legitimately LAG the
+       succession head during a partial multi-client repoint, so it need not be a
+       STRICT successor -- a client at N may jump straight to N+2 if it missed a
+       supersession. It may only ever ADVANCE, though: a first binding
+       (``observed_sequence is None``) may take any sequence; otherwise the new
+       sequence must be strictly greater than the observed one, unless it
+       re-affirms the identical current revision (same sequence AND same digest),
+       which is idempotent. A lower sequence, or an equal sequence with different
+       content, is a rollback and is refused. (Strict single-succession is
+       enforced at the head/succession record, not per binding.)
     """
+    if observed_status is RuntimeBindingStatus.REVOKED and new_status is not RuntimeBindingStatus.REVOKED:
+        raise RevokedBindingResurrectionError(
+            f"repoint to sequence {new_sequence} would resurrect a REVOKED binding to '{new_status.value}'; "
+            "revocation is terminal (re-granting a revoked client is an explicit control-plane GRANT)."
+        )
     if observed_sequence is None:
         return
     is_idempotent = new_sequence == observed_sequence and new_revision_id == observed_revision_id
@@ -242,19 +284,23 @@ class InMemoryClientDeploymentBindingIndex:
         binding = self._by_client.get(client_app_id)
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
+        observed_status: RuntimeBindingStatus | None = None
         if binding is not None and binding.deployment_id == deployment_id:
             observed_sequence = binding.revision_sequence
             observed_revision_id = binding.revision_id
+            observed_status = binding.status
         if observed_sequence != expected_current_sequence:
             raise BindingPreconditionError(
                 f"binding for '{client_app_id}' changed under the repoint "
                 f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
             )
-        _validate_monotonic_repoint(
+        _validate_repoint_admission(
             observed_sequence=observed_sequence,
             observed_revision_id=observed_revision_id,
+            observed_status=observed_status,
             new_sequence=revision_sequence,
             new_revision_id=revision_id,
+            new_status=status,
         )
         self._by_client[client_app_id] = _StoredBinding(deployment_id, revision_id, revision_sequence, status)
 
@@ -329,14 +375,18 @@ class CosmosClientDeploymentBindingIndex:
     ``None``); it returns ``None`` unless the stored row's ``deployment_id``
     equals the asserted one, so it can never redirect the caller. ``repoint`` is
     a CAS write: it reads the current row (+ ETag), checks the observed sequence
-    against ``expected_current_sequence`` and the strict-successor rule, then
+    against ``expected_current_sequence`` and the full repoint admission (monotonic
+    advance + terminal revocation), then
     writes conditionally (``create_item`` when there is no current row, else
-    ``replace_item`` with ``If-Match`` on the ETag). A concurrent modification
-    (409 on create, 412 on replace) surfaces as ``BindingPreconditionError`` for
-    the caller to re-read and retry -- so two overlapping repoints can never
-    lost-update a rollback in. Revocation is a ``repoint`` to a ``REVOKED``
-    TOMBSTONE (never a hard delete), so the succession counter and pinned digest
-    survive.
+    ``replace_item`` with ``If-Match`` on the ETag). Because the ETag covers the
+    whole row, a REVOKE that keeps the sequence still bumps the ETag, so a racing
+    SUPERSEDE's conditional write fails (412), re-reads the now-REVOKED row, and
+    is refused by the terminal-revocation admission rather than resurrecting it. A
+    concurrent modification (409 on create, 412 on replace) surfaces as
+    ``BindingPreconditionError`` for the caller to re-read and retry -- so two
+    overlapping repoints can never lost-update a rollback in. Revocation is a
+    ``repoint`` to a ``REVOKED`` TOMBSTONE (never a hard delete), so the
+    succession counter and pinned digest survive.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
@@ -355,19 +405,23 @@ class CosmosClientDeploymentBindingIndex:
         document = self._read(client_app_id)
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
+        observed_status: RuntimeBindingStatus | None = None
         if document is not None and document.get("deployment_id") == deployment_id:
             observed_sequence = int(str(document["current_revision_sequence"]))
             observed_revision_id = str(document["current_revision_id"])
+            observed_status = RuntimeBindingStatus(str(document["status"]))
         if observed_sequence != expected_current_sequence:
             raise BindingPreconditionError(
                 f"binding for '{client_app_id}' changed under the repoint "
                 f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
             )
-        _validate_monotonic_repoint(
+        _validate_repoint_admission(
             observed_sequence=observed_sequence,
             observed_revision_id=observed_revision_id,
+            observed_status=observed_status,
             new_sequence=revision_sequence,
             new_revision_id=revision_id,
+            new_status=status,
         )
         body = {
             "id": client_app_id,
