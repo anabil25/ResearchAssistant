@@ -560,6 +560,39 @@ def _verbatim_required_text(value: Any, *, field: str) -> str:
     return value
 
 
+def _wire_warnings(value: Any, *, source_label: str) -> tuple[str, ...]:
+    """Extract provider-declared warnings from untrusted wire data, never raising.
+
+    ``warnings`` is advisory (non-authoritative) data, so a malformed shape must
+    not decide availability -- but it must not be silently dropped either, and it
+    must never raise. Any shape other than an array of objects is reported *as* a
+    warning describing the malformation, which is the same treatment malformed
+    provider catalog entries get.
+
+    This exists because the naive generator (``warning.get(...) for warning in
+    value``) raises ``AttributeError`` on ``"boom"``, ``[1,2,3]``, ``[None]``,
+    ``{"a":1}`` and ``[[1]]`` -- an exception type no caller in this module
+    catches, which would let an untrusted provider decide whether the module
+    honours its own fail-closed contract.
+    """
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        return (f"{source_label} 'warnings' was not a JSON array ({type(value).__name__}); ignored.",)
+    collected: list[str] = []
+    for position, warning in enumerate(value):
+        if not isinstance(warning, Mapping):
+            collected.append(
+                f"{source_label} warning #{position} was not a JSON object ({type(warning).__name__}); ignored."
+            )
+            continue
+        collected.append(
+            str(warning.get("message") or warning.get("reason_code") or "unknown warning")
+        )
+    return tuple(collected)
+
+
 def _str_sequence(value: Any, *, field: str) -> tuple[str, ...]:
     """A tuple of strings from a wire array, failing closed on a non-array.
 
@@ -636,9 +669,18 @@ def _map_operation(payload: Mapping[str, Any]) -> tuple[CapabilityOperation, Raw
     # from the wire schema objects (never the provider's prefixed value).
     raw_input_digest = _verbatim_optional_digest(payload.get("input_schema_digest"), field="input_schema_digest")
     raw_output_digest = _verbatim_optional_digest(payload.get("output_schema_digest"), field="output_schema_digest")
+    # Operation identity is governance-relevant, not presentation text:
+    # ``CapabilityDescriptor.operation(name)`` resolves approval/policy lookups by
+    # it, and ``RawOperationPins.operation_id`` is the provider-owned pin used for
+    # drift detection and audit correlation. So it goes through the same
+    # required-string gate as every other identity, never ``str()`` coercion --
+    # which would mint synthetic identities like "None"/"7"/"True" that
+    # ``Field(min_length=1)`` cannot catch.
+    operation_id = _verbatim_required_text(payload.get("operation_id"), field="operation_id")
+    operation_version = _verbatim_required_text(payload.get("operation_version"), field="operation_version")
     operation = CapabilityOperation(
-        name=str(payload["operation_id"]),
-        version=str(payload["operation_version"]),
+        name=operation_id,
+        version=operation_version,
         maturity=_map_maturity(payload["maturity"]),
         lifecycle=_map_lifecycle(payload["lifecycle"]),
         operation_class=operation_class,
@@ -664,8 +706,8 @@ def _map_operation(payload: Mapping[str, Any]) -> tuple[CapabilityOperation, Raw
         least_privilege_roles=_str_sequence(payload.get("least_privilege_roles"), field="least_privilege_roles"),
     )
     pins = RawOperationPins(
-        operation_id=str(payload["operation_id"]),
-        operation_version=str(payload["operation_version"]),
+        operation_id=operation_id,
+        operation_version=operation_version,
         idempotency=idempotency,
         approval_policy=approval_policy,
         input_schema_digest=raw_input_digest,
@@ -1047,10 +1089,7 @@ class HttpCapabilityDiscoverySource:
                 available=False,
                 unavailable_reason="Capability provider catalog 'providers' was not a JSON array.",
             )
-        catalog_warnings = tuple(
-            str(warning.get("message") or warning.get("reason_code") or "unknown catalog warning")
-            for warning in (catalog.get("warnings") or [])
-        )
+        catalog_warnings = _wire_warnings(catalog.get("warnings"), source_label="Capability provider catalog")
         # Bound cardinality against the raw declared collection, before any
         # filtering or de-duplication could mask an over-large catalog.
         if len(providers_payload) > self._max_providers:
@@ -1236,35 +1275,59 @@ class HttpCapabilityDiscoverySource:
                 f"Provider {provider_id} capabilities response provider_id mismatch: "
                 f"{echoed_provider_id!r}."
             )
-        descriptors_payload = payload.get("descriptors") or []
+        descriptors_payload = payload.get("descriptors")
+        if descriptors_payload is None:
+            descriptors_payload = []
+        if not isinstance(descriptors_payload, list):
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} 'descriptors' was not a JSON array "
+                f"({type(descriptors_payload).__name__})."
+            )
         if len(descriptors_payload) > self._max_descriptors_per_provider:
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} returned {len(descriptors_payload)} descriptors, exceeding the "
                 f"adapter cap of {self._max_descriptors_per_provider}."
             )
-        instances_payload = payload.get("instances") or []
+        instances_payload = payload.get("instances")
+        if instances_payload is None:
+            instances_payload = []
+        if not isinstance(instances_payload, list):
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} 'instances' was not a JSON array "
+                f"({type(instances_payload).__name__})."
+            )
         if len(instances_payload) > self._max_instances_per_provider:
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} returned {len(instances_payload)} instances, exceeding the "
                 f"adapter cap of {self._max_instances_per_provider}."
             )
-        warnings: list[str] = [
-            str(warning.get("message") or warning.get("reason_code") or "unknown discovery warning")
-            for warning in (payload.get("warnings") or [])
-        ]
+        warnings: list[str] = list(
+            _wire_warnings(payload.get("warnings"), source_label=f"Provider {provider_id}")
+        )
         descriptors: list[CapabilityDescriptor] = []
         descriptor_pins: list[ProviderDescriptorPins] = []
-        for descriptor_payload in descriptors_payload:
+        for position, descriptor_payload in enumerate(descriptors_payload):
+            if not isinstance(descriptor_payload, Mapping):
+                warnings.append(
+                    f"Provider {provider_id} descriptor #{position} was not a JSON object "
+                    f"({type(descriptor_payload).__name__}); skipped."
+                )
+                continue
             try:
                 descriptor, descriptor_pin = _map_descriptor(
                     descriptor_payload,
                     provider_id=provider_id,
                     max_operations=self._max_operations_per_descriptor,
                 )
-            except (CapabilityProviderProtocolError, ValidationError, KeyError, ValueError, TypeError) as exc:
-                descriptor_id = (
-                    descriptor_payload.get("descriptor_id") if isinstance(descriptor_payload, dict) else None
-                )
+            except (
+                CapabilityProviderProtocolError,
+                ValidationError,
+                KeyError,
+                ValueError,
+                TypeError,
+                AttributeError,
+            ) as exc:
+                descriptor_id = descriptor_payload.get("descriptor_id")
                 warnings.append(
                     f"Provider {provider_id} descriptor {descriptor_id!r} could not be translated "
                     f"and was skipped: {exc}"
@@ -1283,23 +1346,42 @@ class HttpCapabilityDiscoverySource:
         # arrival-order dependence. Those descriptors are rejected wholesale at
         # aggregation, and their instances fall out via the
         # "references descriptor which was not discovered/kept" guard.
-        pin_counts: Counter[str] = Counter(pin.descriptor_id for pin in descriptor_pins)
-        descriptor_pin_by_raw_id = {
-            pin.descriptor_id: pin for pin in descriptor_pins if pin_counts[pin.descriptor_id] == 1
+        #
+        # Keyed on the *namespaced* id so the lookup uses values both sides have
+        # already validated, rather than re-reading and ``str()``-coercing the
+        # raw wire field a second time.
+        pin_counts: Counter[str] = Counter(pin.descriptor_backend_id for pin in descriptor_pins)
+        descriptor_pin_by_backend_id = {
+            pin.descriptor_backend_id: pin
+            for pin in descriptor_pins
+            if pin_counts[pin.descriptor_backend_id] == 1
         }
-        for instance_payload in instances_payload:
+        for position, instance_payload in enumerate(instances_payload):
+            if not isinstance(instance_payload, Mapping):
+                warnings.append(
+                    f"Provider {provider_id} instance #{position} was not a JSON object "
+                    f"({type(instance_payload).__name__}); skipped."
+                )
+                continue
             try:
                 instance, instance_pin = _map_instance(
                     instance_payload, provider_id=provider_id, registered_by=registered_by
                 )
-            except (CapabilityProviderProtocolError, ValidationError, KeyError, ValueError, TypeError) as exc:
-                instance_id = instance_payload.get("instance_id") if isinstance(instance_payload, dict) else None
+            except (
+                CapabilityProviderProtocolError,
+                ValidationError,
+                KeyError,
+                ValueError,
+                TypeError,
+                AttributeError,
+            ) as exc:
+                instance_id = instance_payload.get("instance_id")
                 warnings.append(
                     f"Provider {provider_id} instance {instance_id!r} could not be translated and "
                     f"was skipped: {exc}"
                 )
                 continue
-            reference = descriptor_pin_by_raw_id.get(str(instance_payload.get("descriptor_id")))
+            reference = descriptor_pin_by_backend_id.get(instance.descriptor_id)
             if reference is not None and (
                 instance_pin.descriptor_digest != reference.descriptor_digest
                 or instance.descriptor_version != reference.descriptor_version

@@ -18,7 +18,9 @@ from research_assistant_api.agent_studio.capability_discovery import (
     HttpCapabilityDiscoverySource,
     NullCapabilityDiscoverySource,
     build_capability_discovery_source,
+    discover_with_timeout,
 )
+from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
 from research_assistant_api.agent_studio.models import HealthStatus, InstanceReadiness, OperationClass
 from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -1672,3 +1674,207 @@ async def test_discover_skips_instance_disagreeing_with_its_unambiguous_descript
     assert result.descriptor_pins[0].descriptor_digest == "a" * 64
     assert result.instances == ()
     assert any("disagrees with its descriptor" in warning for warning in result.warnings)
+
+
+# --- second-pass reviewer findings: skipped-not-failed audit -----------------
+#
+# Both defects below sat on FULLY COVERED lines: the catalog warnings generator
+# runs on every well-formed catalog, and operation identity is built for every
+# operation. Neither introduced an arc to miss, so line+branch coverage was
+# structurally incapable of seeing them -- they need adversarial input, not more
+# coverage.
+
+
+MALFORMED_WARNINGS = ["boom", [1, 2, 3], ["a", "b"], [None], {"a": 1}, [[1]]]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_warnings", MALFORMED_WARNINGS)
+async def test_discover_contains_malformed_catalog_warnings(bad_warnings: Any) -> None:
+    """FINDING A. ``catalog['warnings']`` is untrusted; a non-array-of-objects
+    shape previously raised AttributeError -- a type no caller in this module
+    catches -- so it escaped ``discover``, ``discover_with_timeout`` AND
+    ``CapabilityRegistry.from_source``, letting a provider decide whether the
+    module honoured its own fail-closed contract."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["warnings"] = bad_warnings
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # Contained, and the malformation is surfaced rather than silently dropped.
+    assert result.available is True
+    assert result.warnings != ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_warnings", MALFORMED_WARNINGS)
+async def test_discover_with_timeout_contains_malformed_catalog_warnings(bad_warnings: Any) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["warnings"] = bad_warnings
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await discover_with_timeout(source, _request())
+    await client.aclose()
+
+    assert result.available is True
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("bad_warnings", MALFORMED_WARNINGS)
+async def test_registry_from_source_contains_malformed_catalog_warnings(bad_warnings: Any) -> None:
+    """The trust boundary that matters: nothing may cross into the registry."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["warnings"] = bad_warnings
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    registry = await CapabilityRegistry.from_source(source, _request())
+    await client.aclose()
+
+    assert registry.available is True
+
+
+@pytest.mark.asyncio
+async def test_discover_contains_malformed_per_provider_warnings() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        payload = _capabilities_payload("foundry", instances=[])
+        payload["warnings"] = "boom"
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # Degrades to a warning, and the provider's descriptors still translate.
+    assert result.available is True
+    assert len(result.descriptors) == 1
+    assert any("not a JSON array" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("operation_id", None),
+        ("operation_id", 7),
+        ("operation_id", True),
+        ("operation_id", 1.5),
+        ("operation_version", None),
+        ("operation_version", 3),
+    ],
+)
+async def test_discover_rejects_synthetic_operation_identity(field: str, value: Any) -> None:
+    """FINDING B. Operation identity feeds approval/policy lookup via
+    ``CapabilityDescriptor.operation(name)`` and audit correlation via
+    ``RawOperationPins.operation_id``, so a coerced ``'None'``/``'7'``/``'True'``
+    is a synthetic identity in a governance path. ``Field(min_length=1)`` cannot
+    catch it because ``'None'`` is four characters."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(operations=[_operation_payload(**{field: value})])
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert result.descriptor_pins == ()
+    assert any(f"{field} must be a non-empty string" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["descriptors", "instances"])
+async def test_discover_skips_provider_whose_collection_is_not_an_array(collection: str) -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        payload = _capabilities_payload("foundry", instances=[])
+        payload[collection] = "not-an-array"
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert any("was not a JSON array" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["descriptors", "instances"])
+async def test_discover_skips_non_object_entries_without_failing_the_provider(collection: str) -> None:
+    """A non-object entry must degrade that ENTRY, not the whole provider.
+
+    Previously it raised AttributeError inside the mapper, which the per-item
+    handler did not catch, so one bad entry cost the entire provider."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        payload = _capabilities_payload("foundry")
+        payload[collection] = ["i-am-a-string", *payload[collection]]
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert any("was not a JSON object" in warning for warning in result.warnings)
+    # The well-formed sibling entry still translated.
+    assert len(result.descriptors) == 1
+
+
+@pytest.mark.asyncio
+async def test_discover_treats_absent_catalog_warnings_as_empty() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        del payload["warnings"]
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.warnings == ()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("collection", ["descriptors", "instances"])
+async def test_discover_treats_absent_provider_collection_as_empty(collection: str) -> None:
+    """An absent collection is legitimately empty; only a present non-array fails."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        payload = _capabilities_payload("foundry", descriptors=[], instances=[])
+        del payload[collection]
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.descriptors == ()
+    assert result.instances == ()
+    assert result.warnings == ()
