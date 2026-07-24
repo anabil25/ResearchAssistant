@@ -270,6 +270,7 @@ def test_committed_suppression_contract_has_expected_zero_categories() -> None:
         for record in baseline["sourceSuppressions"]
         if record["kind"] in {"type-ignore", "noqa"}
     )
+    assert all(record["role"] == "standard" for record in baseline["sourceSuppressions"])
     assert "missingReasonPolicy" not in baseline
 
 

@@ -1779,18 +1779,10 @@
       "kind": "type-ignore",
       "path": "tests/test_cosmos_workspace.py",
       "posture": "test",
-      "protectedControl": {
-        "anchor": "except CosmosHttpResponseError as exc:",
-        "description": "Exercises optimistic-concurrency recovery and non-412 propagation branches.",
-        "path": "services/api/src/research_assistant_api/cosmos_workspace.py"
-      },
-      "protectedTest": {
-        "anchor": "CosmosHttpResponseError(status_code=",
-        "description": "Constructs Cosmos 412 and 500 collaborator failures that Azure SDK typing does not expose.",
-        "path": "tests/test_cosmos_workspace.py"
-      },
+      "protectedControl": null,
+      "protectedTest": null,
       "reason": "",
-      "role": "load-bearing",
+      "role": "standard",
       "scope": "no-untyped-call"
     },
     {
