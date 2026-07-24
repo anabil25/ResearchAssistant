@@ -12,9 +12,9 @@ from research_assistant_api.agent_studio.runtime_control_schemas import (
     RuntimeConsumptionReceipt,
     RuntimeConsumptionRequest,
     RuntimeConsumptionResponse,
-    RuntimeContextDecision,
     RuntimeContextRequest,
     RuntimeContextResponse,
+    RuntimeControlError,
     RuntimeDestinationHash,
 )
 
@@ -32,31 +32,26 @@ def _request(**overrides: object) -> RuntimeContextRequest:
     return RuntimeContextRequest(**kwargs)  # type: ignore[arg-type]
 
 
-def _response(
-    *,
-    decision: RuntimeContextDecision,
-    approval_id: str | None = None,
-    approval_decision_version: str | None = None,
-    invocation_id: str | None = None,
-) -> RuntimeContextResponse:
-    return RuntimeContextResponse(
-        deployment_id="dep-1",
-        mapping_ref="runtime-deployment-mapping:v1:dep-1",
-        mapping_digest="runtime-deployment-mapping:v1:sha256:" + DIGEST,
-        tenant_id="tenant-1",
-        project_id="project-1",
-        environment=DeploymentEnvironment.DEVELOPMENT,
-        logical_agent_id="agent-1",
-        backend_release_id="backend-release-1",
-        backend_version="1.2.3",
-        binding_id="binding-1",
-        operation_id="search",
-        decision=decision,
-        approval_id=approval_id,
-        approval_decision_version=approval_decision_version,
-        invocation_id=invocation_id,
-        request_digest=DIGEST,
-    )
+def _response(**overrides: object) -> RuntimeContextResponse:
+    kwargs: dict[str, object] = {
+        "deployment_id": "dep-1",
+        "mapping_ref": "runtime-deployment-mapping:v1:dep-1",
+        "mapping_digest": "runtime-deployment-mapping:v1:sha256:" + DIGEST,
+        "tenant_id": "tenant-1",
+        "project_id": "project-1",
+        "environment": DeploymentEnvironment.DEVELOPMENT,
+        "logical_agent_id": "agent-1",
+        "backend_release_id": "backend-release-1",
+        "backend_version": "1.2.3",
+        "binding_id": "binding-1",
+        "operation_id": "search",
+        "approval_id": "appr-1",
+        "approval_decision_version": "approval.decision.v1",
+        "invocation_id": "inv-1",
+        "request_digest": DIGEST,
+    }
+    kwargs.update(overrides)
+    return RuntimeContextResponse(**kwargs)  # type: ignore[arg-type]
 
 
 # --- request ---------------------------------------------------------------
@@ -91,65 +86,40 @@ def test_request_is_frozen() -> None:
 # --- response --------------------------------------------------------------
 
 
-def test_resolved_response_requires_all_approval_fields() -> None:
-    response = _response(
-        decision=RuntimeContextDecision.RESOLVED,
-        approval_id="appr-1",
-        approval_decision_version="approval.decision.v1",
-        invocation_id="inv-1",
-    )
-    assert response.decision is RuntimeContextDecision.RESOLVED
+def test_success_response_is_fully_resolved_with_non_null_approval_fields() -> None:
+    response = _response()
     assert response.approval_id == "appr-1"
+    assert response.approval_decision_version == "approval.decision.v1"
+    assert response.invocation_id == "inv-1"
+    assert response.request_digest == DIGEST
 
 
-def test_resolved_response_rejects_missing_approval_field() -> None:
-    with pytest.raises(ValidationError, match="RESOLVED context must carry"):
-        _response(
-            decision=RuntimeContextDecision.RESOLVED,
-            approval_id="appr-1",
-            approval_decision_version=None,
-            invocation_id="inv-1",
-        )
+def test_success_response_rejects_missing_approval_field() -> None:
+    with pytest.raises(ValidationError):
+        _response(approval_decision_version=None)
 
 
-def test_not_approved_response_rejects_approval_fields() -> None:
-    with pytest.raises(ValidationError, match="non-RESOLVED context must not carry"):
-        _response(decision=RuntimeContextDecision.NOT_APPROVED, approval_id="appr-1")
-
-
-def test_not_found_response_is_clean() -> None:
-    response = _response(decision=RuntimeContextDecision.NOT_FOUND)
-    assert response.approval_id is None
-    assert response.approval_decision_version is None
-    assert response.invocation_id is None
-
-
-def test_not_approved_response_is_clean() -> None:
-    response = _response(decision=RuntimeContextDecision.NOT_APPROVED)
-    assert response.decision is RuntimeContextDecision.NOT_APPROVED
+def test_success_response_rejects_empty_approval_id() -> None:
+    with pytest.raises(ValidationError):
+        _response(approval_id="")
 
 
 def test_response_forbids_extra_fields() -> None:
     with pytest.raises(ValidationError):
-        RuntimeContextResponse(  # type: ignore[call-arg]
-            deployment_id="dep-1",
-            mapping_ref="r",
-            mapping_digest="d",
-            tenant_id="t",
-            project_id="p",
-            environment=DeploymentEnvironment.DEVELOPMENT,
-            logical_agent_id="a",
-            backend_release_id="b",
-            backend_version="1",
-            binding_id="bind",
-            operation_id="op",
-            decision=RuntimeContextDecision.NOT_FOUND,
-            surprise="x",
-        )
+        _response(surprise="x")
 
 
-def test_decision_enum_is_exhaustive() -> None:
-    assert {d.value for d in RuntimeContextDecision} == {"resolved", "not_approved", "not_found"}
+def test_response_is_frozen() -> None:
+    response = _response()
+    with pytest.raises(ValidationError):
+        response.approval_id = "other"
+
+
+def test_control_error_is_strict_uniform_shape() -> None:
+    error = RuntimeControlError(detail="The requested runtime deployment is not available.")
+    assert error.detail == "The requested runtime deployment is not available."
+    with pytest.raises(ValidationError):
+        RuntimeControlError(detail="x", extra="y")  # type: ignore[call-arg]
 
 
 # --- consumption request ---------------------------------------------------

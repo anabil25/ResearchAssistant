@@ -320,44 +320,37 @@ def test_context_resolved_returns_mapping_derived_approval() -> None:
     response = client.post(CONTEXT_URL, json=_context_body(mapping), headers=_context_headers(mapping))
     assert response.status_code == 200
     body = response.json()
-    assert body["decision"] == "resolved"
     assert body["approval_id"] == "approval-1"
     assert body["approval_decision_version"] == "version-1"
     assert body["invocation_id"].startswith("inv-")
     assert body["request_digest"] == REQUEST_DIGEST
-    # Fully mapping-derived scope, never taken from the request.
     assert body["tenant_id"] == "tenant-1"
-    assert body["backend_release_id"] == "backend-release-1" or body["backend_release_id"] == "release-1"
+    # No non-resolved decision field leaks into the success wire.
+    assert "decision" not in body
 
 
-def test_context_not_approved_when_approval_pending() -> None:
+def test_context_not_approved_is_uniform_404() -> None:
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver(approval_state=ApprovalState.PENDING))
     response = client.post(CONTEXT_URL, json=_context_body(mapping), headers=_context_headers(mapping))
-    assert response.status_code == 200
-    body = response.json()
-    assert body["decision"] == "not_approved"
-    assert body["approval_id"] is None
-    assert body["invocation_id"] is None
+    assert response.status_code == 404
+    assert response.json()["detail"] == "The requested runtime deployment is not available."
 
 
-def test_context_operation_mismatch_is_not_found() -> None:
+def test_context_operation_mismatch_is_uniform_404() -> None:
     mapping = _mapping()
     client = _client(mapping, context_resolver=_seeded_resolver())
     response = client.post(
         CONTEXT_URL, json=_context_body(mapping, operation_id="write"), headers=_context_headers(mapping)
     )
-    assert response.status_code == 200
-    assert response.json()["decision"] == "not_found"
+    assert response.status_code == 404
 
 
-def test_context_unknown_release_is_not_found() -> None:
-    # Empty resolver store -> release not found -> NOT_FOUND wire decision.
+def test_context_unknown_release_is_uniform_404() -> None:
     mapping = _mapping()
     client = _client(mapping, context_resolver=_empty_resolver())
     response = client.post(CONTEXT_URL, json=_context_body(mapping), headers=_context_headers(mapping))
-    assert response.status_code == 200
-    assert response.json()["decision"] == "not_found"
+    assert response.status_code == 404
 
 
 def test_context_missing_digest_header_is_rejected() -> None:

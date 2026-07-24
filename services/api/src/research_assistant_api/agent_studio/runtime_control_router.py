@@ -43,9 +43,9 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
 )
 from research_assistant_api.agent_studio.runtime_control_schemas import (
     RuntimeBindingView,
-    RuntimeContextDecision,
     RuntimeContextRequest,
     RuntimeContextResponse,
+    RuntimeControlError,
     RuntimeMappingRetrieveRequest,
     RuntimeMappingView,
 )
@@ -115,7 +115,11 @@ def build_runtime_control_app(
         )
         return _mapping_view(mapping)
 
-    @app.post(f"{RUNTIME_CONTROL_BASE_PATH}/context", response_model=RuntimeContextResponse)
+    @app.post(
+        f"{RUNTIME_CONTROL_BASE_PATH}/context",
+        response_model=RuntimeContextResponse,
+        responses={status.HTTP_404_NOT_FOUND: {"model": RuntimeControlError}},
+    )
     async def resolve_context(
         payload: RuntimeContextRequest,
         request: Request,
@@ -131,7 +135,7 @@ def build_runtime_control_app(
         # mapping -- never taken from the request. The request's operation_id is
         # only accepted when it matches the mapping's bound operation.
         if payload.operation_id != mapping.binding.operation_ref.id:
-            return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_FOUND)
+            raise _uniform_404()
         result = await context_resolver.resolve_context(
             ApprovalContextRequest(
                 scope=ScopeContext(tenant_id=mapping.tenant_id, project_id=mapping.project_id),
@@ -140,32 +144,38 @@ def build_runtime_control_app(
                 operation_id=mapping.binding.operation_ref.id,
             )
         )
-        if result.outcome is ApprovalContextOutcome.RESOLVED:
-            return _context_response(
-                mapping,
-                payload.request_digest,
-                decision=RuntimeContextDecision.RESOLVED,
-                approval_id=result.approval_id,
-                approval_decision_version=result.approval_version,
-                invocation_id=result.invocation_id,
-            )
-        if result.outcome is ApprovalContextOutcome.NOT_APPROVED:
-            return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_APPROVED)
-        return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_FOUND)
+        # The locked wire has no non-resolved 200: every non-RESOLVED outcome
+        # (no effective approval, or release/binding not found) is the single
+        # uniform HTTP error, indistinguishable externally.
+        if result.outcome is not ApprovalContextOutcome.RESOLVED:
+            raise _uniform_404()
+        assert result.approval_id is not None
+        assert result.approval_version is not None
+        assert result.invocation_id is not None
+        return _context_response(
+            mapping,
+            payload.request_digest,
+            approval_id=result.approval_id,
+            approval_decision_version=result.approval_version,
+            invocation_id=result.invocation_id,
+        )
 
     return app
+
+
+def _uniform_404() -> HTTPException:
+    return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=uniform_denial())
 
 
 def _context_response(
     mapping: RuntimeDeploymentMapping,
     request_digest: str,
     *,
-    decision: RuntimeContextDecision,
-    approval_id: str | None = None,
-    approval_decision_version: str | None = None,
-    invocation_id: str | None = None,
+    approval_id: str,
+    approval_decision_version: str,
+    invocation_id: str,
 ) -> RuntimeContextResponse:
-    """Build a fully mapping-derived context response with the server decision."""
+    """Build the fully-resolved (200) mapping-derived context response."""
     return RuntimeContextResponse(
         deployment_id=mapping.deployment_id,
         mapping_ref=mapping.mapping_ref,
@@ -178,7 +188,6 @@ def _context_response(
         backend_version=mapping.backend_version,
         binding_id=mapping.binding.binding_id,
         operation_id=mapping.binding.operation_ref.id,
-        decision=decision,
         approval_id=approval_id,
         approval_decision_version=approval_decision_version,
         invocation_id=invocation_id,

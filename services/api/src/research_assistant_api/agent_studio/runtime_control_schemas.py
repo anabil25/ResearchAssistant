@@ -21,7 +21,6 @@ forge because the server chooses them.
 from __future__ import annotations
 
 from datetime import datetime
-from enum import StrEnum
 from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
@@ -57,30 +56,20 @@ class RuntimeContextRequest(BaseModel):
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
 
 
-class RuntimeContextDecision(StrEnum):
-    """Server decision for a context request.
-
-    ``RESOLVED``: a currently-effective approval authorizes this operation;
-    ``approval_id``/``approval_decision_version``/``invocation_id`` are
-    populated. ``NOT_APPROVED``: the binding/operation is valid but no
-    effective approval currently covers it. ``NOT_FOUND``: the operation is not
-    part of the loaded mapping's binding. All three are reported without
-    revealing anything a runtime did not already legitimately know.
-    """
-
-    RESOLVED = "resolved"
-    NOT_APPROVED = "not_approved"
-    NOT_FOUND = "not_found"
-
-
 class RuntimeContextResponse(BaseModel):
-    """Fully mapping-derived context returned to the runtime.
+    """The **success** body of ``POST /internal/v1/runtime/context`` (HTTP 200).
 
-    Every field except the approval decision/invocation is copied from the
-    server-loaded ``RuntimeDeploymentMapping``; the approval fields are the
-    server's own decision. When ``decision`` is not ``RESOLVED``, all three
-    approval fields are ``None`` so a runtime can never mistake a denial for a
-    usable context by probing a single field.
+    The locked wire has no non-resolved success variant: a 200 is returned
+    only when a currently-effective approval authorizes the operation, and
+    therefore ``approval_id``/``approval_decision_version``/``invocation_id``
+    are always present and non-null. Every non-resolved outcome (no effective
+    approval, operation not part of the mapping, mapping/release absent,
+    expired, unavailable) is a strict HTTP error with uniform external
+    semantics -- never a 200 carrying nullable/forbidden approval fields.
+
+    All non-approval fields are copied from the server-loaded
+    ``RuntimeDeploymentMapping``; the approval fields are the server's own
+    decision; ``request_digest`` is echoed purely as correlation.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -99,10 +88,9 @@ class RuntimeContextResponse(BaseModel):
     binding_id: str = Field(min_length=1, max_length=200)
     operation_id: str = Field(min_length=1, max_length=200)
 
-    decision: RuntimeContextDecision
-    approval_id: str | None = Field(default=None, max_length=200)
-    approval_decision_version: str | None = Field(default=None, max_length=200)
-    invocation_id: str | None = Field(default=None, max_length=200)
+    approval_id: str = Field(min_length=1, max_length=200)
+    approval_decision_version: str = Field(min_length=1, max_length=200)
+    invocation_id: str = Field(min_length=1, max_length=200)
     #: The exact ``request_digest`` the runtime supplied, echoed back so a
     #: runtime/audit can correlate this resolved context to the precise request
     #: attempt. It is a correlation value only -- never treated as approval
@@ -110,19 +98,19 @@ class RuntimeContextResponse(BaseModel):
     request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_at: datetime = Field(default_factory=utc_now)
 
-    @model_validator(mode="after")
-    def _approval_fields_consistent_with_decision(self) -> RuntimeContextResponse:
-        approval_fields = (self.approval_id, self.approval_decision_version, self.invocation_id)
-        if self.decision is RuntimeContextDecision.RESOLVED:
-            if any(field is None for field in approval_fields):
-                raise ValueError(
-                    "A RESOLVED context must carry approval_id, approval_decision_version, and invocation_id."
-                )
-        elif any(field is not None for field in approval_fields):
-            raise ValueError(
-                "A non-RESOLVED context must not carry approval_id, approval_decision_version, or invocation_id."
-            )
-        return self
+
+class RuntimeControlError(BaseModel):
+    """Uniform, typed error body for every non-success runtime-control outcome.
+
+    Denied, not-found, no-effective-approval, expired, and unavailable all
+    render this single shape with an identical opaque ``detail`` so an external
+    caller cannot distinguish them -- the typed error documented in the runtime
+    OpenAPI, never a per-cause message.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    detail: str
 
 
 class RuntimeMappingRetrieveRequest(BaseModel):
