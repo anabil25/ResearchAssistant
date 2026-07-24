@@ -2,12 +2,20 @@ from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from research_assistant_api.agent_studio.models import DeploymentEnvironment
+from research_assistant_api.agent_studio.models import (
+    APPROVAL_CONSUMPTION_RECORD_VERSION,
+    ApprovalConsumptionOutcome,
+    DeploymentEnvironment,
+)
 from research_assistant_api.agent_studio.runtime_control_schemas import (
     RUNTIME_CONTROL_PROTOCOL,
+    RuntimeConsumptionReceipt,
+    RuntimeConsumptionRequest,
+    RuntimeConsumptionResponse,
     RuntimeContextDecision,
     RuntimeContextRequest,
     RuntimeContextResponse,
+    RuntimeDestinationHash,
 )
 
 DIGEST = "a" * 64
@@ -141,3 +149,107 @@ def test_response_forbids_extra_fields() -> None:
 
 def test_decision_enum_is_exhaustive() -> None:
     assert {d.value for d in RuntimeContextDecision} == {"resolved", "not_approved", "not_found"}
+
+
+# --- consumption request ---------------------------------------------------
+
+DEST_DIGEST = "destination:v1:sha256:" + "b" * 64
+IDEM_DIGEST = "idem:v1:sha256:" + "c" * 64
+
+
+def _consumption_request(**overrides: object) -> RuntimeConsumptionRequest:
+    kwargs: dict[str, object] = {
+        "deployment_id": "dep-1",
+        "mapping_ref": "runtime-deployment-mapping:v1:dep-1",
+        "approval_id": "appr-1",
+        "invocation_id": "inv-1",
+        "approval_request_digest": "a" * 64,
+        "binding_digest": "d" * 64,
+        "argument_hash": "e" * 64,
+        "destination_hash": RuntimeDestinationHash(digest=DEST_DIGEST),
+        "idempotency_digest": IDEM_DIGEST,
+    }
+    kwargs.update(overrides)
+    return RuntimeConsumptionRequest(**kwargs)  # type: ignore[arg-type]
+
+
+def test_consumption_request_valid_and_strict() -> None:
+    request = _consumption_request()
+    assert request.protocol == RUNTIME_CONTROL_PROTOCOL
+    assert request.destination_hash.algorithm == "destination:v1:sha256"
+
+
+def test_consumption_request_rejects_bad_idempotency_digest() -> None:
+    with pytest.raises(ValidationError):
+        _consumption_request(idempotency_digest="idem:v2:sha256:" + "c" * 64)
+
+
+def test_consumption_request_rejects_non_hex_binding_digest() -> None:
+    with pytest.raises(ValidationError):
+        _consumption_request(binding_digest="nothex")
+
+
+def test_destination_hash_rejects_bad_prefix() -> None:
+    with pytest.raises(ValidationError):
+        RuntimeDestinationHash(digest="sha256:" + "b" * 64)
+
+
+def test_consumption_request_forbids_extra_fields() -> None:
+    with pytest.raises(ValidationError):
+        _consumption_request(tenant_id="tenant-1")
+
+
+# --- consumption response --------------------------------------------------
+
+
+def _receipt() -> RuntimeConsumptionReceipt:
+    from datetime import UTC, datetime
+
+    now = datetime.now(UTC)
+    return RuntimeConsumptionReceipt(
+        consumption_id="cons-1",
+        approval_id="appr-1",
+        invocation_id="inv-1",
+        approval_decision_version="approval.decision.v1",
+        consumption_revision="rev-1",
+        approver_id="reviewer-1",
+        expires_at=now,
+        consumed_at=now,
+    )
+
+
+def test_receipt_defaults_consumption_version() -> None:
+    assert _receipt().consumption_version == APPROVAL_CONSUMPTION_RECORD_VERSION
+
+
+def test_consumed_response_requires_receipt() -> None:
+    response = RuntimeConsumptionResponse(
+        deployment_id="dep-1", disposition=ApprovalConsumptionOutcome.CONSUMED, receipt=_receipt()
+    )
+    assert response.receipt is not None
+
+
+def test_already_consumed_response_requires_receipt() -> None:
+    response = RuntimeConsumptionResponse(
+        deployment_id="dep-1", disposition=ApprovalConsumptionOutcome.ALREADY_CONSUMED, receipt=_receipt()
+    )
+    assert response.receipt is not None
+
+
+def test_consumed_response_without_receipt_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="must carry a durable receipt"):
+        RuntimeConsumptionResponse(deployment_id="dep-1", disposition=ApprovalConsumptionOutcome.CONSUMED)
+
+
+def test_denied_response_must_not_carry_receipt() -> None:
+    with pytest.raises(ValidationError, match="must not carry a receipt"):
+        RuntimeConsumptionResponse(
+            deployment_id="dep-1", disposition=ApprovalConsumptionOutcome.DENIED, receipt=_receipt()
+        )
+
+
+def test_exhausted_response_is_clean_without_receipt() -> None:
+    response = RuntimeConsumptionResponse(
+        deployment_id="dep-1", disposition=ApprovalConsumptionOutcome.EXHAUSTED
+    )
+    assert response.receipt is None

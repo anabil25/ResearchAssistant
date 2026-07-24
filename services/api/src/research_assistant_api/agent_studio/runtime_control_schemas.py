@@ -26,7 +26,12 @@ from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
-from research_assistant_api.agent_studio.models import DeploymentEnvironment, utc_now
+from research_assistant_api.agent_studio.models import (
+    APPROVAL_CONSUMPTION_RECORD_VERSION,
+    ApprovalConsumptionOutcome,
+    DeploymentEnvironment,
+    utc_now,
+)
 
 #: Strict protocol identifier for the runtime-control wire. A runtime pins this
 #: exact string; the backend rejects any other value.
@@ -112,4 +117,101 @@ class RuntimeContextResponse(BaseModel):
             raise ValueError(
                 "A non-RESOLVED context must not carry approval_id, approval_decision_version, or invocation_id."
             )
+        return self
+
+
+class RuntimeDestinationHash(BaseModel):
+    """The destination hash object a runtime computed for its invocation.
+
+    ``algorithm`` names the versioned scheme (``destination:v1:sha256``, the
+    same one the mapping's ``RuntimeDestinationHashPolicy`` pins); ``digest`` is
+    the full prefixed value ``scope.compute_destination_hash`` produces. Passing
+    the algorithm alongside the digest lets the backend confirm both sides used
+    the identical scheme rather than trusting an opaque string.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    algorithm: Literal["destination:v1:sha256"] = "destination:v1:sha256"
+    digest: str = Field(pattern=r"^destination:v1:sha256:[0-9a-f]{64}$")
+
+
+class RuntimeConsumptionRequest(BaseModel):
+    """The exact local invocation facts a runtime supplies to consume an
+    approval, all matched against the loaded mapping server-side.
+
+    Carries the approval + invocation identifiers the runtime received from its
+    resolved context, plus content digests of every local fact (approval
+    request, binding, arguments, destination, idempotency key). No
+    tenant/project, release, url, or key authority -- the backend rederives the
+    authoritative binding/destination from the mapping and independently
+    revalidates each digest.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
+    deployment_id: str = Field(min_length=1, max_length=200)
+    mapping_ref: str = Field(min_length=1, max_length=400)
+    approval_id: str = Field(min_length=1, max_length=200)
+    invocation_id: str = Field(min_length=1, max_length=200)
+    approval_request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    binding_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    argument_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    destination_hash: RuntimeDestinationHash
+    idempotency_digest: str = Field(pattern=r"^idem:v1:sha256:[0-9a-f]{64}$")
+
+
+class RuntimeConsumptionReceipt(BaseModel):
+    """The durable receipt a runtime receives on a successful (or replayed)
+    consumption.
+
+    Every field is non-null: a receipt exists only when a real durable
+    consumption record does, so ``approver_id`` and ``expires_at`` (copied from
+    the spent approval) are always present, as are the approval decision
+    version and the durable consumption revision. A same-key replay returns the
+    *original* receipt; the runtime adapter can normalize that to a local
+    "consumed" without re-spending.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    consumption_id: str = Field(min_length=1, max_length=200)
+    approval_id: str = Field(min_length=1, max_length=200)
+    invocation_id: str = Field(min_length=1, max_length=200)
+    consumption_version: str = Field(default=APPROVAL_CONSUMPTION_RECORD_VERSION, min_length=1)
+    approval_decision_version: str = Field(min_length=1, max_length=200)
+    consumption_revision: str = Field(min_length=1, max_length=200)
+    approver_id: str = Field(min_length=1, max_length=200)
+    expires_at: datetime
+    consumed_at: datetime
+
+
+class RuntimeConsumptionResponse(BaseModel):
+    """Disposition + optional durable receipt for a consumption attempt.
+
+    ``receipt`` is present exactly for the terminal-success dispositions
+    (``CONSUMED`` and ``ALREADY_CONSUMED`` -- a completed spend or an idempotent
+    replay of the same invocation) and absent for ``DENIED``/``EXHAUSTED``, so a
+    runtime can never treat a denial or an exhausted single-use grant as a
+    usable receipt.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
+    deployment_id: str = Field(min_length=1, max_length=200)
+    disposition: ApprovalConsumptionOutcome
+    receipt: RuntimeConsumptionReceipt | None = None
+
+    @model_validator(mode="after")
+    def _receipt_present_iff_terminal_success(self) -> RuntimeConsumptionResponse:
+        terminal_success = self.disposition in (
+            ApprovalConsumptionOutcome.CONSUMED,
+            ApprovalConsumptionOutcome.ALREADY_CONSUMED,
+        )
+        if terminal_success and self.receipt is None:
+            raise ValueError(f"A '{self.disposition.value}' consumption must carry a durable receipt.")
+        if not terminal_success and self.receipt is not None:
+            raise ValueError(f"A '{self.disposition.value}' consumption must not carry a receipt.")
         return self
