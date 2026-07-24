@@ -3,6 +3,7 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Iterator
+from typing import Any, cast
 
 import pytest
 from fastapi.testclient import TestClient
@@ -695,7 +696,7 @@ def test_dataset_approval_request_expiry_fails_closed(client: TestClient) -> Non
         f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
         json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
     )
-    store = client.app.state.workspace
+    store = app.state.workspace
     with store._lock:
         record = next(
             item for item in store._dataset_approvals if item.id == approval_request["id"]
@@ -909,7 +910,7 @@ def test_authorize_requested_sources_raises_403_and_audits_disabled_connector(
         )
 
     assert excinfo.value.status_code == 403
-    assert excinfo.value.detail["violations"][0]["reason"] == "disabled"
+    assert cast(dict[str, Any], excinfo.value.detail)["violations"][0]["reason"] == "disabled"
     assert any("Rejected unauthorized connector source request" in record.message for record in caplog.records)
 
 
@@ -926,7 +927,7 @@ def test_authorize_requested_sources_raises_422_for_unknown_connector() -> None:
         )
 
     assert excinfo.value.status_code == 422
-    assert excinfo.value.detail["violations"][0]["reason"] == "unknown"
+    assert cast(dict[str, Any], excinfo.value.detail)["violations"][0]["reason"] == "unknown"
 
 
 def test_authorize_requested_sources_returns_resolved_list_when_authorized() -> None:
@@ -960,7 +961,7 @@ def test_run_studio_rejects_unauthorized_connector_source_end_to_end() -> None:
     with a structured 422 before any hosted/connector call is attempted.
     """
     with TestClient(app) as test_client:
-        test_client.app.state.settings = Settings(execution_mode="hosted")
+        app.state.settings = Settings(execution_mode="hosted")
         response = test_client.post(
             "/api/studios/literature/run",
             json={
@@ -989,7 +990,7 @@ def test_run_studio_rejects_disabled_connector_source_as_403(
     admin_headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
     with TestClient(app) as test_client:
-        test_client.app.state.settings = Settings()
+        app.state.settings = Settings()
         arxiv = next(item for item in test_client.get("/api/connectors").json() if item["id"] == "arxiv")
         disable = test_client.put(
             "/api/connectors/arxiv",
@@ -998,7 +999,7 @@ def test_run_studio_rejects_disabled_connector_source_as_403(
         )
         assert disable.status_code == 200
 
-        test_client.app.state.settings = Settings(execution_mode="hosted")
+        app.state.settings = Settings(execution_mode="hosted")
         response = test_client.post(
             "/api/studios/literature/run",
             json={
@@ -1021,7 +1022,7 @@ def test_run_studio_grant_merges_funding_sources_into_authorization_check() -> N
     this must now actually gate the live connector selection, not be
     silently ignored server-side."""
     with TestClient(app) as test_client:
-        test_client.app.state.settings = Settings(execution_mode="hosted")
+        app.state.settings = Settings(execution_mode="hosted")
         response = test_client.post(
             "/api/studios/grant/run",
             json={
@@ -1132,7 +1133,7 @@ def test_dataset_approval_decision_route_requires_reviewer_role(
     monkeypatch.setenv("RESEARCH_ALLOW_DEMO_IDENTITY", "false")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["researchers"])}
     with TestClient(app) as test_client:
-        test_client.app.state.settings = Settings()
+        app.state.settings = Settings()
         created = test_client.post(
             "/api/studios/dataset/approval-requests",
             headers=headers,
@@ -1185,7 +1186,7 @@ def test_dataset_approval_decision_route_404s_when_record_vanishes_between_check
             "csv_text": "group,score\ncontrol,10\n",
         },
     ).json()
-    store = client.app.state.workspace
+    store = app.state.workspace
     monkeypatch.setattr(store, "decide_dataset_approval_request", lambda *args, **kwargs: None)
 
     response = client.post(

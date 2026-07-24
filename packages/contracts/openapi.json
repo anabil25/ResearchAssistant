@@ -408,6 +408,42 @@
             ],
             "title": "Gate Report Id"
           },
+          "harness_link_schema_version": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Link Schema Version"
+          },
+          "harness_manifest_digest": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Manifest Digest"
+          },
+          "harness_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Release Id"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -997,180 +1033,6 @@
           "deterministic"
         ],
         "title": "AnalysisStep",
-        "type": "object"
-      },
-      "ApprovalConsumptionOutcome": {
-        "description": "Outcome of a single ``approval_consumption.consume_approval`` call.\n\n``CONSUMED``: this call is the first, and only, successful spend of a\none-time capability-operation approval.\n``ALREADY_CONSUMED``: an idempotent replay \u2014 a *prior* call with the\nexact same ``idempotency_key`` already consumed this approval; the\noriginal durable record is returned rather than re-executing or\nre-recording anything.\n``DENIED``: the approval does not currently authorize this invocation at\nall (not found, wrong kind, not effectively ``APPROVED``, or its pinned\nversion/binding/operation/instance/policy does not match this\ninvocation) \u2014 fails closed before any consumption is attempted.\n``EXHAUSTED``: the approval is a single-use grant and a *different*\ninvocation (a different ``idempotency_key``) already consumed it; this\ninvocation is denied even though the approval itself remains\neffectively approved.",
-        "enum": [
-          "consumed",
-          "already_consumed",
-          "denied",
-          "exhausted"
-        ],
-        "title": "ApprovalConsumptionOutcome",
-        "type": "string"
-      },
-      "ApprovalConsumptionRecord": {
-        "additionalProperties": false,
-        "description": "Durable, append-only record that a ``CAPABILITY_OPERATION``\n``StudioApprovalRecord`` was actually spent by one specific runtime\ninvocation.\n\nDeciding an approval (``ApprovalState``/``ApprovalEffectiveState``) only\nestablishes that it is *currently valid to act on*; it says nothing\nabout whether any invocation has *already used* it. A\ncapability-operation approval defaults to one-time: the first\n``AgentStudioStore.create_approval_consumption`` call for a given\n``(scope, approval_id)`` durably wins, and every later call either\nreconciles idempotently (same ``idempotency_key`` \u2014 the same invocation\nretrying, e.g. after a network blip) or is denied (a different key \u2014 a\ndistinct invocation trying to reuse an already-spent, single-use grant).\nThis record is the audit trail of exactly *what* was consumed: the\nacting principal, the exact binding/instance/operation/version it was\nexercised against, hashes of the actual call arguments and destination,\nand the policy/release/invocation identifiers in force at the time \u2014 so\na later audit can distinguish one legitimate consumption from any\nattempted replay. Never mutated once created.",
-        "properties": {
-          "approval_id": {
-            "title": "Approval Id",
-            "type": "string"
-          },
-          "args_hash": {
-            "minLength": 1,
-            "title": "Args Hash",
-            "type": "string"
-          },
-          "binding_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Binding Id",
-            "type": "string"
-          },
-          "consumed_at": {
-            "format": "date-time",
-            "title": "Consumed At",
-            "type": "string"
-          },
-          "destination_hash": {
-            "minLength": 1,
-            "title": "Destination Hash",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "idempotency_key": {
-            "title": "Idempotency Key",
-            "type": "string"
-          },
-          "instance_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instance Fingerprint"
-          },
-          "invocation_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Invocation Id",
-            "type": "string"
-          },
-          "operation_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "operation_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operation Version"
-          },
-          "policy_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Ref"
-          },
-          "principal_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Principal Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "release_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Release Id"
-          },
-          "tenant_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Tenant Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "approval_id",
-          "tenant_id",
-          "project_id",
-          "principal_id",
-          "binding_id",
-          "operation_id",
-          "args_hash",
-          "destination_hash",
-          "invocation_id",
-          "idempotency_key"
-        ],
-        "title": "ApprovalConsumptionRecord",
-        "type": "object"
-      },
-      "ApprovalConsumptionResult": {
-        "additionalProperties": false,
-        "description": "Result of a single ``consume_approval`` call.\n\n``record`` is populated for ``CONSUMED``, ``ALREADY_CONSUMED``, and\n``EXHAUSTED`` (the durable winning consumption, even when this call\nitself lost the race) but is always ``None`` for ``DENIED`` -- a denial\nnever reaches the point of even attempting a durable write. ``reason``\ncarries a human-readable, non-sensitive explanation for anything other\nthan a first-time ``CONSUMED``.",
-        "properties": {
-          "outcome": {
-            "$ref": "#/components/schemas/ApprovalConsumptionOutcome"
-          },
-          "reason": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Reason"
-          },
-          "record": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/ApprovalConsumptionRecord"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          }
-        },
-        "required": [
-          "outcome"
-        ],
-        "title": "ApprovalConsumptionResult",
         "type": "object"
       },
       "ApprovalContextOutcome": {
@@ -3358,151 +3220,6 @@
         "title": "CitationPolicy",
         "type": "object"
       },
-      "ClaimIdempotencyRequest": {
-        "additionalProperties": false,
-        "description": "Request body to atomically claim a fresh durable idempotency lease.\n\n``actor_id`` is never accepted here -- the acting actor is always the\nauthenticated caller's own identity, exactly like every other mutating\nAgent Studio route.",
-        "properties": {
-          "argument_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Argument Hash",
-            "type": "string"
-          },
-          "binding_digest": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Binding Digest",
-            "type": "string"
-          },
-          "caller_key": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Caller Key",
-            "type": "string"
-          },
-          "destination": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Destination",
-            "type": "string"
-          },
-          "lease_seconds": {
-            "default": 300.0,
-            "exclusiveMinimum": 0.0,
-            "maximum": 3600.0,
-            "title": "Lease Seconds",
-            "type": "number"
-          },
-          "operation_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "release_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Release Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "binding_digest",
-          "operation_id",
-          "destination",
-          "caller_key",
-          "argument_hash",
-          "release_id"
-        ],
-        "title": "ClaimIdempotencyRequest",
-        "type": "object"
-      },
-      "CompleteIdempotencyRequest": {
-        "additionalProperties": false,
-        "description": "Request body to durably record a successful completion.\n\n``result`` is the raw, JSON-able outcome payload; its digest is always\nindependently recomputed server-side (never trusted from\n``expected_result_hash``, which is only an optional caller-side sanity\nassertion checked against that recomputed digest).",
-        "properties": {
-          "argument_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Argument Hash",
-            "type": "string"
-          },
-          "binding_digest": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Binding Digest",
-            "type": "string"
-          },
-          "caller_key": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Caller Key",
-            "type": "string"
-          },
-          "claim_token": {
-            "maxLength": 256,
-            "minLength": 32,
-            "title": "Claim Token",
-            "type": "string"
-          },
-          "destination": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Destination",
-            "type": "string"
-          },
-          "expected_result_hash": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Result Hash"
-          },
-          "expected_version": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Expected Version",
-            "type": "string"
-          },
-          "operation_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "result": {
-            "additionalProperties": true,
-            "title": "Result",
-            "type": "object"
-          }
-        },
-        "required": [
-          "project_id",
-          "binding_digest",
-          "operation_id",
-          "destination",
-          "caller_key",
-          "argument_hash",
-          "claim_token",
-          "expected_version"
-        ],
-        "title": "CompleteIdempotencyRequest",
-        "type": "object"
-      },
       "ComputeProposal": {
         "properties": {
           "adapter": {
@@ -3666,106 +3383,6 @@
           "assigned_agents"
         ],
         "title": "ConnectorUpdate",
-        "type": "object"
-      },
-      "ConsumeCapabilityApprovalRequest": {
-        "additionalProperties": false,
-        "description": "Request body to durably, atomically spend a ``CAPABILITY_OPERATION``\napproval at actual runtime invocation.\n\nThis is the wire contract the callers referenced in\n``approval_consumption.ApprovalConsumptionRequest`` carry the client;\n``tenant_id``/``project_id`` (via the authenticated identity + this\nrequest's ``project_id``) and ``principal_id`` (the caller's own\nauthenticated identity) are never accepted from the client -- a runtime\ninvocation cannot assert who it is or which tenant it belongs to, it can\nonly present the decision reference (``approval_id``, from the path)\nplus the concrete facts of *this* invocation, all of which are\nindependently revalidated against the approval's own pinned\nbinding/operation/instance/policy/release server-side before anything\nis durably consumed. There is deliberately no boolean \"is this\napproved\" field anywhere on this request: authority comes entirely from\nthe referenced, previously-decided ``StudioApprovalRecord``, never from\nanything the caller asserts inline.",
-        "properties": {
-          "args_hash": {
-            "minLength": 1,
-            "title": "Args Hash",
-            "type": "string"
-          },
-          "binding_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Binding Id",
-            "type": "string"
-          },
-          "destination_hash": {
-            "minLength": 1,
-            "title": "Destination Hash",
-            "type": "string"
-          },
-          "idempotency_key": {
-            "minLength": 1,
-            "title": "Idempotency Key",
-            "type": "string"
-          },
-          "instance_fingerprint": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Instance Fingerprint"
-          },
-          "invocation_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Invocation Id",
-            "type": "string"
-          },
-          "operation_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "operation_version": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Operation Version"
-          },
-          "policy_ref": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Policy Ref"
-          },
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "release_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Release Id"
-          }
-        },
-        "required": [
-          "project_id",
-          "binding_id",
-          "operation_id",
-          "args_hash",
-          "destination_hash",
-          "invocation_id",
-          "idempotency_key"
-        ],
-        "title": "ConsumeCapabilityApprovalRequest",
         "type": "object"
       },
       "CorrectMemoryRequest": {
@@ -3944,6 +3561,200 @@
         ],
         "title": "CreateTestRunRequest",
         "type": "object"
+      },
+      "DatasetApprovalDecisionRequest": {
+        "properties": {
+          "decision": {
+            "enum": [
+              "approved",
+              "rejected"
+            ],
+            "title": "Decision",
+            "type": "string"
+          },
+          "rationale": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Rationale",
+            "type": "string"
+          }
+        },
+        "required": [
+          "decision",
+          "rationale"
+        ],
+        "title": "DatasetApprovalDecisionRequest",
+        "type": "object"
+      },
+      "DatasetApprovalRequest": {
+        "properties": {
+          "approver_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Id"
+          },
+          "approver_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approver Name"
+          },
+          "consumed_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumed At"
+          },
+          "consumed_invocation_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Consumed Invocation Id"
+          },
+          "decided_at": {
+            "anyOf": [
+              {
+                "format": "date-time",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Decided At"
+          },
+          "expires_at": {
+            "format": "date-time",
+            "title": "Expires At",
+            "type": "string"
+          },
+          "filename": {
+            "title": "Filename",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "objective": {
+            "title": "Objective",
+            "type": "string"
+          },
+          "plan_fingerprint": {
+            "title": "Plan Fingerprint",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "rationale": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Rationale"
+          },
+          "requested_at": {
+            "format": "date-time",
+            "title": "Requested At",
+            "type": "string"
+          },
+          "requested_by": {
+            "title": "Requested By",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/DatasetApprovalState"
+          }
+        },
+        "required": [
+          "id",
+          "project_id",
+          "plan_fingerprint",
+          "filename",
+          "objective",
+          "requested_by",
+          "requested_at",
+          "expires_at",
+          "state"
+        ],
+        "title": "DatasetApprovalRequest",
+        "type": "object"
+      },
+      "DatasetApprovalRequestCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "csv_text": {
+            "maxLength": 2000000,
+            "minLength": 1,
+            "title": "Csv Text",
+            "type": "string"
+          },
+          "filename": {
+            "maxLength": 240,
+            "minLength": 1,
+            "title": "Filename",
+            "type": "string"
+          },
+          "objective": {
+            "maxLength": 4000,
+            "minLength": 1,
+            "title": "Objective",
+            "type": "string"
+          },
+          "ttl_minutes": {
+            "default": 60,
+            "maximum": 1440.0,
+            "minimum": 1.0,
+            "title": "Ttl Minutes",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "filename",
+          "objective",
+          "csv_text"
+        ],
+        "title": "DatasetApprovalRequestCreate",
+        "type": "object"
+      },
+      "DatasetApprovalState": {
+        "description": "Lifecycle of a durable, server-issued Dataset Studio analysis approval.\n\n``PENDING``/``APPROVED``/``REJECTED`` mirror a human reviewer decision.\n``CONSUMED`` is a distinct, terminal state reached only once, at the\nmoment an ``APPROVED`` request is actually spent to authorize a single\ndataset-analysis invocation -- this makes a decided approval single-use\nand non-replayable, exactly like ``ApprovalConsumptionPort`` in the\nAgent Studio package it is modeled after.",
+        "enum": [
+          "pending",
+          "approved",
+          "rejected",
+          "consumed"
+        ],
+        "title": "DatasetApprovalState",
+        "type": "string"
       },
       "DatasetFieldProfile": {
         "properties": {
@@ -4769,77 +4580,6 @@
         "title": "EvidenceState",
         "type": "string"
       },
-      "FailIdempotencyRequest": {
-        "additionalProperties": false,
-        "description": "Request body to durably record a failed outcome requiring\nreconciliation (the true side-effect outcome of the original attempt is\nunknown and must never be silently retried as if it were fresh).",
-        "properties": {
-          "argument_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Argument Hash",
-            "type": "string"
-          },
-          "binding_digest": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Binding Digest",
-            "type": "string"
-          },
-          "caller_key": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Caller Key",
-            "type": "string"
-          },
-          "claim_token": {
-            "maxLength": 256,
-            "minLength": 32,
-            "title": "Claim Token",
-            "type": "string"
-          },
-          "destination": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Destination",
-            "type": "string"
-          },
-          "expected_version": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Expected Version",
-            "type": "string"
-          },
-          "failure_code": {
-            "maxLength": 128,
-            "minLength": 1,
-            "title": "Failure Code",
-            "type": "string"
-          },
-          "operation_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "binding_digest",
-          "operation_id",
-          "destination",
-          "caller_key",
-          "argument_hash",
-          "claim_token",
-          "expected_version",
-          "failure_code"
-        ],
-        "title": "FailIdempotencyRequest",
-        "type": "object"
-      },
       "ForgetMemoryRequest": {
         "additionalProperties": false,
         "properties": {
@@ -5227,244 +4967,6 @@
         ],
         "title": "HealthUpdateRequest",
         "type": "object"
-      },
-      "IdempotencyClaim": {
-        "additionalProperties": false,
-        "description": "Result of a single ``claim`` call: the disposition plus the current\nrecord, and -- only when this call is the durable ``ACQUIRED`` winner --\nthe raw, one-time claim token (never persisted; only its hash is).",
-        "properties": {
-          "claim_token": {
-            "anyOf": [
-              {
-                "maxLength": 256,
-                "minLength": 32,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Claim Token"
-          },
-          "disposition": {
-            "$ref": "#/components/schemas/IdempotencyClaimDisposition"
-          },
-          "record": {
-            "$ref": "#/components/schemas/IdempotencyRecord"
-          }
-        },
-        "required": [
-          "disposition",
-          "record"
-        ],
-        "title": "IdempotencyClaim",
-        "type": "object"
-      },
-      "IdempotencyClaimDisposition": {
-        "description": "Result of a single ``claim`` call against a durable idempotency key.\n\n``ACQUIRED``: this call is the sole, durable winner of a fresh claim.\n``IN_PROGRESS``: another still-leased claim already owns this key; this\ncall must not proceed.\n``COMPLETED``: the key already reached a durable, successful outcome;\nthe existing record/result should be replayed rather than re-executed.\n``RECONCILIATION_REQUIRED``: the existing record is either durably\n``FAILED`` or its lease has expired without being renewed/completed --\nthe true outcome of the original attempt is *unknown* (it may have\npartially executed an irreversible side effect), so the caller must\nreconcile out-of-band rather than blindly retrying or trusting success.",
-        "enum": [
-          "acquired",
-          "in_progress",
-          "completed",
-          "reconciliation_required"
-        ],
-        "title": "IdempotencyClaimDisposition",
-        "type": "string"
-      },
-      "IdempotencyKey": {
-        "additionalProperties": false,
-        "description": "Non-optional identity of a single idempotent runtime invocation.\n\nEvery field is required so a durable store can partition\n(``tenant_id``/``project_id``), attribute (``binding_digest``/\n``operation_id``), and deduplicate (``destination``/``caller_key``/\n``argument_hash``) a claim without guessing. ``tenant_id``/``project_id``\nare never trusted from a raw client field alone -- callers (see\n``router.py``) always construct this from the authenticated, membership-\nchecked ``ScopeContext``, never from an independent request field.",
-        "properties": {
-          "argument_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Argument Hash",
-            "type": "string"
-          },
-          "binding_digest": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Binding Digest",
-            "type": "string"
-          },
-          "caller_key": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Caller Key",
-            "type": "string"
-          },
-          "destination": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Destination",
-            "type": "string"
-          },
-          "operation_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "tenant_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Tenant Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "tenant_id",
-          "project_id",
-          "binding_digest",
-          "operation_id",
-          "destination",
-          "caller_key",
-          "argument_hash"
-        ],
-        "title": "IdempotencyKey",
-        "type": "object"
-      },
-      "IdempotencyRecord": {
-        "additionalProperties": false,
-        "description": "Durable state of a single idempotency claim.\n\nState-consistency is enforced structurally, not just by convention:\n``CLAIMED`` must not yet have started; ``IN_PROGRESS`` must have\n``started_at``; ``COMPLETED`` must carry its result identity\n(``completed_at``/``result_hash``/``result_ref``); anything else\n(``FAILED``) must carry a ``failure_code`` and be marked\n``reconciliation_required``. The actual claim token is never persisted\nhere -- only its SHA-256 hash (``claim_token_hash``) -- so a leaked\nrecord can never be replayed as a live claim token.",
-        "properties": {
-          "actor_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Actor Id",
-            "type": "string"
-          },
-          "claim_token_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Claim Token Hash",
-            "type": "string"
-          },
-          "claimed_at": {
-            "format": "date-time",
-            "title": "Claimed At",
-            "type": "string"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "failure_code": {
-            "anyOf": [
-              {
-                "maxLength": 128,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Failure Code"
-          },
-          "irreversible_started": {
-            "default": false,
-            "title": "Irreversible Started",
-            "type": "boolean"
-          },
-          "key": {
-            "$ref": "#/components/schemas/IdempotencyKey"
-          },
-          "lease_expires_at": {
-            "format": "date-time",
-            "title": "Lease Expires At",
-            "type": "string"
-          },
-          "reconciliation_required": {
-            "default": false,
-            "title": "Reconciliation Required",
-            "type": "boolean"
-          },
-          "release_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Release Id",
-            "type": "string"
-          },
-          "result_hash": {
-            "anyOf": [
-              {
-                "pattern": "^[0-9a-f]{64}$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Result Hash"
-          },
-          "result_ref": {
-            "anyOf": [
-              {
-                "maxLength": 2048,
-                "minLength": 1,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Result Ref"
-          },
-          "started_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Started At"
-          },
-          "state": {
-            "$ref": "#/components/schemas/IdempotencyState"
-          },
-          "version": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "key",
-          "state",
-          "version",
-          "claim_token_hash",
-          "lease_expires_at",
-          "actor_id",
-          "release_id"
-        ],
-        "title": "IdempotencyRecord",
-        "type": "object"
-      },
-      "IdempotencyState": {
-        "description": "Lifecycle state of a durable idempotency claim.",
-        "enum": [
-          "claimed",
-          "in_progress",
-          "completed",
-          "failed"
-        ],
-        "title": "IdempotencyState",
-        "type": "string"
       },
       "InstanceReadiness": {
         "description": "Provider-reported readiness of one discovered ``CapabilityInstance``.\n\nDistinct, UI/product-relevant states rather than a boolean, so a caller\ncan render (and an operator can act on) *why* an instance is not\ncurrently usable instead of a single undifferentiated \"unavailable\":\n\n- ``READY``: usable now; the only state ``CapabilityRegistry.attach``/\n  ``check_binding_freshness`` treat as bindable.\n- ``DEGRADED``: usable but the provider has signaled reduced health\n  (see ``CapabilityInstance.health_status`` for detail); not bindable.\n- ``UNAUTHORIZED``: the configured credential/connection lacks\n  sufficient permission; distinct from ``NEEDS_CONSENT`` (no grant has\n  been requested/completed at all) and from generic ``UNAVAILABLE``.\n- ``NEEDS_CONSENT``: an interactive user/admin consent grant is\n  required before the provider will serve this instance.\n- ``MISCONFIGURED``: discovered but its configuration is invalid/\n  incomplete (e.g. a required setting is missing) \u2014 an operator action,\n  not a transient outage.\n- ``UNAVAILABLE``: the fail-closed default and the catch-all for a\n  provider outage/removal with no more specific reason.\n\nNever collapse these into a boolean; ``CapabilityInstance.unavailable_reason``\ncarries the honest, human-readable detail for any non-``READY`` state.",
@@ -5948,75 +5450,6 @@
         ],
         "title": "ManifestFieldChangeKind",
         "type": "string"
-      },
-      "MarkIdempotencyInProgressRequest": {
-        "additionalProperties": false,
-        "description": "Request body to transition a durably claimed key to ``IN_PROGRESS``.\n\n``claim_token``/``expected_version`` are the one-time proof of ownership\nreturned by ``claim`` -- without the exact current pair, the transition\nis rejected as a concurrency conflict rather than silently reapplied.",
-        "properties": {
-          "argument_hash": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Argument Hash",
-            "type": "string"
-          },
-          "binding_digest": {
-            "pattern": "^[0-9a-f]{64}$",
-            "title": "Binding Digest",
-            "type": "string"
-          },
-          "caller_key": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Caller Key",
-            "type": "string"
-          },
-          "claim_token": {
-            "maxLength": 256,
-            "minLength": 32,
-            "title": "Claim Token",
-            "type": "string"
-          },
-          "destination": {
-            "maxLength": 1024,
-            "minLength": 1,
-            "title": "Destination",
-            "type": "string"
-          },
-          "expected_version": {
-            "maxLength": 32,
-            "minLength": 1,
-            "title": "Expected Version",
-            "type": "string"
-          },
-          "irreversible": {
-            "default": false,
-            "title": "Irreversible",
-            "type": "boolean"
-          },
-          "operation_id": {
-            "maxLength": 256,
-            "minLength": 1,
-            "title": "Operation Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 512,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "project_id",
-          "binding_digest",
-          "operation_id",
-          "destination",
-          "caller_key",
-          "argument_hash",
-          "claim_token",
-          "expected_version"
-        ],
-        "title": "MarkIdempotencyInProgressRequest",
-        "type": "object"
       },
       "MatchCriterion": {
         "properties": {
@@ -7298,7 +6731,7 @@
       },
       "ReleaseAttestation": {
         "additionalProperties": false,
-        "description": "Signed, objective attestation that hard release gates passed for one\nexact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a\nharness/runtime consumer to verify at startup before trusting a release.\n\nNever re-runs gates and never reflects advisory ``EvaluationRecord``\nscores -- it is a purely read-derived, reproducible projection of a\nrelease's own ``gate_report_id`` and its version's own ``manifest_hash``.\n``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==\n\"hmac-sha256\"``) over the canonical, finite JSON encoding of every field\nbelow when an attestation-signing key is configured; when none is\nconfigured, ``signature_algorithm == \"sha256-digest\"`` and ``signature``\nis a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-\nevidence check but explicitly *not* claimed as a keyed signature, so a\nconsumer can distinguish \"verified against a shared secret\" from \"just a\ncontent digest\" and this package never overstates what it can honestly\nattest.",
+        "description": "Signed, objective attestation that hard release gates passed for one\nexact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a\nharness/runtime consumer to verify at startup before trusting a release.\n\nNever re-runs gates and never reflects advisory ``EvaluationRecord``\nscores -- it is a purely read-derived, reproducible projection of a\nrelease's own ``gate_report_id`` and its version's own ``manifest_hash``.\n``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==\n\"hmac-sha256\"``) over the canonical, finite JSON encoding of every field\nbelow when an attestation-signing key is configured; when none is\nconfigured, ``signature_algorithm == \"sha256-digest\"`` and ``signature``\nis a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-\nevidence check but explicitly *not* claimed as a keyed signature, so a\nconsumer can distinguish \"verified against a shared secret\" from \"just a\ncontent digest\" and this package never overstates what it can honestly\nattest.\n\n``key_version`` names which configured signing key produced ``signature``\n(``None`` for the unkeyed digest form). It is included in the signed\npayload itself, so an attacker cannot substitute a different key\nversion's claim without invalidating the signature. A verifier that\nretains multiple historical secrets (key rotation) uses this field to\nlook up the one specific secret this attestation was actually signed\nwith, rather than guessing or trying every known key.",
         "properties": {
           "attested_at": {
             "format": "date-time",
@@ -7325,6 +6758,53 @@
             },
             "title": "Gate Results",
             "type": "array"
+          },
+          "harness_link_schema_version": {
+            "anyOf": [
+              {
+                "maxLength": 100,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Link Schema Version"
+          },
+          "harness_manifest_digest": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Manifest Digest"
+          },
+          "harness_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Release Id"
+          },
+          "key_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Key Version"
           },
           "logical_agent_id": {
             "title": "Logical Agent Id",
@@ -7869,6 +7349,30 @@
         "properties": {
           "evidence": {
             "$ref": "#/components/schemas/GateEvidence"
+          },
+          "harness_manifest_digest": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Manifest Digest"
+          },
+          "harness_release_id": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Harness Release Id"
           },
           "project_id": {
             "maxLength": 200,
@@ -8997,6 +8501,14 @@
         ],
         "title": "ApprovalState",
         "type": "string"
+      }
+    },
+    "securitySchemes": {
+      "entraManagedIdentity": {
+        "bearerFormat": "JWT",
+        "description": "Azure Entra ID bearer token, validated by Azure Container Apps' built-in authentication (EasyAuth, Microsoft.App/containerApps/authConfigs) before the request reaches this API. This process trusts only the resulting x-ms-client-principal header injected by that platform-level validation (see research_assistant_api.identity.resolve_identity); it does not independently re-parse or validate the Authorization header itself.",
+        "scheme": "bearer",
+        "type": "http"
       }
     }
   },
@@ -11345,59 +10857,6 @@
         ]
       }
     },
-    "/api/agent-studio/approvals/{approval_id}/consume": {
-      "post": {
-        "description": "Durably, atomically spend a ``CAPABILITY_OPERATION`` approval at\nactual runtime invocation.\n\nThis is the *only* backend path by which a runtime invocation can turn\na decided approval into a spent, one-time authorization: the hosted\ncaller supplies nothing but the decision reference (``approval_id``,\nfrom the path) and the concrete facts of this specific invocation\n(binding/operation/instance/args/destination/policy/release/\nidempotency) -- never a boolean claim of \"this is approved\". The acting\n``principal_id`` is always the authenticated caller's own identity,\nnever client-supplied. Every identifying field is independently\nrevalidated against the approval's own pinned version/binding by\n``ApprovalConsumptionPort`` before anything is durably recorded, so a\nrequest naming the right ``approval_id`` cannot be used to spend it\nagainst a different binding/operation/instance than what was actually\napproved. Fails closed (``DENIED``) rather than raising an error for\nevery \"not currently authorized\" case; only scope/existence failures\nraise HTTP errors.",
-        "operationId": "consume_approval_route_api_agent_studio_approvals__approval_id__consume_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "approval_id",
-            "required": true,
-            "schema": {
-              "title": "Approval Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ConsumeCapabilityApprovalRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/ApprovalConsumptionResult"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Consume Approval Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
     "/api/agent-studio/approvals/{approval_id}/decision": {
       "post": {
         "operationId": "decide_approval_route_api_agent_studio_approvals__approval_id__decision_post",
@@ -11778,235 +11237,6 @@
           }
         },
         "summary": "Record Health",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/idempotency/claim": {
-      "post": {
-        "description": "Atomically claim (or observe the existing disposition of) a durable\nidempotency key before a runtime handler executes a possibly\nside-effecting operation.\n\nNever raises on an already-claimed/completed key -- the returned\n``disposition`` (``ACQUIRED``/``IN_PROGRESS``/``COMPLETED``/\n``RECONCILIATION_REQUIRED``) tells the caller exactly how to proceed;\nonly a malformed ``lease_seconds`` value is rejected as a client error.",
-        "operationId": "claim_idempotency_route_api_agent_studio_idempotency_claim_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/ClaimIdempotencyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdempotencyClaim"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Claim Idempotency Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/idempotency/complete": {
-      "post": {
-        "description": "Durably record a successful completion and its result.\n\nThe durably stored ``result_hash`` is always independently recomputed\nfrom ``result`` by the port itself; ``expected_result_hash`` (if\nsupplied) is only checked as a caller-side sanity assertion and never\ntrusted as the value to persist.",
-        "operationId": "complete_idempotency_route_api_agent_studio_idempotency_complete_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CompleteIdempotencyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdempotencyRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Complete Idempotency Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/idempotency/fail": {
-      "post": {
-        "description": "Durably record that this attempt failed and requires reconciliation\n(the true side-effect outcome of the attempt is unknown and must never\nbe silently retried as if it were fresh).",
-        "operationId": "fail_idempotency_route_api_agent_studio_idempotency_fail_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/FailIdempotencyRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdempotencyRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Fail Idempotency Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/idempotency/mark-in-progress": {
-      "post": {
-        "description": "Transition a durably ``ACQUIRED`` claim to ``IN_PROGRESS`` immediately\nbefore the handler performs its (possibly irreversible) side effect.\n\nRequires the exact ``claim_token``/``expected_version`` pair returned by\n``claim`` -- a stale or wrong pair is rejected as a 409 concurrency\nconflict rather than silently reapplied, since another instance may\nalready have taken over this key.",
-        "operationId": "mark_idempotency_in_progress_route_api_agent_studio_idempotency_mark_in_progress_post",
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/MarkIdempotencyInProgressRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/IdempotencyRecord"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Mark Idempotency In Progress Route",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/idempotency/results/{result_ref}": {
-      "get": {
-        "description": "Replay a previously completed result.\n\nAlways partitioned by the caller's *own authorized* scope -- never by\nanything decoded from ``result_ref`` -- so a caller cannot enumerate\nanother tenant/project's results even by guessing a valid ``result_ref``\nstring; an unauthorized/foreign scope simply misses (``None``/404),\nidentical to a genuinely unknown ``result_ref``.",
-        "operationId": "load_idempotency_result_route_api_agent_studio_idempotency_results__result_ref__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "result_ref",
-            "required": true,
-            "schema": {
-              "title": "Result Ref",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "anyOf": [
-                    {
-                      "additionalProperties": true,
-                      "type": "object"
-                    },
-                    {
-                      "type": "null"
-                    }
-                  ],
-                  "title": "Response Load Idempotency Result Route Api Agent Studio Idempotency Results  Result Ref  Get"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Load Idempotency Result Route",
         "tags": [
           "agent-studio"
         ]
@@ -13205,6 +12435,122 @@
         ]
       }
     },
+    "/api/studios/dataset/approval-requests": {
+      "get": {
+        "operationId": "dataset_approval_requests_api_studios_dataset_approval_requests_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/DatasetApprovalRequest"
+                  },
+                  "title": "Response Dataset Approval Requests Api Studios Dataset Approval Requests Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Dataset Approval Requests",
+        "tags": [
+          "studios"
+        ]
+      },
+      "post": {
+        "operationId": "request_dataset_approval_api_studios_dataset_approval_requests_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatasetApprovalRequestCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetApprovalRequest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Request Dataset Approval",
+        "tags": [
+          "studios"
+        ]
+      }
+    },
+    "/api/studios/dataset/approval-requests/{request_id}/decision": {
+      "post": {
+        "operationId": "decide_dataset_approval_api_studios_dataset_approval_requests__request_id__decision_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "request_id",
+            "required": true,
+            "schema": {
+              "title": "Request Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/DatasetApprovalDecisionRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DatasetApprovalRequest"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Decide Dataset Approval",
+        "tags": [
+          "studios"
+        ]
+      }
+    },
     "/api/studios/{capability}/run": {
       "post": {
         "operationId": "run_studio_api_studios__capability__run_post",
@@ -13365,5 +12711,10 @@
         ]
       }
     }
-  }
+  },
+  "security": [
+    {
+      "entraManagedIdentity": []
+    }
+  ]
 }

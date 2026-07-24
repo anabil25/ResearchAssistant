@@ -313,7 +313,9 @@ def test_dataset_approval_request_is_persisted_and_visible_across_replicas(
         "research",
         credential,
     )
-    assert third.dataset_approval_request(created.id).state.value == "consumed"
+    third_request = third.dataset_approval_request(created.id)
+    assert third_request is not None
+    assert third_request.state.value == "consumed"
 
 
 def test_decide_dataset_approval_request_missing_returns_none(
@@ -376,7 +378,7 @@ def test_decide_dataset_approval_request_conflict_with_same_decision_is_idempote
         document["payload"]["rationale"] = "Concurrent reviewer approved first."
         container.version += 1
         document["_etag"] = str(container.version)
-        container.replace_item = original_replace_item
+        container.replace_item = original_replace_item  # type: ignore[method-assign]
         raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
             status_code=412,
             message="simulated concurrent decision",

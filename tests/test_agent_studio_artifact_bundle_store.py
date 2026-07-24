@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from hashlib import sha256
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
@@ -227,7 +228,7 @@ class FakeBlobClient:
     def download_blob(self) -> Any:
         if self._name not in self._registry:
             raise ResourceNotFoundError("blob not found")
-        content = self._registry[self._name]["content"]
+        content: bytes = self._registry[self._name]["content"]
 
         class _Downloaded:
             def readall(self) -> bytes:
@@ -311,7 +312,7 @@ def test_azure_store_put_treats_concurrent_duplicate_upload_as_success(
     # exact content (and matching sha256 metadata) this call is about to
     # upload, at the exact path this call will compute, *before* this call
     # ever checks anything.
-    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    checksum = sha256(b"racy-payload").hexdigest()
     blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
     fake_container.registry[blob_name] = {"content": b"racy-payload", "metadata": {"sha256": checksum}}
 
@@ -342,7 +343,7 @@ def test_azure_store_put_fails_closed_when_existing_blob_content_mismatches(
         "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
     )
     fake_container = cast(FakeContainerClient, store._container)
-    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    checksum = sha256(b"racy-payload").hexdigest()
     blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
     # Pre-populate a blob at the exact content-addressed path, but with
     # metadata that does not match the checksum this call will compute
@@ -374,7 +375,7 @@ def test_azure_store_put_fails_closed_when_existing_blob_content_mismatches_desp
         "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
     )
     fake_container = cast(FakeContainerClient, store._container)
-    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    checksum = sha256(b"racy-payload").hexdigest()
     blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
     # The stored metadata *claims* the correct checksum and the size also
     # happens to match, but the actual bytes are wrong -- e.g. a buggy or
@@ -509,7 +510,10 @@ def test_azure_store_get_fails_closed_when_blob_content_does_not_match_checksum(
     )
     checksum = "0" * 64
     blob_name = f"demo/proj-1/agent-1/version-1/{checksum}"
-    store._container.registry[blob_name] = {"content": b"tampered-content", "metadata": {"sha256": checksum}}
+    cast(FakeContainerClient, store._container).registry[blob_name] = {
+        "content": b"tampered-content",
+        "metadata": {"sha256": checksum},
+    }
 
     scope = ScopeContext(tenant_id="demo", project_id="proj-1")
     with pytest.raises(ArtifactBundleStoreError, match="does not match"):

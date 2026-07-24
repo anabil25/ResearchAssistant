@@ -6,6 +6,7 @@ import base64
 import hashlib
 import json
 from collections.abc import Iterator
+from datetime import timedelta
 from typing import Any, cast
 
 import pytest
@@ -1362,11 +1363,25 @@ def test_list_agents_filters_by_display_name_query(client: TestClient) -> None:
     assert no_match.json()["items"] == []
 
 
-def test_list_agents_paginates_and_orders_by_most_recently_updated_first(client: TestClient) -> None:
+def test_list_agents_paginates_and_orders_by_most_recently_updated_first(
+    client: TestClient, store: AgentStudioStore
+) -> None:
     created_ids = []
     for suffix in ("c", "a", "b"):
         _create_agent(client, logical_agent_id=f"agent-page-{suffix}", display_name=f"Page {suffix}")
         created_ids.append(f"agent-page-{suffix}")
+
+    # Pin distinct, strictly increasing ``updated_at`` values so ordering is
+    # asserted deterministically rather than depending on wall-clock
+    # resolution: three rapid creates can otherwise collide on a coarse
+    # platform clock and (correctly) fall back to the id tie-break, which is
+    # covered separately below.
+    scope = ScopeContext(tenant_id="demo", project_id=DEFAULT_PROJECT_ID)
+    base_timestamp = utc_now()
+    for index, logical_agent_id in enumerate(created_ids):
+        draft = store.get_draft(scope, logical_agent_id)
+        assert draft is not None
+        store.save_draft(scope, draft.model_copy(update={"updated_at": base_timestamp + timedelta(seconds=index)}))
 
     page_one = client.get(
         "/api/agent-studio/agents",

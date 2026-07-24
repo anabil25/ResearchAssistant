@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
+from types import EllipsisType
 
 import pytest
 from pydantic import ValidationError
@@ -64,7 +65,7 @@ def _binding(
     )
 
 
-def _manifest(*, binding: CapabilityBinding | None = ...) -> AgentManifest:  # type: ignore[assignment]
+def _manifest(*, binding: CapabilityBinding | None | EllipsisType = ...) -> AgentManifest:
     resolved_binding = _binding() if binding is ... else binding
     return AgentManifest(
         logical_agent_id=AGENT_ID,
@@ -192,17 +193,17 @@ def _seed(store: AgentStudioStore, **approval_overrides: object) -> None:
 def test_request_is_frozen_and_rejects_unknown_fields() -> None:
     request = _request()
     with pytest.raises(ValidationError):
-        ApprovalConsumptionRequest(**{**request.model_dump(), "unexpected": "value"})  # type: ignore[arg-type]
+        ApprovalConsumptionRequest(**{**request.model_dump(), "unexpected": "value"})
     with pytest.raises(ValidationError):
-        request.approval_id = "other"  # type: ignore[misc]
+        request.approval_id = "other"
 
 
 def test_result_is_frozen_and_rejects_unknown_fields() -> None:
     result = ApprovalConsumptionResult(outcome=ApprovalConsumptionOutcome.DENIED, reason="no")
     with pytest.raises(ValidationError):
-        ApprovalConsumptionResult(**{**result.model_dump(), "unexpected": "value"})  # type: ignore[arg-type]
+        ApprovalConsumptionResult(**{**result.model_dump(), "unexpected": "value"})
     with pytest.raises(ValidationError):
-        result.outcome = ApprovalConsumptionOutcome.CONSUMED  # type: ignore[misc]
+        result.outcome = ApprovalConsumptionOutcome.CONSUMED
 
 
 # --- denial paths ---------------------------------------------------------

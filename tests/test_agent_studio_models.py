@@ -471,7 +471,7 @@ def test_evaluation_suite_is_frozen_and_scoped_per_logical_agent() -> None:
         created_by="user-1",
     )
     with pytest.raises(ValidationError):
-        suite.name = "mutated"  # type: ignore[misc]
+        suite.name = "mutated"
 
 
 def test_tool_invocation_stat_rejects_error_count_over_invocation_count() -> None:

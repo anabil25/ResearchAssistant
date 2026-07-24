@@ -845,6 +845,7 @@ def test_check_binding_freshness_rejects_binding_with_no_instance_fingerprint_pi
         attached_by="user-1",
         instance_id=instance.id,
     )
+    assert binding.instance_ref is not None
     unpinned = binding.model_copy(
         update={"instance_ref": binding.instance_ref.model_copy(update={"fingerprint": None})}
     )

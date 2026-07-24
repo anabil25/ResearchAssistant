@@ -2373,6 +2373,7 @@ def test_complete_idempotency_concurrent_completions_yield_exactly_one_winner(
     claimer = _new_store(fake_client_factory)
     claim = claimer.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
     assert claim.claim_token is not None
+    claim_token = claim.claim_token
 
     thread_count = 8
     successes: list[Any] = []
@@ -2387,7 +2388,7 @@ def test_complete_idempotency_concurrent_completions_yield_exactly_one_winner(
             completed = store.complete_idempotency(
                 SCOPE,
                 key,
-                claim_token=claim.claim_token,
+                claim_token=claim_token,
                 expected_version="1",
                 result={"status": "ok", "worker": worker_index},
                 result_hash=f"{worker_index:064d}",

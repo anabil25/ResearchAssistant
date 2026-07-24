@@ -697,43 +697,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/agent-studio/approvals/{approval_id}/consume": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Consume Approval Route
-         * @description Durably, atomically spend a ``CAPABILITY_OPERATION`` approval at
-         *     actual runtime invocation.
-         *
-         *     This is the *only* backend path by which a runtime invocation can turn
-         *     a decided approval into a spent, one-time authorization: the hosted
-         *     caller supplies nothing but the decision reference (``approval_id``,
-         *     from the path) and the concrete facts of this specific invocation
-         *     (binding/operation/instance/args/destination/policy/release/
-         *     idempotency) -- never a boolean claim of "this is approved". The acting
-         *     ``principal_id`` is always the authenticated caller's own identity,
-         *     never client-supplied. Every identifying field is independently
-         *     revalidated against the approval's own pinned version/binding by
-         *     ``ApprovalConsumptionPort`` before anything is durably recorded, so a
-         *     request naming the right ``approval_id`` cannot be used to spend it
-         *     against a different binding/operation/instance than what was actually
-         *     approved. Fails closed (``DENIED``) rather than raising an error for
-         *     every "not currently authorized" case; only scope/existence failures
-         *     raise HTTP errors.
-         */
-        post: operations["consume_approval_route_api_agent_studio_approvals__approval_id__consume_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/agent-studio/approvals/{approval_id}/decision": {
         parameters: {
             query?: never;
@@ -913,132 +876,6 @@ export interface paths {
         put?: never;
         /** Record Health */
         post: operations["record_health_api_agent_studio_deployments__deployment_id__health_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/idempotency/claim": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Claim Idempotency Route
-         * @description Atomically claim (or observe the existing disposition of) a durable
-         *     idempotency key before a runtime handler executes a possibly
-         *     side-effecting operation.
-         *
-         *     Never raises on an already-claimed/completed key -- the returned
-         *     ``disposition`` (``ACQUIRED``/``IN_PROGRESS``/``COMPLETED``/
-         *     ``RECONCILIATION_REQUIRED``) tells the caller exactly how to proceed;
-         *     only a malformed ``lease_seconds`` value is rejected as a client error.
-         */
-        post: operations["claim_idempotency_route_api_agent_studio_idempotency_claim_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/idempotency/complete": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Complete Idempotency Route
-         * @description Durably record a successful completion and its result.
-         *
-         *     The durably stored ``result_hash`` is always independently recomputed
-         *     from ``result`` by the port itself; ``expected_result_hash`` (if
-         *     supplied) is only checked as a caller-side sanity assertion and never
-         *     trusted as the value to persist.
-         */
-        post: operations["complete_idempotency_route_api_agent_studio_idempotency_complete_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/idempotency/fail": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Fail Idempotency Route
-         * @description Durably record that this attempt failed and requires reconciliation
-         *     (the true side-effect outcome of the attempt is unknown and must never
-         *     be silently retried as if it were fresh).
-         */
-        post: operations["fail_idempotency_route_api_agent_studio_idempotency_fail_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/idempotency/mark-in-progress": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Mark Idempotency In Progress Route
-         * @description Transition a durably ``ACQUIRED`` claim to ``IN_PROGRESS`` immediately
-         *     before the handler performs its (possibly irreversible) side effect.
-         *
-         *     Requires the exact ``claim_token``/``expected_version`` pair returned by
-         *     ``claim`` -- a stale or wrong pair is rejected as a 409 concurrency
-         *     conflict rather than silently reapplied, since another instance may
-         *     already have taken over this key.
-         */
-        post: operations["mark_idempotency_in_progress_route_api_agent_studio_idempotency_mark_in_progress_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/idempotency/results/{result_ref}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * Load Idempotency Result Route
-         * @description Replay a previously completed result.
-         *
-         *     Always partitioned by the caller's *own authorized* scope -- never by
-         *     anything decoded from ``result_ref`` -- so a caller cannot enumerate
-         *     another tenant/project's results even by guessing a valid ``result_ref``
-         *     string; an unauthorized/foreign scope simply misses (``None``/404),
-         *     identical to a genuinely unknown ``result_ref``.
-         */
-        get: operations["load_idempotency_result_route_api_agent_studio_idempotency_results__result_ref__get"];
-        put?: never;
-        post?: never;
         delete?: never;
         options?: never;
         head?: never;
@@ -1569,6 +1406,41 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/studios/dataset/approval-requests": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Dataset Approval Requests */
+        get: operations["dataset_approval_requests_api_studios_dataset_approval_requests_get"];
+        put?: never;
+        /** Request Dataset Approval */
+        post: operations["request_dataset_approval_api_studios_dataset_approval_requests_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/studios/dataset/approval-requests/{request_id}/decision": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Decide Dataset Approval */
+        post: operations["decide_dataset_approval_api_studios_dataset_approval_requests__request_id__decision_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/studios/{capability}/run": {
         parameters: {
             query?: never;
@@ -1853,6 +1725,12 @@ export interface components {
             environment: components["schemas"]["DeploymentEnvironment"];
             /** Gate Report Id */
             gate_report_id?: string | null;
+            /** Harness Link Schema Version */
+            harness_link_schema_version?: string | null;
+            /** Harness Manifest Digest */
+            harness_manifest_digest?: string | null;
+            /** Harness Release Id */
+            harness_release_id?: string | null;
             /** Id */
             id: string;
             /** Logical Agent Id */
@@ -2114,103 +1992,6 @@ export interface components {
             question: string;
             /** Status */
             status: string;
-        };
-        /**
-         * ApprovalConsumptionOutcome
-         * @description Outcome of a single ``approval_consumption.consume_approval`` call.
-         *
-         *     ``CONSUMED``: this call is the first, and only, successful spend of a
-         *     one-time capability-operation approval.
-         *     ``ALREADY_CONSUMED``: an idempotent replay — a *prior* call with the
-         *     exact same ``idempotency_key`` already consumed this approval; the
-         *     original durable record is returned rather than re-executing or
-         *     re-recording anything.
-         *     ``DENIED``: the approval does not currently authorize this invocation at
-         *     all (not found, wrong kind, not effectively ``APPROVED``, or its pinned
-         *     version/binding/operation/instance/policy does not match this
-         *     invocation) — fails closed before any consumption is attempted.
-         *     ``EXHAUSTED``: the approval is a single-use grant and a *different*
-         *     invocation (a different ``idempotency_key``) already consumed it; this
-         *     invocation is denied even though the approval itself remains
-         *     effectively approved.
-         * @enum {string}
-         */
-        ApprovalConsumptionOutcome: "consumed" | "already_consumed" | "denied" | "exhausted";
-        /**
-         * ApprovalConsumptionRecord
-         * @description Durable, append-only record that a ``CAPABILITY_OPERATION``
-         *     ``StudioApprovalRecord`` was actually spent by one specific runtime
-         *     invocation.
-         *
-         *     Deciding an approval (``ApprovalState``/``ApprovalEffectiveState``) only
-         *     establishes that it is *currently valid to act on*; it says nothing
-         *     about whether any invocation has *already used* it. A
-         *     capability-operation approval defaults to one-time: the first
-         *     ``AgentStudioStore.create_approval_consumption`` call for a given
-         *     ``(scope, approval_id)`` durably wins, and every later call either
-         *     reconciles idempotently (same ``idempotency_key`` — the same invocation
-         *     retrying, e.g. after a network blip) or is denied (a different key — a
-         *     distinct invocation trying to reuse an already-spent, single-use grant).
-         *     This record is the audit trail of exactly *what* was consumed: the
-         *     acting principal, the exact binding/instance/operation/version it was
-         *     exercised against, hashes of the actual call arguments and destination,
-         *     and the policy/release/invocation identifiers in force at the time — so
-         *     a later audit can distinguish one legitimate consumption from any
-         *     attempted replay. Never mutated once created.
-         */
-        ApprovalConsumptionRecord: {
-            /** Approval Id */
-            approval_id: string;
-            /** Args Hash */
-            args_hash: string;
-            /** Binding Id */
-            binding_id: string;
-            /**
-             * Consumed At
-             * Format: date-time
-             */
-            consumed_at?: string;
-            /** Destination Hash */
-            destination_hash: string;
-            /** Id */
-            id: string;
-            /** Idempotency Key */
-            idempotency_key: string;
-            /** Instance Fingerprint */
-            instance_fingerprint?: string | null;
-            /** Invocation Id */
-            invocation_id: string;
-            /** Operation Id */
-            operation_id: string;
-            /** Operation Version */
-            operation_version?: string | null;
-            /** Policy Ref */
-            policy_ref?: string | null;
-            /** Principal Id */
-            principal_id: string;
-            /** Project Id */
-            project_id: string;
-            /** Release Id */
-            release_id?: string | null;
-            /** Tenant Id */
-            tenant_id: string;
-        };
-        /**
-         * ApprovalConsumptionResult
-         * @description Result of a single ``consume_approval`` call.
-         *
-         *     ``record`` is populated for ``CONSUMED``, ``ALREADY_CONSUMED``, and
-         *     ``EXHAUSTED`` (the durable winning consumption, even when this call
-         *     itself lost the race) but is always ``None`` for ``DENIED`` -- a denial
-         *     never reaches the point of even attempting a durable write. ``reason``
-         *     carries a human-readable, non-sensitive explanation for anything other
-         *     than a first-time ``CONSUMED``.
-         */
-        ApprovalConsumptionResult: {
-            outcome: components["schemas"]["ApprovalConsumptionOutcome"];
-            /** Reason */
-            reason?: string | null;
-            record?: components["schemas"]["ApprovalConsumptionRecord"] | null;
         };
         /**
          * ApprovalContextOutcome
@@ -3216,68 +2997,6 @@ export interface components {
              */
             require_citations: boolean;
         };
-        /**
-         * ClaimIdempotencyRequest
-         * @description Request body to atomically claim a fresh durable idempotency lease.
-         *
-         *     ``actor_id`` is never accepted here -- the acting actor is always the
-         *     authenticated caller's own identity, exactly like every other mutating
-         *     Agent Studio route.
-         */
-        ClaimIdempotencyRequest: {
-            /** Argument Hash */
-            argument_hash: string;
-            /** Binding Digest */
-            binding_digest: string;
-            /** Caller Key */
-            caller_key: string;
-            /** Destination */
-            destination: string;
-            /**
-             * Lease Seconds
-             * @default 300
-             */
-            lease_seconds: number;
-            /** Operation Id */
-            operation_id: string;
-            /** Project Id */
-            project_id: string;
-            /** Release Id */
-            release_id: string;
-        };
-        /**
-         * CompleteIdempotencyRequest
-         * @description Request body to durably record a successful completion.
-         *
-         *     ``result`` is the raw, JSON-able outcome payload; its digest is always
-         *     independently recomputed server-side (never trusted from
-         *     ``expected_result_hash``, which is only an optional caller-side sanity
-         *     assertion checked against that recomputed digest).
-         */
-        CompleteIdempotencyRequest: {
-            /** Argument Hash */
-            argument_hash: string;
-            /** Binding Digest */
-            binding_digest: string;
-            /** Caller Key */
-            caller_key: string;
-            /** Claim Token */
-            claim_token: string;
-            /** Destination */
-            destination: string;
-            /** Expected Result Hash */
-            expected_result_hash?: string | null;
-            /** Expected Version */
-            expected_version: string;
-            /** Operation Id */
-            operation_id: string;
-            /** Project Id */
-            project_id: string;
-            /** Result */
-            result?: {
-                [key: string]: unknown;
-            };
-        };
         /** ComputeProposal */
         ComputeProposal: {
             /** Adapter */
@@ -3331,50 +3050,6 @@ export interface components {
             assigned_agents: string[];
             /** Enabled */
             enabled: boolean;
-        };
-        /**
-         * ConsumeCapabilityApprovalRequest
-         * @description Request body to durably, atomically spend a ``CAPABILITY_OPERATION``
-         *     approval at actual runtime invocation.
-         *
-         *     This is the wire contract the callers referenced in
-         *     ``approval_consumption.ApprovalConsumptionRequest`` carry the client;
-         *     ``tenant_id``/``project_id`` (via the authenticated identity + this
-         *     request's ``project_id``) and ``principal_id`` (the caller's own
-         *     authenticated identity) are never accepted from the client -- a runtime
-         *     invocation cannot assert who it is or which tenant it belongs to, it can
-         *     only present the decision reference (``approval_id``, from the path)
-         *     plus the concrete facts of *this* invocation, all of which are
-         *     independently revalidated against the approval's own pinned
-         *     binding/operation/instance/policy/release server-side before anything
-         *     is durably consumed. There is deliberately no boolean "is this
-         *     approved" field anywhere on this request: authority comes entirely from
-         *     the referenced, previously-decided ``StudioApprovalRecord``, never from
-         *     anything the caller asserts inline.
-         */
-        ConsumeCapabilityApprovalRequest: {
-            /** Args Hash */
-            args_hash: string;
-            /** Binding Id */
-            binding_id: string;
-            /** Destination Hash */
-            destination_hash: string;
-            /** Idempotency Key */
-            idempotency_key: string;
-            /** Instance Fingerprint */
-            instance_fingerprint?: string | null;
-            /** Invocation Id */
-            invocation_id: string;
-            /** Operation Id */
-            operation_id: string;
-            /** Operation Version */
-            operation_version?: string | null;
-            /** Policy Ref */
-            policy_ref?: string | null;
-            /** Project Id */
-            project_id: string;
-            /** Release Id */
-            release_id?: string | null;
         };
         /** CorrectMemoryRequest */
         CorrectMemoryRequest: {
@@ -3451,6 +3126,81 @@ export interface components {
             /** Version Id */
             version_id?: string | null;
         };
+        /** DatasetApprovalDecisionRequest */
+        DatasetApprovalDecisionRequest: {
+            /**
+             * Decision
+             * @enum {string}
+             */
+            decision: "approved" | "rejected";
+            /** Rationale */
+            rationale: string;
+        };
+        /** DatasetApprovalRequest */
+        DatasetApprovalRequest: {
+            /** Approver Id */
+            approver_id?: string | null;
+            /** Approver Name */
+            approver_name?: string | null;
+            /** Consumed At */
+            consumed_at?: string | null;
+            /** Consumed Invocation Id */
+            consumed_invocation_id?: string | null;
+            /** Decided At */
+            decided_at?: string | null;
+            /**
+             * Expires At
+             * Format: date-time
+             */
+            expires_at: string;
+            /** Filename */
+            filename: string;
+            /** Id */
+            id: string;
+            /** Objective */
+            objective: string;
+            /** Plan Fingerprint */
+            plan_fingerprint: string;
+            /** Project Id */
+            project_id: string;
+            /** Rationale */
+            rationale?: string | null;
+            /**
+             * Requested At
+             * Format: date-time
+             */
+            requested_at: string;
+            /** Requested By */
+            requested_by: string;
+            state: components["schemas"]["DatasetApprovalState"];
+        };
+        /** DatasetApprovalRequestCreate */
+        DatasetApprovalRequestCreate: {
+            /** Csv Text */
+            csv_text: string;
+            /** Filename */
+            filename: string;
+            /** Objective */
+            objective: string;
+            /**
+             * Ttl Minutes
+             * @default 60
+             */
+            ttl_minutes: number;
+        };
+        /**
+         * DatasetApprovalState
+         * @description Lifecycle of a durable, server-issued Dataset Studio analysis approval.
+         *
+         *     ``PENDING``/``APPROVED``/``REJECTED`` mirror a human reviewer decision.
+         *     ``CONSUMED`` is a distinct, terminal state reached only once, at the
+         *     moment an ``APPROVED`` request is actually spent to authorize a single
+         *     dataset-analysis invocation -- this makes a decided approval single-use
+         *     and non-replayable, exactly like ``ApprovalConsumptionPort`` in the
+         *     Agent Studio package it is modeled after.
+         * @enum {string}
+         */
+        DatasetApprovalState: "pending" | "approved" | "rejected" | "consumed";
         /** DatasetFieldProfile */
         DatasetFieldProfile: {
             /** Data Type */
@@ -3803,32 +3553,6 @@ export interface components {
          * @enum {string}
          */
         EvidenceState: "verified" | "model_analysis" | "unsupported" | "blocked";
-        /**
-         * FailIdempotencyRequest
-         * @description Request body to durably record a failed outcome requiring
-         *     reconciliation (the true side-effect outcome of the original attempt is
-         *     unknown and must never be silently retried as if it were fresh).
-         */
-        FailIdempotencyRequest: {
-            /** Argument Hash */
-            argument_hash: string;
-            /** Binding Digest */
-            binding_digest: string;
-            /** Caller Key */
-            caller_key: string;
-            /** Claim Token */
-            claim_token: string;
-            /** Destination */
-            destination: string;
-            /** Expected Version */
-            expected_version: string;
-            /** Failure Code */
-            failure_code: string;
-            /** Operation Id */
-            operation_id: string;
-            /** Project Id */
-            project_id: string;
-        };
         /** ForgetMemoryRequest */
         ForgetMemoryRequest: {
             /** Project Id */
@@ -3978,124 +3702,6 @@ export interface components {
             /** Trace Ref */
             trace_ref?: string | null;
         };
-        /**
-         * IdempotencyClaim
-         * @description Result of a single ``claim`` call: the disposition plus the current
-         *     record, and -- only when this call is the durable ``ACQUIRED`` winner --
-         *     the raw, one-time claim token (never persisted; only its hash is).
-         */
-        IdempotencyClaim: {
-            /** Claim Token */
-            claim_token?: string | null;
-            disposition: components["schemas"]["IdempotencyClaimDisposition"];
-            record: components["schemas"]["IdempotencyRecord"];
-        };
-        /**
-         * IdempotencyClaimDisposition
-         * @description Result of a single ``claim`` call against a durable idempotency key.
-         *
-         *     ``ACQUIRED``: this call is the sole, durable winner of a fresh claim.
-         *     ``IN_PROGRESS``: another still-leased claim already owns this key; this
-         *     call must not proceed.
-         *     ``COMPLETED``: the key already reached a durable, successful outcome;
-         *     the existing record/result should be replayed rather than re-executed.
-         *     ``RECONCILIATION_REQUIRED``: the existing record is either durably
-         *     ``FAILED`` or its lease has expired without being renewed/completed --
-         *     the true outcome of the original attempt is *unknown* (it may have
-         *     partially executed an irreversible side effect), so the caller must
-         *     reconcile out-of-band rather than blindly retrying or trusting success.
-         * @enum {string}
-         */
-        IdempotencyClaimDisposition: "acquired" | "in_progress" | "completed" | "reconciliation_required";
-        /**
-         * IdempotencyKey
-         * @description Non-optional identity of a single idempotent runtime invocation.
-         *
-         *     Every field is required so a durable store can partition
-         *     (``tenant_id``/``project_id``), attribute (``binding_digest``/
-         *     ``operation_id``), and deduplicate (``destination``/``caller_key``/
-         *     ``argument_hash``) a claim without guessing. ``tenant_id``/``project_id``
-         *     are never trusted from a raw client field alone -- callers (see
-         *     ``router.py``) always construct this from the authenticated, membership-
-         *     checked ``ScopeContext``, never from an independent request field.
-         */
-        IdempotencyKey: {
-            /** Argument Hash */
-            argument_hash: string;
-            /** Binding Digest */
-            binding_digest: string;
-            /** Caller Key */
-            caller_key: string;
-            /** Destination */
-            destination: string;
-            /** Operation Id */
-            operation_id: string;
-            /** Project Id */
-            project_id: string;
-            /** Tenant Id */
-            tenant_id: string;
-        };
-        /**
-         * IdempotencyRecord
-         * @description Durable state of a single idempotency claim.
-         *
-         *     State-consistency is enforced structurally, not just by convention:
-         *     ``CLAIMED`` must not yet have started; ``IN_PROGRESS`` must have
-         *     ``started_at``; ``COMPLETED`` must carry its result identity
-         *     (``completed_at``/``result_hash``/``result_ref``); anything else
-         *     (``FAILED``) must carry a ``failure_code`` and be marked
-         *     ``reconciliation_required``. The actual claim token is never persisted
-         *     here -- only its SHA-256 hash (``claim_token_hash``) -- so a leaked
-         *     record can never be replayed as a live claim token.
-         */
-        IdempotencyRecord: {
-            /** Actor Id */
-            actor_id: string;
-            /** Claim Token Hash */
-            claim_token_hash: string;
-            /**
-             * Claimed At
-             * Format: date-time
-             */
-            claimed_at?: string;
-            /** Completed At */
-            completed_at?: string | null;
-            /** Failure Code */
-            failure_code?: string | null;
-            /**
-             * Irreversible Started
-             * @default false
-             */
-            irreversible_started: boolean;
-            key: components["schemas"]["IdempotencyKey"];
-            /**
-             * Lease Expires At
-             * Format: date-time
-             */
-            lease_expires_at: string;
-            /**
-             * Reconciliation Required
-             * @default false
-             */
-            reconciliation_required: boolean;
-            /** Release Id */
-            release_id: string;
-            /** Result Hash */
-            result_hash?: string | null;
-            /** Result Ref */
-            result_ref?: string | null;
-            /** Started At */
-            started_at?: string | null;
-            state: components["schemas"]["IdempotencyState"];
-            /** Version */
-            version: string;
-        };
-        /**
-         * IdempotencyState
-         * @description Lifecycle state of a durable idempotency claim.
-         * @enum {string}
-         */
-        IdempotencyState: "claimed" | "in_progress" | "completed" | "failed";
         /**
          * InstanceReadiness
          * @description Provider-reported readiness of one discovered ``CapabilityInstance``.
@@ -4287,37 +3893,6 @@ export interface components {
          * @enum {string}
          */
         ManifestFieldChangeKind: "added" | "removed" | "modified";
-        /**
-         * MarkIdempotencyInProgressRequest
-         * @description Request body to transition a durably claimed key to ``IN_PROGRESS``.
-         *
-         *     ``claim_token``/``expected_version`` are the one-time proof of ownership
-         *     returned by ``claim`` -- without the exact current pair, the transition
-         *     is rejected as a concurrency conflict rather than silently reapplied.
-         */
-        MarkIdempotencyInProgressRequest: {
-            /** Argument Hash */
-            argument_hash: string;
-            /** Binding Digest */
-            binding_digest: string;
-            /** Caller Key */
-            caller_key: string;
-            /** Claim Token */
-            claim_token: string;
-            /** Destination */
-            destination: string;
-            /** Expected Version */
-            expected_version: string;
-            /**
-             * Irreversible
-             * @default false
-             */
-            irreversible: boolean;
-            /** Operation Id */
-            operation_id: string;
-            /** Project Id */
-            project_id: string;
-        };
         /** MatchCriterion */
         MatchCriterion: {
             /** Id */
@@ -4976,6 +4551,14 @@ export interface components {
          *     consumer can distinguish "verified against a shared secret" from "just a
          *     content digest" and this package never overstates what it can honestly
          *     attest.
+         *
+         *     ``key_version`` names which configured signing key produced ``signature``
+         *     (``None`` for the unkeyed digest form). It is included in the signed
+         *     payload itself, so an attacker cannot substitute a different key
+         *     version's claim without invalidating the signature. A verifier that
+         *     retains multiple historical secrets (key rotation) uses this field to
+         *     look up the one specific secret this attestation was actually signed
+         *     with, rather than guessing or trying every known key.
          */
         ReleaseAttestation: {
             /**
@@ -4990,6 +4573,14 @@ export interface components {
             gate_report_id: string;
             /** Gate Results */
             gate_results: components["schemas"]["GateResult"][];
+            /** Harness Link Schema Version */
+            harness_link_schema_version?: string | null;
+            /** Harness Manifest Digest */
+            harness_manifest_digest?: string | null;
+            /** Harness Release Id */
+            harness_release_id?: string | null;
+            /** Key Version */
+            key_version?: string | null;
             /** Logical Agent Id */
             logical_agent_id: string;
             /** Manifest Hash */
@@ -5228,6 +4819,10 @@ export interface components {
         /** RunGatesRequest */
         RunGatesRequest: {
             evidence?: components["schemas"]["GateEvidence"];
+            /** Harness Manifest Digest */
+            harness_manifest_digest?: string | null;
+            /** Harness Release Id */
+            harness_release_id?: string | null;
             /** Project Id */
             project_id: string;
         };
@@ -7127,41 +6722,6 @@ export interface operations {
             };
         };
     };
-    consume_approval_route_api_agent_studio_approvals__approval_id__consume_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                approval_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ConsumeCapabilityApprovalRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["ApprovalConsumptionResult"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
     decide_approval_route_api_agent_studio_approvals__approval_id__decision_post: {
         parameters: {
             query?: never;
@@ -7401,173 +6961,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["DeploymentRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    claim_idempotency_route_api_agent_studio_idempotency_claim_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["ClaimIdempotencyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IdempotencyClaim"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    complete_idempotency_route_api_agent_studio_idempotency_complete_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CompleteIdempotencyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IdempotencyRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    fail_idempotency_route_api_agent_studio_idempotency_fail_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["FailIdempotencyRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IdempotencyRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    mark_idempotency_in_progress_route_api_agent_studio_idempotency_mark_in_progress_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["MarkIdempotencyInProgressRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["IdempotencyRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    load_idempotency_result_route_api_agent_studio_idempotency_results__result_ref__get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                result_ref: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": {
-                        [key: string]: unknown;
-                    } | null;
                 };
             };
             /** @description Validation Error */
@@ -8377,6 +7770,94 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProjectSettings"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    dataset_approval_requests_api_studios_dataset_approval_requests_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetApprovalRequest"][];
+                };
+            };
+        };
+    };
+    request_dataset_approval_api_studios_dataset_approval_requests_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatasetApprovalRequestCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetApprovalRequest"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    decide_dataset_approval_api_studios_dataset_approval_requests__request_id__decision_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                request_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["DatasetApprovalDecisionRequest"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["DatasetApprovalRequest"];
                 };
             };
             /** @description Validation Error */

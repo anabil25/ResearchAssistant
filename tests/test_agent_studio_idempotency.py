@@ -91,9 +91,9 @@ def _record(**overrides: object) -> IdempotencyRecord:
 def test_idempotency_key_is_frozen_and_rejects_unknown_fields() -> None:
     key = _key()
     with pytest.raises(ValidationError):
-        key.caller_key = "other"  # type: ignore[misc]
+        key.caller_key = "other"
     with pytest.raises(ValidationError):
-        IdempotencyKey(**{**key.model_dump(), "unexpected": "value"})  # type: ignore[arg-type]
+        IdempotencyKey(**{**key.model_dump(), "unexpected": "value"})
 
 
 def test_idempotency_key_rejects_malformed_digest_fields() -> None:
@@ -198,7 +198,7 @@ def test_record_rejects_irreversible_started_without_started_at() -> None:
 def test_record_is_frozen() -> None:
     record = _record()
     with pytest.raises(ValidationError):
-        record.state = IdempotencyState.FAILED  # type: ignore[misc]
+        record.state = IdempotencyState.FAILED
 
 
 def test_claim_requires_token_iff_acquired() -> None:
@@ -628,7 +628,7 @@ async def test_port_load_result_rejects_missing_result_document() -> None:
     # Simulate a durably COMPLETED record whose result document is gone
     # (or was never actually written) -- an integrity violation, not an
     # ordinary "not found" that should quietly return None.
-    del store._idempotency_results[(SCOPE.scope_key, completed.result_ref)]  # type: ignore[attr-defined]
+    del store._idempotency_results[(SCOPE.scope_key, completed.result_ref)]
 
     with pytest.raises(IdempotencyResultIntegrityError):
         await port.load_result(SCOPE, key, release_id="release-1")
@@ -657,10 +657,10 @@ async def test_port_load_result_rejects_record_missing_result_identity() -> None
     # corrupted/partially-migrated durable record would look) to prove the
     # port fails closed instead of assuming the invariant always holds.
     dedup_key = (SCOPE.scope_key, key.digest)
-    corrupted = store._idempotency_records[dedup_key].model_copy(  # type: ignore[attr-defined]
+    corrupted = store._idempotency_records[dedup_key].model_copy(
         update={"result_ref": None, "result_hash": None}
     )
-    store._idempotency_records[dedup_key] = corrupted  # type: ignore[attr-defined]
+    store._idempotency_records[dedup_key] = corrupted
 
     with pytest.raises(IdempotencyResultIntegrityError):
         await port.load_result(SCOPE, key, release_id="release-1")
@@ -684,7 +684,7 @@ async def test_port_load_result_rejects_tampered_result_hash() -> None:
 
     # Simulate a corrupted/tampered result document: the payload stored no
     # longer matches the durable result_hash the record was completed with.
-    store._idempotency_results[(SCOPE.scope_key, completed.result_ref)] = {"status": "tampered"}  # type: ignore[attr-defined]
+    store._idempotency_results[(SCOPE.scope_key, completed.result_ref)] = {"status": "tampered"}
 
     with pytest.raises(IdempotencyResultIntegrityError):
         await port.load_result(SCOPE, key, release_id="release-1")
