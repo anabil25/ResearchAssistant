@@ -1889,3 +1889,66 @@ async def test_discover_treats_absent_provider_collection_as_empty(collection: s
     assert result.descriptors == ()
     assert result.instances == ()
     assert result.warnings == ()
+
+
+@pytest.mark.asyncio
+async def test_duplicate_id_survives_when_its_twin_failed_to_map() -> None:
+    """Locks the PRECISE scope of the duplicate-rejection guarantee.
+
+    Detection runs over successfully-mapped items, so the guarantee is "every
+    occurrence among successfully-mapped items", not "every occurrence". A valid
+    descriptor whose same-id twin failed to map is the sole survivor of that id
+    and IS retained.
+
+    This is correct behaviour and remains permutation-invariant -- which twin
+    fails to map depends on its content, not its position -- but the unqualified
+    phrasing previously documented would have led a reader to conclude a
+    duplicated identity can never survive, which is false in exactly this case.
+    """
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        valid = _descriptor_payload(descriptor_id="dup")
+        malformed = _descriptor_payload(
+            descriptor_id="dup", operations=[_operation_payload(maturity="bogus")]
+        )
+        return httpx.Response(
+            200, json=_capabilities_payload("foundry", descriptors=[valid, malformed], instances=[])
+        )
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # The malformed twin is skipped with its own warning; the valid one survives.
+    assert [d.id for d in result.descriptors] == ["foundry:dup"]
+    assert any("could not be translated" in warning for warning in result.warnings)
+    # ...and it is NOT reported as a rejected duplicate, because only one mapped.
+    assert not any("declared more than once" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reverse", [False, True])
+async def test_duplicate_with_failed_twin_is_still_permutation_invariant(reverse: bool) -> None:
+    """The scoped guarantee must not smuggle positional dependence back in."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        valid = _descriptor_payload(descriptor_id="dup", descriptor_digest="a" * 64)
+        malformed = _descriptor_payload(
+            descriptor_id="dup", operations=[_operation_payload(maturity="bogus")]
+        )
+        ordered = [malformed, valid] if reverse else [valid, malformed]
+        return httpx.Response(
+            200, json=_capabilities_payload("foundry", descriptors=ordered, instances=[])
+        )
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    # Identical outcome in both orderings: content decides, not arrival position.
+    assert [d.id for d in result.descriptors] == ["foundry:dup"]
+    assert [p.descriptor_digest for p in result.descriptor_pins] == ["a" * 64]

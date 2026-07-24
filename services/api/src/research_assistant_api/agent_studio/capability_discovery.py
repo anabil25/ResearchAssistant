@@ -910,11 +910,16 @@ _ProviderDiscoveryOutcome = tuple[
 def _duplicates[HasId: (CapabilityDescriptor, CapabilityInstance)](
     items: Iterable[HasId],
 ) -> list[HasId]:
-    """Every item whose ``id`` occurs more than once, order-independently.
+    """Every item whose ``id`` occurs more than once *within ``items``*, order-independently.
 
     Used to fail closed on ambiguous identities: because the result depends only
     on *which* ids repeat and never on the order they arrived in, any permutation
     of the wire payload yields the same rejection set.
+
+    Note the scope: callers pass only successfully-mapped items, so an id whose
+    twin failed to map is not seen here as a duplicate and its sole survivor is
+    retained. That is deliberate and remains permutation-invariant, since which
+    twin fails to map depends on content rather than position.
     """
 
     counts: Counter[str] = Counter()
@@ -1188,6 +1193,16 @@ class HttpCapabilityDiscoverySource:
         # correlates and becomes bindable at all. So every occurrence of a
         # duplicated identity is rejected (fail closed): the outcome is identical
         # under any permutation of the wire payload.
+        #
+        # PRECISE SCOPE OF THAT GUARANTEE: detection runs over SUCCESSFULLY-MAPPED
+        # items only, so it is "every occurrence *among successfully-mapped
+        # items*". A valid descriptor whose same-id twin failed to map (and was
+        # already skipped with its own warning) is the sole survivor of that id
+        # and IS retained. That does not reintroduce positional dependence --
+        # which twin fails to map is a property of its content, not of its
+        # position -- so the behaviour is correct; only the unqualified phrasing
+        # would have been wrong, and a confidently-wrong statement about a
+        # control is worse than none because it gets trusted.
         duplicate_descriptor_ids = {
             descriptor.id
             for descriptor in _duplicates(descriptor for _, descriptor, _ in collected_descriptors)
@@ -1197,13 +1212,15 @@ class HttpCapabilityDiscoverySource:
         }
         for descriptor_id in sorted(duplicate_descriptor_ids):
             warnings.append(
-                f"Descriptor id {descriptor_id!r} was declared more than once; every occurrence was "
-                "rejected because the correct one cannot be determined from content."
+                f"Descriptor id {descriptor_id!r} was declared more than once among successfully-mapped "
+                "descriptors; every such occurrence was rejected because the correct one cannot be "
+                "determined from content."
             )
         for instance_id in sorted(duplicate_instance_ids):
             warnings.append(
-                f"Instance id {instance_id!r} was declared more than once; every occurrence was "
-                "rejected because the correct one cannot be determined from content."
+                f"Instance id {instance_id!r} was declared more than once among successfully-mapped "
+                "instances; every such occurrence was rejected because the correct one cannot be "
+                "determined from content."
             )
 
         descriptors: list[CapabilityDescriptor] = []
