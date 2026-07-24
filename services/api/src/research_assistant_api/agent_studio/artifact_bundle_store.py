@@ -242,14 +242,18 @@ class AzureArtifactBundleStore:
                 content_settings=ContentSettings(content_type=content_type),
             )
         except ResourceExistsError:
-            self._verify_existing_blob_matches(blob, checksum=checksum, expected_size=len(content))
+            self._verify_existing_blob_matches(
+                blob, checksum=checksum, expected_size=len(content), blob_name=blob_name
+            )
         return StoredBundle(uri=blob.url, checksum=f"sha256:{checksum}", size_bytes=len(content))
 
     @staticmethod
-    def _verify_existing_blob_matches(blob: BlobClient, *, checksum: str, expected_size: int) -> None:
+    def _verify_existing_blob_matches(
+        blob: BlobClient, *, checksum: str, expected_size: int, blob_name: str
+    ) -> None:
         """After losing a content-addressed create race, confirm the blob
-        already present at this exact path really is the content this call
-        intended to write before reporting success.
+        already present at this exact path really *contains* the content
+        this call intended to write before reporting success.
 
         A content-addressed path collision without matching content should
         be unreachable in correct operation, so this is defense in depth,
@@ -258,23 +262,34 @@ class AzureArtifactBundleStore:
         between the failed create and this read) fails closed with an
         explicit error rather than silently reporting an unverified write
         as a successful idempotent duplicate.
+
+        This downloads and re-hashes the actual stored bytes -- the same
+        verification ``get()`` performs via ``_verify_content_matches_
+        checksum`` -- rather than trusting the blob's ``sha256`` metadata
+        tag alone. A checksum-shaped path or a metadata tag that merely
+        *claims* to match is not proof the stored bytes actually do:
+        either could be wrong from storage corruption, a prior bug, or an
+        out-of-band/privileged writer that set incorrect metadata. Only
+        recomputing the hash from the bytes actually stored can attest
+        that a content-addressed create conflict really is byte-identical.
         """
         try:
-            properties = blob.get_blob_properties()
+            downloaded = blob.download_blob()
         except ResourceNotFoundError as exc:
             raise ArtifactBundleStoreError(
                 "Content-addressed create was rejected as already-existing, but the blob could "
                 "not be re-read to verify its identity; refusing to report this as a successful "
                 "idempotent duplicate."
             ) from exc
-        existing_checksum = (properties.metadata or {}).get("sha256")
-        if existing_checksum != checksum or properties.size != expected_size:
+        content: bytes = downloaded.readall()
+        if len(content) != expected_size:
             raise ArtifactBundleStoreError(
-                f"Blob at content-addressed path already exists but does not match the expected "
-                f"content (expected sha256={checksum} size={expected_size} bytes; found "
-                f"sha256={existing_checksum} size={properties.size} bytes); refusing to treat this "
-                "create conflict as an idempotent duplicate."
+                f"Blob at content-addressed path '{blob_name}' already exists but its size does "
+                f"not match the expected content (expected size={expected_size} bytes; found "
+                f"size={len(content)} bytes); refusing to treat this create conflict as an "
+                "idempotent duplicate."
             )
+        _verify_content_matches_checksum(content, checksum=checksum, location=blob_name)
 
     def get(
         self,

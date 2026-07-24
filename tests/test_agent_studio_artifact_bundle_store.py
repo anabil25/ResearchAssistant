@@ -235,17 +235,6 @@ class FakeBlobClient:
 
         return _Downloaded()
 
-    def get_blob_properties(self) -> Any:
-        if self._name not in self._registry:
-            raise ResourceNotFoundError("blob not found")
-        entry = self._registry[self._name]
-
-        class _Properties:
-            metadata = entry["metadata"]
-            size = len(entry["content"])
-
-        return _Properties()
-
 
 class FakeContainerClient:
     def __init__(self) -> None:
@@ -370,6 +359,43 @@ def test_azure_store_put_fails_closed_when_existing_blob_content_mismatches(
         )
 
 
+def test_azure_store_put_fails_closed_when_existing_blob_content_mismatches_despite_matching_metadata(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Regression for trusting the blob's ``sha256`` metadata tag instead of
+    the actual stored bytes: a corrupted/mismatched write whose *metadata*
+    happens to (incorrectly) claim the expected checksum and size must
+    still be caught, because that metadata is only as trustworthy as
+    whatever process wrote it -- it is not proof of what bytes are
+    actually stored. Verification must re-download and re-hash the real
+    content, not just compare against a self-reported tag."""
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+    fake_container = cast(FakeContainerClient, store._container)
+    checksum = artifact_bundle_store.sha256(b"racy-payload").hexdigest()
+    blob_name = f"demo/proj-1/agent-1/version-race/{checksum}"
+    # The stored metadata *claims* the correct checksum and the size also
+    # happens to match, but the actual bytes are wrong -- e.g. a buggy or
+    # out-of-band writer set the metadata tag without the content it
+    # describes actually matching.
+    fake_container.registry[blob_name] = {
+        "content": b"wrong-bytes!",
+        "metadata": {"sha256": checksum},
+    }
+    assert len(b"wrong-bytes!") == len(b"racy-payload")
+
+    with pytest.raises(ArtifactBundleStoreError, match="does not match"):
+        store.put(
+            tenant_id="demo",
+            project_id="proj-1",
+            logical_agent_id="agent-1",
+            content=b"racy-payload",
+            version_label="version-race",
+        )
+
+
 def test_azure_store_put_fails_closed_when_existing_blob_vanishes_before_verification(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -388,7 +414,7 @@ def test_azure_store_put_fails_closed_when_existing_blob_vanishes_before_verific
         def upload_blob(self, *args: Any, **kwargs: Any) -> None:
             raise ResourceExistsError("blob already exists")
 
-        def get_blob_properties(self) -> Any:
+        def download_blob(self) -> Any:
             raise ResourceNotFoundError("blob not found")
 
     monkeypatch.setattr(store._container, "get_blob_client", lambda _name: _VanishingBlobClient())
