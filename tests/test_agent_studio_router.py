@@ -2514,6 +2514,8 @@ def test_run_gates_maps_service_release_error_to_404(
             actor_id: str,
             actor_role: AgentRole,
             evidence: GateEvidence,
+            harness_release_id: str | None = None,
+            harness_manifest_digest: str | None = None,
         ) -> ReleaseGateReport:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
 
@@ -2535,6 +2537,54 @@ def test_run_gates_maps_service_release_error_to_404(
             headers=USER_HEADERS,
         )
     assert response.status_code == 404
+
+
+def test_run_gates_persists_harness_release_linkage_when_supplied(
+    client: TestClient,
+) -> None:
+    """Harness blocker #1 (signed release linkage): a gate run may supply its
+    own release identity/scoped-manifest digest, which the resulting
+    ``AgentRelease`` must carry through verbatim."""
+
+    _create_agent(client, logical_agent_id="agent-harness-linkage", headers=USER_HEADERS)
+    version = _cut_version(client, "agent-harness-linkage", headers=USER_HEADERS)
+    report = _run_gates(
+        client,
+        version["id"],
+        headers=USER_HEADERS,
+        evidence={
+            **GATED_EVIDENCE,
+            "harness_release_id": "harness-release-router-1",
+            "harness_manifest_digest": "sha256:" + "d" * 64,
+        },
+    )
+    assert all(result["status"] in {"passed", "not_applicable"} for result in report["results"])
+
+    releases_response = client.get(
+        "/api/agent-studio/agents/agent-harness-linkage/workspace",
+        params=_params(),
+        headers=USER_HEADERS,
+    )
+    assert releases_response.status_code == 200
+    latest_release = releases_response.json()["latest_release"]
+    assert latest_release is not None
+    assert latest_release["harness_release_id"] == "harness-release-router-1"
+    assert latest_release["harness_manifest_digest"] == "sha256:" + "d" * 64
+
+
+def test_run_gates_rejects_harness_release_id_without_manifest_digest(
+    client: TestClient,
+) -> None:
+    _create_agent(client, logical_agent_id="agent-harness-linkage-invalid", headers=USER_HEADERS)
+    version = _cut_version(client, "agent-harness-linkage-invalid", headers=USER_HEADERS)
+
+    response = client.post(
+        f"/api/agent-studio/versions/{version['id']}/gates",
+        json=_body(**{**GATED_EVIDENCE, "harness_release_id": "harness-release-router-1"}),
+        headers=USER_HEADERS,
+    )
+
+    assert response.status_code == 422
 
 
 def test_cut_version_returns_404_when_granted_actor_has_no_draft(

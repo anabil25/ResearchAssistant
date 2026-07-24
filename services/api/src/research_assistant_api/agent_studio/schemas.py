@@ -61,6 +61,14 @@ class RunGatesRequest(BaseModel):
 
     project_id: str = Field(min_length=1, max_length=200)
     evidence: GateEvidence = Field(default_factory=GateEvidence)
+    #: Harness's own release identity/scoped-manifest digest for the runtime
+    #: release this gate run corresponds to (harness blocker #1: "signed
+    #: release linkage"). Optional -- omitted entirely for releases with no
+    #: harness counterpart. Must be supplied together (both or neither); the
+    #: resulting ``AgentRelease``/``ReleaseAttestation`` never asserts these
+    #: are equal to this package's own ``manifest_hash``.
+    harness_release_id: str | None = Field(default=None, max_length=500)
+    harness_manifest_digest: str | None = Field(default=None, max_length=200)
 
 
 class PromotionRequest(BaseModel):

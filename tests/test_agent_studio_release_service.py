@@ -28,6 +28,7 @@ from research_assistant_api.agent_studio.model_discovery import (
 )
 from research_assistant_api.agent_studio.models import (
     AGENT_STUDIO_PROTOCOL_VERSION,
+    HARNESS_RELEASE_LINK_SCHEMA_VERSION,
     AgentManifest,
     AgentOwnerKind,
     AgentRelease,
@@ -1088,6 +1089,146 @@ def test_run_release_gates_records_actual_actor_as_created_by(service: ReleaseSe
     assert len(releases) == 1
     assert releases[0].created_by == "maintainer-1"
     assert version.created_by == "author-1"
+
+
+# --- harness release linkage (harness blocker #1: signed release linkage) --
+
+
+def test_run_release_gates_omits_harness_linkage_by_default(service: ReleaseService) -> None:
+    version = _gated_version(service)
+
+    release = service._store.latest_release_for_version(_scope(), version.id)
+
+    assert release is not None
+    assert release.harness_release_id is None
+    assert release.harness_manifest_digest is None
+    assert release.harness_link_schema_version is None
+
+
+def test_run_release_gates_persists_harness_release_linkage_when_supplied(service: ReleaseService) -> None:
+    _create_agent(service)
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    service.run_release_gates(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+        evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        harness_release_id="harness-release-xyz",
+        harness_manifest_digest="sha256:" + "c" * 64,
+    )
+
+    release = service._store.latest_release_for_version(_scope(), version.id)
+    assert release is not None
+    assert release.harness_release_id == "harness-release-xyz"
+    assert release.harness_manifest_digest == "sha256:" + "c" * 64
+    assert release.harness_link_schema_version == HARNESS_RELEASE_LINK_SCHEMA_VERSION
+    # Never asserted equal to this package's own manifest_hash.
+    assert release.harness_manifest_digest != release.manifest_hash
+
+
+def test_run_release_gates_rejects_harness_release_id_without_manifest_digest(service: ReleaseService) -> None:
+    _create_agent(service)
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    with pytest.raises(ValueError, match="must be supplied together"):
+        service.run_release_gates(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+            harness_release_id="harness-release-xyz",
+        )
+
+
+def test_run_release_gates_rejects_harness_manifest_digest_without_release_id(service: ReleaseService) -> None:
+    _create_agent(service)
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+
+    with pytest.raises(ValueError, match="must be supplied together"):
+        service.run_release_gates(
+            tenant_id="demo",
+            project_id=TEST_PROJECT_ID,
+            version_id=version.id,
+            actor_id="user-1",
+            actor_role=AgentRole.OWNER,
+            evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+            harness_manifest_digest="sha256:" + "c" * 64,
+        )
+
+
+def test_harness_release_linkage_propagates_through_promote_and_activate(service: ReleaseService) -> None:
+    """The harness identity established at gate-run time must survive every
+    later governance transition of the same version (promote, activate) --
+    it identifies the one immutable version those transitions all govern,
+    not any single lifecycle snapshot of it."""
+
+    _create_agent(service)
+    version = service.cut_version(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        logical_agent_id="agent-one",
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+    )
+    service.run_release_gates(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.OWNER,
+        evidence=GateEvidence(build_succeeded=True, tests_passed=True, smoke_passed=True),
+        harness_release_id="harness-release-xyz",
+        harness_manifest_digest="sha256:" + "c" * 64,
+    )
+
+    service.request_promotion(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-1",
+        actor_role=AgentRole.MAINTAINER,
+        destination="production",
+        evidence_summary="All hard gates green.",
+    )
+    _record_healthy_deployment(service, version)
+    active = service.activate_release(
+        tenant_id="demo",
+        project_id=TEST_PROJECT_ID,
+        version_id=version.id,
+        actor_id="user-3",
+        actor_role=AgentRole.MAINTAINER,
+    )
+
+    releases = service._store.list_releases_for_version(_scope(), version.id)
+    assert [r.status for r in releases] == [ReleaseStatus.GATED, ReleaseStatus.APPROVED, ReleaseStatus.ACTIVE]
+    for release in releases:
+        assert release.harness_release_id == "harness-release-xyz"
+        assert release.harness_manifest_digest == "sha256:" + "c" * 64
+        assert release.harness_link_schema_version == HARNESS_RELEASE_LINK_SCHEMA_VERSION
+    assert active.harness_release_id == "harness-release-xyz"
 
 
 def test_run_release_gates_raises_promotion_conflict_when_a_concurrent_gate_wins_the_race(

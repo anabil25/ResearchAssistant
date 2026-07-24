@@ -1338,9 +1338,13 @@ def run_gates(request: Request, version_id: str, payload: RunGatesRequest) -> Re
             actor_id=identity.user_id,
             actor_role=role,
             evidence=payload.evidence,
+            harness_release_id=payload.harness_release_id,
+            harness_manifest_digest=payload.harness_manifest_digest,
         )
     except AuthorizationError as exc:
         raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
     except ReleaseServiceError as exc:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     _audit(

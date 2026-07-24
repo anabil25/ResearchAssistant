@@ -12,6 +12,15 @@ records into one signed, self-contained object -- it never re-runs gates,
 never inspects (let alone is influenced by) the report's advisory
 ``evaluations``, and never accepts caller-supplied gate results.
 
+This projection also carries forward ``AgentRelease.harness_release_id`` /
+``harness_manifest_digest`` / ``harness_link_schema_version`` (harness
+blocker #1: "signed release linkage") when a release has them, and covers
+them under the same signature -- giving harness a genuinely signed link from
+its own release identity to this exact release without either side ever
+asserting that harness's own release/manifest hashing scheme and this
+package's ``manifest_hash`` are the same digest (they are computed over
+different canonical encodings and are not byte-comparable).
+
 The "signature" is deliberately honest about what it actually is: a keyed
 HMAC-SHA256 digest when an operator has configured an attestation-signing
 key (``Settings.agent_studio_attestation_signing_key``), or a plain
@@ -89,6 +98,9 @@ def _canonical_payload(
     blocking_gates: tuple[str, ...],
     attested_at_iso: str,
     key_version: str | None,
+    harness_release_id: str | None = None,
+    harness_manifest_digest: str | None = None,
+    harness_link_schema_version: str | None = None,
 ) -> bytes:
     """Canonical, finite JSON encoding of every field the signature covers.
 
@@ -107,6 +119,13 @@ def _canonical_payload(
     signing-key version an attestation *claims* to have been signed with
     also invalidates the signature -- a verifier can never be tricked into
     checking the wrong historical secret.
+
+    ``harness_release_id``/``harness_manifest_digest``/
+    ``harness_link_schema_version`` (harness blocker #1) are likewise
+    included so a signed attestation is tamper-evident about *which* harness
+    release identity it is linked to, not just about this package's own
+    release facts -- a verifier can trust the cross-reference itself, not
+    only the backend-local fields either side of it.
     """
 
     payload = {
@@ -123,6 +142,9 @@ def _canonical_payload(
         "blocking_gates": list(blocking_gates),
         "attested_at": attested_at_iso,
         "key_version": key_version,
+        "harness_release_id": harness_release_id,
+        "harness_manifest_digest": harness_manifest_digest,
+        "harness_link_schema_version": harness_link_schema_version,
     }
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return canonical.encode("utf-8")
@@ -188,6 +210,9 @@ def build_release_attestation(
         blocking_gates=tuple(gate.value for gate in blocking_gates),
         attested_at_iso=attested_at.isoformat(),
         key_version=key_version,
+        harness_release_id=release.harness_release_id,
+        harness_manifest_digest=release.harness_manifest_digest,
+        harness_link_schema_version=release.harness_link_schema_version,
     )
     if signing_key:
         digest = hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
@@ -212,6 +237,9 @@ def build_release_attestation(
         signature_algorithm=algorithm,
         signature=f"{_SIGNATURE_PREFIX}{algorithm}:{digest}",
         key_version=key_version,
+        harness_release_id=release.harness_release_id,
+        harness_manifest_digest=release.harness_manifest_digest,
+        harness_link_schema_version=release.harness_link_schema_version,
     )
 
 
@@ -268,6 +296,9 @@ def verify_release_attestation(
         blocking_gates=tuple(gate.value for gate in attestation.blocking_gates),
         attested_at_iso=attestation.attested_at.isoformat(),
         key_version=attestation.key_version,
+        harness_release_id=attestation.harness_release_id,
+        harness_manifest_digest=attestation.harness_manifest_digest,
+        harness_link_schema_version=attestation.harness_link_schema_version,
     )
     if signing_key:
         expected = hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()

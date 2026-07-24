@@ -1165,6 +1165,62 @@ class ReleaseStatus(StrEnum):
     ROLLED_BACK = "rolled_back"
 
 
+#: Schema/contract version for the optional harness-release-linkage fields on
+#: ``AgentRelease``/``ReleaseAttestation`` (harness blocker #1: "signed release
+#: linkage"). Harness's own release/manifest identities are computed over its
+#: own scoped-manifest encoding and are *intentionally* not byte-identical to
+#: this package's ``manifest_hash`` (which is computed over the backend's own
+#: canonical ``AgentManifest`` encoding) -- this package must never assert
+#: parity between the two. Instead, when a harness release-gate run supplies
+#: its own ``harness_release_id``/``harness_manifest_digest``, this package
+#: persists them verbatim as an immutable, separately-labeled cross-reference
+#: (tagged with this schema version so the mapping's shape itself can be
+#: versioned/rotated later) and signs them as part of ``ReleaseAttestation``
+#: -- giving harness a genuinely signed link from its own release identity to
+#: this package's release, without either side pretending the two hashing
+#: schemes are the same thing.
+HARNESS_RELEASE_LINK_SCHEMA_VERSION = "harness-release-link:v1"
+
+
+def _validate_harness_release_link(
+    *,
+    harness_release_id: str | None,
+    harness_manifest_digest: str | None,
+    harness_link_schema_version: str | None,
+) -> None:
+    """Shared all-or-nothing validation for the harness-release-linkage
+    fields on ``AgentRelease`` and ``ReleaseAttestation``.
+
+    Either all three fields are unset (no harness linkage was ever supplied
+    -- the ordinary, fully backend-local case) or all three are set, with
+    ``harness_link_schema_version`` pinned to the one currently-sanctioned
+    constant. A caller can never supply the identity/digest pair without the
+    schema tag (or vice versa), and can never invent an arbitrary schema
+    version string -- both would defeat the point of a versioned, auditable
+    cross-system linkage.
+    """
+
+    fields_present = (
+        harness_release_id is not None,
+        harness_manifest_digest is not None,
+        harness_link_schema_version is not None,
+    )
+    if not any(fields_present):
+        return
+    if not all(fields_present):
+        raise ValueError(
+            "harness_release_id, harness_manifest_digest, and harness_link_schema_version "
+            "must be set together (all three) or not at all."
+        )
+    if harness_link_schema_version != HARNESS_RELEASE_LINK_SCHEMA_VERSION:
+        raise ValueError(
+            f"harness_link_schema_version must be '{HARNESS_RELEASE_LINK_SCHEMA_VERSION}', "
+            f"got '{harness_link_schema_version}'."
+        )
+    if not harness_release_id or not harness_manifest_digest:
+        raise ValueError("harness_release_id and harness_manifest_digest must be non-empty when set.")
+
+
 class AgentRelease(BaseModel):
     """Append-only lifecycle/governance record for an immutable ``AgentVersion``.
 
@@ -1202,6 +1258,31 @@ class AgentRelease(BaseModel):
     created_at: datetime = Field(default_factory=utc_now)
     created_by: str
     detail: str = ""
+    #: Harness's own release identity for the runtime release this backend
+    #: ``AgentRelease`` corresponds to (harness blocker #1). Never asserted
+    #: equal to this record's own ``id`` or ``manifest_hash`` -- see
+    #: ``HARNESS_RELEASE_LINK_SCHEMA_VERSION`` docstring. Set once at gate-run
+    #: time (``release_service.run_release_gates``) and copied forward
+    #: verbatim through every later lifecycle transition of the same version
+    #: (promote/activate), since all of those govern the one same immutable
+    #: version this identity was established for.
+    harness_release_id: str | None = Field(default=None, max_length=500)
+    #: Harness's own sha256 scoped-manifest digest for this release
+    #: (harness blocker #1). Intentionally a separate hashing scheme from
+    #: ``manifest_hash``; never compared/asserted equal to it.
+    harness_manifest_digest: str | None = Field(default=None, max_length=200)
+    #: Schema/contract version tag for the two fields above; must equal
+    #: ``HARNESS_RELEASE_LINK_SCHEMA_VERSION`` whenever they are set.
+    harness_link_schema_version: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def _harness_release_link_is_consistent(self) -> AgentRelease:
+        _validate_harness_release_link(
+            harness_release_id=self.harness_release_id,
+            harness_manifest_digest=self.harness_manifest_digest,
+            harness_link_schema_version=self.harness_link_schema_version,
+        )
+        return self
 
 
 class ResolvedAgentContract(BaseModel):
@@ -1569,6 +1650,22 @@ class ReleaseAttestation(BaseModel):
     signature_algorithm: str
     signature: str
     key_version: str | None = None
+    #: Copied verbatim from the attested ``AgentRelease``'s own harness-
+    #: linkage fields (harness blocker #1) and covered by ``signature`` --
+    #: see ``HARNESS_RELEASE_LINK_SCHEMA_VERSION`` for why these are never
+    #: asserted equal to ``manifest_hash``/``release_id``.
+    harness_release_id: str | None = Field(default=None, max_length=500)
+    harness_manifest_digest: str | None = Field(default=None, max_length=200)
+    harness_link_schema_version: str | None = Field(default=None, max_length=100)
+
+    @model_validator(mode="after")
+    def _harness_release_link_is_consistent(self) -> ReleaseAttestation:
+        _validate_harness_release_link(
+            harness_release_id=self.harness_release_id,
+            harness_manifest_digest=self.harness_manifest_digest,
+            harness_link_schema_version=self.harness_link_schema_version,
+        )
+        return self
 
 
 # --------------------------------------------------------------------------

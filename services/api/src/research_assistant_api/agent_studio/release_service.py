@@ -29,6 +29,7 @@ from research_assistant_api.agent_studio.model_discovery import (
 )
 from research_assistant_api.agent_studio.models import (
     AGENT_STUDIO_PROTOCOL_VERSION,
+    HARNESS_RELEASE_LINK_SCHEMA_VERSION,
     AgentDraft,
     AgentManifest,
     AgentOwnerKind,
@@ -460,9 +461,19 @@ class ReleaseService:
         actor_id: str,
         actor_role: AgentRole,
         evidence: GateEvidence,
+        harness_release_id: str | None = None,
+        harness_manifest_digest: str | None = None,
     ) -> ReleaseGateReport:
         scope = ScopeContext(tenant_id=tenant_id, project_id=project_id)
         self._require_role(actor_role, AgentRole.CONTRIBUTOR)
+        if (harness_release_id is None) != (harness_manifest_digest is None):
+            raise ValueError(
+                "harness_release_id and harness_manifest_digest must be supplied together "
+                "(harness blocker #1: signed release linkage) or not at all."
+            )
+        harness_link_schema_version = (
+            HARNESS_RELEASE_LINK_SCHEMA_VERSION if harness_release_id is not None else None
+        )
         version = self._store.get_version(scope, version_id)
         if version is None:
             raise ReleaseServiceError(f"Version '{version_id}' not found.")
@@ -504,6 +515,9 @@ class ReleaseService:
                 previous_release_id=previous.id if previous is not None else None,
                 created_by=actor_id,
                 detail="Passed all applicable hard gates.",
+                harness_release_id=harness_release_id,
+                harness_manifest_digest=harness_manifest_digest,
+                harness_link_schema_version=harness_link_schema_version,
             )
             try:
                 self._store.create_release(scope, release)
@@ -713,6 +727,9 @@ class ReleaseService:
                     previous_release_id=gated.id,
                     created_by=version.created_by,
                     detail="Promotion approved.",
+                    harness_release_id=gated.harness_release_id,
+                    harness_manifest_digest=gated.harness_manifest_digest,
+                    harness_link_schema_version=gated.harness_link_schema_version,
                 ),
             )
         except _StoreReleaseSuccessorConflictError as exc:
@@ -788,6 +805,9 @@ class ReleaseService:
                     previous_release_id=approved.id,
                     created_by=actor_id,
                     detail="Version activated after a successful deployment and healthy smoke check.",
+                    harness_release_id=approved.harness_release_id,
+                    harness_manifest_digest=approved.harness_manifest_digest,
+                    harness_link_schema_version=approved.harness_link_schema_version,
                 ),
             )
         except _StoreReleaseSuccessorConflictError as exc:

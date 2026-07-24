@@ -7,6 +7,7 @@ from datetime import UTC, datetime
 import pytest
 from pydantic import ValidationError
 from research_assistant_api.agent_studio.models import (
+    HARNESS_RELEASE_LINK_SCHEMA_VERSION,
     AgentRelease,
     DeploymentEnvironment,
     GateName,
@@ -69,6 +70,9 @@ def _release(
     project_id: str = PROJECT,
     gate_report_id: str | None = "report-1",
     status: ReleaseStatus = ReleaseStatus.GATED,
+    harness_release_id: str | None = None,
+    harness_manifest_digest: str | None = None,
+    harness_link_schema_version: str | None = None,
 ) -> AgentRelease:
     return AgentRelease(
         id=release_id,
@@ -81,6 +85,9 @@ def _release(
         manifest_hash="sha256:" + "a" * 64,
         gate_report_id=gate_report_id,
         created_by=USER_ID,
+        harness_release_id=harness_release_id,
+        harness_manifest_digest=harness_manifest_digest,
+        harness_link_schema_version=harness_link_schema_version,
     )
 
 
@@ -424,3 +431,114 @@ def test_attested_at_defaults_to_recent_utc_timestamp() -> None:
     after = datetime.now(UTC)
 
     assert before <= attestation.attested_at <= after
+
+
+# --- harness release linkage (harness blocker #1: signed release linkage) --
+
+
+def test_attestation_has_no_harness_linkage_when_release_has_none() -> None:
+    attestation = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
+
+    assert attestation.harness_release_id is None
+    assert attestation.harness_manifest_digest is None
+    assert attestation.harness_link_schema_version is None
+
+
+def test_attestation_carries_harness_linkage_fields_through_from_release() -> None:
+    release = _release(
+        harness_release_id="harness-release-abc",
+        harness_manifest_digest="sha256:" + "b" * 64,
+        harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION,
+    )
+
+    attestation = build_release_attestation(release=release, gate_report=_gate_report(), signing_key=None)
+
+    assert attestation.harness_release_id == "harness-release-abc"
+    assert attestation.harness_manifest_digest == "sha256:" + "b" * 64
+    assert attestation.harness_link_schema_version == HARNESS_RELEASE_LINK_SCHEMA_VERSION
+    # Never asserted equal to this package's own release id/manifest hash.
+    assert attestation.harness_release_id != attestation.release_id
+    assert attestation.harness_manifest_digest != attestation.manifest_hash
+
+
+def test_attestation_signature_differs_when_harness_linkage_differs() -> None:
+    """The signature must cover the harness-linkage fields, not just the
+    backend-local ones -- otherwise an attacker could swap which harness
+    release an attestation is linked to without invalidating the signature."""
+
+    with_linkage = build_release_attestation(
+        release=_release(
+            harness_release_id="harness-release-1",
+            harness_manifest_digest="sha256:" + "b" * 64,
+            harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION,
+        ),
+        gate_report=_gate_report(),
+        signing_key=None,
+    )
+    without_linkage = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
+
+    assert with_linkage.signature != without_linkage.signature
+
+
+def test_verify_roundtrip_succeeds_when_harness_linkage_present() -> None:
+    release = _release(
+        harness_release_id="harness-release-1",
+        harness_manifest_digest="sha256:" + "b" * 64,
+        harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION,
+    )
+    attestation = build_release_attestation(
+        release=release, gate_report=_gate_report(), signing_key="secret", key_version="v1"
+    )
+
+    assert verify_release_attestation(attestation, signing_key="secret") is True
+
+
+def test_verify_fails_when_harness_release_id_is_tampered() -> None:
+    release = _release(
+        harness_release_id="harness-release-1",
+        harness_manifest_digest="sha256:" + "b" * 64,
+        harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION,
+    )
+    attestation = build_release_attestation(release=release, gate_report=_gate_report(), signing_key=None)
+    tampered = attestation.model_copy(update={"harness_release_id": "harness-release-attacker"})
+
+    assert verify_release_attestation(tampered, signing_key=None) is False
+
+
+def test_agent_release_rejects_only_harness_release_id_set() -> None:
+    with pytest.raises(ValidationError):
+        _release(harness_release_id="harness-1")
+
+
+def test_agent_release_rejects_only_harness_manifest_digest_set() -> None:
+    with pytest.raises(ValidationError):
+        _release(harness_manifest_digest="sha256:" + "b" * 64)
+
+
+def test_agent_release_rejects_only_harness_link_schema_version_set() -> None:
+    with pytest.raises(ValidationError):
+        _release(harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION)
+
+
+def test_agent_release_rejects_unsanctioned_harness_link_schema_version() -> None:
+    with pytest.raises(ValidationError, match="harness_link_schema_version"):
+        _release(
+            harness_release_id="harness-1",
+            harness_manifest_digest="sha256:" + "b" * 64,
+            harness_link_schema_version="harness-release-link:v2",
+        )
+
+
+def test_agent_release_rejects_empty_harness_release_id_when_schema_version_set() -> None:
+    with pytest.raises(ValidationError):
+        _release(
+            harness_release_id="",
+            harness_manifest_digest="sha256:" + "b" * 64,
+            harness_link_schema_version=HARNESS_RELEASE_LINK_SCHEMA_VERSION,
+        )
+
+
+def test_release_attestation_rejects_only_harness_release_id_set() -> None:
+    attestation = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
+    with pytest.raises(ValidationError):
+        type(attestation).model_validate({**attestation.model_dump(), "harness_release_id": "harness-1"})
