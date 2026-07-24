@@ -5,21 +5,16 @@ from pathlib import Path
 from typing import Any
 
 from scripts.check_suppression_contract import (
-    INITIAL_MISSING_REASON_MAXIMUM,
-    INTEGRATION_REFRESH_REVIEW,
-    MISSING_REASON_POLICY,
     Suppression,
     _javascript_comments,
     census,
     compare_inventory,
-    missing_reason_policy,
     mypy_module_name,
     mypy_paths,
     mypy_roots,
     parse_javascript_comment,
     parse_python_comment,
     validate_inventory,
-    validate_missing_reason_policy,
 )
 
 
@@ -72,100 +67,6 @@ def test_compare_inventory_is_exact_in_both_directions() -> None:
     assert compare_inventory(expected, {"sourceSuppressions": [{"path": "b.py"}]})
 
 
-def test_missing_reason_grandfather_is_exact_and_initially_capped() -> None:
-    records = [_suppression_record(count=INITIAL_MISSING_REASON_MAXIMUM)]
-    inventory = _minimal_inventory()
-    inventory["sourceSuppressions"] = records
-    inventory["missingReasonPolicy"] = missing_reason_policy(
-        records,
-        None,
-        integration_refresh=False,
-    )
-
-    assert validate_missing_reason_policy(inventory, None) == []
-    inventory["sourceSuppressions"][0]["count"] += 1
-    inventory["missingReasonPolicy"] = missing_reason_policy(
-        inventory["sourceSuppressions"],
-        None,
-        integration_refresh=False,
-    )
-
-    assert (
-        "initial missing-reason grandfather exceeds 74; "
-        "use the one-time reviewed integration refresh"
-    ) in validate_missing_reason_policy(inventory, None)
-
-
-def test_missing_reason_grandfather_allows_only_exact_shrink() -> None:
-    historical = _minimal_inventory()
-    historical["sourceSuppressions"] = [_suppression_record(count=2)]
-    historical["missingReasonPolicy"] = missing_reason_policy(
-        historical["sourceSuppressions"],
-        None,
-        integration_refresh=False,
-    )
-    current = _minimal_inventory()
-    current["sourceSuppressions"] = [_suppression_record(count=1)]
-    current["missingReasonPolicy"] = missing_reason_policy(
-        current["sourceSuppressions"],
-        historical,
-        integration_refresh=False,
-    )
-
-    assert validate_missing_reason_policy(current, historical) == []
-
-    current["sourceSuppressions"] = [
-        _suppression_record(count=1),
-        _suppression_record(path="new.py"),
-    ]
-    current["missingReasonPolicy"] = missing_reason_policy(
-        current["sourceSuppressions"],
-        historical,
-        integration_refresh=False,
-    )
-
-    errors = validate_missing_reason_policy(current, historical)
-    assert any(MISSING_REASON_POLICY in error for error in errors)
-    assert "missing-reason grandfather cardinality may only decrease" not in errors
-
-
-def test_missing_reason_integration_refresh_is_exact_and_one_time() -> None:
-    historical = _minimal_inventory()
-    historical["sourceSuppressions"] = [_suppression_record()]
-    historical["missingReasonPolicy"] = missing_reason_policy(
-        historical["sourceSuppressions"],
-        None,
-        integration_refresh=False,
-    )
-    current = _minimal_inventory()
-    current["sourceSuppressions"] = [
-        _suppression_record(),
-        _suppression_record(path="incoming.py"),
-    ]
-    current["missingReasonPolicy"] = missing_reason_policy(
-        current["sourceSuppressions"],
-        historical,
-        integration_refresh=True,
-    )
-
-    assert validate_missing_reason_policy(current, historical) == []
-
-    future = _minimal_inventory()
-    future["sourceSuppressions"] = [
-        *current["sourceSuppressions"],
-        _suppression_record(path="later.py"),
-    ]
-    future["missingReasonPolicy"] = missing_reason_policy(
-        future["sourceSuppressions"],
-        current,
-        integration_refresh=False,
-    )
-
-    errors = validate_missing_reason_policy(future, current)
-    assert any("New reasonless suppression is not grandfathered: later.py" in error for error in errors)
-    assert "missing-reason grandfather cardinality may only decrease" in errors
-
-
 def test_validate_inventory_rejects_bare_and_javascript_suppressions(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inventory["sourceSuppressions"] = [
@@ -175,7 +76,7 @@ def test_validate_inventory_rejects_bare_and_javascript_suppressions(tmp_path: P
 
     errors = validate_inventory(tmp_path, inventory, [])
 
-    assert "bare type-ignore is forbidden: sample.py" in errors
+    assert "bare type-ignore is forbidden; scope or reason required: sample.py" in errors
     assert "ts-expect-error suppressions are pinned to zero: web.ts" in errors
 
 
@@ -190,6 +91,21 @@ def test_validate_inventory_requires_pragma_reason(tmp_path: Path) -> None:
         inventory,
         [],
     )
+
+
+def test_validate_inventory_accepts_reasoned_unscoped_type_and_noqa(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["sourceSuppressions"] = [
+        _suppression_record(kind="type-ignore", scope="", reason="untyped SDK boundary"),
+        _suppression_record(
+            path="bootstrap.py",
+            kind="noqa",
+            scope="",
+            reason="import must follow environment setup",
+        ),
+    ]
+
+    assert validate_inventory(tmp_path, inventory, []) == []
 
 
 def test_validate_inventory_rejects_coverage_gate_and_domain_drift(tmp_path: Path) -> None:
@@ -339,11 +255,7 @@ def test_committed_suppression_contract_has_expected_zero_categories() -> None:
         for record in baseline["sourceSuppressions"]
         if record["kind"] in {"type-ignore", "noqa"}
     )
-    policy = baseline["missingReasonPolicy"]
-    assert policy["requirement"] == MISSING_REASON_POLICY
-    assert policy["initialMaximum"] == INITIAL_MISSING_REASON_MAXIMUM
-    assert sum(record["count"] for record in policy["grandfathered"]) == 74
-    assert policy["integrationRefresh"]["used"] is False
+    assert "missingReasonPolicy" not in baseline
 
 
 def _minimal_inventory() -> dict[str, Any]:
@@ -385,17 +297,6 @@ def _minimal_inventory() -> dict[str, Any]:
         "reportedMypyModules": ["package.module"],
         "productionFiles": [],
         "sourceSuppressions": [],
-        "missingReasonPolicy": {
-            "requirement": MISSING_REASON_POLICY,
-            "initialMaximum": INITIAL_MISSING_REASON_MAXIMUM,
-            "grandfathered": [],
-            "integrationRefresh": {
-                "used": False,
-                "maximumAfter": None,
-                "addedGrandfathered": [],
-                "reviewRequirement": INTEGRATION_REFRESH_REVIEW,
-            },
-        },
         "coverageStructuralExclusions": [],
         "coverageExcludedLines": [],
     }

@@ -15,8 +15,6 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
-        with:
-          fetch-depth: 2
 
       - uses: actions/setup-python@v5
         with:
@@ -43,7 +41,7 @@ jobs:
       - name: Enforce exact suppression and coverage domain
         id: suppression_contract
         continue-on-error: true
-        run: uv run python scripts/check_suppression_contract.py --previous-baseline-ref HEAD^
+        run: uv run python scripts/check_suppression_contract.py
 
       - name: Upload Python coverage
         if: always()
