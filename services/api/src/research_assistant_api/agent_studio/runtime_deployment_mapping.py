@@ -113,6 +113,24 @@ class RuntimePolicyRef(BaseModel):
     version: str | None = None
     digest: str | None = None
 
+
+class RuntimeConnectionRef(BaseModel):
+    """Frozen pin of the connection an operation's execution is bound to.
+
+    A connection determines which backend endpoint is contacted and therefore
+    where data flows -- that is DESTINATION authority, not a mere execution
+    detail -- so it is pinned as a typed ref plus content ``digest`` and folded
+    into ``mapping_digest``. The connection's SECRET material is never projected
+    here; only its identity and digest, so the runtime's echoed-digest
+    confirmation actually pins what will execute rather than only the operation.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str | None = None
+    version: str | None = None
+    digest: str | None = None
+
 #: Strict schema/contract version for this object. Runtime consumers resolve
 #: the mapping contract by this exact string; it is *not* a free-form label.
 RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION: Literal["runtime-deployment-mapping:v1"] = "runtime-deployment-mapping:v1"
@@ -184,6 +202,19 @@ class RuntimeBindingDescriptor(BaseModel):
     operation_ref: RuntimeOperationRef
     instance_ref: RuntimeInstanceRef | None = None
     policy_ref: RuntimePolicyRef | None = None
+    #: Connection/config execution-authority pins (Q-ITEM3). Conditionally
+    #: required in the same structural style as ``instance_ref``: when the
+    #: operation's execution depends on a connection or config, the pin is
+    #: required and a required-but-absent pin is refused structurally. Under the
+    #: revision model a legitimate config/connection rotation is a NEW revision
+    #: (next sequence + repoint), never a mutation, so pinning stays cheap.
+    requires_connection: bool = False
+    connection_ref: RuntimeConnectionRef | None = None
+    requires_config: bool = False
+    #: Opaque digest of the resolved config; pins config drift WITHOUT
+    #: duplicating or leaking config contents (the release layer stays
+    #: authoritative for content -- this is an equality check, not a copy).
+    config_digest: str | None = None
     destination_constraints: tuple[str, ...] = Field(default_factory=tuple)
     destination_constraints_digest: str | None = None
     destination_hash_policy: RuntimeDestinationHashPolicy
@@ -227,6 +258,33 @@ class RuntimeBindingDescriptor(BaseModel):
                 raise ValueError(
                     f"An attached instance_ref must pin {', '.join(missing)}; a partially-pinned instance is refused."
                 )
+        return self
+
+    @model_validator(mode="after")
+    def _connection_pin_is_complete_when_required(self) -> RuntimeBindingDescriptor:
+        """Q-ITEM3: a connection-dependent operation must pin the connection completely.
+
+        When ``requires_connection`` is set the ``connection_ref`` must be
+        present and carry both its ``id`` and ``digest`` (required-but-absent is
+        refused structurally, like the instance pin). An attached
+        ``connection_ref`` -- even when not strictly required -- must not be
+        partially pinned.
+        """
+        if self.requires_connection and self.connection_ref is None:
+            raise ValueError("A connection-dependent operation must pin a connection_ref.")
+        if self.connection_ref is not None and (self.connection_ref.id is None or self.connection_ref.digest is None):
+            raise ValueError("An attached connection_ref must pin id and digest; a partial connection is refused.")
+        return self
+
+    @model_validator(mode="after")
+    def _config_digest_present_when_required(self) -> RuntimeBindingDescriptor:
+        """Q-ITEM3: a config-dependent operation must pin a config_digest.
+
+        Pins config drift via an opaque digest (never the config contents). A
+        required-but-absent config digest is refused structurally.
+        """
+        if self.requires_config and not self.config_digest:
+            raise ValueError("A config-dependent operation must pin a config_digest.")
         return self
 
 

@@ -10,6 +10,7 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RUNTIME_DESTINATION_HASH_ALGORITHM,
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
+    RuntimeConnectionRef,
     RuntimeDeploymentMapping,
     RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
@@ -366,6 +367,67 @@ def test_revision_id_is_the_digest_hex_tail() -> None:
     mapping = _mapping()
     assert mapping.revision_id == mapping.mapping_digest.rsplit(":", 1)[-1]
     assert ":" not in mapping.revision_id
+
+
+# --- Q-ITEM3: connection / config execution-authority pins -----------------
+
+
+def _binding_with(**overrides: object) -> RuntimeBindingDescriptor:
+    base = dict(
+        binding_id="binding-1",
+        provider_contract_version="provider.contract.v7",
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
+        operation_ref=RuntimeOperationRef(id="search", version="1"),
+        destination_hash_policy=RuntimeDestinationHashPolicy(binding_id="binding-1", operation_id="search"),
+    )
+    base.update(overrides)
+    return RuntimeBindingDescriptor(**base)  # type: ignore[arg-type]
+
+
+def test_connection_required_but_absent_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must pin a connection_ref"):
+        _binding_with(requires_connection=True)
+
+
+def test_connection_required_and_completely_pinned_is_accepted() -> None:
+    binding = _binding_with(
+        requires_connection=True,
+        connection_ref=RuntimeConnectionRef(id="conn-1", version="1", digest="sha256:conn"),
+    )
+    assert binding.connection_ref is not None
+    assert binding.connection_ref.id == "conn-1"
+
+
+def test_partially_pinned_connection_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must pin id and digest"):
+        _binding_with(connection_ref=RuntimeConnectionRef(id="conn-1"))  # missing digest
+
+
+def test_config_required_but_absent_is_refused() -> None:
+    with pytest.raises(ValidationError, match="must pin a config_digest"):
+        _binding_with(requires_config=True)
+
+
+def test_config_required_and_pinned_is_accepted() -> None:
+    binding = _binding_with(requires_config=True, config_digest="sha256:config")
+    assert binding.config_digest == "sha256:config"
+
+
+def test_connection_and_config_pins_are_covered_by_the_digest() -> None:
+    base = _mapping().mapping_digest
+    with_conn = _mapping().model_copy(
+        update={
+            "binding": _binding_with(
+                requires_connection=True,
+                connection_ref=RuntimeConnectionRef(id="conn-1", version="1", digest="sha256:conn"),
+            )
+        }
+    )
+    with_config = _mapping().model_copy(
+        update={"binding": _binding_with(requires_config=True, config_digest="sha256:c")}
+    )
+    assert with_conn.mapping_digest != base
+    assert with_config.mapping_digest != base
 
 
 # --- M1: nested refs are frozen (digest cannot drift) ----------------------
