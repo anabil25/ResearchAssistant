@@ -5,12 +5,32 @@ import {
   outcomeIsInternallyConsistent,
   PLAYWRIGHT_ID_PATTERN,
   PLAYWRIGHT_STATE_TOKEN_PATTERN,
+  resolveTestResults,
   specPassed,
   validateReportSchema,
   type PlaywrightJsonReport,
   type PlaywrightJsonSpec,
   type PlaywrightJsonTest,
 } from "./runtime-coverage-verifier";
+
+describe("resolveTestResults", () => {
+  it("returns the test entry's own results array when one is present", () => {
+    const results = [{ status: "passed" }];
+    expect(
+      resolveTestResults({
+        expectedStatus: "passed",
+        status: "expected",
+        results,
+      }),
+    ).toBe(results);
+  });
+
+  it("falls back to an empty array when results is missing entirely (no attempts recorded)", () => {
+    expect(
+      resolveTestResults({ expectedStatus: "passed", status: "expected" }),
+    ).toEqual([]);
+  });
+});
 
 describe("extractTokensFromTitle", () => {
   it("extracts a bare id token", () => {
@@ -110,6 +130,36 @@ describe("computeExpectedOutcome", () => {
     expect(
       computeExpectedOutcome("passed", [{ status: "bogus-status" }]),
     ).toBe("unexpected");
+  });
+
+  it("ignores 'interrupted' attempts entirely -- they contribute to neither the expected nor unexpected count, so a run with only an interrupted attempt is indistinguishable from having no attempts at all", () => {
+    expect(computeExpectedOutcome("passed", [{ status: "interrupted" }])).toBe(
+      "skipped",
+    );
+  });
+
+  it("ignoring an 'interrupted' attempt lets a later genuine attempt in the same history determine the outcome on its own", () => {
+    expect(
+      computeExpectedOutcome("passed", [
+        { status: "interrupted" },
+        { status: "passed" },
+      ]),
+    ).toBe("expected");
+  });
+
+  it("treats a 'skipped' attempt as a no-op ('did not run') rather than 'unexpected' when expectedStatus is something other than 'skipped', letting a later genuine attempt determine the outcome", () => {
+    expect(
+      computeExpectedOutcome("passed", [
+        { status: "skipped" },
+        { status: "passed" },
+      ]),
+    ).toBe("expected");
+  });
+
+  it("returns 'skipped' when the only attempt is 'skipped' but expectedStatus does not itself equal 'skipped' -- distinct from the exact-match case above, since here the mismatch is deliberately not counted as unexpected", () => {
+    expect(computeExpectedOutcome("passed", [{ status: "skipped" }])).toBe(
+      "skipped",
+    );
   });
 });
 
@@ -1155,6 +1205,45 @@ describe("validateReportSchema", () => {
 
   it("does not flag a stats mismatch when the recount genuinely matches (no false positive on a real, internally consistent report)", () => {
     expect(validateReportSchema(validReport(), requiredProjects)).toEqual([]);
+  });
+
+  it("flags a header/recount disagreement specifically on the 'unexpected' bucket, and correctly tallies a genuinely 'unexpected' test entry in the recount", () => {
+    const report = validReport();
+    report.stats = { expected: 1, unexpected: 5, flaky: 0, skipped: 0 };
+    report.suites = [
+      {
+        title: "a.spec.ts",
+        specs: [
+          {
+            title: "does something",
+            tests: [
+              {
+                projectName: "chromium",
+                expectedStatus: "passed",
+                status: "expected",
+                results: [{ status: "passed" }],
+              },
+              // Only one genuinely "unexpected" test entry actually exists
+              // in this suite tree, disagreeing with the header's claimed 5.
+              {
+                projectName: "chromium",
+                expectedStatus: "passed",
+                status: "unexpected",
+                results: [{ status: "failed" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const problems = validateReportSchema(report, requiredProjects);
+    expect(
+      problems.some(
+        (p) =>
+          p.includes("top-level `stats` block") &&
+          p.includes("unexpected: header 5 vs recounted 1"),
+      ),
+    ).toBe(true);
   });
 });
 

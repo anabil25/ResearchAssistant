@@ -217,10 +217,20 @@ export function computeExpectedOutcome(
  * closing the "project execution with no attempts" gap in
  * `collectProjectNames`.
  */
+/** Normalize a test entry's `results` field to a concrete array, treating a
+ * missing/undefined field as "no attempts" (`[]`). Shared by every reader of
+ * `testEntry.results` so this fallback is expressed -- and covered -- in
+ * exactly one place rather than re-derived redundantly at each call site. */
+export function resolveTestResults(
+  testEntry: PlaywrightJsonTest,
+): readonly PlaywrightJsonResult[] {
+  return testEntry.results ?? [];
+}
+
 export function outcomeIsInternallyConsistent(
   testEntry: PlaywrightJsonTest,
 ): boolean {
-  const results = testEntry.results ?? [];
+  const results = resolveTestResults(testEntry);
   return computeExpectedOutcome(testEntry.expectedStatus, results) === testEntry.status;
 }
 
@@ -253,7 +263,7 @@ export function specPassed(spec: PlaywrightJsonSpec): boolean {
     if (testEntry.expectedStatus !== "passed") return false;
     if (!PASSING_OUTCOME_STATUSES.has(testEntry.status ?? "")) return false;
     if (!outcomeIsInternallyConsistent(testEntry)) return false;
-    const results = testEntry.results ?? [];
+    const results = resolveTestResults(testEntry);
     const last = results[results.length - 1];
     return last?.status === "passed";
   });

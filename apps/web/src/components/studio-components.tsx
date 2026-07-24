@@ -32,6 +32,7 @@ import {
 import {
   lazy,
   Suspense,
+  useEffect,
   useMemo,
   useRef,
   useState,
@@ -3036,6 +3037,23 @@ export function AutomationStudio({
   });
   const [activated, setActivated] = useState(false);
   const [activationConfirmOpen, setActivationConfirmOpen] = useState(false);
+  // Modal focus lifecycle for the activation confirmation dialog: move
+  // focus into the dialog when it opens, and restore it to the trigger
+  // that opened it when it closes. `wasActivationOpenRef` distinguishes a
+  // genuine close (open -> closed) from the initial mount (never opened),
+  // so we don't yank focus to the trigger button on first render.
+  const activateTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const activationCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const wasActivationOpenRef = useRef(false);
+  useEffect(() => {
+    if (activationConfirmOpen) {
+      wasActivationOpenRef.current = true;
+      activationCloseButtonRef.current?.focus();
+    } else if (wasActivationOpenRef.current) {
+      wasActivationOpenRef.current = false;
+      activateTriggerRef.current?.focus();
+    }
+  }, [activationConfirmOpen]);
   const [catalogPreviewKey, setCatalogPreviewKey] = useState<string | null>(
     null,
   );
@@ -3387,6 +3405,7 @@ export function AutomationStudio({
                   : undefined
               }
               onClick={() => setActivationConfirmOpen(true)}
+              ref={activateTriggerRef}
             >
               {activated ? "Activated (draft workspace)" : "Activate after approval"}
             </button>
@@ -3690,6 +3709,43 @@ export function AutomationStudio({
                 role="dialog"
                 aria-modal="true"
                 aria-labelledby="activate-workflow-title"
+                onKeyDown={(event) => {
+                  if (event.key === "Escape") {
+                    // Escape behaves exactly like Cancel/the close button: it
+                    // never activates, regardless of `canActivate`.
+                    event.stopPropagation();
+                    setActivationConfirmOpen(false);
+                    return;
+                  }
+                  if (event.key !== "Tab") return;
+                  // `currentTarget` is exactly this dialog element (the one
+                  // this handler is bound to), so unlike a separately-read
+                  // ref it is never null here -- no defensive guard needed.
+                  const container = event.currentTarget;
+                  const focusable = Array.from(
+                    container.querySelectorAll<HTMLElement>(
+                      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+                    ),
+                  );
+                  // The dialog always renders its close button and a Cancel
+                  // button (neither is ever disabled), so `focusable` can
+                  // never actually be empty; no length guard is needed
+                  // before indexing into it.
+                  const first = focusable[0];
+                  const last = focusable[focusable.length - 1];
+                  // Keep keyboard focus contained within the dialog while it
+                  // is open: wrap Tab past the last focusable element back to
+                  // the first, and Shift+Tab past the first back to the
+                  // last, so a keyboard user (or screen reader) can never
+                  // Tab out into the `inert`-marked background page.
+                  if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                  } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                  }
+                }}
               >
                 <div className="modal-heading">
                   <div>
@@ -3700,6 +3756,7 @@ export function AutomationStudio({
                   </div>
                   <button
                     aria-label="Close activation dialog"
+                    ref={activationCloseButtonRef}
                     onClick={() => setActivationConfirmOpen(false)}
                   >
                     <X size={19} />

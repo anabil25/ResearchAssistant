@@ -2961,6 +2961,75 @@ describe("AutomationStudio", () => {
     ).toBeDisabled();
   });
 
+  it("moves focus into the dialog on open, contains Tab within it, restores focus to the trigger on close, and closes (without activating) on Escape", async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+
+    const activateButton = screen.getByRole("button", {
+      name: "Activate after approval",
+    });
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    expect(activateButton).toBeEnabled();
+    await user.click(activateButton);
+
+    const dialog = screen.getByRole("dialog", { name: /activate graph/i });
+    const closeButton = within(dialog).getByLabelText(
+      "Close activation dialog",
+    );
+    // Focus enters the dialog as soon as it opens, landing on its close
+    // button -- a keyboard/screen-reader user is never left stranded with
+    // focus on a background element the dialog now visually covers.
+    expect(closeButton).toHaveFocus();
+
+    const cancelButton = within(dialog).getByRole("button", {
+      name: "Cancel",
+    });
+    const confirmButton = within(dialog).getByRole("button", {
+      name: "Confirm activation",
+    });
+
+    // Shift+Tab from the first focusable element (close button) wraps
+    // around to the last (Confirm activation) instead of escaping the
+    // dialog into the (inert) background page.
+    await user.tab({ shift: true });
+    expect(confirmButton).toHaveFocus();
+
+    // Tab from the last focusable element wraps back to the first (close
+    // button), keeping keyboard focus fully contained within the dialog.
+    await user.tab();
+    expect(closeButton).toHaveFocus();
+
+    // Ordinary, non-wrapping Tab navigation between the wrap points still
+    // works exactly as expected.
+    await user.tab();
+    expect(cancelButton).toHaveFocus();
+    await user.tab();
+    expect(confirmButton).toHaveFocus();
+
+    // Escape behaves exactly like Cancel/the close button: it dismisses the
+    // dialog but never activates.
+    await user.keyboard("{Escape}");
+    expect(
+      screen.queryByRole("dialog", { name: /activate graph/i }),
+    ).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /activated \(draft workspace\)/i }),
+    ).not.toBeInTheDocument();
+    // Focus is restored to the exact trigger element that opened the
+    // dialog, not merely somewhere on the page.
+    expect(activateButton).toHaveFocus();
+  });
+
   it("invalidates a passing dry run after edits and while revalidation is pending or errored", async () => {
     const user = userEvent.setup();
     let resolveRun!: () => void;

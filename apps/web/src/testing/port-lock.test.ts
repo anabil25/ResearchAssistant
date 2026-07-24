@@ -34,12 +34,14 @@ jest.mock("node:fs", () => {
     openSync: jest.fn(actual.openSync),
     rmSync: jest.fn(actual.rmSync),
     readFileSync: jest.fn(actual.readFileSync),
+    writeFileSync: jest.fn(actual.writeFileSync),
   };
 });
 
 const mockOpenSync = openSync as unknown as jest.Mock;
 const mockRmSync = rmSync as unknown as jest.Mock;
 const mockReadFileSync = readFileSync as unknown as jest.Mock;
+const mockWriteFileSync = writeFileSync as unknown as jest.Mock;
 
 let nonceCounter = 0;
 
@@ -367,6 +369,35 @@ describe("port-lock", () => {
       writeFileSync(lockPath, "999"); // legacy plain-PID format, not JSON
       expect(isPortLockHeld(deps, 67000)).toBe(false);
       expect(tryClaimPortLock(deps, 67000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats genuinely unparseable JSON content (distinct from the merely-wrong-shape plain-PID case above) as unheld rather than throwing", () => {
+    const { deps, cleanup } = makeDeps({ isProcessAlive: () => true });
+    const lockPath = join(deps.lockDir, "68000.lock");
+    try {
+      // "999" above is valid JSON (a bare number) that fails the shape
+      // check; this is invalid JSON syntax entirely, exercising
+      // readLockRecord's `JSON.parse` `catch` branch specifically, not its
+      // shape-validation branch.
+      writeFileSync(lockPath, "{ this is not valid json at all");
+      expect(isPortLockHeld(deps, 68000)).toBe(false);
+      expect(tryClaimPortLock(deps, 68000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("touchPortLock returns false (rather than throwing) when the heartbeat rewrite itself fails, e.g. the lock directory vanished out from under it", () => {
+    const { deps, cleanup } = makeDeps({ pid: 14_000 });
+    try {
+      expect(tryClaimPortLock(deps, 69000)).toBe(true);
+      mockWriteFileSync.mockImplementationOnce(() => {
+        throw new Error("ENOENT: no such file or directory");
+      });
+      expect(touchPortLock(deps, 69000)).toBe(false);
     } finally {
       cleanup();
     }
