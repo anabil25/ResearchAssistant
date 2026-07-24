@@ -72,23 +72,26 @@ def test_unbound_client_resolves_to_none() -> None:
 
 def test_grant_binds_exact_pair_to_a_revision() -> None:
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     resolution = index.resolve_binding(CLIENT, "dep-1")
-    assert resolution == BindingResolution(deployment_id="dep-1", revision_id=REV, status=RuntimeBindingStatus.ACTIVE)
+    expected = BindingResolution(
+        deployment_id="dep-1", revision_id=REV, revision_sequence=1, status=RuntimeBindingStatus.ACTIVE
+    )
+    assert resolution == expected
 
 
 def test_resolve_wrong_deployment_is_none() -> None:
     # Exact membership: the asserted deployment must match the bound one.
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     assert index.resolve_binding(CLIENT, "dep-2") is None
 
 
 def test_grant_is_one_to_one_and_replaces() -> None:
     # One client -> exactly one deployment; a new grant replaces the old binding.
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-2", "revision-2")
+    index.grant(CLIENT, "dep-1", REV, 1)
+    index.grant(CLIENT, "dep-2", "revision-2", 2)
     assert index.resolve_binding(CLIENT, "dep-1") is None
     resolution = index.resolve_binding(CLIENT, "dep-2")
     assert resolution is not None
@@ -98,8 +101,8 @@ def test_grant_is_one_to_one_and_replaces() -> None:
 
 def test_regrant_same_deployment_repoints_revision() -> None:
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-1", "revision-2")
+    index.grant(CLIENT, "dep-1", REV, 1)
+    index.grant(CLIENT, "dep-1", "revision-2", 2)
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.revision_id == "revision-2"
@@ -107,7 +110,7 @@ def test_regrant_same_deployment_repoints_revision() -> None:
 
 def test_revoke_removes_matching_binding() -> None:
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     index.revoke(CLIENT, "dep-1")
     assert index.resolve_binding(CLIENT, "dep-1") is None
 
@@ -116,7 +119,7 @@ def test_revoke_mismatched_deployment_is_noop() -> None:
     # A revoke targeting a deployment the client is not bound to must not clobber
     # its actual binding (guards against clobbering a re-grant).
     index = InMemoryClientDeploymentBindingIndex()
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     index.revoke(CLIENT, "dep-2")
     assert index.resolve_binding(CLIENT, "dep-1") is not None
 
@@ -151,7 +154,7 @@ def _loader(
     if mapping_present:
         store.put(mapping)
     if bound:
-        index.grant(CLIENT, "dep-1", bound_revision or mapping.revision_id)
+        index.grant(CLIENT, "dep-1", bound_revision or mapping.revision_id, 1)
     return build_authorized_mapping_loader(index, store), mapping, store
 
 
@@ -191,7 +194,10 @@ class _RevokedResolver:
 
     def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
         return BindingResolution(
-            deployment_id=asserted_deployment_id, revision_id=REV, status=RuntimeBindingStatus.REVOKED
+            deployment_id=asserted_deployment_id,
+            revision_id=REV,
+            revision_sequence=1,
+            status=RuntimeBindingStatus.REVOKED,
         )
 
 
@@ -231,9 +237,12 @@ class _FakeBindingContainer:
 
 def test_cosmos_binding_grant_then_resolve() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     resolution = index.resolve_binding(CLIENT, "dep-1")
-    assert resolution == BindingResolution(deployment_id="dep-1", revision_id=REV, status=RuntimeBindingStatus.ACTIVE)
+    expected = BindingResolution(
+        deployment_id="dep-1", revision_id=REV, revision_sequence=1, status=RuntimeBindingStatus.ACTIVE
+    )
+    assert resolution == expected
 
 
 def test_cosmos_binding_unknown_client_is_none() -> None:
@@ -243,14 +252,14 @@ def test_cosmos_binding_unknown_client_is_none() -> None:
 
 def test_cosmos_binding_resolve_wrong_deployment_is_none() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     assert index.resolve_binding(CLIENT, "dep-2") is None
 
 
 def test_cosmos_binding_grant_repoints_and_replaces() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    index.grant(CLIENT, "dep-1", REV)
-    index.grant(CLIENT, "dep-2", "revision-2")
+    index.grant(CLIENT, "dep-1", REV, 1)
+    index.grant(CLIENT, "dep-2", "revision-2", 2)
     assert index.resolve_binding(CLIENT, "dep-1") is None
     resolution = index.resolve_binding(CLIENT, "dep-2")
     assert resolution is not None
@@ -259,14 +268,14 @@ def test_cosmos_binding_grant_repoints_and_replaces() -> None:
 
 def test_cosmos_binding_revoke_removes_matching() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     index.revoke(CLIENT, "dep-1")
     assert index.resolve_binding(CLIENT, "dep-1") is None
 
 
 def test_cosmos_binding_revoke_mismatched_deployment_is_noop() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
-    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", REV, 1)
     index.revoke(CLIENT, "dep-2")  # different deployment -> must not delete
     assert index.resolve_binding(CLIENT, "dep-1") is not None
 
@@ -286,6 +295,7 @@ def test_cosmos_binding_soft_revoked_tombstone_resolves_revoked() -> None:
         "client_app_id": CLIENT,
         "deployment_id": "dep-1",
         "current_revision_id": REV,
+        "current_revision_sequence": 1,
         "status": "revoked",
     }
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
@@ -299,7 +309,9 @@ def test_cosmos_binding_backs_the_authorized_loader() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping()
     store.put(mapping)
-    index.grant(CLIENT, "dep-1", mapping.revision_id)
+    index.grant(CLIENT, "dep-1", mapping.revision_id, 1)
     load = build_authorized_mapping_loader(index, store)
     assert load(CLIENT, "dep-1") is mapping
     assert load("other-client", "dep-1") is None
+
+

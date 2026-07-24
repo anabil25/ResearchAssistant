@@ -205,6 +205,7 @@ def _client(
         CLIENT_APP_ID,
         mapping.deployment_id if mapping is not None else "dep-1",
         mapping.revision_id if mapping is not None else "no-such-revision",
+        mapping.revision_sequence if mapping is not None else 1,
     )
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
     app = build_runtime_control_app(

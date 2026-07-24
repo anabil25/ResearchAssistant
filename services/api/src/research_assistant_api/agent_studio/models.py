@@ -2396,6 +2396,9 @@ class AuditEventKind(StrEnum):
     BUILDER_PROPOSAL_APPLIED = "builder_proposal_applied"
     POLICY_GATE_FAILED = "policy_gate_failed"
     ARTIFACT_DELETED = "artifact_deleted"
+    RUNTIME_BINDING_GRANTED = "runtime_binding_granted"
+    RUNTIME_BINDING_REPOINTED = "runtime_binding_repointed"
+    RUNTIME_BINDING_REVOKED = "runtime_binding_revoked"
 
 
 class AuditEvent(BaseModel):

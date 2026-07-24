@@ -85,15 +85,19 @@ class RuntimeBindingStatus(StrEnum):
 class BindingResolution(BaseModel):
     """The result of an exact ``(client, asserted_deployment)`` membership test.
 
-    Carries WHICH revision of the asserted deployment is current and the binding
-    ``status`` -- never a deployment the caller did not assert. The store then
-    performs an exact ``(deployment_id, revision_id)`` point read.
+    Carries WHICH revision of the asserted deployment is current -- both the
+    content-addressed ``revision_id`` (a digest pin: repointing to a different
+    document changes it) and the monotonic ``revision_sequence`` the control
+    plane uses to reject a rollback -- plus the binding ``status``. It never
+    carries a deployment the caller did not assert. The store then performs an
+    exact ``(deployment_id, revision_id)`` point read.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     deployment_id: str
     revision_id: str
+    revision_sequence: int
     status: RuntimeBindingStatus
 
 
@@ -114,8 +118,8 @@ class ClientDeploymentBindingResolver(Protocol):
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
-        """Bind ``client_app_id`` to exactly ``deployment_id`` at ``revision_id`` (one-to-one; replaces)."""
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
+        """Bind ``client_app_id`` to exactly ``deployment_id`` at the given revision (one-to-one; replaces)."""
         ...
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
@@ -126,11 +130,14 @@ class ClientDeploymentBindingWriter(Protocol):
 class _StoredBinding:
     """A client's single one-to-one binding record."""
 
-    __slots__ = ("deployment_id", "revision_id", "status")
+    __slots__ = ("deployment_id", "revision_id", "revision_sequence", "status")
 
-    def __init__(self, deployment_id: str, revision_id: str, status: RuntimeBindingStatus) -> None:
+    def __init__(
+        self, deployment_id: str, revision_id: str, revision_sequence: int, status: RuntimeBindingStatus
+    ) -> None:
         self.deployment_id = deployment_id
         self.revision_id = revision_id
+        self.revision_sequence = revision_sequence
         self.status = status
 
 
@@ -146,8 +153,10 @@ class InMemoryClientDeploymentBindingIndex:
     def __init__(self) -> None:
         self._by_client: dict[str, _StoredBinding] = {}
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
-        self._by_client[client_app_id] = _StoredBinding(deployment_id, revision_id, RuntimeBindingStatus.ACTIVE)
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
+        self._by_client[client_app_id] = _StoredBinding(
+            deployment_id, revision_id, revision_sequence, RuntimeBindingStatus.ACTIVE
+        )
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
         binding = self._by_client.get(client_app_id)
@@ -161,6 +170,7 @@ class InMemoryClientDeploymentBindingIndex:
         return BindingResolution(
             deployment_id=binding.deployment_id,
             revision_id=binding.revision_id,
+            revision_sequence=binding.revision_sequence,
             status=binding.status,
         )
 
@@ -224,7 +234,7 @@ class CosmosClientDeploymentBindingIndex:
     def __init__(self, container: ContainerProxy) -> None:
         self._container = container
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
         self._container.upsert_item(
             {
                 "id": client_app_id,
@@ -232,6 +242,7 @@ class CosmosClientDeploymentBindingIndex:
                 "client_app_id": client_app_id,
                 "deployment_id": deployment_id,
                 "current_revision_id": revision_id,
+                "current_revision_sequence": revision_sequence,
                 "status": RuntimeBindingStatus.ACTIVE.value,
             }
         )
@@ -249,6 +260,7 @@ class CosmosClientDeploymentBindingIndex:
         return BindingResolution(
             deployment_id=str(document["deployment_id"]),
             revision_id=str(document["current_revision_id"]),
+            revision_sequence=int(str(document["current_revision_sequence"])),
             status=RuntimeBindingStatus(str(document["status"])),
         )
 
