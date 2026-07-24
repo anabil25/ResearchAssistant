@@ -54,6 +54,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import Protocol
 
+from azure.cosmos import ContainerProxy
+from azure.cosmos.exceptions import CosmosResourceNotFoundError
+
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
 
@@ -141,3 +144,71 @@ def build_authorized_mapping_loader(
         return mapping_store.get(asserted_deployment_id, revision_id)
 
     return _load
+
+
+#: Cosmos ``documentType`` discriminator and partition-key path for the durable
+#: client->deployment binding index. The container is partitioned by
+#: ``/client_app_id`` so a runtime authorization is a single-partition
+#: ``read_item`` keyed by the AUTHENTICATED client (constraint 2) -- never a
+#: query by ``deployment_id`` and never a scan, so the index is not itself an
+#: enumeration surface.
+RUNTIME_BINDING_DOCUMENT_TYPE = "runtimeClientDeploymentBindingV1"
+RUNTIME_BINDING_PARTITION_KEY_PATH = "/client_app_id"
+
+
+def _binding_item_id(client_app_id: str, deployment_id: str) -> str:
+    """Compose the binding item id (one binding per (client, deployment) pair)."""
+    return f"{client_app_id}::{deployment_id}"
+
+
+class CosmosClientDeploymentBindingIndex:
+    """Durable binding index partitioned by ``/client_app_id``.
+
+    Implements both the read-only resolver and the control-plane writer, but the
+    two surfaces are governed by *different* data-plane identities in IaC: the
+    runtime app-role identity is granted Cosmos **Data Reader** on this
+    container (it only ever calls ``current_revision``), while grants/revocations
+    run under the control-plane identity with **Data Contributor**. The type
+    split here is the code half; the RBAC split is the enforcement half.
+
+    ``current_revision`` is a fresh single-partition point ``read_item`` (404 ->
+    ``None``). ``grant`` repoints the binding to the current revision with
+    ``upsert_item`` (the binding is the one mutable authority; repointing on
+    supersession is expected). ``revoke`` deletes the binding item; a missing
+    item is treated as an idempotent no-op so a re-revoke never raises.
+    """
+
+    def __init__(self, container: ContainerProxy) -> None:
+        self._container = container
+
+    def grant(self, client_app_id: str, deployment_id: str, revision_id: str) -> None:
+        self._container.upsert_item(
+            {
+                "id": _binding_item_id(client_app_id, deployment_id),
+                "documentType": RUNTIME_BINDING_DOCUMENT_TYPE,
+                "client_app_id": client_app_id,
+                "deployment_id": deployment_id,
+                "current_revision_id": revision_id,
+            }
+        )
+
+    def revoke(self, client_app_id: str, deployment_id: str) -> None:
+        try:
+            self._container.delete_item(
+                item=_binding_item_id(client_app_id, deployment_id),
+                partition_key=client_app_id,
+            )
+        except CosmosResourceNotFoundError:
+            return
+
+    def current_revision(self, client_app_id: str, deployment_id: str) -> str | None:
+        try:
+            document = dict(
+                self._container.read_item(
+                    item=_binding_item_id(client_app_id, deployment_id),
+                    partition_key=client_app_id,
+                )
+            )
+        except CosmosResourceNotFoundError:
+            return None
+        return str(document["current_revision_id"])

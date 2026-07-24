@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
+from typing import cast
 
+from azure.cosmos import ContainerProxy
+from azure.cosmos.exceptions import CosmosResourceNotFoundError
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_client_binding import (
     AuthorizedMappingLoader,
+    CosmosClientDeploymentBindingIndex,
     InMemoryClientDeploymentBindingIndex,
     build_authorized_mapping_loader,
 )
@@ -167,3 +171,76 @@ def test_loader_returns_none_when_binding_points_at_stale_revision() -> None:
     # revision id the store never stored): exact point read misses -> denial.
     load, _mapping, _store = _loader(bound_revision="revision-that-was-never-written")
     assert load(CLIENT, "dep-1") is None
+
+
+# --- durable Cosmos binding adapter ----------------------------------------
+
+
+class _FakeBindingContainer:
+    """Minimal Cosmos container double for the binding index (upsert/read/delete)."""
+
+    def __init__(self) -> None:
+        self.items: dict[str, dict[str, object]] = {}
+
+    def upsert_item(self, body: dict[str, object]) -> dict[str, object]:
+        self.items[str(body["id"])] = dict(body)
+        return dict(body)
+
+    def read_item(self, *, item: str, partition_key: str) -> dict[str, object]:
+        # Partitioned by /client_app_id; the item id begins with it.
+        assert item.startswith(f"{partition_key}::")
+        if item not in self.items:
+            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        return dict(self.items[item])
+
+    def delete_item(self, *, item: str, partition_key: str) -> None:
+        assert item.startswith(f"{partition_key}::")
+        if item not in self.items:
+            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        del self.items[item]
+
+
+def test_cosmos_binding_grant_then_current_revision() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.grant(CLIENT, "dep-1", REV)
+    assert index.current_revision(CLIENT, "dep-1") == REV
+
+
+def test_cosmos_binding_unknown_pair_is_none() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    assert index.current_revision(CLIENT, "dep-1") is None
+
+
+def test_cosmos_binding_grant_repoints_to_new_revision() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.grant(CLIENT, "dep-1", REV)
+    index.grant(CLIENT, "dep-1", "revision-2")
+    assert index.current_revision(CLIENT, "dep-1") == "revision-2"
+
+
+def test_cosmos_binding_revoke_removes_pair() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.grant(CLIENT, "dep-1", REV)
+    index.revoke(CLIENT, "dep-1")
+    assert index.current_revision(CLIENT, "dep-1") is None
+
+
+def test_cosmos_binding_revoke_missing_is_idempotent_noop() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    index.revoke(CLIENT, "dep-1")  # must not raise
+    assert index.current_revision(CLIENT, "dep-1") is None
+
+
+def test_cosmos_binding_backs_the_authorized_loader() -> None:
+    # End-to-end: durable binding + in-memory store compose into the loader with
+    # the same exact-membership + current-revision semantics.
+    from research_assistant_api.agent_studio.runtime_mapping_store import InMemoryRuntimeDeploymentMappingStore
+
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    store = InMemoryRuntimeDeploymentMappingStore()
+    mapping = _mapping()
+    store.put(mapping)
+    index.grant(CLIENT, "dep-1", mapping.revision_id)
+    load = build_authorized_mapping_loader(index, store)
+    assert load(CLIENT, "dep-1") is mapping
+    assert load("other-client", "dep-1") is None
