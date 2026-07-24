@@ -116,6 +116,20 @@ def test_distinct_deployment_ids_are_isolated() -> None:
     assert store.get("dep-b", 1) is b
 
 
+def test_delete_removes_exact_revision() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"))
+    store.delete("dep-1", 1)
+    assert store.get("dep-1", 1) is None
+    assert store.get("dep-1", 2) is not None
+
+
+def test_delete_missing_is_a_noop() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.delete("dep-1", 1)  # must not raise
+
+
 # --- Cosmos adapter --------------------------------------------------------
 
 
@@ -139,6 +153,12 @@ class _FakeContainer:
         if item not in self.items or (self._read_returns_none_on_conflict and item in self.items):
             raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
         return dict(self.items[item])
+
+    def delete_item(self, *, item: str, partition_key: str) -> None:
+        assert item.startswith(f"{partition_key}:")
+        if item not in self.items:
+            raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
+        del self.items[item]
 
 
 def test_cosmos_get_returns_none_when_absent() -> None:
@@ -206,3 +226,16 @@ def test_cosmos_put_reraises_non_conflict_error() -> None:
     container.items["dep-1:1"] = {"id": "dep-1:1"}
     with pytest.raises(CosmosHttpResponseError):
         store.put(mapping)
+
+
+def test_cosmos_delete_removes_exact_revision() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
+    store.delete("dep-1", 1)
+    assert store.get("dep-1", 1) is None
+
+
+def test_cosmos_delete_missing_is_a_noop() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.delete("dep-1", 1)  # 404 swallowed, must not raise

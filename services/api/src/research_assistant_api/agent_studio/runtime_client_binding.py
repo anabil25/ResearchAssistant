@@ -37,10 +37,13 @@ Ratified design constraints (do not reinvent):
 5. **Fail-closed ordering (no cross-container atomicity).** Binding partition is
    ``client_app_id`` and mapping partition is ``deployment_id``; no Cosmos
    transactional batch spans them. The producer's GRANT writes the mapping
-   revision FIRST then the binding (a binding never points at a missing
-   revision); REVOKE removes/repoints the binding FIRST then writes the retiring
-   revision (authority is withdrawn before the object). A binding-without-mapping
-   is a denial, never a repairable state -- the loader returns ``None`` for it.
+   revision FIRST then repoints the binding (a binding never points at a missing
+   revision); REVOKE repoints the binding to a REVOKED tombstone FIRST (authority
+   withdrawn immediately) then writes the retiring revision. Revocation NEVER
+   hard-deletes the row -- deleting it would lose the succession counter and
+   force a sequence-1 collision or the forbidden latest-query on the next
+   re-grant; the tombstone retains the sequence + pinned digest and denies on
+   ``status != ACTIVE``, so the counter and audit chain survive.
 6. **Access is not usability.** A present binding authorizes *access* only.
    After the binding check and mapping load, the full lifecycle evaluation still
    applies (``lifecycle_fault``: not-yet-effective/expired/revoked/superseded/
@@ -139,16 +142,17 @@ class NonMonotonicRepointError(RuntimeError):
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
-    def grant(
+    def repoint(
         self,
         client_app_id: str,
         deployment_id: str,
         revision_sequence: int,
         revision_id: str,
+        status: RuntimeBindingStatus,
         *,
         expected_current_sequence: int | None,
     ) -> None:
-        """CAS repoint of ``client_app_id`` to ``deployment_id`` at the given revision.
+        """CAS repoint of ``client_app_id``'s binding to the given revision + status.
 
         Conditional on the currently-stored sequence for this (client,
         deployment) equalling ``expected_current_sequence`` (``None`` meaning the
@@ -157,11 +161,15 @@ class ClientDeploymentBindingWriter(Protocol):
         modification) and ``NonMonotonicRepointError`` if the new sequence is not
         the strict successor of -- or an idempotent re-affirmation of -- the
         observed current. Both checks happen atomically with the write.
-        """
-        ...
 
-    def revoke(self, client_app_id: str, deployment_id: str) -> None:
-        """Remove the client's binding iff it currently points at ``deployment_id``."""
+        ``status`` is ``ACTIVE`` for a grant and ``REVOKED`` for a revocation
+        TOMBSTONE. Revocation NEVER hard-deletes the row: deleting it would lose
+        the succession counter (a later re-grant would have no current value to
+        derive ``next`` from, forcing either a sequence-1 collision or the
+        forbidden latest-query). The tombstone retains the sequence and pinned
+        digest, authority is withdrawn immediately (the loader denies on
+        ``status != ACTIVE``), and the counter + audit chain survive.
+        """
         ...
 
 
@@ -216,12 +224,13 @@ class InMemoryClientDeploymentBindingIndex:
     def __init__(self) -> None:
         self._by_client: dict[str, _StoredBinding] = {}
 
-    def grant(
+    def repoint(
         self,
         client_app_id: str,
         deployment_id: str,
         revision_sequence: int,
         revision_id: str,
+        status: RuntimeBindingStatus,
         *,
         expected_current_sequence: int | None,
     ) -> None:
@@ -242,14 +251,7 @@ class InMemoryClientDeploymentBindingIndex:
             new_sequence=revision_sequence,
             new_revision_id=revision_id,
         )
-        self._by_client[client_app_id] = _StoredBinding(
-            deployment_id, revision_id, revision_sequence, RuntimeBindingStatus.ACTIVE
-        )
-
-    def revoke(self, client_app_id: str, deployment_id: str) -> None:
-        binding = self._by_client.get(client_app_id)
-        if binding is not None and binding.deployment_id == deployment_id:
-            del self._by_client[client_app_id]
+        self._by_client[client_app_id] = _StoredBinding(deployment_id, revision_id, revision_sequence, status)
 
     def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
         binding = self._by_client.get(client_app_id)
@@ -320,27 +322,28 @@ class CosmosClientDeploymentBindingIndex:
 
     ``resolve_binding`` is a fresh single-partition point ``read_item`` (404 ->
     ``None``); it returns ``None`` unless the stored row's ``deployment_id``
-    equals the asserted one, so it can never redirect the caller. ``grant`` is a
-    CAS repoint: it reads the current row (+ ETag), checks the observed sequence
+    equals the asserted one, so it can never redirect the caller. ``repoint`` is
+    a CAS write: it reads the current row (+ ETag), checks the observed sequence
     against ``expected_current_sequence`` and the strict-successor rule, then
     writes conditionally (``create_item`` when there is no current row, else
     ``replace_item`` with ``If-Match`` on the ETag). A concurrent modification
     (409 on create, 412 on replace) surfaces as ``BindingPreconditionError`` for
     the caller to re-read and retry -- so two overlapping repoints can never
-    lost-update a rollback in. ``revoke`` deletes the client's binding only when
-    it currently points at ``deployment_id``; a missing/mismatched binding is an
-    idempotent no-op.
+    lost-update a rollback in. Revocation is a ``repoint`` to a ``REVOKED``
+    TOMBSTONE (never a hard delete), so the succession counter and pinned digest
+    survive.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
         self._container = container
 
-    def grant(
+    def repoint(
         self,
         client_app_id: str,
         deployment_id: str,
         revision_sequence: int,
         revision_id: str,
+        status: RuntimeBindingStatus,
         *,
         expected_current_sequence: int | None,
     ) -> None:
@@ -368,7 +371,7 @@ class CosmosClientDeploymentBindingIndex:
             "deployment_id": deployment_id,
             "current_revision_id": revision_id,
             "current_revision_sequence": revision_sequence,
-            "status": RuntimeBindingStatus.ACTIVE.value,
+            "status": status.value,
         }
         try:
             if document is None:
@@ -386,12 +389,6 @@ class CosmosClientDeploymentBindingIndex:
                     f"binding for '{client_app_id}' was modified concurrently; re-read and retry."
                 ) from exc
             raise
-
-    def revoke(self, client_app_id: str, deployment_id: str) -> None:
-        document = self._read(client_app_id)
-        if document is None or document.get("deployment_id") != deployment_id:
-            return
-        self._container.delete_item(item=client_app_id, partition_key=client_app_id)
 
     def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
         document = self._read(client_app_id)

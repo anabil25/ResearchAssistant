@@ -25,7 +25,10 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
 )
 from research_assistant_api.agent_studio.runtime_authz import RuntimeAuthPolicy
-from research_assistant_api.agent_studio.runtime_client_binding import InMemoryClientDeploymentBindingIndex
+from research_assistant_api.agent_studio.runtime_client_binding import (
+    InMemoryClientDeploymentBindingIndex,
+    RuntimeBindingStatus,
+)
 from research_assistant_api.agent_studio.runtime_control_router import build_runtime_control_app
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
@@ -201,11 +204,12 @@ def _client(
     # The authenticated runtime client is server-bound to exactly this
     # deployment's current revision (or "dep-1"/a placeholder revision when there
     # is no mapping, to exercise the bound-client-but-no-mapping path).
-    resolver.grant(
+    resolver.repoint(
         CLIENT_APP_ID,
         mapping.deployment_id if mapping is not None else "dep-1",
         mapping.revision_sequence if mapping is not None else 1,
         mapping.revision_id if mapping is not None else "no-such-revision",
+        RuntimeBindingStatus.ACTIVE,
         expected_current_sequence=None,
     )
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)

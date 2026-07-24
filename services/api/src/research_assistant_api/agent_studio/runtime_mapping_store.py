@@ -72,6 +72,16 @@ class RuntimeDeploymentMappingStore(Protocol):
         """Fresh exact point read of the ``(deployment_id, revision_sequence)`` revision (or ``None``)."""
         ...
 
+    def delete(self, deployment_id: str, revision_sequence: int) -> None:
+        """Delete the exact ``(deployment_id, revision_sequence)`` revision (retention; control-plane only).
+
+        Exact-id deletion only -- there is deliberately NO "delete latest" or
+        scope-keyed variant. Retention safety (never deleting a revision a
+        binding still points at) is enforced by the control-plane producer's
+        retention interlock, not here.
+        """
+        ...
+
 
 class InMemoryRuntimeDeploymentMappingStore:
     """In-memory adapter keyed by ``deployment_id:sequence`` (tests/local only).
@@ -101,6 +111,9 @@ class InMemoryRuntimeDeploymentMappingStore:
 
     def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
         return self._by_item_id.get(_revision_item_id(deployment_id, revision_sequence))
+
+    def delete(self, deployment_id: str, revision_sequence: int) -> None:
+        self._by_item_id.pop(_revision_item_id(deployment_id, revision_sequence), None)
 
 
 #: Cosmos ``documentType`` discriminator and partition-key path for the
@@ -169,3 +182,10 @@ class CosmosRuntimeDeploymentMappingStore:
         except CosmosResourceNotFoundError:
             return None
         return RuntimeDeploymentMapping.model_validate(document["payload"])
+
+    def delete(self, deployment_id: str, revision_sequence: int) -> None:
+        item_id = _revision_item_id(deployment_id, revision_sequence)
+        try:
+            self._container.delete_item(item=item_id, partition_key=deployment_id)
+        except CosmosResourceNotFoundError:
+            return

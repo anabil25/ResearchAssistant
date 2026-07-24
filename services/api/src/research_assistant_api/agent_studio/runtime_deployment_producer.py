@@ -35,6 +35,7 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from typing import Protocol
+from uuid import uuid4
 
 from research_assistant_api.agent_studio.models import AuditEventKind
 from research_assistant_api.agent_studio.runtime_client_binding import (
@@ -42,6 +43,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     ClientDeploymentBindingResolver,
     ClientDeploymentBindingWriter,
     NonMonotonicRepointError,
+    RuntimeBindingStatus,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDeploymentMapping,
@@ -153,49 +155,66 @@ class RuntimeDeploymentProducer:
                 )
         persisted = self._mapping_store.put(mapping)
         for binding in mapping.allowed_client_app_role_bindings:
-            prior = self._cas_repoint(binding.client_app_id, mapping)
-            self._record_binding_event(
-                mapping,
-                kind=(
-                    AuditEventKind.RUNTIME_BINDING_GRANTED
-                    if prior is None
-                    else AuditEventKind.RUNTIME_BINDING_REPOINTED
-                ),
-                actor_id=actor_id,
-                now=now,
-                client_app_id=binding.client_app_id,
-                from_sequence=prior[0] if prior is not None else None,
-                from_revision_id=prior[1] if prior is not None else None,
-            )
+            self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.ACTIVE, actor_id=actor_id, now=now)
         return persisted
 
-    def _cas_repoint(self, client_app_id: str, mapping: RuntimeDeploymentMapping) -> tuple[int, str] | None:
-        """CAS-repoint one client's binding to ``mapping``; return the prior (sequence, revision_id) or None.
+    def _cas_repoint(
+        self,
+        client_app_id: str,
+        mapping: RuntimeDeploymentMapping,
+        status: RuntimeBindingStatus,
+        *,
+        actor_id: str,
+        now: datetime,
+    ) -> None:
+        """CAS-repoint one client's binding to ``mapping`` at ``status``, audited INTENT-FIRST.
 
-        Reads the current pointer, attempts the conditional write, and on a
-        concurrent-modification precondition failure RE-READS and retries (never
-        blind), up to a bounded budget. A non-monotonic repoint (rollback/gap
-        that survives to the CAS) is surfaced as ``RollbackRepointError``.
+        Ordering (A2): write the repoint INTENT (from-revision -> to-revision)
+        BEFORE the CAS, perform the CAS, then mark it APPLIED. If a crash occurs
+        between the two, the worst case is a recorded intent that never landed --
+        recoverable and inspectable -- rather than a repoint that happened with
+        no record (which would defeat A2). A dangling unresolved intent is itself
+        a reconciliation signal. On a concurrent-modification precondition
+        failure it RE-READS and retries (never blind); a non-monotonic repoint
+        surfaces as ``RollbackRepointError``.
         """
+        intent_id = uuid4().hex
+        prior = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
+        kind = self._repoint_kind(status, prior)
+        self._record_binding_event(
+            mapping, kind=kind, phase="intent", intent_id=intent_id, actor_id=actor_id, now=now,
+            client_app_id=client_app_id, prior=prior,
+        )
         for _attempt in range(_MAX_REPOINT_ATTEMPTS):
             resolution = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
             expected = None if resolution is None else resolution.revision_sequence
             try:
-                self._binding_writer.grant(
+                self._binding_writer.repoint(
                     client_app_id,
                     mapping.deployment_id,
                     mapping.revision_sequence,
                     mapping.revision_id,
+                    status,
                     expected_current_sequence=expected,
                 )
             except BindingPreconditionError:
                 continue
             except NonMonotonicRepointError as exc:
                 raise RollbackRepointError(str(exc)) from exc
-            return None if resolution is None else (resolution.revision_sequence, resolution.revision_id)
+            self._record_binding_event(
+                mapping, kind=kind, phase="applied", intent_id=intent_id, actor_id=actor_id, now=now,
+                client_app_id=client_app_id, prior=resolution,
+            )
+            return
         raise BindingPreconditionError(
             f"repoint for '{client_app_id}' did not converge within {_MAX_REPOINT_ATTEMPTS} attempts."
         )
+
+    @staticmethod
+    def _repoint_kind(status: RuntimeBindingStatus, prior: object) -> AuditEventKind:
+        if status is RuntimeBindingStatus.REVOKED:
+            return AuditEventKind.RUNTIME_BINDING_REVOKED
+        return AuditEventKind.RUNTIME_BINDING_GRANTED if prior is None else AuditEventKind.RUNTIME_BINDING_REPOINTED
 
     def revoke(
         self, revoking_revision: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
@@ -204,9 +223,12 @@ class RuntimeDeploymentProducer:
 
         ``revoking_revision`` is a NEW revision recording the revocation
         (``revoked_at`` set, not future-dated). Fail-closed ordering: every bound
-        client is UNBOUND first (authority withdrawn immediately, with an audit
-        event capturing the from-revision), THEN the revoking revision is
-        persisted for durable lineage.
+        client's binding is repointed to a REVOKED TOMBSTONE FIRST (authority
+        withdrawn immediately -- the loader denies on ``status != ACTIVE``),
+        THEN the retiring revision is persisted for durable lineage. The tombstone
+        is NEVER a hard delete: it retains the succession counter and pinned
+        digest so a later re-grant can derive ``next`` without a latest-query and
+        retention keeps its interlock.
         """
         now = _require_aware_utc_now(now)
         if revoking_revision.revoked_at is None:
@@ -220,16 +242,8 @@ class RuntimeDeploymentProducer:
                 "an act that has already happened (use expires_at for a future window)."
             )
         for binding in revoking_revision.allowed_client_app_role_bindings:
-            prior = self._binding_resolver.resolve_binding(binding.client_app_id, revoking_revision.deployment_id)
-            self._binding_writer.revoke(binding.client_app_id, revoking_revision.deployment_id)
-            self._record_binding_event(
-                revoking_revision,
-                kind=AuditEventKind.RUNTIME_BINDING_REVOKED,
-                actor_id=actor_id,
-                now=now,
-                client_app_id=binding.client_app_id,
-                from_sequence=None if prior is None else prior.revision_sequence,
-                from_revision_id=None if prior is None else prior.revision_id,
+            self._cas_repoint(
+                binding.client_app_id, revoking_revision, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now
             )
         return self._mapping_store.put(revoking_revision)
 
@@ -238,14 +252,25 @@ class RuntimeDeploymentProducer:
     ) -> RuntimeDeploymentMapping:
         """Idempotently COMPLETE a REVOKE whose retiring-revision write failed (D).
 
-        The ratified ordering removes the binding first, so a crash between the
-        unbind and the retiring-revision write leaves authority withdrawn but the
-        audit record of *why* not yet durable. This re-ensures each client is
-        unbound and re-persists the retiring revision (the store put is
-        idempotent for identical content), so the lineage record is never lost.
-        Safe to call repeatedly.
+        The tombstone repoint is idempotent (re-affirming the identical REVOKED
+        revision), and the store put is idempotent for identical content, so this
+        re-drives the whole revoke and re-persists the retiring revision. Safe to
+        call repeatedly; the durable lineage record is never lost.
         """
         return self.revoke(revoking_revision, actor_id=actor_id, now=now)
+
+    def retire_revision(
+        self, deployment_id: str, revision_sequence: int, revision_id: str, client_app_ids: tuple[str, ...]
+    ) -> None:
+        """Delete a superseded revision under the retention interlock.
+
+        Refuses (``RevisionStillReferencedError``) to delete a revision any live
+        binding still points at, then performs an EXACT ``(deployment_id,
+        revision_sequence)`` deletion. Never deletes "the latest" and never
+        scope-queries.
+        """
+        self.assert_safe_to_retire(deployment_id, revision_id, client_app_ids)
+        self._mapping_store.delete(deployment_id, revision_sequence)
 
     def assert_safe_to_retire(self, deployment_id: str, revision_id: str, client_app_ids: tuple[str, ...]) -> None:
         """Retention interlock: refuse to retire a revision a binding still points at.
@@ -269,12 +294,15 @@ class RuntimeDeploymentProducer:
         mapping: RuntimeDeploymentMapping,
         *,
         kind: AuditEventKind,
+        phase: str,
+        intent_id: str,
         actor_id: str,
         now: datetime,
         client_app_id: str,
-        from_sequence: int | None,
-        from_revision_id: str | None,
+        prior: object,
     ) -> None:
+        from_sequence = getattr(prior, "revision_sequence", None)
+        from_revision_id = getattr(prior, "revision_id", None)
         self._audit.record(
             tenant_id=mapping.tenant_id,
             project_id=mapping.project_id,
@@ -283,6 +311,8 @@ class RuntimeDeploymentProducer:
             subject_id=f"{client_app_id}:{mapping.deployment_id}",
             logical_agent_id=mapping.logical_agent_id,
             detail={
+                "phase": phase,
+                "intent_id": intent_id,
                 "client_app_id": client_app_id,
                 "deployment_id": mapping.deployment_id,
                 "from_revision_sequence": "" if from_sequence is None else str(from_sequence),
