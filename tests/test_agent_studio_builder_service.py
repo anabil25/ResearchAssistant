@@ -121,7 +121,8 @@ def _service(
     resolved_release_service = release_service or ReleaseService(resolved_store, registry or seeded_test_registry())
     return BuilderService(
         store=resolved_store,
-        generator=generator or InMemoryManifestProposalGenerator(
+        generator=generator
+        or InMemoryManifestProposalGenerator(
             lambda manifest, message: ProposedManifestChange(
                 after_manifest=manifest.model_copy(update={"description": message}),
                 generator="test-generator",
@@ -560,13 +561,61 @@ def test_classify_risk_escalations_flags_runtime_requirements_change() -> None:
     assert any(e.category is ProposalRiskCategory.RUNTIME for e in escalations)
 
 
+def test_classify_risk_escalations_flags_runtime_requirements_widening_for_each_riskier_field() -> None:
+    """Every field that can move to its riskier state must independently
+    trigger a RUNTIME escalation, including the inverted
+    ``uses_project_deployed_model_only`` (riskier when turned *off*)."""
+    widening_cases = (
+        RuntimeRequirements(requires_custom_orchestration_workflow=True),
+        RuntimeRequirements(requires_non_ga_tool=True),
+        RuntimeRequirements(uses_project_deployed_model_only=False),
+    )
+    before = _manifest(runtime_requirements=RuntimeRequirements())
+    for widened in widening_cases:
+        after = before.model_copy(update={"runtime_requirements": widened})
+        escalations = classify_risk_escalations(before, after, ())
+        assert any(e.category is ProposalRiskCategory.RUNTIME for e in escalations), widened
+
+
+def test_classify_risk_escalations_does_not_flag_runtime_requirements_narrowing() -> None:
+    """A change that only moves fields *away* from their riskier state
+    (e.g. no longer requiring custom code) is a narrowing, not a widening,
+    and must not be misreported as a RUNTIME escalation -- mirroring how
+    destination-constraint removal and delegation-scope narrowing are
+    already excluded elsewhere in this classifier."""
+    before = _manifest(
+        runtime_requirements=RuntimeRequirements(
+            requires_custom_code=True,
+            requires_custom_orchestration_workflow=True,
+            requires_non_ga_tool=True,
+            uses_project_deployed_model_only=False,
+        )
+    )
+    after = before.model_copy(update={"runtime_requirements": RuntimeRequirements()})
+    escalations = classify_risk_escalations(before, after, ())
+    assert not any(e.category is ProposalRiskCategory.RUNTIME for e in escalations)
+
+
+def test_classify_risk_escalations_flags_runtime_requirements_mixed_change_only_for_widened_fields() -> None:
+    """A change that narrows one field while widening another must still
+    escalate (because a widening occurred), and the reported detail should
+    name only the field(s) that actually widened."""
+    before = _manifest(runtime_requirements=RuntimeRequirements(requires_custom_code=True, requires_non_ga_tool=False))
+    after = before.model_copy(
+        update={"runtime_requirements": RuntimeRequirements(requires_custom_code=False, requires_non_ga_tool=True)}
+    )
+    escalations = classify_risk_escalations(before, after, ())
+    runtime_escalations = [e for e in escalations if e.category is ProposalRiskCategory.RUNTIME]
+    assert len(runtime_escalations) == 1
+    widened_fields_clause = runtime_escalations[0].detail.split("widened (")[1].split(")")[0]
+    assert widened_fields_clause == "requires_non_ga_tool"
+
+
 def test_classify_risk_escalations_flags_model_deployment_change() -> None:
     before = _manifest()
     after = before.model_copy(
         update={
-            "model_deployment": ModelDeploymentRef(
-                deployment_name="dep-1", model_name="model-1", model_format="openai"
-            )
+            "model_deployment": ModelDeploymentRef(deployment_name="dep-1", model_name="model-1", model_format="openai")
         }
     )
     escalations = classify_risk_escalations(before, after, ())

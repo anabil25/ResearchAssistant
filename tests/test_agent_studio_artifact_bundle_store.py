@@ -133,6 +133,29 @@ def test_in_memory_store_get_returns_none_for_wrong_scope_or_missing_content() -
     assert result is None
 
 
+def test_in_memory_store_get_fails_closed_when_stored_content_does_not_match_checksum() -> None:
+    """The content-addressed path already embeds the checksum, so this is
+    unreachable via the store's own ``put``/``get`` API -- but a test
+    fixture (or, in production, storage corruption/an out-of-band writer)
+    poking the backing storage directly must not be silently trusted back
+    out as verified content."""
+    store = InMemoryArtifactBundleStore()
+    stored = store.put(
+        tenant_id="demo",
+        project_id="proj-1",
+        logical_agent_id="agent-1",
+        content=b"payload",
+        version_label="version-1",
+    )
+    checksum = stored.checksum.removeprefix("sha256:")
+    key = f"demo/proj-1/agent-1/version-1/{checksum}"
+    store.items[key] = b"tampered-content"
+
+    scope = ScopeContext(tenant_id="demo", project_id="proj-1")
+    with pytest.raises(ArtifactBundleStoreError, match="does not match"):
+        store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum, version_label="version-1")
+
+
 @pytest.mark.parametrize("bad_label", ["", "   "])
 def test_in_memory_store_fails_closed_on_blank_version_label(bad_label: str) -> None:
     store = InMemoryArtifactBundleStore()
@@ -443,6 +466,28 @@ def test_azure_store_get_returns_none_when_blob_missing(monkeypatch: pytest.Monk
     )
     scope = ScopeContext(tenant_id="demo", project_id="proj-1")
     assert store.get(scope=scope, logical_agent_id="agent-1", checksum="0" * 64, version_label="version-1") is None
+
+
+def test_azure_store_get_fails_closed_when_blob_content_does_not_match_checksum(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A blob present at a content-addressed path should be unreachable
+    with content that doesn't match its own path's checksum -- but as with
+    the write-side create-race verification, this is defense in depth, not
+    an assumption: corruption, a prior bug, or a privileged/out-of-band
+    writer placing different bytes at that exact name must fail closed on
+    read rather than being silently trusted and returned."""
+    monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
+    store = AzureArtifactBundleStore(
+        "https://storage.example.test", "bundles", credential=cast("TokenCredential", object())
+    )
+    checksum = "0" * 64
+    blob_name = f"demo/proj-1/agent-1/version-1/{checksum}"
+    store._container.registry[blob_name] = {"content": b"tampered-content", "metadata": {"sha256": checksum}}
+
+    scope = ScopeContext(tenant_id="demo", project_id="proj-1")
+    with pytest.raises(ArtifactBundleStoreError, match="does not match"):
+        store.get(scope=scope, logical_agent_id="agent-1", checksum=checksum, version_label="version-1")
 
 
 def test_build_artifact_bundle_store_returns_unavailable_when_not_configured() -> None:

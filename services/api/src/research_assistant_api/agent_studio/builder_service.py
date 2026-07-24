@@ -182,9 +182,7 @@ def diff_manifest_fields(before: AgentManifest, after: AgentManifest) -> tuple[M
     return tuple(changes)
 
 
-def diff_capability_bindings(
-    before: AgentManifest, after: AgentManifest
-) -> tuple[CapabilityChangeSummary, ...]:
+def diff_capability_bindings(before: AgentManifest, after: AgentManifest) -> tuple[CapabilityChangeSummary, ...]:
     """Deterministic capability-binding diff, keyed by ``binding_id``.
 
     ``binding_id`` (not ``(descriptor_id, operation)``) is the natural
@@ -240,6 +238,22 @@ _DELEGATION_SCOPE_RANK: dict[DelegationScope, int] = {
     DelegationScope.ANY_RELEASED_AGENT: 2,
 }
 
+# For each ``RuntimeRequirements`` field, the boolean value that represents
+# the *riskier* state. A runtime-requirement escalation is only warranted
+# when a field flips *into* its riskier value (e.g. ``requires_custom_code``
+# turning on); flipping *out* of it (narrowing, e.g. no longer requiring
+# custom code) must never be misreported as an escalation, matching how
+# destination-constraint removal and delegation-scope narrowing are already
+# excluded above.
+_RUNTIME_RISKIER_VALUE: dict[str, bool] = {
+    "requires_custom_code": True,
+    "requires_custom_orchestration_workflow": True,
+    "requires_non_ga_tool": True,
+    # Inverted: ``True`` is the safe default (restricted to project-deployed
+    # models only), so the riskier state is turning this *off*.
+    "uses_project_deployed_model_only": False,
+}
+
 
 def classify_risk_escalations(
     before: AgentManifest,
@@ -284,9 +298,7 @@ def classify_risk_escalations(
                     )
                 )
         elif (
-            change.kind is CapabilityChangeKind.RECONFIGURED
-            and change.before is not None
-            and change.after is not None
+            change.kind is CapabilityChangeKind.RECONFIGURED and change.before is not None and change.after is not None
         ):
             if (
                 change.before.connection_ref != change.after.connection_ref
@@ -361,15 +373,24 @@ def classify_risk_escalations(
             )
 
     if before.runtime_requirements != after.runtime_requirements:
-        escalations.append(
-            ProposalRiskEscalation(
-                category=ProposalRiskCategory.RUNTIME,
-                detail=(
-                    f"Runtime requirements changed: {before.runtime_requirements.model_dump(mode='json')} "
-                    f"-> {after.runtime_requirements.model_dump(mode='json')}."
-                ),
+        widened_fields = [
+            field
+            for field, riskier_value in _RUNTIME_RISKIER_VALUE.items()
+            if getattr(before.runtime_requirements, field) != riskier_value
+            and getattr(after.runtime_requirements, field) == riskier_value
+        ]
+        if widened_fields:
+            escalations.append(
+                ProposalRiskEscalation(
+                    category=ProposalRiskCategory.RUNTIME,
+                    detail=(
+                        "Runtime requirements widened "
+                        f"({', '.join(sorted(widened_fields))}): "
+                        f"{before.runtime_requirements.model_dump(mode='json')} "
+                        f"-> {after.runtime_requirements.model_dump(mode='json')}."
+                    ),
+                )
             )
-        )
 
     if before.model_deployment != after.model_deployment:
         escalations.append(
@@ -439,9 +460,7 @@ class BuilderService:
         result = self._generator.propose(manifest=draft.manifest, message=message)
         after_manifest = result.after_manifest
         if after_manifest.logical_agent_id != logical_agent_id or after_manifest.tenant_id != tenant_id:
-            raise BuilderServiceError(
-                "Generated manifest logical_agent_id/tenant_id must match the target agent."
-            )
+            raise BuilderServiceError("Generated manifest logical_agent_id/tenant_id must match the target agent.")
         source_bundle_ref: str | None = None
         if result.source_bundle_content is not None:
             stored = self._bundle_store.put(

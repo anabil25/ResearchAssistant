@@ -88,6 +88,27 @@ def _blob_path(tenant_id: str, project_id: str, logical_agent_id: str, checksum:
     return f"{tenant_id}/{project_id}/{logical_agent_id}/{version_label}/{checksum}"
 
 
+def _verify_content_matches_checksum(content: bytes, *, checksum: str, location: str) -> None:
+    """Fail closed on read if stored content doesn't match its own
+    content-addressed checksum.
+
+    The path/key already embeds ``checksum``, so this should be
+    unreachable in correct operation -- but, as with the write-side
+    ``ResourceExistsError`` race check, a content-addressed path is not
+    *provably* immune to returning wrong bytes (storage corruption, a
+    prior bug, an out-of-band/privileged writer, or a test fixture
+    poking storage directly). A caller must never receive bytes silently
+    misattributed to a checksum they did not actually produce.
+    """
+    actual = sha256(content).hexdigest()
+    if actual != checksum:
+        raise ArtifactBundleStoreError(
+            f"Content stored at content-addressed location '{location}' does not match its own "
+            f"path checksum (expected sha256={checksum}, computed sha256={actual}); refusing to "
+            "return unverified content."
+        )
+
+
 class ArtifactBundleStore(Protocol):
     def put(
         self,
@@ -140,7 +161,11 @@ class InMemoryArtifactBundleStore:
         version_label: str,
     ) -> bytes | None:
         key = _blob_path(scope.tenant_id, scope.project_id, logical_agent_id, checksum, version_label)
-        return self.items.get(key)
+        content = self.items.get(key)
+        if content is None:
+            return None
+        _verify_content_matches_checksum(content, checksum=checksum, location=key)
+        return content
 
 
 class UnavailableArtifactBundleStore:
@@ -266,6 +291,7 @@ class AzureArtifactBundleStore:
         except ResourceNotFoundError:
             return None
         content: bytes = downloaded.readall()
+        _verify_content_matches_checksum(content, checksum=checksum, location=blob_name)
         return content
 
 
