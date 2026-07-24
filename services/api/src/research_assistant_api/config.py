@@ -19,6 +19,21 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 #: ``RESEARCH_ALLOW_DEMO_IDENTITY=true`` -- it is never enabled by default.
 DEMO_IDENTITY_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
+#: Environment names (case-insensitive, whitespace-trimmed) in which a
+#: ``ReleaseAttestation`` may fall back to an unkeyed SHA-256 content digest
+#: (``signature_algorithm == "sha256-digest"``) instead of a genuine keyed
+#: signature. That fallback is honestly labeled (see
+#: ``research_assistant_api.agent_studio.release_attestation``) but it is
+#: integrity labeling, not authentication -- a third party cannot trust it
+#: without also trusting "nobody else could compute a SHA-256 hash". Outside
+#: these environments, ``Settings`` refuses to start at all unless a real,
+#: versioned HMAC signing key (``AGENT_STUDIO_ATTESTATION_SIGNING_KEY`` +
+#: ``AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION``) is configured. This is a
+#: deliberately independent constant from ``DEMO_IDENTITY_SAFE_ENVIRONMENTS``
+#: (even though the values currently match) so the two unrelated security
+#: controls can never accidentally share, or be coupled through, one name.
+ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -99,7 +114,20 @@ class Settings(BaseSettings):
             "Shared secret used to HMAC-sign ReleaseAttestation objects. When unset, "
             "ReleaseAttestation falls back to an unkeyed SHA-256 content digest and reports "
             "signature_algorithm='sha256-digest' rather than claiming a keyed signature it "
-            "cannot actually provide."
+            "cannot actually provide -- this digest-only fallback is refused at startup "
+            "outside ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS. Must be paired with "
+            "agent_studio_attestation_signing_key_version whenever set."
+        ),
+    )
+    agent_studio_attestation_signing_key_version: str | None = Field(
+        default=None,
+        validation_alias="AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION",
+        description=(
+            "Version label (e.g. a rotation date or a Key Vault secret version) for "
+            "agent_studio_attestation_signing_key, embedded in every ReleaseAttestation it "
+            "signs. Required whenever agent_studio_attestation_signing_key is configured, so "
+            "a verifier that retains multiple historical secrets (key rotation) can look up "
+            "the exact secret an older attestation was actually signed with."
         ),
     )
     agent_studio_app_insights_resource_id: str | None = Field(
@@ -228,6 +256,45 @@ class Settings(BaseSettings):
                 "RESEARCH_ALLOW_DEMO_IDENTITY may only be enabled when environment is one of "
                 f"{sorted(DEMO_IDENTITY_SAFE_ENVIRONMENTS)}; refusing to start with "
                 f"environment={self.environment!r} and demo identity enabled."
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _forbid_unversioned_or_missing_attestation_signing_key(self) -> Settings:
+        """Fail closed at startup, not at request time.
+
+        A ``ReleaseAttestation`` signed with an unkeyed SHA-256 digest
+        (``signature_algorithm == "sha256-digest"``) is honestly labeled as
+        integrity-only, never as authentication -- a third party can only
+        trust it by also trusting "nobody else could compute a SHA-256
+        hash". That is acceptable for local development/tests, but must
+        never become the silent production default: refuse to construct
+        ``Settings`` at all when no signing key is configured and
+        ``environment`` is not one of the known-safe local/dev/test names,
+        rather than allowing a bad or missing ``RESEARCH_ENVIRONMENT`` to
+        silently carry an unauthenticated attestation into production.
+
+        A configured signing key must also always carry an explicit
+        ``agent_studio_attestation_signing_key_version``: an unversioned
+        managed secret cannot be rotated or audited, so this is refused
+        regardless of environment.
+        """
+        if self.agent_studio_attestation_signing_key and not self.agent_studio_attestation_signing_key_version:
+            raise ValueError(
+                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION must be set whenever "
+                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY is configured, so signed "
+                "ReleaseAttestations can be rotated and audited by version."
+            )
+        if (
+            not self.agent_studio_attestation_signing_key
+            and self.environment.strip().lower() not in ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS
+        ):
+            raise ValueError(
+                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY (with "
+                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION) must be configured outside of "
+                f"{sorted(ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS)} environments; refusing "
+                "to start with an unauthenticated sha256-digest-only ReleaseAttestation and "
+                f"environment={self.environment!r}."
             )
         return self
 

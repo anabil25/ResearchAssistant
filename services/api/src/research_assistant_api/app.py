@@ -243,13 +243,17 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         # gap without requiring a caller to guess or invent either value.
         application.state.agent_studio_approval_context_resolver = StoreBackedApprovalContextResolver(store)
         # Default release-attestation adapter: signs (HMAC-SHA256 when
-        # ``agent_studio_attestation_signing_key`` is configured, otherwise
-        # an honestly-labeled unkeyed SHA-256 digest) a read-derived
+        # ``agent_studio_attestation_signing_key``/``..._signing_key_version``
+        # are configured, otherwise an honestly-labeled unkeyed SHA-256
+        # digest -- refused at Settings-construction time outside
+        # ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS) a read-derived
         # projection of a release's own immutable ReleaseGateReport, for
         # harness/runtime startup to verify hard gates passed before
         # trusting a release -- advisory evaluations never affect this.
         application.state.agent_studio_release_attestation_port = StoreBackedReleaseAttestationPort(
-            store, signing_key=settings.agent_studio_attestation_signing_key
+            store,
+            signing_key=settings.agent_studio_attestation_signing_key,
+            key_version=settings.agent_studio_attestation_signing_key_version,
         )
     try:
         memory_store = build_memory_store(settings)

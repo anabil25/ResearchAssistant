@@ -163,7 +163,7 @@ def test_unsigned_attestation_reports_digest_algorithm_and_prefixed_signature() 
 
 def test_signed_attestation_reports_hmac_algorithm_and_prefixed_signature() -> None:
     attestation = build_release_attestation(
-        release=_release(), gate_report=_gate_report(), signing_key="shared-secret"
+        release=_release(), gate_report=_gate_report(), signing_key="shared-secret", key_version="v1"
     )
 
     assert attestation.signature_algorithm == "hmac-sha256"
@@ -171,10 +171,42 @@ def test_signed_attestation_reports_hmac_algorithm_and_prefixed_signature() -> N
 
 
 def test_signed_and_unsigned_signatures_for_identical_content_differ() -> None:
-    signed = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key="secret")
+    signed = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret", key_version="v1"
+    )
     unsigned = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
 
     assert signed.signature != unsigned.signature
+
+
+def test_build_attestation_raises_when_signing_key_configured_without_key_version() -> None:
+    with pytest.raises(ReleaseAttestationError, match="key_version"):
+        build_release_attestation(
+            release=_release(), gate_report=_gate_report(), signing_key="secret", key_version=None
+        )
+
+
+def test_build_attestation_ignores_key_version_when_no_signing_key_given() -> None:
+    attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key=None, key_version="v1"
+    )
+
+    assert attestation.key_version is None
+    assert attestation.signature_algorithm == "sha256-digest"
+
+
+def test_signed_attestation_embeds_configured_key_version() -> None:
+    attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret", key_version="v2"
+    )
+
+    assert attestation.key_version == "v2"
+
+
+def test_unsigned_attestation_has_no_key_version() -> None:
+    attestation = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
+
+    assert attestation.key_version is None
 
 
 # --- verify_release_attestation --------------------------------------------
@@ -188,7 +220,7 @@ def test_verify_roundtrip_succeeds_for_unsigned_attestation() -> None:
 
 def test_verify_roundtrip_succeeds_for_signed_attestation_with_correct_key() -> None:
     attestation = build_release_attestation(
-        release=_release(), gate_report=_gate_report(), signing_key="correct-key"
+        release=_release(), gate_report=_gate_report(), signing_key="correct-key", key_version="v1"
     )
 
     assert verify_release_attestation(attestation, signing_key="correct-key") is True
@@ -196,7 +228,7 @@ def test_verify_roundtrip_succeeds_for_signed_attestation_with_correct_key() -> 
 
 def test_verify_fails_for_signed_attestation_with_wrong_key() -> None:
     attestation = build_release_attestation(
-        release=_release(), gate_report=_gate_report(), signing_key="correct-key"
+        release=_release(), gate_report=_gate_report(), signing_key="correct-key", key_version="v1"
     )
 
     assert verify_release_attestation(attestation, signing_key="wrong-key") is False
@@ -204,7 +236,7 @@ def test_verify_fails_for_signed_attestation_with_wrong_key() -> None:
 
 def test_verify_fails_when_signing_key_omitted_at_verification_but_present_at_signing() -> None:
     attestation = build_release_attestation(
-        release=_release(), gate_report=_gate_report(), signing_key="correct-key"
+        release=_release(), gate_report=_gate_report(), signing_key="correct-key", key_version="v1"
     )
 
     assert verify_release_attestation(attestation, signing_key=None) is False
@@ -215,6 +247,60 @@ def test_verify_fails_when_attestation_content_is_tampered() -> None:
     tampered = attestation.model_copy(update={"manifest_hash": "sha256:" + "f" * 64})
 
     assert verify_release_attestation(tampered, signing_key=None) is False
+
+
+def test_verify_fails_when_claimed_key_version_is_tampered() -> None:
+    attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="correct-key", key_version="v1"
+    )
+    tampered = attestation.model_copy(update={"key_version": "v2"})
+
+    assert verify_release_attestation(tampered, signing_key="correct-key") is False
+
+
+# --- verify_release_attestation with a signing_keys map (rotation) ---------
+
+
+def test_verify_via_signing_keys_map_succeeds_by_looking_up_embedded_key_version() -> None:
+    attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret-v1", key_version="v1"
+    )
+
+    assert verify_release_attestation(attestation, signing_keys={"v1": "secret-v1", "v2": "secret-v2"}) is True
+
+
+def test_verify_via_signing_keys_map_fails_when_embedded_version_unknown_to_map() -> None:
+    attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret-v1", key_version="v1"
+    )
+
+    assert verify_release_attestation(attestation, signing_keys={"v2": "secret-v2"}) is False
+
+
+def test_verify_via_signing_keys_map_fails_for_unsigned_digest_attestation() -> None:
+    attestation = build_release_attestation(release=_release(), gate_report=_gate_report(), signing_key=None)
+
+    assert verify_release_attestation(attestation, signing_keys={"v1": "secret-v1"}) is False
+
+
+def test_verify_via_signing_keys_map_supports_rotation_across_two_versions() -> None:
+    """An attestation signed under a retired key version remains verifiable
+    as long as the verifier still retains that specific version's secret --
+    the core "rotation" guarantee: signing moves to a new active version,
+    but older attestations do not become unverifiable."""
+
+    old_attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret-v1", key_version="v1"
+    )
+    new_attestation = build_release_attestation(
+        release=_release(), gate_report=_gate_report(), signing_key="secret-v2", key_version="v2"
+    )
+    known_keys = {"v1": "secret-v1", "v2": "secret-v2"}
+
+    assert verify_release_attestation(old_attestation, signing_keys=known_keys) is True
+    assert verify_release_attestation(new_attestation, signing_keys=known_keys) is True
+    # Cross-checking against the wrong version's secret must fail.
+    assert verify_release_attestation(old_attestation, signing_keys={"v1": "secret-v2"}) is False
 
 
 # --- model contract ---------------------------------------------------------
@@ -303,13 +389,21 @@ async def test_port_uses_configured_signing_key() -> None:
     store = AgentStudioStore()
     store.save_gate_report(SCOPE, _gate_report())
     store.create_release(SCOPE, _release())
-    port = StoreBackedReleaseAttestationPort(store, signing_key="operator-key")
+    port = StoreBackedReleaseAttestationPort(store, signing_key="operator-key", key_version="v1")
 
     result = await port.get_attestation(ReleaseAttestationRequest(scope=SCOPE, release_id="release-1"))
 
     assert result.attestation is not None
     assert result.attestation.signature_algorithm == "hmac-sha256"
+    assert result.attestation.key_version == "v1"
     assert verify_release_attestation(result.attestation, signing_key="operator-key") is True
+
+
+def test_port_construction_raises_when_signing_key_configured_without_key_version() -> None:
+    store = AgentStudioStore()
+
+    with pytest.raises(ReleaseAttestationError, match="key_version"):
+        StoreBackedReleaseAttestationPort(store, signing_key="operator-key", key_version=None)
 
 
 @pytest.mark.asyncio

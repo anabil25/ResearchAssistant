@@ -1542,6 +1542,14 @@ class ReleaseAttestation(BaseModel):
     consumer can distinguish "verified against a shared secret" from "just a
     content digest" and this package never overstates what it can honestly
     attest.
+
+    ``key_version`` names which configured signing key produced ``signature``
+    (``None`` for the unkeyed digest form). It is included in the signed
+    payload itself, so an attacker cannot substitute a different key
+    version's claim without invalidating the signature. A verifier that
+    retains multiple historical secrets (key rotation) uses this field to
+    look up the one specific secret this attestation was actually signed
+    with, rather than guessing or trying every known key.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -1560,6 +1568,7 @@ class ReleaseAttestation(BaseModel):
     attested_at: datetime = Field(default_factory=utc_now)
     signature_algorithm: str
     signature: str
+    key_version: str | None = None
 
 
 # --------------------------------------------------------------------------

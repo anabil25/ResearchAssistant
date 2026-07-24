@@ -6,13 +6,22 @@ finding #4): the unauthenticated "demo sandbox" identity bypass
 explicit, impossible-to-misconfigure-into-production local/dev/test
 adapter, never a silent default that survives into a production
 deployment through a missing or unrecognized ``RESEARCH_ENVIRONMENT``.
+
+They also cover the equivalent production guard on the
+``ReleaseAttestation`` signing key: an unkeyed SHA-256 digest is honest
+integrity labeling, never authentication, and must never become the
+silent production default either.
 """
 
 from __future__ import annotations
 
 import pytest
 from pydantic import ValidationError
-from research_assistant_api.config import DEMO_IDENTITY_SAFE_ENVIRONMENTS, Settings
+from research_assistant_api.config import (
+    ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS,
+    DEMO_IDENTITY_SAFE_ENVIRONMENTS,
+    Settings,
+)
 
 
 def test_default_settings_disable_demo_identity(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -51,6 +60,58 @@ def test_demo_identity_is_refused_outside_safe_environments(environment: str) ->
 
 @pytest.mark.parametrize("environment", ["production", "prod", "staging", "unknown-env"])
 def test_demo_identity_disabled_is_always_permitted_regardless_of_environment(environment: str) -> None:
-    settings = Settings(environment=environment, allow_demo_identity=False)
+    # A signing key (+ version) is supplied here so this test exercises only
+    # the demo-identity guard in isolation, not the independent
+    # attestation-signing-key production guard covered below.
+    settings = Settings(
+        environment=environment,
+        allow_demo_identity=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
     assert settings.allow_demo_identity is False
     assert settings.environment == environment
+
+
+# --- ReleaseAttestation signing-key production guard -----------------------
+
+
+def test_default_settings_have_no_attestation_signing_key_in_development() -> None:
+    settings = Settings()
+    assert settings.environment == "development"
+    assert settings.agent_studio_attestation_signing_key is None
+    assert settings.agent_studio_attestation_signing_key_version is None
+
+
+@pytest.mark.parametrize("environment", sorted(ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS))
+def test_unsigned_attestation_digest_fallback_is_permitted_in_every_safe_environment(environment: str) -> None:
+    settings = Settings(environment=environment)
+    assert settings.agent_studio_attestation_signing_key is None
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "staging", "PRODUCTION", "unknown-env"])
+def test_unsigned_attestation_digest_fallback_is_refused_outside_safe_environments(environment: str) -> None:
+    with pytest.raises(ValidationError, match="AGENT_STUDIO_ATTESTATION_SIGNING_KEY"):
+        Settings(environment=environment, allow_demo_identity=False)
+
+
+@pytest.mark.parametrize("environment", ["production", "prod", "staging", "unknown-env"])
+def test_configured_signing_key_with_version_is_permitted_in_every_environment(environment: str) -> None:
+    settings = Settings(
+        environment=environment,
+        allow_demo_identity=False,
+        agent_studio_attestation_signing_key="operator-key",
+        agent_studio_attestation_signing_key_version="v1",
+    )
+    assert settings.agent_studio_attestation_signing_key == "operator-key"
+    assert settings.agent_studio_attestation_signing_key_version == "v1"
+    assert settings.environment == environment
+
+
+def test_configured_signing_key_without_version_is_always_refused() -> None:
+    with pytest.raises(ValidationError, match="AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION"):
+        Settings(
+            environment="development",
+            agent_studio_attestation_signing_key="operator-key",
+            agent_studio_attestation_signing_key_version=None,
+        )

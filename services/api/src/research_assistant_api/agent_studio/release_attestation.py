@@ -21,6 +21,20 @@ a third party can trust without also trusting "nobody else could compute a
 SHA-256 hash" -- ``signature_algorithm`` always says which one a caller
 actually received, so nothing here is ever presented as more than it is (no
 fake production success).
+
+A configured signing key must always carry an explicit ``key_version``
+label (``Settings.agent_studio_attestation_signing_key_version``): this is
+the "managed secret with version/rotation" the unkeyed digest is explicitly
+*not* a substitute for. ``key_version`` is embedded in the signed payload
+itself (so it cannot be swapped after the fact) and on the resulting
+``ReleaseAttestation``, so a verifier that retains multiple historical
+secrets (because the active signing key has since been rotated) can look up
+the one specific secret an older attestation was actually signed with,
+rather than guessing. ``Settings`` itself refuses to start in a
+non-test/dev environment with no signing key configured at all (see
+``research_assistant_api.config._forbid_unversioned_or_missing_attestation_signing_key``),
+so the honest-but-unauthenticated digest form can never silently become the
+production default.
 """
 
 from __future__ import annotations
@@ -28,6 +42,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import json
+from collections.abc import Mapping
 from enum import StrEnum
 from typing import Protocol
 
@@ -73,6 +88,7 @@ def _canonical_payload(
     gate_results: tuple[tuple[str, str], ...],
     blocking_gates: tuple[str, ...],
     attested_at_iso: str,
+    key_version: str | None,
 ) -> bytes:
     """Canonical, finite JSON encoding of every field the signature covers.
 
@@ -86,6 +102,11 @@ def _canonical_payload(
     encoding is unambiguous by construction, so no field value (however it is
     composed) can ever be crafted to produce the same payload as a different
     attestation.
+
+    ``key_version`` is included so an attacker who tampers with which
+    signing-key version an attestation *claims* to have been signed with
+    also invalidates the signature -- a verifier can never be tricked into
+    checking the wrong historical secret.
     """
 
     payload = {
@@ -101,6 +122,7 @@ def _canonical_payload(
         "gate_results": [list(pair) for pair in gate_results],
         "blocking_gates": list(blocking_gates),
         "attested_at": attested_at_iso,
+        "key_version": key_version,
     }
     canonical = json.dumps(payload, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
     return canonical.encode("utf-8")
@@ -111,6 +133,7 @@ def build_release_attestation(
     release: AgentRelease,
     gate_report: ReleaseGateReport,
     signing_key: str | None,
+    key_version: str | None = None,
 ) -> ReleaseAttestation:
     """Build a signed ``ReleaseAttestation`` from an already-fetched release
     and its own gate report.
@@ -119,7 +142,24 @@ def build_release_attestation(
     correspond to each other (version/tenant/project mismatch) -- a defensive
     check against ever attesting the wrong pairing, even though callers are
     expected to fetch ``gate_report`` via ``release.gate_report_id``.
+
+    A truthy ``signing_key`` must always be paired with a truthy
+    ``key_version``: an unversioned managed secret cannot be rotated or
+    audited, so this is refused outright rather than silently accepted as an
+    anonymous key. ``key_version`` is ignored (forced to ``None``) when no
+    ``signing_key`` is given, since there is no key to version in the
+    unkeyed digest form.
     """
+
+    if signing_key and not key_version:
+        raise ReleaseAttestationError(
+            "A configured attestation signing key must have an explicit key_version "
+            "(Settings.agent_studio_attestation_signing_key_version) so signed "
+            "ReleaseAttestations can be rotated and audited by version; refusing to "
+            "sign with an unversioned key."
+        )
+    if not signing_key:
+        key_version = None
 
     if (
         gate_report.version_id != release.version_id
@@ -147,6 +187,7 @@ def build_release_attestation(
         gate_results=tuple((result.name.value, result.status.value) for result in gate_report.results),
         blocking_gates=tuple(gate.value for gate in blocking_gates),
         attested_at_iso=attested_at.isoformat(),
+        key_version=key_version,
     )
     if signing_key:
         digest = hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
@@ -170,10 +211,16 @@ def build_release_attestation(
         attested_at=attested_at,
         signature_algorithm=algorithm,
         signature=f"{_SIGNATURE_PREFIX}{algorithm}:{digest}",
+        key_version=key_version,
     )
 
 
-def verify_release_attestation(attestation: ReleaseAttestation, *, signing_key: str | None) -> bool:
+def verify_release_attestation(
+    attestation: ReleaseAttestation,
+    *,
+    signing_key: str | None = None,
+    signing_keys: Mapping[str, str] | None = None,
+) -> bool:
     """Independently recompute an attestation's signature and compare.
 
     A caller (harness startup, or this package's own tests) can use this to
@@ -181,7 +228,31 @@ def verify_release_attestation(attestation: ReleaseAttestation, *, signing_key: 
     signing key (or the knowledge that none is configured) the issuer used.
     Comparison is constant-time (``hmac.compare_digest``) to avoid leaking
     timing information about a partially-correct signature.
+
+    Two verification modes are supported:
+
+    * ``signing_key``: the caller already knows the one specific secret this
+      attestation should have been signed with (the simple, non-rotating
+      case, or verifying a single known-current key).
+    * ``signing_keys``: a mapping of every historical secret this verifier
+      still retains, keyed by version. The attestation's own embedded
+      ``key_version`` selects which secret to use -- this is what makes key
+      rotation verifiable: an attestation signed under a retired key version
+      remains verifiable as long as that version's secret is still in the
+      map, while an attestation claiming an unknown or missing key version
+      fails closed (returns ``False``) rather than guessing.
+
+    If both are omitted, verification proceeds as the unsigned-digest case
+    (``signing_key=None``).
     """
+
+    if signing_keys is not None:
+        if attestation.key_version is None:
+            return False
+        candidate = signing_keys.get(attestation.key_version)
+        if candidate is None:
+            return False
+        signing_key = candidate
 
     canonical = _canonical_payload(
         release_id=attestation.release_id,
@@ -196,6 +267,7 @@ def verify_release_attestation(attestation: ReleaseAttestation, *, signing_key: 
         gate_results=tuple((result.name.value, result.status.value) for result in attestation.gate_results),
         blocking_gates=tuple(gate.value for gate in attestation.blocking_gates),
         attested_at_iso=attestation.attested_at.isoformat(),
+        key_version=attestation.key_version,
     )
     if signing_key:
         expected = hmac.new(signing_key.encode("utf-8"), canonical, hashlib.sha256).hexdigest()
@@ -244,11 +316,26 @@ class StoreBackedReleaseAttestationPort:
     Like release-gate running itself, there is no external provider
     dependency for reading back a release's own already-computed gate
     report -- this package can attest its own gates correctly on its own.
+
+    A truthy ``signing_key`` must always be paired with a truthy
+    ``key_version`` (fails closed at construction time, not at first use):
+    an unversioned managed secret cannot be rotated or audited, matching the
+    same requirement ``build_release_attestation`` enforces.
     """
 
-    def __init__(self, store: AgentStudioStore, *, signing_key: str | None = None) -> None:
+    def __init__(
+        self, store: AgentStudioStore, *, signing_key: str | None = None, key_version: str | None = None
+    ) -> None:
+        if signing_key and not key_version:
+            raise ReleaseAttestationError(
+                "A configured attestation signing key must have an explicit key_version "
+                "so signed ReleaseAttestations can be rotated and audited by version; "
+                "refusing to construct StoreBackedReleaseAttestationPort with an "
+                "unversioned key."
+            )
         self._store = store
         self._signing_key = signing_key
+        self._key_version = key_version if signing_key else None
 
     async def get_attestation(self, request: ReleaseAttestationRequest) -> ReleaseAttestationResult:
         scope = request.scope
@@ -273,6 +360,9 @@ class StoreBackedReleaseAttestationPort:
                 ),
             )
         attestation = build_release_attestation(
-            release=release, gate_report=gate_report, signing_key=self._signing_key
+            release=release,
+            gate_report=gate_report,
+            signing_key=self._signing_key,
+            key_version=self._key_version,
         )
         return ReleaseAttestationResult(outcome=ReleaseAttestationOutcome.ATTESTED, attestation=attestation)
