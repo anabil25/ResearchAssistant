@@ -120,6 +120,68 @@ class RuntimeContextResponse(BaseModel):
         return self
 
 
+class RuntimeMappingRetrieveRequest(BaseModel):
+    """Body a runtime posts to retrieve its own deployment mapping view.
+
+    The opaque ``deployment_id`` travels in the path; the runtime echoes the
+    exact ``mapping_ref``/``mapping_digest`` it was issued so the backend can
+    authorize and confirm the request targets the precise mapping the runtime
+    believes it is bound to.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
+    mapping_ref: str = Field(min_length=1, max_length=400)
+    mapping_digest: str = Field(min_length=1, max_length=200)
+
+
+class RuntimeBindingView(BaseModel):
+    """Runtime-safe projection of the mapping's pinned binding descriptor.
+
+    Carries the operation/binding identity and provider contract the runtime
+    needs to reproduce its request facts, but never the server-side
+    ``allowed_client_app_role_bindings`` allowlist -- a runtime has no business
+    seeing which other identities may load the deployment.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    binding_id: str
+    provider_contract_version: str
+    descriptor_id: str
+    operation_id: str
+    destination_hash_algorithm: Literal["destination:v1:sha256"]
+
+
+class RuntimeMappingView(BaseModel):
+    """Runtime-safe view returned by the mapping-retrieval endpoint.
+
+    Fully mapping-derived (scope/environment/logical agent/backend
+    release+version/provider contract+artifact/binding), minus the server-side
+    client/app-role allowlist. Echoes the exact ``mapping_ref``/``mapping_digest``
+    the runtime authorized with so it can pin them for subsequent context/
+    consume calls.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    protocol: Literal["research-assistant.runtime-control.v1"] = RUNTIME_CONTROL_PROTOCOL
+    deployment_id: str
+    mapping_ref: str
+    mapping_digest: str
+    tenant_id: str
+    project_id: str
+    environment: DeploymentEnvironment
+    logical_agent_id: str
+    backend_release_id: str
+    backend_version: str
+    provider_contract_version: str
+    provider_artifact_digest: str
+    binding: RuntimeBindingView
+    lifecycle_state: str
+
+
 class RuntimeDestinationHash(BaseModel):
     """The destination hash object a runtime computed for its invocation.
 
