@@ -60,20 +60,18 @@ class RuntimeAuthzReason(StrEnum):
     DEPLOYMENT_ID_MISMATCH = "deployment_id_mismatch"
     MAPPING_NOT_YET_EFFECTIVE = "mapping_not_yet_effective"
     MAPPING_EXPIRED = "mapping_expired"
-    MAPPING_REVOKED = "mapping_revoked"
-    MAPPING_SUPERSEDED = "mapping_superseded"
-    MAPPING_RETIRED = "mapping_retired"
     CLIENT_NOT_ALLOWED = "client_not_allowed"
     MAPPING_REF_MISMATCH = "mapping_ref_mismatch"
     MAPPING_REVISION_STALE = "mapping_revision_stale"
     MAPPING_DIGEST_MISMATCH = "mapping_digest_mismatch"
 
 
-#: Map a mapping ``lifecycle_fault`` string to its distinct audit reason.
+#: Map a mapping ``lifecycle_fault`` string to its distinct audit reason. The
+#: immutable mapping expresses ONLY its creation-time validity window, so the
+#: only faults it produces are ``not_yet_effective`` and ``expired``; revocation
+#: and supersession are enforced by the mutable binding ``status`` (a revoked/
+#: superseded binding denies via the loader), not by the mapping.
 _LIFECYCLE_FAULT_REASONS = {
-    "revoked": RuntimeAuthzReason.MAPPING_REVOKED,
-    "superseded": RuntimeAuthzReason.MAPPING_SUPERSEDED,
-    "retired": RuntimeAuthzReason.MAPPING_RETIRED,
     "not_yet_effective": RuntimeAuthzReason.MAPPING_NOT_YET_EFFECTIVE,
     "expired": RuntimeAuthzReason.MAPPING_EXPIRED,
 }

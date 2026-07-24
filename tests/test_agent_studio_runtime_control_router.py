@@ -36,7 +36,6 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDeploymentMapping,
     RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
-    RuntimeMappingLifecycleState,
     RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import InMemoryRuntimeDeploymentMappingStore
@@ -57,7 +56,6 @@ REQUEST_DIGEST = "f" * 64
 def _mapping(
     *,
     deployment_id: str = "dep-1",
-    lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE,
 ) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
@@ -82,7 +80,6 @@ def _mapping(
         allowed_client_app_role_bindings=(
             AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),
         ),
-        lifecycle_state=lifecycle_state,
         revision_sequence=1,
         revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         deployment_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -197,6 +194,7 @@ def _client(
     mapping: RuntimeDeploymentMapping | None,
     *,
     context_resolver: StoreBackedApprovalContextResolver | None = None,
+    binding_status: RuntimeBindingStatus = RuntimeBindingStatus.ACTIVE,
 ) -> TestClient:
     store = InMemoryRuntimeDeploymentMappingStore()
     resolver = InMemoryClientDeploymentBindingIndex()
@@ -204,13 +202,14 @@ def _client(
         store.put(mapping)
     # The authenticated runtime client is server-bound to exactly this
     # deployment's current revision (or "dep-1"/a placeholder revision when there
-    # is no mapping, to exercise the bound-client-but-no-mapping path).
+    # is no mapping, to exercise the bound-client-but-no-mapping path). A REVOKED
+    # tombstone status exercises the binding-status denial path.
     resolver.repoint(
         CLIENT_APP_ID,
         mapping.deployment_id if mapping is not None else "dep-1",
         mapping.revision_sequence if mapping is not None else 1,
         mapping.revision_id if mapping is not None else "no-such-revision",
-        RuntimeBindingStatus.ACTIVE,
+        binding_status,
         expected_current_sequence=None,
     )
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
@@ -326,9 +325,11 @@ def test_retrieve_client_not_allowlisted_is_uniform_404() -> None:
     assert response.status_code == 404
 
 
-def test_retrieve_superseded_mapping_is_uniform_404() -> None:
-    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
-    client = _client(mapping)
+def test_retrieve_revoked_binding_is_uniform_404() -> None:
+    # Revocation is a binding-status fact now: a REVOKED tombstone denies
+    # uniformly (same 404), the loader never reading the mapping.
+    mapping = _mapping()
+    client = _client(mapping, binding_status=RuntimeBindingStatus.REVOKED)
     response = client.post(RETRIEVE_URL, json=_body(mapping), headers={"x-ms-client-principal": _principal_header()})
     assert response.status_code == 404
 
@@ -484,17 +485,12 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
             )
         )
     )
-    # distinct lifecycle faults (expired/revoked/superseded/retired) -- each a
-    # different internal audit reason but the SAME uniform external body.
+    # distinct denial causes -- window faults from the mapping (expired,
+    # not-yet-effective) and a revoked binding-status tombstone -- each a
+    # different internal reason but the SAME uniform external body.
     past = datetime(2020, 1, 1, tzinfo=UTC)
     future = datetime(2099, 1, 1, tzinfo=UTC)
-    for update in (
-        {"lifecycle_state": RuntimeMappingLifecycleState.SUPERSEDED},
-        {"lifecycle_state": RuntimeMappingLifecycleState.RETIRED},
-        {"revoked_at": past},
-        {"expires_at": past},
-        {"revision_created_at": future},  # not-yet-effective
-    ):
+    for update in ({"expires_at": past}, {"revision_created_at": future}):
         faulted = _mapping().model_copy(update=update)
         faulted_client = _client(faulted)
         bodies.append(
@@ -504,6 +500,16 @@ def test_all_denial_reasons_produce_identical_response_body() -> None:
                 )
             )
         )
+    # revoked binding-status tombstone
+    revoked_mapping = _mapping()
+    revoked_client = _client(revoked_mapping, binding_status=RuntimeBindingStatus.REVOKED)
+    bodies.append(
+        _collect(
+            revoked_client.post(
+                RETRIEVE_URL, json=_body(revoked_mapping), headers={"x-ms-client-principal": _principal_header()}
+            )
+        )
+    )
     assert len(set(bodies)) == 1, bodies
 
 

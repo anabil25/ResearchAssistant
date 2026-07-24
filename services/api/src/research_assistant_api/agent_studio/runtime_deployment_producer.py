@@ -45,10 +45,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     NonMonotonicRepointError,
     RuntimeBindingStatus,
 )
-from research_assistant_api.agent_studio.runtime_deployment_mapping import (
-    RuntimeDeploymentMapping,
-    RuntimeMappingLifecycleState,
-)
+from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
 
 #: Bounded CAS retry budget for a repoint racing a concurrent control-plane
@@ -58,18 +55,6 @@ _MAX_REPOINT_ATTEMPTS = 5
 
 class RuntimeDeploymentProducerError(RuntimeError):
     """Base error for control-plane runtime deployment production."""
-
-
-class NonGrantableMappingError(RuntimeDeploymentProducerError):
-    """Raised when GRANT is asked to bind a mapping that is not live authority."""
-
-
-class NonRevokingMappingError(RuntimeDeploymentProducerError):
-    """Raised when REVOKE is given a revision that does not record a revocation."""
-
-
-class FutureDatedRevocationError(RuntimeDeploymentProducerError):
-    """Raised when a revoking revision's ``revoked_at`` is after the write instant."""
 
 
 class RollbackRepointError(RuntimeDeploymentProducerError):
@@ -134,12 +119,6 @@ class RuntimeDeploymentProducer:
         event per client.
         """
         now = _require_aware_utc_now(now)
-        if mapping.lifecycle_state is not RuntimeMappingLifecycleState.ACTIVE or mapping.revoked_at is not None:
-            raise NonGrantableMappingError(
-                "Only an ACTIVE, non-revoked mapping revision may be granted; "
-                f"got lifecycle_state={mapping.lifecycle_state.value}, "
-                f"revoked_at={'set' if mapping.revoked_at is not None else 'unset'}."
-            )
         # Best-effort early rollback/gap rejection before writing an orphan
         # revision; the CAS repoint below is the authoritative check.
         for binding in mapping.allowed_client_app_role_bindings:
@@ -216,48 +195,23 @@ class RuntimeDeploymentProducer:
             return AuditEventKind.RUNTIME_BINDING_REVOKED
         return AuditEventKind.RUNTIME_BINDING_GRANTED if prior is None else AuditEventKind.RUNTIME_BINDING_REPOINTED
 
-    def revoke(
-        self, revoking_revision: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
-    ) -> RuntimeDeploymentMapping:
-        """Withdraw authority for ``revoking_revision``'s deployment.
+    def revoke(self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime) -> None:
+        """Revoke authority for ``mapping``'s deployment: tombstone the binding(s).
 
-        ``revoking_revision`` is a NEW revision recording the revocation
-        (``revoked_at`` set, not future-dated). Fail-closed ordering: every bound
-        client's binding is repointed to a REVOKED TOMBSTONE FIRST (authority
-        withdrawn immediately -- the loader denies on ``status != ACTIVE``),
-        THEN the retiring revision is persisted for durable lineage. The tombstone
-        is NEVER a hard delete: it retains the succession counter and pinned
-        digest so a later re-grant can derive ``next`` without a latest-query and
-        retention keeps its interlock.
+        Under the ratified split, revocation is NOT a mapping fact (an immutable,
+        digest-covered document can never be flipped to revoked). It is a SINGLE
+        CAS write per client that flips the binding ``status`` to ``REVOKED`` at
+        the SAME (sequence, revision_id) -- a tombstone that retains the
+        succession counter and pinned digest so a later re-grant can derive the
+        next sequence without a latest-query. No new mapping revision is written,
+        so the cross-container ordering problem and the half-finished-revoke
+        reconciliation case disappear. Authority is withdrawn immediately (the
+        loader denies on ``status != ACTIVE``); ``mapping`` must be the CURRENT
+        active revision, else the CAS precondition fails.
         """
         now = _require_aware_utc_now(now)
-        if revoking_revision.revoked_at is None:
-            raise NonRevokingMappingError(
-                "REVOKE requires a revoking revision whose revoked_at is set; "
-                "a lifecycle transition is a new revision, never an in-place edit."
-            )
-        if revoking_revision.revoked_at > now:
-            raise FutureDatedRevocationError(
-                "revoked_at must not be after the write instant; revocation records "
-                "an act that has already happened (use expires_at for a future window)."
-            )
-        for binding in revoking_revision.allowed_client_app_role_bindings:
-            self._cas_repoint(
-                binding.client_app_id, revoking_revision, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now
-            )
-        return self._mapping_store.put(revoking_revision)
-
-    def reconcile_revoke(
-        self, revoking_revision: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
-    ) -> RuntimeDeploymentMapping:
-        """Idempotently COMPLETE a REVOKE whose retiring-revision write failed (D).
-
-        The tombstone repoint is idempotent (re-affirming the identical REVOKED
-        revision), and the store put is idempotent for identical content, so this
-        re-drives the whole revoke and re-persists the retiring revision. Safe to
-        call repeatedly; the durable lineage record is never lost.
-        """
-        return self.revoke(revoking_revision, actor_id=actor_id, now=now)
+        for binding in mapping.allowed_client_app_role_bindings:
+            self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
 
     def retire_revision(
         self, deployment_id: str, revision_sequence: int, revision_id: str, client_app_ids: tuple[str, ...]

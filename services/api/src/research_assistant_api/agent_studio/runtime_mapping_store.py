@@ -158,7 +158,6 @@ class CosmosRuntimeDeploymentMappingStore:
             "tenant_id": mapping.tenant_id,
             "project_id": mapping.project_id,
             "logical_agent_id": mapping.logical_agent_id,
-            "lifecycle_state": mapping.lifecycle_state.value,
             "payload": mapping.model_dump(mode="json"),
         }
         try:

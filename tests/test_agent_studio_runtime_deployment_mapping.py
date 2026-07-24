@@ -15,7 +15,6 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
     RuntimeInstanceRef,
-    RuntimeMappingLifecycleState,
     RuntimeOperationRef,
     RuntimePolicyRef,
     compute_mapping_digest,
@@ -53,8 +52,7 @@ def _mapping(
     *,
     deployment_id: str = "dep-1",
     allowed: tuple[AllowedClientAppRoleBinding, ...] | None = None,
-    supersedes_deployment_id: str | None = None,
-    lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE,
+    revision_sequence: int = 1,
 ) -> RuntimeDeploymentMapping:
     return RuntimeDeploymentMapping(
         deployment_id=deployment_id,
@@ -74,9 +72,7 @@ def _mapping(
             if allowed is not None
             else (AllowedClientAppRoleBinding(client_app_id="client-app-1", app_role="research-assistant.runtime"),)
         ),
-        lifecycle_state=lifecycle_state,
-        supersedes_deployment_id=supersedes_deployment_id,
-        revision_sequence=1,
+        revision_sequence=revision_sequence,
         revision_created_at=FIXED_CREATED_AT,
         deployment_created_at=FIXED_CREATED_AT,
         created_by="release-service",
@@ -113,10 +109,7 @@ def test_mapping_digest_is_versioned_and_stable() -> None:
 def test_mapping_digest_changes_when_any_authoritative_field_changes() -> None:
     base = _mapping().mapping_digest
     assert _mapping(deployment_id="dep-2").mapping_digest != base
-    assert (
-        _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED).mapping_digest != base
-    )
-    assert _mapping(supersedes_deployment_id="dep-0").mapping_digest != base
+    assert _mapping(revision_sequence=2).mapping_digest != base
     allowed = (
         AllowedClientAppRoleBinding(client_app_id="client-app-2", app_role="research-assistant.runtime"),
     )
@@ -178,20 +171,6 @@ def test_mapping_accepts_distinct_allowlist_entries() -> None:
 # --- supersession validator ------------------------------------------------
 
 
-def test_mapping_rejects_self_supersession() -> None:
-    with pytest.raises(ValidationError, match="supersedes_deployment_id must not equal deployment_id"):
-        _mapping(deployment_id="dep-1", supersedes_deployment_id="dep-1")
-
-
-def test_mapping_allows_absent_supersession() -> None:
-    assert _mapping(supersedes_deployment_id=None).supersedes_deployment_id is None
-
-
-def test_mapping_allows_distinct_supersession() -> None:
-    mapping = _mapping(deployment_id="dep-2", supersedes_deployment_id="dep-1")
-    assert mapping.supersedes_deployment_id == "dep-1"
-
-
 # --- immutability / strictness ---------------------------------------------
 
 
@@ -203,8 +182,14 @@ def test_mapping_is_frozen_and_forbids_extra_fields() -> None:
         RuntimeDeploymentMapping(**{**mapping.model_dump(), "unexpected": "x"})
 
 
-def test_lifecycle_states_are_exhaustive() -> None:
-    assert {state.value for state in RuntimeMappingLifecycleState} == {"active", "superseded", "retired"}
+def test_mapping_carries_no_revocation_or_supersession_state() -> None:
+    # Ratified: revocation/supersession are NOT mapping facts (an immutable,
+    # digest-covered doc can never be flipped after issuance). They live on the
+    # mutable binding status.
+    fields = set(_mapping().model_dump().keys())
+    assert "revoked_at" not in fields
+    assert "lifecycle_state" not in fields
+    assert "supersedes_deployment_id" not in fields
 
 
 # --- L1: aware-UTC timestamps ----------------------------------------------
@@ -234,31 +219,21 @@ def test_is_effective_at_true_for_active_unexpired_unrevoked() -> None:
     assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is True
 
 
-def test_is_effective_at_false_when_superseded() -> None:
-    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
-    assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is False
-
-
-def test_is_effective_at_false_when_revoked() -> None:
-    mapping = _mapping().model_copy(update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC)})
-    assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is False
-
-
 def test_is_effective_at_false_after_expiry() -> None:
     mapping = _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)})
     assert mapping.is_effective_at(datetime(2026, 3, 1, 0, 0, 1, tzinfo=UTC)) is False
     assert mapping.is_effective_at(datetime(2026, 2, 1, tzinfo=UTC)) is True
 
 
-def test_lifecycle_fault_reports_the_specific_cause() -> None:
+def test_lifecycle_fault_reports_only_window_faults() -> None:
+    # The immutable mapping expresses ONLY its creation-time window; revocation
+    # and supersession are binding-status facts, not mapping faults.
     now = datetime(2026, 6, 1, tzinfo=UTC)
     assert _mapping().lifecycle_fault(now) is None
-    assert _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED).lifecycle_fault(now) == "superseded"
-    assert _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED).lifecycle_fault(now) == "retired"
-    revoked = _mapping().model_copy(update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC)})
-    assert revoked.lifecycle_fault(now) == "revoked"
     expired = _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)})
     assert expired.lifecycle_fault(now) == "expired"
+    future = _mapping().model_copy(update={"revision_created_at": datetime(2027, 1, 1, tzinfo=UTC)})
+    assert future.lifecycle_fault(now) == "not_yet_effective"
 
 
 def test_lifecycle_fault_not_yet_effective_before_created_at() -> None:
@@ -299,14 +274,6 @@ def test_permits_single_instant_window() -> None:
     assert mapping.lifecycle_fault(created) is None
 
 
-def test_rejects_revoked_before_created() -> None:
-    created = datetime(2026, 3, 1, tzinfo=UTC)
-    with pytest.raises(ValidationError, match="revoked_at must not be before revision_created_at"):
-        RuntimeDeploymentMapping(
-            **{**_mapping().model_dump(), "revision_created_at": created, "revoked_at": created - timedelta(seconds=1)}
-        )
-
-
 def test_same_inputs_produce_identical_digest() -> None:
     # The positive proof the default-factory defect class is gone: two same-input
     # constructions digest identically.
@@ -314,14 +281,6 @@ def test_same_inputs_produce_identical_digest() -> None:
     a = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_created_at": created})
     b = RuntimeDeploymentMapping(**{**_mapping().model_dump(), "revision_created_at": created})
     assert a.mapping_digest == b.mapping_digest
-
-
-def test_lifecycle_fault_prioritizes_revocation_over_expiry() -> None:
-    now = datetime(2026, 6, 1, tzinfo=UTC)
-    mapping = _mapping().model_copy(
-        update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC), "expires_at": datetime(2026, 3, 1, tzinfo=UTC)}
-    )
-    assert mapping.lifecycle_fault(now) == "revoked"
 
 
 def test_revision_created_at_is_required() -> None:
@@ -338,10 +297,9 @@ def test_deployment_created_at_is_required() -> None:
         RuntimeDeploymentMapping(**payload)
 
 
-def test_expiry_and_revocation_change_the_digest() -> None:
+def test_expiry_changes_the_digest() -> None:
     base = _mapping().mapping_digest
     assert _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
-    assert _mapping().model_copy(update={"revoked_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
 
 
 def test_revision_sequence_is_covered_by_digest_and_ref() -> None:

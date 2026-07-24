@@ -45,7 +45,6 @@ from __future__ import annotations
 import hashlib
 import json
 from datetime import UTC, datetime
-from enum import StrEnum
 from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -147,21 +146,6 @@ _MAPPING_DIGEST_PREFIX = "runtime-deployment-mapping:v1:sha256:"
 #: names ``scope.compute_destination_hash``'s versioned scheme so a runtime
 #: reproduces the identical value; it is never invented ad hoc per caller.
 RUNTIME_DESTINATION_HASH_ALGORITHM: Literal["destination:v1:sha256"] = "destination:v1:sha256"
-
-
-class RuntimeMappingLifecycleState(StrEnum):
-    """Lifecycle state of one immutable ``RuntimeDeploymentMapping``.
-
-    ``ACTIVE``: the mapping is the current, servable binding for its
-    deployment. ``SUPERSEDED``: a newer mapping has replaced it (its
-    ``deployment_id`` is named by the newer mapping's ``supersedes_deployment_id``)
-    but it is retained for lineage/audit. ``RETIRED``: the deployment is
-    permanently withdrawn and must never be served again.
-    """
-
-    ACTIVE = "active"
-    SUPERSEDED = "superseded"
-    RETIRED = "retired"
 
 
 class RuntimeDestinationHashPolicy(BaseModel):
@@ -335,29 +319,23 @@ class RuntimeDeploymentMapping(BaseModel):
     binding: RuntimeBindingDescriptor
     allowed_client_app_role_bindings: tuple[AllowedClientAppRoleBinding, ...]
 
-    lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE
-    supersedes_deployment_id: str | None = Field(default=None, max_length=200)
-
-    #: Monotonic integer revision of this deployment. Each new revision of a
-    #: deployment (supersession, revocation, retirement) carries a strictly
-    #: greater ``revision_sequence`` than the one it succeeds; the control-plane
-    #: producer enforces strictly-increasing repointing against the current
-    #: binding pointer (rollback protection). It is a plain digest-covered
-    #: integer and is NEVER derived from any timestamp -- a caller-supplied or
-    #: skewed clock must not be able to order revisions.
+    #: Monotonic integer revision of this deployment. Each new revision carries a
+    #: strictly greater ``revision_sequence`` than the one it succeeds (item id is
+    #: ``deployment_id:sequence``); the control-plane producer enforces
+    #: strictly-increasing repointing against the current binding pointer
+    #: (rollback protection). It is a plain digest-covered integer and is NEVER
+    #: derived from any timestamp -- a caller-supplied or skewed clock must not be
+    #: able to order revisions.
     revision_sequence: int = Field(ge=1)
 
-    #: Optional hard expiry: after this instant the mapping is no longer valid
-    #: authority even if its ``lifecycle_state`` is still ``ACTIVE`` and it was
-    #: never explicitly revoked. Aware UTC. Evaluated against the REVISION
-    #: instant window ``[revision_created_at, expires_at]``.
+    #: Optional creation-time TTL: after this instant the mapping revision is
+    #: past its window. Immutable and digest-covered (a legitimate creation-time
+    #: fact), evaluated against ``[revision_created_at, expires_at]``. Revocation
+    #: and supersession are NOT expressed here -- an immutable, digest-covered
+    #: document can never be flipped to a revoked/superseded state after
+    #: issuance, so those are enforced by the mutable, server-owned binding
+    #: record's ``status`` (see ``runtime_client_binding``), not by the mapping.
     expires_at: datetime | None = None
-    #: Set (aware UTC) once the mapping has been revoked; a revoked mapping is
-    #: permanently invalid authority regardless of lifecycle/expiry. On a
-    #: retiring revision this is set at construction (a "born revoked" revision
-    #: is the normal revocation mechanism under the revision model), so
-    #: ``revoked_at >= revision_created_at`` (equal is valid).
-    revoked_at: datetime | None = None
 
     #: Aware-UTC instant THIS REVISION was written. REQUIRED (no default): a
     #: mapping revision is authoritative content whose timestamp is inside the
@@ -373,7 +351,7 @@ class RuntimeDeploymentMapping(BaseModel):
     deployment_created_at: datetime
     created_by: str = Field(min_length=1, max_length=200)
 
-    @field_validator("revision_created_at", "deployment_created_at", "expires_at", "revoked_at")
+    @field_validator("revision_created_at", "deployment_created_at", "expires_at")
     @classmethod
     def _timestamps_are_aware_utc(cls, value: datetime | None) -> datetime | None:
         if value is None:
@@ -403,30 +381,16 @@ class RuntimeDeploymentMapping(BaseModel):
         return self
 
     @model_validator(mode="after")
-    def _supersession_is_not_self_referential(self) -> RuntimeDeploymentMapping:
-        """A mapping can never declare that it supersedes its own deployment."""
-        if self.supersedes_deployment_id is not None and self.supersedes_deployment_id == self.deployment_id:
-            raise ValueError("supersedes_deployment_id must not equal deployment_id.")
-        return self
-
-    @model_validator(mode="after")
     def _validity_window_is_coherent(self) -> RuntimeDeploymentMapping:
-        """Structural coherence of the [revision_created_at, expires_at] window and revocation.
+        """Structural coherence of the immutable [revision_created_at, expires_at] window.
 
-        Both window bounds are inclusive (see ``lifecycle_fault``) and are
-        evaluated against the REVISION instant. An empty window
-        (``expires_at < revision_created_at``) is rejected; the degenerate
-        single-instant window (``expires_at == revision_created_at``) is
-        permitted. A ``revoked_at`` before ``revision_created_at`` is rejected --
-        a revoking revision is *born* at the revocation instant, so
-        ``revoked_at >= revision_created_at`` (equal is valid). "Not
-        future-dated" (revoked_at must be <= the write instant) is a
-        producer-level check where an injected ``now`` is available.
+        Both bounds are inclusive (see ``lifecycle_fault``), evaluated against the
+        REVISION instant. An empty window (``expires_at < revision_created_at``)
+        is rejected; the degenerate single-instant window
+        (``expires_at == revision_created_at``) is permitted.
         """
         if self.expires_at is not None and self.expires_at < self.revision_created_at:
             raise ValueError("expires_at must not be before revision_created_at (empty validity window).")
-        if self.revoked_at is not None and self.revoked_at < self.revision_created_at:
-            raise ValueError("revoked_at must not be before revision_created_at.")
         return self
 
     @property
@@ -451,37 +415,25 @@ class RuntimeDeploymentMapping(BaseModel):
 
     @property
     def revision_id(self) -> str:
-        """Content-addressed revision identifier for this exact mapping content.
+        """Content-addressed revision identifier (hex tail of ``mapping_digest``).
 
-        A mapping is immutable and content-addressed; a *lifecycle transition*
-        (ACTIVE -> REVOKED/RETIRED/SUPERSEDED) is effected by writing a NEW
-        revision, never by mutating an existing document. The revision id is the
-        hex tail of ``mapping_digest`` (stable per exact content), so two
-        revisions of one ``deployment_id`` coexist in the same partition under
-        distinct item ids and a superseding revision never collides with the
-        revision it supersedes.
+        The digest pins the exact immutable content of this revision; the store
+        item id is ``deployment_id:sequence`` (not the digest), and the binding
+        pins this ``revision_id`` so a repoint is detectable and a stored
+        revision whose content doesn't match the pin is denied.
         """
         return self.mapping_digest.rsplit(":", 1)[-1]
 
     def lifecycle_fault(self, now: datetime) -> str | None:
-        """The specific reason the mapping is not currently valid authority, or
-        ``None`` if it is effective at ``now``.
+        """The window fault of this mapping revision at ``now``, or ``None``.
 
-        Returns exactly one distinct fault -- ``"revoked"``, ``"superseded"``,
-        ``"retired"``, ``"not_yet_effective"`` (``now`` is before ``created_at``,
-        possible now that ``created_at`` is caller-supplied), or ``"expired"`` --
-        so authorization can record a precise audit reason (revocation is a
-        deliberate act, distinct from a lapsed expiry or a not-yet-valid window)
-        even though the external response stays uniform. Revocation takes
-        priority, then lifecycle state, then the validity window
-        (not-yet-effective before expired). ``now`` must be aware UTC.
+        The immutable mapping expresses ONLY its creation-time validity window,
+        so this returns ``"not_yet_effective"`` (``now`` before
+        ``revision_created_at``) or ``"expired"`` (``now`` after ``expires_at``),
+        both bounds inclusive. Revocation and supersession are NOT mapping facts
+        -- they live on the mutable binding ``status`` and are evaluated there.
+        ``now`` must be aware UTC.
         """
-        if self.revoked_at is not None:
-            return "revoked"
-        if self.lifecycle_state is RuntimeMappingLifecycleState.SUPERSEDED:
-            return "superseded"
-        if self.lifecycle_state is RuntimeMappingLifecycleState.RETIRED:
-            return "retired"
         if now < self.revision_created_at:
             return "not_yet_effective"
         if self.expires_at is not None and now > self.expires_at:
@@ -489,7 +441,7 @@ class RuntimeDeploymentMapping(BaseModel):
         return None
 
     def is_effective_at(self, now: datetime) -> bool:
-        """True iff the mapping is currently valid authority at ``now`` (aware UTC)."""
+        """True iff the mapping's window is currently open at ``now`` (aware UTC)."""
         return self.lifecycle_fault(now) is None
 
 
@@ -523,11 +475,8 @@ def compute_mapping_digest(mapping: RuntimeDeploymentMapping) -> str:
         "allowed_client_app_role_bindings": [
             entry.model_dump(mode="json") for entry in mapping.allowed_client_app_role_bindings
         ],
-        "lifecycle_state": mapping.lifecycle_state.value,
-        "supersedes_deployment_id": mapping.supersedes_deployment_id,
         "revision_sequence": mapping.revision_sequence,
         "expires_at": mapping.expires_at.isoformat() if mapping.expires_at is not None else None,
-        "revoked_at": mapping.revoked_at.isoformat() if mapping.revoked_at is not None else None,
         "revision_created_at": mapping.revision_created_at.isoformat(),
         "deployment_created_at": mapping.deployment_created_at.isoformat(),
         "created_by": mapping.created_by,

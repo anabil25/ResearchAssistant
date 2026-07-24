@@ -217,7 +217,6 @@ class RuntimeMappingView(BaseModel):
     provider_contract_version: str
     provider_artifact_digest: str
     binding: RuntimeBindingView
-    lifecycle_state: str
 
 
 class RuntimeDestinationHash(BaseModel):

@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
 import pytest
 from research_assistant_api.agent_studio.audit_service import AuditService, InMemoryAuditStore
@@ -17,13 +17,9 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDeploymentMapping,
     RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
-    RuntimeMappingLifecycleState,
     RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_deployment_producer import (
-    FutureDatedRevocationError,
-    NonGrantableMappingError,
-    NonRevokingMappingError,
     RevisionStillReferencedError,
     RollbackRepointError,
     RuntimeDeploymentProducer,
@@ -45,8 +41,6 @@ def _mapping(
     deployment_id: str = "dep-1",
     backend_version: str = "1.2.3",
     revision_sequence: int = 1,
-    lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE,
-    revoked_at: datetime | None = None,
 ) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
@@ -71,9 +65,7 @@ def _mapping(
         allowed_client_app_role_bindings=(
             AllowedClientAppRoleBinding(client_app_id=CLIENT, app_role="research-assistant.runtime"),
         ),
-        lifecycle_state=lifecycle_state,
         revision_sequence=revision_sequence,
-        revoked_at=revoked_at,
         revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         deployment_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="control-plane",
@@ -159,22 +151,6 @@ def test_grant_rejects_same_sequence_different_content() -> None:
         producer.grant(_mapping(revision_sequence=2, backend_version="9.9.9"), actor_id=ACTOR, now=NOW)
 
 
-def test_grant_rejects_non_active_mapping() -> None:
-    producer, store, index, _audit = _producer()
-    retired = _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED)
-    with pytest.raises(NonGrantableMappingError):
-        producer.grant(retired, actor_id=ACTOR, now=NOW)
-    assert store.get("dep-1", 1) is None
-    assert index.resolve_binding(CLIENT, "dep-1") is None
-
-
-def test_grant_rejects_revoked_mapping() -> None:
-    producer, _store, _index, _audit = _producer()
-    revoked = _mapping(revoked_at=datetime(2026, 1, 1, 13, 0, 0, tzinfo=UTC))
-    with pytest.raises(NonGrantableMappingError):
-        producer.grant(revoked, actor_id=ACTOR, now=NOW)
-
-
 def test_grant_rejects_naive_now() -> None:
     producer, _store, _index, _audit = _producer()
     with pytest.raises(ValueError, match="now must be timezone-aware"):
@@ -186,78 +162,50 @@ def test_divergent_content_at_same_sequence_is_conflict() -> None:
     # same sequence; the store adjudicates and the second is a hard conflict.
     producer, _store, _index, _audit = _producer()
     producer.grant(_mapping(revision_sequence=1, backend_version="1.2.3"), actor_id=ACTOR, now=NOW)
-    # A different content forced at the SAME sequence (bypassing the successor
-    # pre-check by using an unbound second client is not possible under 1:1, so
-    # drive the store directly through a fresh producer sharing the store).
     with pytest.raises(RuntimeMappingConflictError):
         _store.put(_mapping(revision_sequence=1, backend_version="9.9.9"))
 
 
-# --- REVOKE (tombstone) ----------------------------------------------------
+# --- REVOKE (binding-status tombstone, no new mapping revision) -------------
 
 
-def test_revoke_tombstones_binding_then_writes_retiring_revision() -> None:
+def test_revoke_flips_binding_to_revoked_tombstone_in_place() -> None:
+    # Ratified: REVOKE is a single CAS write flipping the binding status to
+    # REVOKED at the SAME (sequence, revision_id) -- no new mapping revision, no
+    # store write. The row survives (counter + digest preserved).
     producer, store, index, audit = _producer()
     active = _mapping(revision_sequence=1)
     producer.grant(active, actor_id=ACTOR, now=NOW)
-    revoking = _mapping(
-        revision_sequence=2,
-        lifecycle_state=RuntimeMappingLifecycleState.RETIRED,
-        revoked_at=datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
-    )
-    persisted = producer.revoke(revoking, actor_id=ACTOR, now=NOW)
-    # Authority withdrawn as a TOMBSTONE, not a delete: the row survives REVOKED.
+    producer.revoke(active, actor_id=ACTOR, now=NOW)
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is RuntimeBindingStatus.REVOKED
-    assert resolution.revision_sequence == 2
-    assert store.get("dep-1", 2) is persisted
+    assert resolution.revision_sequence == 1  # same sequence, tombstoned in place
+    # No new/retiring mapping revision was written.
+    assert store.get("dep-1", 2) is None
     assert store.get("dep-1", 1) is active
     applied = _events(audit, AuditEventKind.RUNTIME_BINDING_REVOKED, "applied")
     assert len(applied) == 1
 
 
-def test_revoke_requires_a_revoking_revision() -> None:
-    producer, _store, _index, _audit = _producer()
-    with pytest.raises(NonRevokingMappingError):
-        producer.revoke(_mapping(), actor_id=ACTOR, now=NOW)
-
-
-def test_revoke_rejects_future_dated_revocation() -> None:
-    producer, _store, _index, _audit = _producer()
-    with pytest.raises(FutureDatedRevocationError):
-        producer.revoke(_mapping(revoked_at=NOW + timedelta(hours=1)), actor_id=ACTOR, now=NOW)
-
-
-def test_revoke_permits_revocation_at_the_write_instant() -> None:
-    producer, store, _index, _audit = _producer()
+def test_revoke_preserves_counter_for_later_re_grant() -> None:
+    # After revoke, the tombstone retains the sequence, so a later re-grant
+    # advances to N+1 (no sequence-1 collision, no latest-query needed).
+    producer, store, index, _audit = _producer()
     producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
-    at_now = _mapping(revision_sequence=2, lifecycle_state=RuntimeMappingLifecycleState.RETIRED, revoked_at=NOW)
-    producer.revoke(at_now, actor_id=ACTOR, now=NOW)
+    producer.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    producer.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is RuntimeBindingStatus.ACTIVE
+    assert resolution.revision_sequence == 2
     assert store.get("dep-1", 2) is not None
 
 
 def test_revoke_rejects_naive_now() -> None:
     producer, _store, _index, _audit = _producer()
-    revoking = _mapping(revoked_at=datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC))
     with pytest.raises(ValueError, match="now must be timezone-aware"):
-        producer.revoke(revoking, actor_id=ACTOR, now=datetime(2026, 1, 2, 12, 0, 0))
-
-
-def test_reconcile_revoke_is_idempotent() -> None:
-    producer, store, index, _audit = _producer()
-    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
-    revoking = _mapping(
-        revision_sequence=2,
-        lifecycle_state=RuntimeMappingLifecycleState.RETIRED,
-        revoked_at=datetime(2026, 1, 2, 0, 0, 0, tzinfo=UTC),
-    )
-    producer.revoke(revoking, actor_id=ACTOR, now=NOW)
-    producer.reconcile_revoke(revoking, actor_id=ACTOR, now=NOW)  # must not raise
-    resolution = index.resolve_binding(CLIENT, "dep-1")
-    assert resolution is not None
-    assert resolution.status is RuntimeBindingStatus.REVOKED
-    assert store.get("dep-1", 2) is not None
+        producer.revoke(_mapping(), actor_id=ACTOR, now=datetime(2026, 1, 2, 12, 0, 0))
 
 
 # --- retention interlock ---------------------------------------------------

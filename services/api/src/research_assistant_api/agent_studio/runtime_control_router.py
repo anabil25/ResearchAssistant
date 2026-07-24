@@ -229,5 +229,4 @@ def _mapping_view(mapping: RuntimeDeploymentMapping) -> RuntimeMappingView:
             operation_id=mapping.binding.operation_ref.id,
             destination_hash_algorithm=mapping.binding.destination_hash_policy.algorithm,
         ),
-        lifecycle_state=mapping.lifecycle_state.value,
     )

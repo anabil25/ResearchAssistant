@@ -20,7 +20,6 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDeploymentMapping,
     RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
-    RuntimeMappingLifecycleState,
     RuntimeOperationRef,
 )
 
@@ -34,7 +33,6 @@ FIXED_NOW = datetime(2026, 6, 1, 12, 0, 0, tzinfo=UTC)
 def _mapping(
     *,
     deployment_id: str = "dep-1",
-    lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE,
     allowed: tuple[AllowedClientAppRoleBinding, ...] | None = None,
 ) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
@@ -62,7 +60,6 @@ def _mapping(
             if allowed is not None
             else (AllowedClientAppRoleBinding(client_app_id=CLIENT_APP_ID, app_role=RUNTIME_ROLE),)
         ),
-        lifecycle_state=lifecycle_state,
         revision_sequence=1,
         revision_created_at=FIXED_NOW,
         deployment_created_at=FIXED_NOW,
@@ -184,18 +181,6 @@ def test_mapping_not_found_is_denied() -> None:
     assert loader.calls == 1
 
 
-def test_superseded_mapping_is_denied() -> None:
-    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
-    decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_SUPERSEDED
-
-
-def test_retired_mapping_is_denied() -> None:
-    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED)
-    decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_RETIRED
-
-
 def test_not_yet_effective_mapping_is_denied() -> None:
     mapping = _mapping().model_copy(update={"revision_created_at": FIXED_NOW + timedelta(days=1)})
     decision, _ = _authorize(mapping)
@@ -214,12 +199,6 @@ def test_not_yet_expired_mapping_passes_lifecycle_at_injected_now() -> None:
     mapping = _mapping().model_copy(update={"expires_at": FIXED_NOW + timedelta(hours=1)})
     decision, _ = _authorize(mapping)
     assert decision.authorized
-
-
-def test_revoked_mapping_is_denied() -> None:
-    mapping = _mapping().model_copy(update={"revoked_at": FIXED_NOW - timedelta(minutes=1)})
-    decision, _ = _authorize(mapping)
-    assert decision.reason is RuntimeAuthzReason.MAPPING_REVOKED
 
 
 def test_authorize_rejects_naive_now() -> None:
