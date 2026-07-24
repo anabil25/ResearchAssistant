@@ -62,11 +62,36 @@ flowchart LR
   legacy `provider-discovery://` sentinels and cross-scope attestations or
   invocations are rejected.
 
+### Release identity and lineage boundary
+
+- `scripts/build_agent_source_tree.py` derives logical source identity from
+  committed Git blobs at a named commit and `agents/` tree, using a versioned
+  inclusion policy. It never hashes worktree, ZIP, or OCI bytes. The generated
+  `agents/.release/source-tree.json` carries its own canonical digest, which
+  runtime recomputes before accepting the identity. Because anyone can
+  regenerate the manifest from its named Git objects, it is a correctness
+  control rather than an unverified consistency snapshot.
+- `HarnessSettings.source_tree_digest` is required. Making this field required
+  is a deliberate exception to the harness's additive-only contract rule and
+  marks an explicit release-lineage boundary. Missing manifests fail closed and
+  name the producer; direct Python launches, offline harnesses, and deployment
+  paths that bypass the producer receive no ambient filesystem fallback.
+- A source-lineage change changes `release_id`. `ApprovalConsumptionRequest`
+  includes `release_id` in its canonical digest, so an approval minted for a
+  prior release is rejected with `approval_binding_mismatch` and must be issued
+  again for the successor release. Idempotency lookup identity remains
+  release-independent; release provenance is checked after record retrieval.
+- Predeploy validation rejects package-eligible tracked or untracked worktree
+  drift so the direct-code remote-build upload cannot claim a committed source
+  identity for different bytes. Checkout-only newline translation is allowed.
+  A future immutable deployed-artifact digest is separate evidence and must not
+  be folded into release, approval, idempotency, or parent-lineage identity.
+
 ### Runtime governance boundary
 
 - Hosted startup fails before constructing or serving an agent unless an
   application-owned durable release attestor confirms the immutable release,
-  schemas, source bundle, model/provider pins, and every objective hard gate.
+  schemas, source tree, model/provider pins, and every objective hard gate.
   Evaluator scores are advisory and never substitute for these gates.
 - Consequential capabilities claim durable idempotency first, atomically
   consume an exact-bound one-time `approval_decision_id`, persist the receipt,

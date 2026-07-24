@@ -25,7 +25,14 @@ class HarnessSettings(BaseModel):
     foundry_project_endpoint: HttpUrl
     model_deployment_name: str = Field(min_length=1)
     model_deployment_version: str | None = Field(default=None, min_length=1)
-    source_tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_tree_digest: str = Field(
+        pattern=r"^[0-9a-f]{64}$",
+        description=(
+            "Required digest produced by scripts/build_agent_source_tree.py from committed "
+            "Git objects. This deliberate additive-only contract exception changes release_id "
+            "and ApprovalConsumptionRequest identity when the committed source lineage changes."
+        ),
+    )
     managed_identity_client_id: str | None = None
     toolbox_endpoint: HttpUrl | None = None
     deployment_tenant_id: str | None = Field(default=None, min_length=1, max_length=256)

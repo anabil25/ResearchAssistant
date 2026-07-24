@@ -2233,6 +2233,32 @@ async def test_in_memory_approval_consumption_is_atomic_and_exact() -> None:
 
 
 @pytest.mark.asyncio
+async def test_prior_release_approval_is_rejected_after_source_identity_lineage_change() -> None:
+    capability = _external_capability()
+    _, binding = _external_registry(capability, lambda payload: payload)
+    prior_request = _approval_request(
+        binding,
+        _external_context(),
+        f"sha256:{'a' * 64}",
+    )
+    corrected_request = prior_request.model_copy(
+        update={"release_id": f"sha256:{'b' * 64}"}
+    )
+    now = datetime(2026, 7, 24, tzinfo=UTC)
+    adapter = InMemoryApprovalConsumptionAdapter(clock=lambda: now)
+    await adapter.issue(_approval_grant(prior_request))
+
+    result = await adapter.consume(corrected_request)
+
+    assert prior_request.digest != corrected_request.digest
+    assert result.disposition == ApprovalConsumptionDisposition.MISMATCH
+    assert result.reason_code == "approval_binding_mismatch"
+    assert result.request_digest == corrected_request.digest
+    assert result.approval_version == "1"
+    assert result.receipt is None
+
+
+@pytest.mark.asyncio
 async def test_executor_consumes_exact_approval_and_persists_receipt() -> None:
     release_id = f"sha256:{'c' * 64}"
     context = _external_context()

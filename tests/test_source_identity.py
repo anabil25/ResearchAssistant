@@ -314,8 +314,12 @@ def test_baked_manifest_loader_fails_closed(
     assert load_baked_source_tree_manifest().source_root == "agents"
 
     missing = tmp_path / "missing.json"
-    with pytest.raises(ConfigurationError, match="missing or invalid"):
+    with pytest.raises(
+        ConfigurationError,
+        match=r"scripts/build_agent_source_tree\.py",
+    ) as exc:
         load_baked_source_tree_manifest(missing)
+    assert exc.value.context["producer"] == "scripts/build_agent_source_tree.py"
 
     invalid = tmp_path / "invalid.json"
     invalid.write_text(json.dumps(_manifest_payload(entry_count=0)), encoding="utf-8")

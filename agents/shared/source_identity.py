@@ -33,8 +33,12 @@ def load_baked_source_tree_manifest(path: Path | None = None) -> BakedSourceTree
         manifest = BakedSourceTreeManifest.model_validate_json(payload)
     except (OSError, UnicodeError, ValidationError) as exc:
         raise ConfigurationError(
-            "Baked Hosted Agent source identity is missing or invalid",
-            context={"path": str(manifest_path)},
+            "Baked Hosted Agent source identity is missing or invalid; "
+            "run scripts/build_agent_source_tree.py before startup",
+            context={
+                "path": str(manifest_path),
+                "producer": "scripts/build_agent_source_tree.py",
+            },
         ) from exc
     # Git-object provenance makes this an independently regenerable correctness control.
     expected_digest = canonical_digest(
@@ -42,7 +46,11 @@ def load_baked_source_tree_manifest(path: Path | None = None) -> BakedSourceTree
     )
     if not hmac.compare_digest(manifest.source_manifest_digest, expected_digest):
         raise ConfigurationError(
-            "Baked Hosted Agent source identity failed its canonical digest check",
-            context={"path": str(manifest_path)},
+            "Baked Hosted Agent source identity failed its canonical digest check; "
+            "regenerate it with scripts/build_agent_source_tree.py",
+            context={
+                "path": str(manifest_path),
+                "producer": "scripts/build_agent_source_tree.py",
+            },
         )
     return manifest
