@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from hashlib import sha256
 from threading import RLock
 from typing import Any, Literal
 from uuid import uuid4
@@ -163,6 +164,77 @@ class ApprovalDecision(BaseModel):
         return value
 
 
+class DatasetApprovalState(StrEnum):
+    """Lifecycle of a durable, server-issued Dataset Studio analysis approval.
+
+    ``PENDING``/``APPROVED``/``REJECTED`` mirror a human reviewer decision.
+    ``CONSUMED`` is a distinct, terminal state reached only once, at the
+    moment an ``APPROVED`` request is actually spent to authorize a single
+    dataset-analysis invocation -- this makes a decided approval single-use
+    and non-replayable, exactly like ``ApprovalConsumptionPort`` in the
+    Agent Studio package it is modeled after.
+    """
+
+    PENDING = "pending"
+    APPROVED = "approved"
+    REJECTED = "rejected"
+    CONSUMED = "consumed"
+
+
+def compute_dataset_plan_fingerprint(
+    *,
+    project_id: str,
+    objective: str,
+    filename: str,
+    csv_text: str,
+) -> str:
+    """Deterministically bind a dataset approval to the exact plan it may
+    authorize.
+
+    A decided approval can never be replayed against a different project,
+    objective, filename, or CSV content: changing any one of those facts
+    changes the fingerprint, so ``consume_dataset_approval_request`` will
+    reject the mismatch rather than silently accepting a look-alike
+    request. This closes the gap where a client-supplied
+    ``analysis_approved``/``compute_adapter_configured`` boolean asserted
+    its own authority with no binding to what was actually reviewed.
+    """
+    material = "\u241f".join([project_id, objective, filename, csv_text])
+    return sha256(material.encode("utf-8")).hexdigest()
+
+
+class DatasetApprovalRequest(BaseModel):
+    id: str
+    project_id: str
+    plan_fingerprint: str
+    filename: str
+    objective: str
+    requested_by: str
+    requested_at: datetime
+    expires_at: datetime
+    state: DatasetApprovalState
+    approver_id: str | None = None
+    approver_name: str | None = None
+    decided_at: datetime | None = None
+    rationale: str | None = None
+    consumed_at: datetime | None = None
+    consumed_invocation_id: str | None = None
+
+
+class DatasetApprovalRequestCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    filename: str = Field(min_length=1, max_length=240)
+    objective: str = Field(min_length=1, max_length=4000)
+    csv_text: str = Field(min_length=1, max_length=2_000_000)
+    ttl_minutes: int = Field(default=60, ge=1, le=1440)
+
+
+class DatasetApprovalDecisionRequest(BaseModel):
+    decision: Literal["approved", "rejected"]
+    rationale: str = Field(min_length=3, max_length=1000)
+
+
 class ConnectorSetting(BaseModel):
     id: str
     name: str
@@ -233,6 +305,7 @@ class WorkspaceStore:
         self._library = _seed_library()
         self._runs = _seed_runs(project_id)
         self._approvals = _seed_approvals()
+        self._dataset_approvals: list[DatasetApprovalRequest] = []
         self._connectors = _seed_connectors()
         self._settings = ProjectSettings(
             project_id=project_id,
@@ -555,6 +628,112 @@ class WorkspaceStore:
             run = next((item for item in self._runs if item.id == run_id), None)
             if run:
                 run.approval_id = record.id
+            return deepcopy(record)
+
+    def dataset_approval_requests(self) -> list[DatasetApprovalRequest]:
+        with self._lock:
+            return deepcopy(
+                sorted(self._dataset_approvals, key=lambda item: item.requested_at, reverse=True)
+            )
+
+    def dataset_approval_request(self, request_id: str) -> DatasetApprovalRequest | None:
+        with self._lock:
+            return deepcopy(
+                next((item for item in self._dataset_approvals if item.id == request_id), None)
+            )
+
+    def create_dataset_approval_request(
+        self,
+        *,
+        plan_fingerprint: str,
+        filename: str,
+        objective: str,
+        requested_by: str,
+        ttl_minutes: int,
+    ) -> DatasetApprovalRequest:
+        now = utc_now()
+        record = DatasetApprovalRequest(
+            id=f"dsapproval-{uuid4().hex[:12]}",
+            project_id=self.project_id,
+            plan_fingerprint=plan_fingerprint,
+            filename=filename,
+            objective=objective,
+            requested_by=requested_by,
+            requested_at=now,
+            expires_at=now + timedelta(minutes=ttl_minutes),
+            state=DatasetApprovalState.PENDING,
+        )
+        with self._lock:
+            self._dataset_approvals.append(record)
+            return deepcopy(record)
+
+    def decide_dataset_approval_request(
+        self,
+        request_id: str,
+        decision: DatasetApprovalDecisionRequest,
+        identity: IdentityContext,
+    ) -> DatasetApprovalRequest | None:
+        with self._lock:
+            record = next(
+                (item for item in self._dataset_approvals if item.id == request_id),
+                None,
+            )
+            if record is None:
+                return None
+            if record.state != DatasetApprovalState.PENDING:
+                raise ValueError("This dataset approval request has already been decided.")
+            record.state = (
+                DatasetApprovalState.APPROVED
+                if decision.decision == "approved"
+                else DatasetApprovalState.REJECTED
+            )
+            record.approver_id = identity.user_id
+            record.approver_name = identity.display_name
+            record.decided_at = utc_now()
+            record.rationale = decision.rationale
+            return deepcopy(record)
+
+    def consume_dataset_approval_request(
+        self,
+        request_id: str,
+        *,
+        plan_fingerprint: str,
+        invocation_id: str,
+    ) -> DatasetApprovalRequest:
+        """Atomically resolve and single-use-consume a decided dataset
+        approval, failing closed with a specific reason for every
+        non-usable state.
+
+        A caller can never mistake a denial for a grant: this either
+        returns a ``CONSUMED`` record (never previously consumed, decided
+        ``APPROVED``, matching this exact plan fingerprint, and not yet
+        expired) or raises ``ValueError``. Never fabricates a context and
+        never allows the same decided approval to authorize a second,
+        different, or replayed invocation.
+        """
+        with self._lock:
+            record = next(
+                (item for item in self._dataset_approvals if item.id == request_id),
+                None,
+            )
+            if record is None:
+                raise ValueError("Dataset approval request was not found.")
+            if record.plan_fingerprint != plan_fingerprint:
+                raise ValueError(
+                    "Dataset approval request does not match the exact dataset plan submitted."
+                )
+            if record.state == DatasetApprovalState.CONSUMED:
+                raise ValueError("Dataset approval request has already been consumed.")
+            if record.state == DatasetApprovalState.REJECTED:
+                raise ValueError("Dataset approval request was rejected.")
+            if record.state == DatasetApprovalState.PENDING:
+                raise ValueError("Dataset approval request has not been decided yet.")
+            now = utc_now()
+            if record.expires_at <= now:
+                raise ValueError("Dataset approval request has expired.")
+            record.state = DatasetApprovalState.CONSUMED
+            record.consumed_at = now
+            record.consumed_invocation_id = invocation_id
             return deepcopy(record)
 
     def connectors(self) -> list[ConnectorSetting]:

@@ -380,8 +380,11 @@ class StudioService:
         owner: str,
         insight: AgentInsight | None,
     ) -> DatasetStudioResult:
-        if request.inputs.get("csv_text") and request.inputs.get("analysis_approved") is not True:
-            raise ValueError("Explicit dataset analysis approval is required.")
+        # Dataset analysis approval is enforced upstream in ``run_studio``
+        # against a durable, server-resolved ``DatasetApprovalRequest``
+        # before this method (or any hosted invocation) ever runs; a
+        # client-supplied ``analysis_approved`` boolean is never treated as
+        # authoritative here.
         profile = generic.metadata["profile"]
         estimated_bytes = int(request.inputs.get("estimated_bytes", 0))
         requires_scale_out = estimated_bytes > 5_000_000

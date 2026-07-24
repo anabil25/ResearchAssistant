@@ -465,14 +465,28 @@ def test_large_unresolved_dataset_returns_estimate_without_fixture_profile(
 def test_inline_computed_dataset_does_not_default_to_scale_out(
     client: TestClient,
 ) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+    decision = client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+    assert decision.status_code == 200
+    assert decision.json()["state"] == "approved"
+
     response = client.post(
         "/api/studios/dataset/run",
         json={
-            "objective": "Profile the supplied two-row dataset.",
+            "objective": objective,
             "inputs": {
-                "filename": "inline.csv",
-                "csv_text": "group,score\ncontrol,10\nintervention,12\n",
-                "analysis_approved": True,
+                "filename": filename,
+                "csv_text": csv_text,
+                "approval_request_id": approval_request["id"],
             },
         },
     )
@@ -500,8 +514,208 @@ def test_inline_dataset_analysis_requires_explicit_approval(
         },
     )
 
-    assert response.status_code == 422
+    assert response.status_code == 409
     assert "approval" in response.json()["detail"].lower()
+
+
+def test_client_supplied_analysis_approved_flag_grants_no_authority(
+    client: TestClient,
+) -> None:
+    """A caller that bypasses the UI (e.g. curl/Postman) and simply asserts
+    its own ``analysis_approved: true`` -- with no durable, reviewer-decided
+    approval request ever created -- must still be rejected. The field is
+    inert: only a server-resolved, single-use consumption of a decided
+    ``DatasetApprovalRequest`` can authorize dataset analysis.
+    """
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": "Analyze the supplied dataset.",
+            "inputs": {
+                "filename": "inline.csv",
+                "csv_text": "group,score\ncontrol,10\n",
+                "analysis_approved": True,
+                "compute_adapter_configured": True,
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "approval" in response.json()["detail"].lower()
+
+
+def test_dataset_approval_request_cannot_be_replayed_for_a_different_csv(
+    client: TestClient,
+) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={
+            "filename": filename,
+            "objective": objective,
+            "csv_text": "group,score\ncontrol,10\nintervention,12\n",
+        },
+    ).json()
+    client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": objective,
+            "inputs": {
+                "filename": filename,
+                "csv_text": "group,score\ncontrol,999\nintervention,999\n",
+                "approval_request_id": approval_request["id"],
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "does not match" in response.json()["detail"].lower()
+
+
+def test_dataset_approval_request_is_single_use(client: TestClient) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+    client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+    run_payload = {
+        "objective": objective,
+        "inputs": {
+            "filename": filename,
+            "csv_text": csv_text,
+            "approval_request_id": approval_request["id"],
+        },
+    }
+
+    first = client.post("/api/studios/dataset/run", json=run_payload)
+    second = client.post("/api/studios/dataset/run", json=run_payload)
+
+    assert first.status_code == 200
+    assert second.status_code == 409
+    assert "already been consumed" in second.json()["detail"].lower()
+
+
+def test_dataset_approval_request_rejected_cannot_authorize_analysis(
+    client: TestClient,
+) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+    decision = client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "rejected", "rationale": "Contains disallowed identifiers."},
+    )
+    assert decision.json()["state"] == "rejected"
+
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": objective,
+            "inputs": {
+                "filename": filename,
+                "csv_text": csv_text,
+                "approval_request_id": approval_request["id"],
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "rejected" in response.json()["detail"].lower()
+
+
+def test_dataset_approval_request_forged_id_is_rejected(client: TestClient) -> None:
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": "Analyze the supplied dataset.",
+            "inputs": {
+                "filename": "inline.csv",
+                "csv_text": "group,score\ncontrol,10\n",
+                "approval_request_id": "dsapproval-forgedforgedforged",
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "not found" in response.json()["detail"].lower()
+
+
+def test_dataset_approval_request_still_pending_cannot_authorize_analysis(
+    client: TestClient,
+) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": objective,
+            "inputs": {
+                "filename": filename,
+                "csv_text": csv_text,
+                "approval_request_id": approval_request["id"],
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "has not been decided" in response.json()["detail"].lower()
+
+
+def test_dataset_approval_request_expiry_fails_closed(client: TestClient) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+    client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+    store = client.app.state.workspace
+    with store._lock:
+        record = next(
+            item for item in store._dataset_approvals if item.id == approval_request["id"]
+        )
+        record.expires_at = record.requested_at
+
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": objective,
+            "inputs": {
+                "filename": filename,
+                "csv_text": csv_text,
+                "approval_request_id": approval_request["id"],
+            },
+        },
+    )
+
+    assert response.status_code == 409
+    assert "expired" in response.json()["detail"].lower()
 
 
 def test_automation_graph_is_hashed_and_invalid_cycles_are_blocked(
@@ -823,3 +1037,160 @@ def test_run_studio_grant_merges_funding_sources_into_authorization_check() -> N
 
     assert response.status_code == 422
     assert response.json()["detail"]["violations"][0]["requested"] == "not-a-real-connector"
+
+
+def test_decide_dataset_approval_request_returns_none_when_missing() -> None:
+    from research_assistant_api.identity import IdentityContext
+    from research_assistant_api.workspace import DatasetApprovalDecisionRequest
+
+    store = WorkspaceStore()
+
+    result = store.decide_dataset_approval_request(
+        "dsapproval-does-not-exist",
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        IdentityContext(
+            user_id="reviewer-1",
+            display_name="Reviewer One",
+            tenant_id="demo",
+            groups=("grant-reviewers",),
+            source="test",
+        ),
+    )
+
+    assert result is None
+
+
+def test_decide_dataset_approval_request_rejects_a_second_decision() -> None:
+    from research_assistant_api.identity import IdentityContext
+    from research_assistant_api.workspace import DatasetApprovalDecisionRequest
+
+    store = WorkspaceStore()
+    identity = IdentityContext(
+        user_id="reviewer-1",
+        display_name="Reviewer One",
+        tenant_id="demo",
+        groups=("grant-reviewers",),
+        source="test",
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        identity,
+    )
+
+    with pytest.raises(ValueError, match="already been decided"):
+        store.decide_dataset_approval_request(
+            created.id,
+            DatasetApprovalDecisionRequest(decision="rejected", rationale="Changed my mind."),
+            identity,
+        )
+
+
+def test_dataset_approval_decision_route_rejects_deciding_twice(client: TestClient) -> None:
+    objective = "Profile the supplied two-row dataset."
+    filename = "inline.csv"
+    csv_text = "group,score\ncontrol,10\nintervention,12\n"
+    approval_request = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={"filename": filename, "objective": objective, "csv_text": csv_text},
+    ).json()
+    first = client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+    assert first.status_code == 200
+
+    second = client.post(
+        f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
+        json={"decision": "rejected", "rationale": "Changed my mind."},
+    )
+
+    assert second.status_code == 409
+    assert "already been decided" in second.json()["detail"].lower()
+
+
+def test_dataset_approval_decision_route_404s_for_unknown_request(client: TestClient) -> None:
+    response = client.post(
+        "/api/studios/dataset/approval-requests/dsapproval-does-not-exist/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+
+    assert response.status_code == 404
+
+
+def test_dataset_approval_decision_route_requires_reviewer_role(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("RESEARCH_ALLOW_DEMO_IDENTITY", "false")
+    headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["researchers"])}
+    with TestClient(app) as test_client:
+        test_client.app.state.settings = Settings()
+        created = test_client.post(
+            "/api/studios/dataset/approval-requests",
+            headers=headers,
+            json={
+                "filename": "inline.csv",
+                "objective": "Profile the supplied dataset.",
+                "csv_text": "group,score\ncontrol,10\n",
+            },
+        ).json()
+        response = test_client.post(
+            f"/api/studios/dataset/approval-requests/{created['id']}/decision",
+            headers=headers,
+            json={"decision": "approved", "rationale": "Unauthorized attempt"},
+        )
+
+    assert response.status_code == 403
+
+
+def test_dataset_approval_requests_list_route_returns_created_requests(
+    client: TestClient,
+) -> None:
+    created = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={
+            "filename": "inline.csv",
+            "objective": "Profile the supplied dataset.",
+            "csv_text": "group,score\ncontrol,10\n",
+        },
+    ).json()
+
+    listed = client.get("/api/studios/dataset/approval-requests").json()
+
+    assert any(item["id"] == created["id"] for item in listed)
+
+
+def test_dataset_approval_decision_route_404s_when_record_vanishes_between_check_and_decide(
+    client: TestClient,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Defensive branch: the route first checks the request exists, then
+    calls ``decide_dataset_approval_request``; if the record vanishes in
+    the (vanishingly small) window between those two calls, the route
+    must still respond 404 rather than crash or leak an internal
+    ``None``."""
+    created = client.post(
+        "/api/studios/dataset/approval-requests",
+        json={
+            "filename": "inline.csv",
+            "objective": "Profile the supplied dataset.",
+            "csv_text": "group,score\ncontrol,10\n",
+        },
+    ).json()
+    store = client.app.state.workspace
+    monkeypatch.setattr(store, "decide_dataset_approval_request", lambda *args, **kwargs: None)
+
+    response = client.post(
+        f"/api/studios/dataset/approval-requests/{created['id']}/decision",
+        json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
+    )
+
+    assert response.status_code == 404

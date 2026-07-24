@@ -18,6 +18,8 @@ from research_assistant_api.workspace import (
     ApprovalState,
     ConnectorSetting,
     ConnectorUpdate,
+    DatasetApprovalDecisionRequest,
+    DatasetApprovalRequest,
     LibraryIngestRecord,
     LibraryIngestResponse,
     LibraryItem,
@@ -105,6 +107,13 @@ class CosmosWorkspaceStore(WorkspaceStore):
             for approval in self._approvals:
                 self._persist_approval(approval)
 
+        dataset_approval_documents = self._query(self._runs_container, "dataset_approval")
+        if dataset_approval_documents:
+            self._dataset_approvals = [
+                DatasetApprovalRequest.model_validate(document["payload"])
+                for document in dataset_approval_documents
+            ]
+
     def _persist_settings(self, settings: ProjectSettings) -> None:
         self._projects_container.upsert_item(
             {
@@ -164,6 +173,17 @@ class CosmosWorkspaceStore(WorkspaceStore):
             }
         )
 
+    def _persist_dataset_approval(self, record: DatasetApprovalRequest) -> None:
+        self._runs_container.upsert_item(
+            {
+                "id": record.id,
+                "documentType": "dataset_approval",
+                "tenantId": self.tenant_id,
+                "projectId": self.project_id,
+                "payload": record.model_dump(mode="json"),
+            }
+        )
+
     def summary(self) -> WorkspaceSummary:
         self.library()
         self.runs()
@@ -192,6 +212,110 @@ class CosmosWorkspaceStore(WorkspaceStore):
     def approval(self, approval_id: str) -> ApprovalRecord | None:
         self.approvals()
         return super().approval(approval_id)
+
+    def dataset_approval_requests(self) -> list[DatasetApprovalRequest]:
+        documents = self._query(self._runs_container, "dataset_approval")
+        self._dataset_approvals = [
+            DatasetApprovalRequest.model_validate(document["payload"]) for document in documents
+        ]
+        return super().dataset_approval_requests()
+
+    def dataset_approval_request(self, request_id: str) -> DatasetApprovalRequest | None:
+        self.dataset_approval_requests()
+        return super().dataset_approval_request(request_id)
+
+    def create_dataset_approval_request(
+        self,
+        *,
+        plan_fingerprint: str,
+        filename: str,
+        objective: str,
+        requested_by: str,
+        ttl_minutes: int,
+    ) -> DatasetApprovalRequest:
+        record = super().create_dataset_approval_request(
+            plan_fingerprint=plan_fingerprint,
+            filename=filename,
+            objective=objective,
+            requested_by=requested_by,
+            ttl_minutes=ttl_minutes,
+        )
+        self._persist_dataset_approval(record)
+        return record
+
+    def decide_dataset_approval_request(
+        self,
+        request_id: str,
+        decision: DatasetApprovalDecisionRequest,
+        identity: IdentityContext,
+    ) -> DatasetApprovalRequest | None:
+        documents = self._query(self._runs_container, "dataset_approval")
+        document = next((item for item in documents if item["id"] == request_id), None)
+        if document is None:
+            return None
+        self._dataset_approvals = [
+            DatasetApprovalRequest.model_validate(item["payload"]) for item in documents
+        ]
+        record = super().decide_dataset_approval_request(request_id, decision, identity)
+        if record is None:
+            return None
+        document["payload"] = record.model_dump(mode="json")
+        try:
+            self._runs_container.replace_item(
+                item=document["id"],
+                body=document,
+                etag=document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 412:
+                raise
+            self.dataset_approval_requests()
+            current = super().dataset_approval_request(request_id)
+            if current is not None and current.state.value == decision.decision:
+                return current
+            raise ValueError("This dataset approval request was decided concurrently.") from exc
+        return record
+
+    def consume_dataset_approval_request(
+        self,
+        request_id: str,
+        *,
+        plan_fingerprint: str,
+        invocation_id: str,
+    ) -> DatasetApprovalRequest:
+        documents = self._query(self._runs_container, "dataset_approval")
+        document = next((item for item in documents if item["id"] == request_id), None)
+        if document is None:
+            raise ValueError("Dataset approval request was not found.")
+        self._dataset_approvals = [
+            DatasetApprovalRequest.model_validate(item["payload"]) for item in documents
+        ]
+        record = super().consume_dataset_approval_request(
+            request_id,
+            plan_fingerprint=plan_fingerprint,
+            invocation_id=invocation_id,
+        )
+        document["payload"] = record.model_dump(mode="json")
+        try:
+            self._runs_container.replace_item(
+                item=document["id"],
+                body=document,
+                etag=document.get("_etag"),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code != 412:
+                raise
+            # Consumption is strictly single-use: a concurrent winner already
+            # mutated this exact record between our fresh read and this
+            # write, so this attempt must fail closed rather than risk
+            # granting a second invocation for the same decided approval.
+            raise ValueError(
+                "Dataset approval request was concurrently consumed or modified; "
+                "refusing to grant a second invocation."
+            ) from exc
+        return record
 
     def connectors(self) -> list[ConnectorSetting]:
         documents = self._query(self._projects_container, "connector")

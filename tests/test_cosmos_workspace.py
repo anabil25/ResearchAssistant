@@ -6,11 +6,13 @@ from typing import Any
 
 import research_assistant_api.cosmos_workspace as cosmos_workspace
 from azure.core.credentials import AccessToken, TokenCredential
+from azure.cosmos.exceptions import CosmosHttpResponseError
 from research_assistant_api.identity import IdentityContext
 from research_assistant_api.workspace import (
     ApprovalDecision,
     ApprovalState,
     ConnectorUpdate,
+    DatasetApprovalDecisionRequest,
     LibraryIngestRecord,
 )
 from research_assistant_core.models import Capability, RunStatus
@@ -32,6 +34,10 @@ class FakeContainer:
     def __init__(self) -> None:
         self.documents: dict[str, dict[str, Any]] = {}
         self.version = 0
+        # When set, the next ``replace_item`` call raises a Cosmos conflict
+        # instead of applying the write, letting tests simulate a
+        # concurrent writer winning the optimistic-concurrency race.
+        self.fail_replace_status: int | None = None
 
     def upsert_item(self, item: dict[str, Any]) -> dict[str, Any]:
         self.version += 1
@@ -48,6 +54,13 @@ class FakeContainer:
         etag: str | None,
         match_condition: Any,
     ) -> dict[str, Any]:
+        if self.fail_replace_status is not None:
+            status = self.fail_replace_status
+            self.fail_replace_status = None
+            raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+                status_code=status,
+                message="simulated concurrent write conflict",
+            )
         assert self.documents[item]["_etag"] == etag
         return self.upsert_item(body)
 
@@ -230,3 +243,395 @@ def test_scheduling_reconciliation_preserves_worker_terminal_state(
     assert reconciled.status == RunStatus.COMPLETED
     assert reconciled.progress == 100
     assert reconciled.current_stage == "Complete"
+
+
+def _reviewer_identity() -> IdentityContext:
+    return IdentityContext(
+        user_id="reviewer-1",
+        display_name="Reviewer One",
+        tenant_id="demo",
+        groups=("grant-reviewers",),
+        source="test",
+    )
+
+
+def test_dataset_approval_request_is_persisted_and_visible_across_replicas(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    credential = FakeCredential()
+    first = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        credential,
+    )
+
+    created = first.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+
+    assert created.state.value == "pending"
+    runs_documents = fake_client.database.containers["runs"].documents.values()
+    assert any(item["documentType"] == "dataset_approval" for item in runs_documents)
+
+    second = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        credential,
+    )
+    reloaded = second.dataset_approval_request(created.id)
+    assert reloaded is not None
+    assert reloaded.plan_fingerprint == "fp-abc"
+
+    decided = second.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+    assert decided is not None
+    assert decided.state.value == "approved"
+
+    consumed = second.consume_dataset_approval_request(
+        created.id,
+        plan_fingerprint="fp-abc",
+        invocation_id="inv-1",
+    )
+    assert consumed.state.value == "consumed"
+    assert consumed.consumed_invocation_id == "inv-1"
+
+    third = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        credential,
+    )
+    assert third.dataset_approval_request(created.id).state.value == "consumed"
+
+
+def test_decide_dataset_approval_request_missing_returns_none(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+
+    result = store.decide_dataset_approval_request(
+        "dsapproval-does-not-exist",
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+
+    assert result is None
+
+
+def test_decide_dataset_approval_request_conflict_with_same_decision_is_idempotent(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    container = fake_client.database.containers["runs"]
+    original_replace_item = container.replace_item
+
+    def _concurrent_same_decision_then_conflict(
+        *, item: str, body: dict[str, Any], etag: str | None, match_condition: Any
+    ) -> dict[str, Any]:
+        # Simulate a concurrent replica committing the identical "approved"
+        # decision after our own fresh read but before our write lands.
+        document = container.documents[item]
+        document["payload"]["state"] = "approved"
+        document["payload"]["approver_id"] = "reviewer-2"
+        document["payload"]["approver_name"] = "Reviewer Two"
+        document["payload"]["rationale"] = "Concurrent reviewer approved first."
+        container.version += 1
+        document["_etag"] = str(container.version)
+        container.replace_item = original_replace_item
+        raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+            status_code=412,
+            message="simulated concurrent decision",
+        )
+
+    monkeypatch.setattr(container, "replace_item", _concurrent_same_decision_then_conflict)
+
+    result = store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+
+    assert result is not None
+    assert result.state.value == "approved"
+    assert result.approver_id == "reviewer-2"
+
+
+def test_decide_dataset_approval_request_conflict_with_different_decision_fails_closed(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    container = fake_client.database.containers["runs"]
+
+    def _concurrent_different_decision_then_conflict(
+        *, item: str, body: dict[str, Any], etag: str | None, match_condition: Any
+    ) -> dict[str, Any]:
+        # Simulate a concurrent replica rejecting the request instead.
+        document = container.documents[item]
+        document["payload"]["state"] = "rejected"
+        container.version += 1
+        document["_etag"] = str(container.version)
+        raise CosmosHttpResponseError(  # type: ignore[no-untyped-call]
+            status_code=412,
+            message="simulated concurrent decision",
+        )
+
+    monkeypatch.setattr(container, "replace_item", _concurrent_different_decision_then_conflict)
+
+    try:
+        store.decide_dataset_approval_request(
+            created.id,
+            DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+            _reviewer_identity(),
+        )
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "concurrently" in str(exc).lower()
+
+
+def test_consume_dataset_approval_request_missing_raises_value_error(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+
+    try:
+        store.consume_dataset_approval_request(
+            "dsapproval-does-not-exist",
+            plan_fingerprint="fp-abc",
+            invocation_id="inv-1",
+        )
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "not found" in str(exc).lower()
+
+
+def test_consume_dataset_approval_request_conflict_never_retries_and_fails_closed(
+    monkeypatch: Any,
+) -> None:
+    """Unlike ``decide_dataset_approval_request``, consumption is strictly
+    single-use: even if a concurrent writer's outcome happened to match
+    what this caller would have produced, a losing racer on the ETag CAS
+    must still fail closed rather than risk two invocations being
+    authorized from one decided approval."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+    fake_client.database.containers["runs"].fail_replace_status = 412
+
+    try:
+        store.consume_dataset_approval_request(
+            created.id,
+            plan_fingerprint="fp-abc",
+            invocation_id="inv-1",
+        )
+        raise AssertionError("expected ValueError")
+    except ValueError as exc:
+        assert "concurrently consumed" in str(exc).lower()
+
+    # The record must remain APPROVED (not silently CONSUMED), since the
+    # write never actually succeeded.
+    reread = store.dataset_approval_request(created.id)
+    assert reread is not None
+    assert reread.state.value == "approved"
+
+
+def test_decide_dataset_approval_request_propagates_non_conflict_replace_errors(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    fake_client.database.containers["runs"].fail_replace_status = 500
+
+    try:
+        store.decide_dataset_approval_request(
+            created.id,
+            DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+            _reviewer_identity(),
+        )
+        raise AssertionError("expected CosmosHttpResponseError")
+    except CosmosHttpResponseError as exc:
+        assert exc.status_code == 500
+
+
+def test_consume_dataset_approval_request_propagates_non_conflict_replace_errors(
+    monkeypatch: Any,
+) -> None:
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+    fake_client.database.containers["runs"].fail_replace_status = 500
+
+    try:
+        store.consume_dataset_approval_request(
+            created.id,
+            plan_fingerprint="fp-abc",
+            invocation_id="inv-1",
+        )
+        raise AssertionError("expected CosmosHttpResponseError")
+    except CosmosHttpResponseError as exc:
+        assert exc.status_code == 500
+
+
+def test_decide_dataset_approval_request_returns_none_if_record_vanishes_after_fresh_read(
+    monkeypatch: Any,
+) -> None:
+    """Defensive branch: if the base in-memory decide somehow returns
+    ``None`` despite the document having just been found in the fresh
+    Cosmos read (a state this code cannot organically reach given how
+    ``self._dataset_approvals`` is populated immediately beforehand), the
+    Cosmos store must still return ``None`` rather than raise or persist
+    a bogus write."""
+    import research_assistant_api.workspace as workspace_module
+
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(
+        cosmos_workspace,
+        "CosmosClient",
+        lambda _endpoint, credential: fake_client,
+    )
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test",
+        "research",
+        FakeCredential(),
+    )
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+    )
+    monkeypatch.setattr(
+        workspace_module.WorkspaceStore,
+        "decide_dataset_approval_request",
+        lambda self, request_id, decision, identity: None,
+    )
+
+    result = store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+
+    assert result is None

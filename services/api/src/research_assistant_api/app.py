@@ -110,6 +110,9 @@ from research_assistant_api.workspace import (
     ApprovalState,
     ConnectorSetting,
     ConnectorUpdate,
+    DatasetApprovalDecisionRequest,
+    DatasetApprovalRequest,
+    DatasetApprovalRequestCreate,
     LibraryIngestRecord,
     LibraryIngestRequest,
     LibraryIngestResponse,
@@ -119,6 +122,7 @@ from research_assistant_api.workspace import (
     RunSummary,
     WorkspaceStore,
     WorkspaceSummary,
+    compute_dataset_plan_fingerprint,
 )
 
 configure_telemetry("research-assistant-api")
@@ -708,6 +712,68 @@ def decide_approval(
 
 
 @app.get(
+    "/api/studios/dataset/approval-requests",
+    response_model=list[DatasetApprovalRequest],
+    tags=["studios"],
+)
+def dataset_approval_requests(request: Request) -> list[DatasetApprovalRequest]:
+    store, _ = _workspace_access(request)
+    return store.dataset_approval_requests()
+
+
+@app.post(
+    "/api/studios/dataset/approval-requests",
+    response_model=DatasetApprovalRequest,
+    status_code=201,
+    tags=["studios"],
+)
+def request_dataset_approval(
+    payload: DatasetApprovalRequestCreate,
+    request: Request,
+) -> DatasetApprovalRequest:
+    store, identity = _workspace_access(request)
+    fingerprint = compute_dataset_plan_fingerprint(
+        project_id=store.project_id,
+        objective=payload.objective,
+        filename=payload.filename,
+        csv_text=payload.csv_text,
+    )
+    return store.create_dataset_approval_request(
+        plan_fingerprint=fingerprint,
+        filename=payload.filename,
+        objective=payload.objective,
+        requested_by=identity.display_name,
+        ttl_minutes=payload.ttl_minutes,
+    )
+
+
+@app.post(
+    "/api/studios/dataset/approval-requests/{request_id}/decision",
+    response_model=DatasetApprovalRequest,
+    tags=["studios"],
+)
+def decide_dataset_approval(
+    request_id: str,
+    payload: DatasetApprovalDecisionRequest,
+    request: Request,
+) -> DatasetApprovalRequest:
+    store, identity = _workspace_access(
+        request,
+        required_groups={"grant-reviewers", "research-reviewers"},
+    )
+    existing = store.dataset_approval_request(request_id)
+    if existing is None:
+        raise HTTPException(status_code=404, detail="Dataset approval request not found.")
+    try:
+        record = store.decide_dataset_approval_request(request_id, payload, identity)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    if record is None:
+        raise HTTPException(status_code=404, detail="Dataset approval request not found.")
+    return record
+
+
+@app.get(
     "/api/connectors",
     response_model=list[ConnectorSetting],
     tags=["connectors"],
@@ -1101,6 +1167,56 @@ def _record_studio_result(
     )
 
 
+def _authorize_dataset_analysis(
+    capability: Capability,
+    payload: StudioRunRequest,
+    store: WorkspaceStore,
+) -> None:
+    """Fail closed, before any local or hosted processing of dataset
+    content, unless a durable, previously-decided ``DatasetApprovalRequest``
+    exists for this exact project/objective/filename/CSV plan and has not
+    already been consumed or expired.
+
+    A client-supplied ``analysis_approved``/``compute_adapter_configured``
+    boolean grants nothing here -- it is never even inspected. The only
+    thing that can authorize sending bounded CSV material to the hosted
+    Foundry Code Interpreter (or to any local analysis of it) is a
+    server-resolved, single-use consumption of a reviewer-decided approval
+    request, matching how ``ApprovalContextResolver``/
+    ``ApprovalConsumptionPort`` already gate Agent Studio capability
+    operations.
+    """
+    if capability != Capability.DATASET:
+        return
+    csv_text = payload.inputs.get("csv_text")
+    if not csv_text:
+        return
+    approval_request_id = payload.inputs.get("approval_request_id")
+    if not isinstance(approval_request_id, str) or not approval_request_id:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                "Dataset analysis requires a decided dataset approval request "
+                "referenced by 'approval_request_id'; client-supplied approval "
+                "flags are not accepted."
+            ),
+        )
+    fingerprint = compute_dataset_plan_fingerprint(
+        project_id=store.project_id,
+        objective=payload.objective,
+        filename=str(payload.inputs.get("filename", "dataset.csv")),
+        csv_text=str(csv_text),
+    )
+    try:
+        store.consume_dataset_approval_request(
+            approval_request_id,
+            plan_fingerprint=fingerprint,
+            invocation_id=f"inv-{uuid4().hex}",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post(
     "/api/studios/{capability}/run",
     response_model=STUDIO_RESULT,
@@ -1114,6 +1230,7 @@ async def run_studio(
     current = cast(Settings, request.app.state.settings)
     store, identity = _workspace_access(request)
     _online_policy(capability, payload)
+    _authorize_dataset_analysis(capability, payload, store)
 
     research = cast(ResearchService, request.app.state.research)
     try:
