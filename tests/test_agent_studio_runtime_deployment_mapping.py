@@ -1,28 +1,31 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
+
 import pytest
 from pydantic import ValidationError
-from research_assistant_api.agent_studio.models import (
-    CapabilityDescriptorRef,
-    CapabilityInstanceRef,
-    CapabilityOperationRef,
-    CapabilityPolicyRef,
-    DeploymentEnvironment,
-)
+from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RUNTIME_DEPLOYMENT_MAPPING_SCHEMA_VERSION,
     RUNTIME_DESTINATION_HASH_ALGORITHM,
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
     RuntimeDeploymentMapping,
+    RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
+    RuntimeInstanceRef,
     RuntimeMappingLifecycleState,
+    RuntimeOperationRef,
+    RuntimePolicyRef,
     compute_mapping_digest,
 )
 
 
 def _hash_policy(*, binding_id: str = "binding-1", operation_id: str = "search") -> RuntimeDestinationHashPolicy:
     return RuntimeDestinationHashPolicy(binding_id=binding_id, operation_id=operation_id)
+
+
+FIXED_CREATED_AT = datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
 
 
 def _binding(
@@ -35,10 +38,10 @@ def _binding(
     return RuntimeBindingDescriptor(
         binding_id=binding_id,
         provider_contract_version="provider.contract.v7",
-        descriptor_ref=CapabilityDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
-        operation_ref=CapabilityOperationRef(id=operation_id, version="1"),
-        instance_ref=CapabilityInstanceRef(provider_id="prov-1", id="inst-1", fingerprint="fp-1"),
-        policy_ref=CapabilityPolicyRef(id="policy-1", version="1", digest="sha256:bb"),
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
+        operation_ref=RuntimeOperationRef(id=operation_id, version="1"),
+        instance_ref=RuntimeInstanceRef(provider_id="prov-1", id="inst-1", fingerprint="fp-1"),
+        policy_ref=RuntimePolicyRef(id="policy-1", version="1", digest="sha256:bb"),
         destination_constraints=("https://search.example",),
         destination_constraints_digest="sha256:cc",
         destination_hash_policy=resolved_policy,
@@ -72,6 +75,7 @@ def _mapping(
         ),
         lifecycle_state=lifecycle_state,
         supersedes_deployment_id=supersedes_deployment_id,
+        created_at=FIXED_CREATED_AT,
         created_by="release-service",
     )
 
@@ -196,3 +200,92 @@ def test_mapping_is_frozen_and_forbids_extra_fields() -> None:
 
 def test_lifecycle_states_are_exhaustive() -> None:
     assert {state.value for state in RuntimeMappingLifecycleState} == {"active", "superseded", "retired"}
+
+
+# --- L1: aware-UTC timestamps ----------------------------------------------
+
+
+def test_naive_created_at_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="must be timezone-aware"):
+        RuntimeDeploymentMapping(**{**_mapping().model_dump(), "created_at": datetime(2026, 1, 1, 12, 0, 0)})
+
+
+def test_aware_non_utc_created_at_is_normalized_to_utc() -> None:
+    from datetime import timedelta, timezone
+
+    plus_two = timezone(timedelta(hours=2))
+    mapping = RuntimeDeploymentMapping(
+        **{**_mapping().model_dump(), "created_at": datetime(2026, 1, 1, 14, 0, 0, tzinfo=plus_two)}
+    )
+    assert mapping.created_at.utcoffset() == timedelta(0)
+    assert mapping.created_at == datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC)
+
+
+# --- N1: expiry / revocation / lifecycle authority -------------------------
+
+
+def test_is_effective_at_true_for_active_unexpired_unrevoked() -> None:
+    mapping = _mapping()
+    assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is True
+
+
+def test_is_effective_at_false_when_superseded() -> None:
+    mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
+    assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is False
+
+
+def test_is_effective_at_false_when_revoked() -> None:
+    mapping = _mapping().model_copy(update={"revoked_at": datetime(2026, 2, 1, tzinfo=UTC)})
+    assert mapping.is_effective_at(datetime(2026, 6, 1, tzinfo=UTC)) is False
+
+
+def test_is_effective_at_false_after_expiry() -> None:
+    mapping = _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)})
+    assert mapping.is_effective_at(datetime(2026, 3, 1, 0, 0, 1, tzinfo=UTC)) is False
+    assert mapping.is_effective_at(datetime(2026, 2, 1, tzinfo=UTC)) is True
+
+
+def test_expiry_and_revocation_change_the_digest() -> None:
+    base = _mapping().mapping_digest
+    assert _mapping().model_copy(update={"expires_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
+    assert _mapping().model_copy(update={"revoked_at": datetime(2026, 3, 1, tzinfo=UTC)}).mapping_digest != base
+
+
+# --- M1: nested refs are frozen (digest cannot drift) ----------------------
+
+
+def test_nested_binding_refs_are_frozen() -> None:
+    mapping = _mapping()
+    with pytest.raises(ValidationError):
+        mapping.binding.descriptor_ref.id = "tampered"
+    with pytest.raises(ValidationError):
+        mapping.binding.operation_ref.id = "tampered"
+
+
+# --- N2: conditional instance pinning --------------------------------------
+
+
+def _binding_no_instance() -> RuntimeBindingDescriptor:
+    return RuntimeBindingDescriptor(
+        binding_id="binding-1",
+        provider_contract_version="provider.contract.v7",
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search"),
+        operation_ref=RuntimeOperationRef(id="search"),
+        destination_hash_policy=_hash_policy(),
+    )
+
+
+def test_binding_without_instance_is_allowed() -> None:
+    assert _binding_no_instance().instance_ref is None
+
+
+def test_binding_with_partially_pinned_instance_is_rejected() -> None:
+    with pytest.raises(ValidationError, match="must pin"):
+        RuntimeBindingDescriptor(
+            binding_id="binding-1",
+            provider_contract_version="provider.contract.v7",
+            descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search"),
+            operation_ref=RuntimeOperationRef(id="search"),
+            instance_ref=RuntimeInstanceRef(provider_id="prov-1", id=None, fingerprint="fp-1"),
+            destination_hash_policy=_hash_policy(),
+        )

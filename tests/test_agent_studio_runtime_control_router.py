@@ -29,8 +29,10 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
     RuntimeDeploymentMapping,
+    RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
     RuntimeMappingLifecycleState,
+    RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import InMemoryRuntimeDeploymentMappingStore
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -55,8 +57,8 @@ def _mapping(
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
         provider_contract_version="provider.contract.v7",
-        descriptor_ref=CapabilityDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
-        operation_ref=CapabilityOperationRef(id="search", version="1"),
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
+        operation_ref=RuntimeOperationRef(id="search", version="1"),
         destination_hash_policy=RuntimeDestinationHashPolicy(binding_id="binding-1", operation_id="search"),
     )
     return RuntimeDeploymentMapping(
@@ -378,3 +380,60 @@ def test_context_without_principal_is_uniform_404() -> None:
         CONTEXT_URL, json=_context_body(mapping), headers={"x-runtime-mapping-digest": mapping.mapping_digest}
     )
     assert response.status_code == 404
+
+
+def test_all_denial_reasons_produce_identical_response_body() -> None:
+    """Every distinct denial cause must be indistinguishable to the caller --
+    same status and byte-identical body -- so nothing leaks which check failed."""
+    mapping = _mapping()
+    client = _client(mapping)
+    bodies: list[tuple[int, str]] = []
+    # no principal
+    bodies.append(_collect(client.post(RETRIEVE_URL, json=_body(mapping))))
+    # wrong role
+    bodies.append(
+        _collect(
+            client.post(
+                RETRIEVE_URL, json=_body(mapping), headers={"x-ms-client-principal": _principal_header(role="nope")}
+            )
+        )
+    )
+    # not allowlisted
+    bodies.append(
+        _collect(
+            client.post(
+                RETRIEVE_URL,
+                json=_body(mapping),
+                headers={"x-ms-client-principal": _principal_header(client_app_id="stranger")},
+            )
+        )
+    )
+    # digest mismatch
+    bodies.append(
+        _collect(
+            client.post(
+                RETRIEVE_URL,
+                json={"mapping_ref": mapping.mapping_ref, "mapping_digest": "runtime-deployment-mapping:v1:sha256:00"},
+                headers={"x-ms-client-principal": _principal_header()},
+            )
+        )
+    )
+    # unknown deployment
+    empty = _client(mapping=None)
+    bodies.append(
+        _collect(
+            empty.post(
+                RETRIEVE_URL,
+                json={"mapping_ref": "runtime-deployment-mapping:v1:dep-1", "mapping_digest": "x"},
+                headers={"x-ms-client-principal": _principal_header()},
+            )
+        )
+    )
+    assert len(set(bodies)) == 1, bodies
+
+
+def _collect(response: object) -> tuple[int, str]:
+    import json as _json
+
+    status_code = response.status_code  # type: ignore[attr-defined]
+    return status_code, _json.dumps(response.json(), sort_keys=True)  # type: ignore[attr-defined]

@@ -100,6 +100,16 @@ def test_resolve_returns_none_when_platform_headers_untrusted() -> None:
     assert resolve_runtime_principal(request, settings) is None  # type: ignore[arg-type]
 
 
+def test_resolve_returns_none_when_easyauth_not_enforced() -> None:
+    # trust flag on but enforcement off (only constructible in a safe env) ->
+    # the injected header is not trustworthy, so no runtime principal.
+    settings = Settings(
+        trust_platform_identity_headers=True, entra_auth_enforced=False, environment="test"
+    )
+    request = _FakeRequest({"x-ms-client-principal": _principal_header(_claims())})
+    assert resolve_runtime_principal(request, settings) is None  # type: ignore[arg-type]
+
+
 def test_resolve_returns_none_without_header() -> None:
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
     assert resolve_runtime_principal(_FakeRequest({}), settings) is None  # type: ignore[arg-type]

@@ -39,12 +39,10 @@ from __future__ import annotations
 import hmac
 from collections.abc import Callable
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from enum import StrEnum
 
-from research_assistant_api.agent_studio.runtime_deployment_mapping import (
-    RuntimeDeploymentMapping,
-    RuntimeMappingLifecycleState,
-)
+from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 
 
 class RuntimeAuthzReason(StrEnum):
@@ -152,9 +150,9 @@ def authorize_runtime_request(
     mapping = load_mapping()
     if mapping is None:
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_FOUND)
-    if mapping.lifecycle_state is not RuntimeMappingLifecycleState.ACTIVE:
+    if not mapping.is_effective_at(datetime.now(UTC)):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.MAPPING_NOT_ACTIVE)
-    if mapping.deployment_id != presented_deployment_id:
+    if not hmac.compare_digest(mapping.deployment_id, presented_deployment_id):
         return RuntimeAuthzDecision(reason=RuntimeAuthzReason.DEPLOYMENT_ID_MISMATCH)
 
     if not _client_is_allowlisted(principal, mapping):

@@ -41,20 +41,74 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
-from research_assistant_api.agent_studio.models import (
-    CapabilityDescriptorRef,
-    CapabilityInstanceRef,
-    CapabilityOperationRef,
-    CapabilityPolicyRef,
-    DeploymentEnvironment,
-    utc_now,
-)
+from research_assistant_api.agent_studio.models import DeploymentEnvironment, utc_now
+
+
+def _require_aware_utc(value: datetime, *, field_name: str) -> datetime:
+    """Normalize a timestamp to aware UTC, rejecting naive datetimes.
+
+    A naive datetime and an aware one for the *same instant* would canonicalize
+    to different ISO strings and therefore different mapping digests, so a naive
+    value is refused outright and any aware value is converted to UTC so the
+    same instant always canonicalizes identically.
+    """
+    if value.tzinfo is None:
+        raise ValueError(f"{field_name} must be timezone-aware (UTC); a naive datetime is ambiguous.")
+    return value.astimezone(UTC)
+
+
+class RuntimeDescriptorRef(BaseModel):
+    """Frozen snapshot of the attached descriptor's identity/content pin.
+
+    A local, immutable copy (not the shared, mutable
+    ``models.CapabilityDescriptorRef``) so a mapping's content -- and therefore
+    its ``mapping_digest`` -- can never drift after issuance by someone mutating
+    a nested ref in place.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=160)
+    version: str = Field(default="1", min_length=1, max_length=40)
+    digest: str | None = None
+
+
+class RuntimeOperationRef(BaseModel):
+    """Frozen snapshot of the attached operation's identity/version/schemas."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str = Field(min_length=1, max_length=120)
+    version: str | None = None
+    input_schema_digest: str | None = None
+    output_schema_digest: str | None = None
+
+
+class RuntimeInstanceRef(BaseModel):
+    """Frozen snapshot of the discovered instance this binding targets."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str | None = None
+    id: str | None = None
+    discovered_version: str | None = None
+    fingerprint: str | None = None
+
+
+class RuntimePolicyRef(BaseModel):
+    """Frozen snapshot of the approval/destination policy pin."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    id: str | None = None
+    version: str | None = None
+    digest: str | None = None
 
 #: Strict schema/contract version for this object. Runtime consumers resolve
 #: the mapping contract by this exact string; it is *not* a free-form label.
@@ -123,10 +177,10 @@ class RuntimeBindingDescriptor(BaseModel):
 
     binding_id: str = Field(min_length=1, max_length=200)
     provider_contract_version: str = Field(min_length=1, max_length=80)
-    descriptor_ref: CapabilityDescriptorRef
-    operation_ref: CapabilityOperationRef
-    instance_ref: CapabilityInstanceRef | None = None
-    policy_ref: CapabilityPolicyRef | None = None
+    descriptor_ref: RuntimeDescriptorRef
+    operation_ref: RuntimeOperationRef
+    instance_ref: RuntimeInstanceRef | None = None
+    policy_ref: RuntimePolicyRef | None = None
     destination_constraints: tuple[str, ...] = Field(default_factory=tuple)
     destination_constraints_digest: str | None = None
     destination_hash_policy: RuntimeDestinationHashPolicy
@@ -144,6 +198,32 @@ class RuntimeBindingDescriptor(BaseModel):
             raise ValueError("destination_hash_policy.binding_id must equal binding_id.")
         if self.destination_hash_policy.operation_id != self.operation_ref.id:
             raise ValueError("destination_hash_policy.operation_id must equal operation_ref.id.")
+        return self
+
+    @model_validator(mode="after")
+    def _instance_pin_is_complete_when_present(self) -> RuntimeBindingDescriptor:
+        """When an instance is attached, its exact facts must be pinned.
+
+        A mapping that named an instance but left its ``provider_id``/``id``/
+        ``fingerprint`` unpinned would authorize an invocation against a
+        differently-versioned or substituted instance without detection, so an
+        attached ``instance_ref`` must carry all three (conditional N2 pinning);
+        an operation with no discovered instance omits ``instance_ref`` entirely.
+        """
+        if self.instance_ref is not None:
+            missing = [
+                name
+                for name, value in (
+                    ("provider_id", self.instance_ref.provider_id),
+                    ("id", self.instance_ref.id),
+                    ("fingerprint", self.instance_ref.fingerprint),
+                )
+                if value is None
+            ]
+            if missing:
+                raise ValueError(
+                    f"An attached instance_ref must pin {', '.join(missing)}; a partially-pinned instance is refused."
+                )
         return self
 
 
@@ -197,8 +277,23 @@ class RuntimeDeploymentMapping(BaseModel):
     lifecycle_state: RuntimeMappingLifecycleState = RuntimeMappingLifecycleState.ACTIVE
     supersedes_deployment_id: str | None = Field(default=None, max_length=200)
 
+    #: Optional hard expiry: after this instant the mapping is no longer valid
+    #: authority even if its ``lifecycle_state`` is still ``ACTIVE`` and it was
+    #: never explicitly revoked. Aware UTC.
+    expires_at: datetime | None = None
+    #: Set (aware UTC) once the mapping has been revoked; a revoked mapping is
+    #: permanently invalid authority regardless of lifecycle/expiry.
+    revoked_at: datetime | None = None
+
     created_at: datetime = Field(default_factory=utc_now)
     created_by: str = Field(min_length=1, max_length=200)
+
+    @field_validator("created_at", "expires_at", "revoked_at")
+    @classmethod
+    def _timestamps_are_aware_utc(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_aware_utc(value, field_name="timestamp")
 
     @model_validator(mode="after")
     def _allowlist_is_non_empty_and_unique(self) -> RuntimeDeploymentMapping:
@@ -243,6 +338,18 @@ class RuntimeDeploymentMapping(BaseModel):
         """Deterministic content digest over every authoritative field."""
         return compute_mapping_digest(self)
 
+    def is_effective_at(self, now: datetime) -> bool:
+        """True iff the mapping is currently valid authority at ``now``.
+
+        Requires an ``ACTIVE`` lifecycle, no revocation, and (if an expiry is
+        set) that ``now`` is at or before it. ``now`` must be aware UTC.
+        """
+        if self.lifecycle_state is not RuntimeMappingLifecycleState.ACTIVE:
+            return False
+        if self.revoked_at is not None:
+            return False
+        return not (self.expires_at is not None and now > self.expires_at)
+
 
 def compute_mapping_digest(mapping: RuntimeDeploymentMapping) -> str:
     """Canonical, versioned digest of a ``RuntimeDeploymentMapping``.
@@ -276,6 +383,8 @@ def compute_mapping_digest(mapping: RuntimeDeploymentMapping) -> str:
         ],
         "lifecycle_state": mapping.lifecycle_state.value,
         "supersedes_deployment_id": mapping.supersedes_deployment_id,
+        "expires_at": mapping.expires_at.isoformat() if mapping.expires_at is not None else None,
+        "revoked_at": mapping.revoked_at.isoformat() if mapping.revoked_at is not None else None,
         "created_at": mapping.created_at.isoformat(),
         "created_by": mapping.created_by,
     }

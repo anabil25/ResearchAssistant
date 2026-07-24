@@ -67,14 +67,18 @@ def extract_runtime_principal(claims: Mapping[str, list[str]]) -> RuntimePrincip
 def resolve_runtime_principal(request: Request, settings: Settings) -> RuntimePrincipal | None:
     """Resolve a ``RuntimePrincipal`` from the request's platform-injected header.
 
-    Returns ``None`` (caller must fail closed) when platform-header trust is
-    disabled, the header is absent/undecodable, or the decoded principal lacks
-    the minimum workload claims. There is intentionally no demo/dev fallback --
-    unlike ``identity.resolve_identity``, a runtime principal is only ever a
-    real validated workload token.
+    Returns ``None`` (caller must fail closed) unless BOTH
+    ``trust_platform_identity_headers`` and ``entra_auth_enforced`` are set --
+    the header is only trustworthy when Container Apps EasyAuth is actually
+    validating tokens (enforced) and the app is configured to trust its output
+    (trust). Also returns ``None`` when the header is absent/undecodable or the
+    decoded principal lacks the minimum workload claims. There is intentionally
+    no demo/dev fallback -- a runtime principal is only ever a real validated
+    workload token, built solely from EasyAuth-validated issuer/aud/roles/
+    (appid|azp), never from a request body field.
     """
 
-    if not settings.trust_platform_identity_headers:
+    if not (settings.trust_platform_identity_headers and settings.entra_auth_enforced):
         return None
     encoded = request.headers.get("x-ms-client-principal")
     if not encoded:

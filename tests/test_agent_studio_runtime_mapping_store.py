@@ -5,16 +5,14 @@ from typing import cast
 import pytest
 from azure.cosmos import ContainerProxy
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
-from research_assistant_api.agent_studio.models import (
-    CapabilityDescriptorRef,
-    CapabilityOperationRef,
-    DeploymentEnvironment,
-)
+from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
     RuntimeDeploymentMapping,
+    RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
+    RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import (
     CosmosRuntimeDeploymentMappingStore,
@@ -27,8 +25,8 @@ def _mapping(*, deployment_id: str = "dep-1", backend_version: str = "1.2.3") ->
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
         provider_contract_version="provider.contract.v7",
-        descriptor_ref=CapabilityDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
-        operation_ref=CapabilityOperationRef(id="search", version="1"),
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
+        operation_ref=RuntimeOperationRef(id="search", version="1"),
         destination_hash_policy=RuntimeDestinationHashPolicy(binding_id="binding-1", operation_id="search"),
     )
     return RuntimeDeploymentMapping(

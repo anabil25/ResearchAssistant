@@ -1,11 +1,7 @@
 from __future__ import annotations
 
 import pytest
-from research_assistant_api.agent_studio.models import (
-    CapabilityDescriptorRef,
-    CapabilityOperationRef,
-    DeploymentEnvironment,
-)
+from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_authz import (
     RuntimeAuthorizationError,
     RuntimeAuthPolicy,
@@ -20,8 +16,10 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
     RuntimeDeploymentMapping,
+    RuntimeDescriptorRef,
     RuntimeDestinationHashPolicy,
     RuntimeMappingLifecycleState,
+    RuntimeOperationRef,
 )
 
 ISSUER = "https://login.microsoftonline.com/tenant-1/v2.0"
@@ -39,8 +37,8 @@ def _mapping(
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
         provider_contract_version="provider.contract.v7",
-        descriptor_ref=CapabilityDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
-        operation_ref=CapabilityOperationRef(id="search", version="1"),
+        descriptor_ref=RuntimeDescriptorRef(id="foundry.azure_ai_search", version="1", digest="sha256:aa"),
+        operation_ref=RuntimeOperationRef(id="search", version="1"),
         destination_hash_policy=RuntimeDestinationHashPolicy(binding_id="binding-1", operation_id="search"),
     )
     return RuntimeDeploymentMapping(
@@ -155,6 +153,22 @@ def test_mapping_not_found_is_denied() -> None:
 
 def test_superseded_mapping_is_denied() -> None:
     mapping = _mapping(lifecycle_state=RuntimeMappingLifecycleState.SUPERSEDED)
+    decision, _ = _authorize(mapping)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
+
+
+def test_expired_mapping_is_denied() -> None:
+    from datetime import UTC, datetime, timedelta
+
+    mapping = _mapping().model_copy(update={"expires_at": datetime.now(UTC) - timedelta(hours=1)})
+    decision, _ = _authorize(mapping)
+    assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
+
+
+def test_revoked_mapping_is_denied() -> None:
+    from datetime import UTC, datetime
+
+    mapping = _mapping().model_copy(update={"revoked_at": datetime.now(UTC)})
     decision, _ = _authorize(mapping)
     assert decision.reason is RuntimeAuthzReason.MAPPING_NOT_ACTIVE
 
