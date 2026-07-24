@@ -58,8 +58,9 @@ from collections.abc import Callable
 from enum import StrEnum
 from typing import Protocol
 
+from azure.core import MatchConditions
 from azure.cosmos import ContainerProxy
-from azure.cosmos.exceptions import CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 from pydantic import BaseModel, ConfigDict
 
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
@@ -115,11 +116,48 @@ class ClientDeploymentBindingResolver(Protocol):
         ...
 
 
+class BindingPreconditionError(RuntimeError):
+    """Raised when a CAS repoint's expected-current precondition no longer holds.
+
+    A concurrent control-plane writer moved the binding between the caller's read
+    and its conditional write. The caller must RE-READ the current pointer and
+    retry (never blind-retry), so a stale forward-or-backward move can never win
+    a lost-update race.
+    """
+
+
+class NonMonotonicRepointError(RuntimeError):
+    """Raised when a repoint is not the strict successor of the observed current.
+
+    A repoint may only advance a (client, deployment) binding to
+    ``observed + 1`` (or re-affirm the identical current revision, idempotently).
+    A lower, equal-but-different, or gapped sequence is refused -- this is the
+    rollback control, evaluated INSIDE the CAS against the observed current.
+    """
+
+
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
-        """Bind ``client_app_id`` to exactly ``deployment_id`` at the given revision (one-to-one; replaces)."""
+    def grant(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        """CAS repoint of ``client_app_id`` to ``deployment_id`` at the given revision.
+
+        Conditional on the currently-stored sequence for this (client,
+        deployment) equalling ``expected_current_sequence`` (``None`` meaning the
+        caller expects no current binding for this deployment). Raises
+        ``BindingPreconditionError`` if that precondition fails (concurrent
+        modification) and ``NonMonotonicRepointError`` if the new sequence is not
+        the strict successor of -- or an idempotent re-affirmation of -- the
+        observed current. Both checks happen atomically with the write.
+        """
         ...
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
@@ -141,19 +179,69 @@ class _StoredBinding:
         self.status = status
 
 
+def _validate_monotonic_repoint(
+    *,
+    observed_sequence: int | None,
+    observed_revision_id: str | None,
+    new_sequence: int,
+    new_revision_id: str,
+) -> None:
+    """Enforce strict-successor (or idempotent re-affirmation) against the observed current.
+
+    Shared by both adapters so the rollback rule is identical everywhere. A
+    first binding (``observed_sequence is None``) may take any sequence -- the
+    store already adjudicated the revision's uniqueness. Otherwise the new
+    sequence must be ``observed + 1``, unless it re-affirms the identical current
+    revision (same sequence AND same digest), which is idempotent.
+    """
+    if observed_sequence is None:
+        return
+    is_idempotent = new_sequence == observed_sequence and new_revision_id == observed_revision_id
+    is_successor = new_sequence == observed_sequence + 1
+    if not (is_idempotent or is_successor):
+        raise NonMonotonicRepointError(
+            f"repoint to sequence {new_sequence} is not the strict successor of {observed_sequence}."
+        )
+
+
 class InMemoryClientDeploymentBindingIndex:
     """In-memory one-to-one client->deployment binding index (tests/local).
 
     Implements both the read-only resolver and the control-plane writer; the
     runtime is only ever handed the ``resolve_binding`` surface (typed as
     ``ClientDeploymentBindingResolver``), never this concrete writer. A client
-    holds exactly one binding; a ``grant`` replaces it.
+    holds exactly one binding; ``grant`` is a CAS repoint that replaces it.
     """
 
     def __init__(self) -> None:
         self._by_client: dict[str, _StoredBinding] = {}
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
+    def grant(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        binding = self._by_client.get(client_app_id)
+        observed_sequence: int | None = None
+        observed_revision_id: str | None = None
+        if binding is not None and binding.deployment_id == deployment_id:
+            observed_sequence = binding.revision_sequence
+            observed_revision_id = binding.revision_id
+        if observed_sequence != expected_current_sequence:
+            raise BindingPreconditionError(
+                f"binding for '{client_app_id}' changed under the repoint "
+                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
+            )
+        _validate_monotonic_repoint(
+            observed_sequence=observed_sequence,
+            observed_revision_id=observed_revision_id,
+            new_sequence=revision_sequence,
+            new_revision_id=revision_id,
+        )
         self._by_client[client_app_id] = _StoredBinding(
             deployment_id, revision_id, revision_sequence, RuntimeBindingStatus.ACTIVE
         )
@@ -197,7 +285,15 @@ def build_authorized_mapping_loader(
             return None
         if resolution.status is not RuntimeBindingStatus.ACTIVE:
             return None
-        return mapping_store.get(resolution.deployment_id, resolution.revision_id)
+        mapping = mapping_store.get(resolution.deployment_id, resolution.revision_sequence)
+        if mapping is None:
+            return None
+        # A1 digest pin: the binding pins the target digest, so a store revision
+        # whose content does not match the pinned digest (tampering, or an
+        # out-of-band overwrite) is a denial, never trusted.
+        if mapping.revision_id != resolution.revision_id:
+            return None
+        return mapping
 
     return _load
 
@@ -224,28 +320,72 @@ class CosmosClientDeploymentBindingIndex:
 
     ``resolve_binding`` is a fresh single-partition point ``read_item`` (404 ->
     ``None``); it returns ``None`` unless the stored row's ``deployment_id``
-    equals the asserted one, so it can never redirect the caller. ``grant``
-    upserts the client's single binding to the current revision (the binding is
-    the one mutable authority; a re-grant repoints it). ``revoke`` deletes the
-    client's binding only when it currently points at ``deployment_id``; a
-    missing/mismatched binding is an idempotent no-op.
+    equals the asserted one, so it can never redirect the caller. ``grant`` is a
+    CAS repoint: it reads the current row (+ ETag), checks the observed sequence
+    against ``expected_current_sequence`` and the strict-successor rule, then
+    writes conditionally (``create_item`` when there is no current row, else
+    ``replace_item`` with ``If-Match`` on the ETag). A concurrent modification
+    (409 on create, 412 on replace) surfaces as ``BindingPreconditionError`` for
+    the caller to re-read and retry -- so two overlapping repoints can never
+    lost-update a rollback in. ``revoke`` deletes the client's binding only when
+    it currently points at ``deployment_id``; a missing/mismatched binding is an
+    idempotent no-op.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
         self._container = container
 
-    def grant(self, client_app_id: str, deployment_id: str, revision_id: str, revision_sequence: int) -> None:
-        self._container.upsert_item(
-            {
-                "id": client_app_id,
-                "documentType": RUNTIME_BINDING_DOCUMENT_TYPE,
-                "client_app_id": client_app_id,
-                "deployment_id": deployment_id,
-                "current_revision_id": revision_id,
-                "current_revision_sequence": revision_sequence,
-                "status": RuntimeBindingStatus.ACTIVE.value,
-            }
+    def grant(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        document = self._read(client_app_id)
+        observed_sequence: int | None = None
+        observed_revision_id: str | None = None
+        if document is not None and document.get("deployment_id") == deployment_id:
+            observed_sequence = int(str(document["current_revision_sequence"]))
+            observed_revision_id = str(document["current_revision_id"])
+        if observed_sequence != expected_current_sequence:
+            raise BindingPreconditionError(
+                f"binding for '{client_app_id}' changed under the repoint "
+                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
+            )
+        _validate_monotonic_repoint(
+            observed_sequence=observed_sequence,
+            observed_revision_id=observed_revision_id,
+            new_sequence=revision_sequence,
+            new_revision_id=revision_id,
         )
+        body = {
+            "id": client_app_id,
+            "documentType": RUNTIME_BINDING_DOCUMENT_TYPE,
+            "client_app_id": client_app_id,
+            "deployment_id": deployment_id,
+            "current_revision_id": revision_id,
+            "current_revision_sequence": revision_sequence,
+            "status": RuntimeBindingStatus.ACTIVE.value,
+        }
+        try:
+            if document is None:
+                self._container.create_item(body)
+            else:
+                self._container.replace_item(
+                    item=client_app_id,
+                    body=body,
+                    etag=str(document["_etag"]),
+                    match_condition=MatchConditions.IfNotModified,
+                )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code in (409, 412):
+                raise BindingPreconditionError(
+                    f"binding for '{client_app_id}' was modified concurrently; re-read and retry."
+                ) from exc
+            raise
 
     def revoke(self, client_app_id: str, deployment_id: str) -> None:
         document = self._read(client_app_id)

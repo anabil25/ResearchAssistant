@@ -28,9 +28,12 @@ Design invariants (why this object exists at all):
   of every authoritative field via the same canonical (sorted-key,
   compact-separator) JSON + SHA-256 construction the rest of this package
   uses, prefixed with ``runtime-deployment-mapping:v1:sha256:`` so the
-  encoding can never silently change meaning. ``mapping_ref`` is the opaque,
-  stable reference (``<schema_version>:<deployment_id>``) a runtime echoes
-  back; the server matches *both* ref and digest exactly.
+  encoding can never silently change meaning. ``mapping_ref``
+  (``<schema_version>:<deployment_id>:<revision_sequence>``) is the reference a
+  runtime echoes back; it is stable per REVISION and CHANGES on every
+  supersession (the revision component advances), so it is not a cache key a
+  harness may treat as stable across releases -- the server matches *both* ref
+  and digest exactly.
 
 This module owns only the immutable contract shape and its digest. Retrieval,
 authorization ordering, and the internal router that serves it live in
@@ -370,11 +373,13 @@ class RuntimeDeploymentMapping(BaseModel):
 
     @property
     def mapping_ref(self) -> str:
-        """Opaque, stable reference a runtime echoes back in every request.
+        """Per-revision reference a runtime echoes back in every request.
 
         Composed of the strict schema version, the opaque deployment id, and the
         monotonic ``revision_sequence`` so the ref identifies exactly ONE
-        document (one revision), not merely the deployment. This makes ordinary
+        document (one revision), not merely the deployment. It is stable per
+        REVISION and CHANGES on every supersession (a harness must NOT treat it
+        as a stable cache key across releases). This makes ordinary
         post-supersession staleness structurally distinguishable from tampering:
         a stale runtime's ref differs only in the revision component. It exposes
         no scope/partition value and is safe to hand to a runtime.

@@ -5,7 +5,11 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from research_assistant_api.agent_studio.audit_service import AuditService, InMemoryAuditStore
 from research_assistant_api.agent_studio.models import AuditEvent, AuditEventKind, DeploymentEnvironment
-from research_assistant_api.agent_studio.runtime_client_binding import InMemoryClientDeploymentBindingIndex
+from research_assistant_api.agent_studio.runtime_client_binding import (
+    BindingPreconditionError,
+    InMemoryClientDeploymentBindingIndex,
+    NonMonotonicRepointError,
+)
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
     RuntimeBindingDescriptor,
@@ -97,7 +101,7 @@ def test_grant_writes_mapping_then_binds_and_audits() -> None:
     mapping = _mapping()
     returned = producer.grant(mapping, actor_id=ACTOR, now=NOW)
     assert returned is mapping
-    assert store.get("dep-1", mapping.revision_id) is mapping
+    assert store.get("dep-1", 1) is mapping
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.revision_id == mapping.revision_id
@@ -118,7 +122,7 @@ def test_grant_is_idempotent_for_identical_inputs() -> None:
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.revision_id == reconstructed.revision_id
-    assert store.get("dep-1", reconstructed.revision_id) is not None
+    assert store.get("dep-1", 1) is not None
 
 
 def test_grant_advances_to_a_greater_revision_and_repoints() -> None:
@@ -164,7 +168,7 @@ def test_grant_rejects_non_active_mapping() -> None:
     retired = _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED)
     with pytest.raises(NonGrantableMappingError):
         producer.grant(retired, actor_id=ACTOR, now=NOW)
-    assert store.get("dep-1", retired.revision_id) is None
+    assert store.get("dep-1", 1) is None
     assert index.resolve_binding(CLIENT, "dep-1") is None
 
 
@@ -195,8 +199,8 @@ def test_revoke_unbinds_first_then_writes_retiring_revision_and_audits() -> None
     )
     persisted = producer.revoke(revoking, actor_id=ACTOR, now=NOW)
     assert index.resolve_binding(CLIENT, "dep-1") is None
-    assert store.get("dep-1", revoking.revision_id) is persisted
-    assert store.get("dep-1", active.revision_id) is active
+    assert store.get("dep-1", 2) is persisted
+    assert store.get("dep-1", 1) is active
     revoked_events = _events(audit, AuditEventKind.RUNTIME_BINDING_REVOKED)
     assert len(revoked_events) == 1
     assert revoked_events[0].detail["from_revision_sequence"] == "1"
@@ -219,7 +223,7 @@ def test_revoke_permits_revocation_at_the_write_instant() -> None:
     producer, store, _index, _audit = _producer()
     at_now = _mapping(lifecycle_state=RuntimeMappingLifecycleState.RETIRED, revoked_at=NOW)
     persisted = producer.revoke(at_now, actor_id=ACTOR, now=NOW)
-    assert store.get("dep-1", at_now.revision_id) is persisted
+    assert store.get("dep-1", 1) is persisted
 
 
 def test_revoke_rejects_naive_now() -> None:
@@ -244,9 +248,9 @@ def test_reconcile_revoke_completes_a_failed_retiring_write() -> None:
     )
     # Manually unbind to model "first write succeeded, second failed".
     index.revoke(CLIENT, "dep-1")
-    assert store.get("dep-1", revoking.revision_id) is None
+    assert store.get("dep-1", 2) is None
     producer.reconcile_revoke(revoking, actor_id=ACTOR, now=NOW)
-    assert store.get("dep-1", revoking.revision_id) is not None
+    assert store.get("dep-1", 2) is not None
     assert index.resolve_binding(CLIENT, "dep-1") is None
 
 
@@ -264,3 +268,84 @@ def test_assert_safe_to_retire_allows_an_unreferenced_revision() -> None:
     producer.grant(active, actor_id=ACTOR, now=NOW)
     # A different (older/superseded) revision id is not referenced by the pointer.
     producer.assert_safe_to_retire("dep-1", "some-older-revision-id", (CLIENT,))
+
+
+# --- CAS concurrency paths -------------------------------------------------
+
+
+class _FlakyWriter:
+    """Wraps a real index but raises BindingPreconditionError a fixed number of times."""
+
+    def __init__(self, index: InMemoryClientDeploymentBindingIndex, fail_times: int) -> None:
+        self._index = index
+        self._remaining = fail_times
+        self.calls = 0
+
+    def grant(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        self.calls += 1
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise BindingPreconditionError("flaky")
+        self._index.grant(
+            client_app_id, deployment_id, revision_sequence, revision_id,
+            expected_current_sequence=expected_current_sequence,
+        )
+
+    def revoke(self, client_app_id: str, deployment_id: str) -> None:
+        self._index.revoke(client_app_id, deployment_id)
+
+
+def test_grant_retries_on_precondition_then_succeeds() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    writer = _FlakyWriter(index, fail_times=1)
+    producer = RuntimeDeploymentProducer(store, writer, index, AuditService(InMemoryAuditStore()))
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    assert writer.calls == 2  # one precondition failure, one success
+    assert index.resolve_binding(CLIENT, "dep-1") is not None
+
+
+def test_grant_raises_when_repoint_never_converges() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    writer = _FlakyWriter(index, fail_times=999)
+    producer = RuntimeDeploymentProducer(store, writer, index, AuditService(InMemoryAuditStore()))
+    with pytest.raises(BindingPreconditionError):
+        producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+
+
+class _NonMonotonicWriter:
+    """A writer whose CAS always reports a non-monotonic repoint."""
+
+    def grant(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        raise NonMonotonicRepointError("cas-detected rollback")
+
+    def revoke(self, client_app_id: str, deployment_id: str) -> None:
+        pass
+
+
+def test_grant_maps_cas_nonmonotonic_to_rollback() -> None:
+    # The pre-check passes (no current binding), but the CAS itself detects a
+    # non-monotonic repoint -> surfaced as RollbackRepointError.
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    producer = RuntimeDeploymentProducer(store, _NonMonotonicWriter(), index, AuditService(InMemoryAuditStore()))
+    with pytest.raises(RollbackRepointError):
+        producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+

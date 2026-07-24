@@ -38,14 +38,20 @@ from typing import Protocol
 
 from research_assistant_api.agent_studio.models import AuditEventKind
 from research_assistant_api.agent_studio.runtime_client_binding import (
+    BindingPreconditionError,
     ClientDeploymentBindingResolver,
     ClientDeploymentBindingWriter,
+    NonMonotonicRepointError,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDeploymentMapping,
     RuntimeMappingLifecycleState,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+
+#: Bounded CAS retry budget for a repoint racing a concurrent control-plane
+#: write. Each retry RE-READS the current pointer (never a blind retry).
+_MAX_REPOINT_ATTEMPTS = 5
 
 
 class RuntimeDeploymentProducerError(RuntimeError):
@@ -117,10 +123,13 @@ class RuntimeDeploymentProducer:
     def grant(self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime) -> RuntimeDeploymentMapping:
         """Publish ``mapping`` as live authority: write the revision, then bind.
 
-        Enforces strictly-increasing repointing per (client, deployment) against
-        the current pointer BEFORE any write (rollback protection), writes the
-        mapping revision FIRST, repoints each allowed client's binding to this
-        revision, and appends a grant/repoint audit event per client.
+        Pre-checks strict-successor repointing per (client, deployment) to reject
+        an obvious rollback/gap before any write, then writes the mapping revision
+        FIRST (the store atomically adjudicates the sequence), then CAS-repoints
+        each allowed client's binding to this revision (the authoritative
+        strict-successor check runs INSIDE the conditional write, retrying on a
+        concurrent modification by RE-READING), and appends a grant/repoint audit
+        event per client.
         """
         now = _require_aware_utc_now(now)
         if mapping.lifecycle_state is not RuntimeMappingLifecycleState.ACTIVE or mapping.revoked_at is not None:
@@ -129,29 +138,22 @@ class RuntimeDeploymentProducer:
                 f"got lifecycle_state={mapping.lifecycle_state.value}, "
                 f"revoked_at={'set' if mapping.revoked_at is not None else 'unset'}."
             )
-        # Rollback guard FIRST, before any write: a bound (same-deployment) client
-        # may only advance to a strictly greater revision_sequence.
-        current = {
-            binding.client_app_id: self._binding_resolver.resolve_binding(binding.client_app_id, mapping.deployment_id)
-            for binding in mapping.allowed_client_app_role_bindings
-        }
-        for resolution in current.values():
+        # Best-effort early rollback/gap rejection before writing an orphan
+        # revision; the CAS repoint below is the authoritative check.
+        for binding in mapping.allowed_client_app_role_bindings:
+            resolution = self._binding_resolver.resolve_binding(binding.client_app_id, mapping.deployment_id)
             if (
                 resolution is not None
                 and resolution.revision_id != mapping.revision_id
-                and mapping.revision_sequence <= resolution.revision_sequence
+                and mapping.revision_sequence != resolution.revision_sequence + 1
             ):
                 raise RollbackRepointError(
-                    "grant would repoint a binding to an older-or-equal revision "
-                    f"(current sequence {resolution.revision_sequence}, requested {mapping.revision_sequence}); "
-                    "a different revision may only advance the sequence."
+                    "grant is not the strict successor of the current binding "
+                    f"(current sequence {resolution.revision_sequence}, requested {mapping.revision_sequence})."
                 )
         persisted = self._mapping_store.put(mapping)
         for binding in mapping.allowed_client_app_role_bindings:
-            prior = current[binding.client_app_id]
-            self._binding_writer.grant(
-                binding.client_app_id, mapping.deployment_id, mapping.revision_id, mapping.revision_sequence
-            )
+            prior = self._cas_repoint(binding.client_app_id, mapping)
             self._record_binding_event(
                 mapping,
                 kind=(
@@ -162,10 +164,38 @@ class RuntimeDeploymentProducer:
                 actor_id=actor_id,
                 now=now,
                 client_app_id=binding.client_app_id,
-                from_sequence=None if prior is None else prior.revision_sequence,
-                from_revision_id=None if prior is None else prior.revision_id,
+                from_sequence=prior[0] if prior is not None else None,
+                from_revision_id=prior[1] if prior is not None else None,
             )
         return persisted
+
+    def _cas_repoint(self, client_app_id: str, mapping: RuntimeDeploymentMapping) -> tuple[int, str] | None:
+        """CAS-repoint one client's binding to ``mapping``; return the prior (sequence, revision_id) or None.
+
+        Reads the current pointer, attempts the conditional write, and on a
+        concurrent-modification precondition failure RE-READS and retries (never
+        blind), up to a bounded budget. A non-monotonic repoint (rollback/gap
+        that survives to the CAS) is surfaced as ``RollbackRepointError``.
+        """
+        for _attempt in range(_MAX_REPOINT_ATTEMPTS):
+            resolution = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
+            expected = None if resolution is None else resolution.revision_sequence
+            try:
+                self._binding_writer.grant(
+                    client_app_id,
+                    mapping.deployment_id,
+                    mapping.revision_sequence,
+                    mapping.revision_id,
+                    expected_current_sequence=expected,
+                )
+            except BindingPreconditionError:
+                continue
+            except NonMonotonicRepointError as exc:
+                raise RollbackRepointError(str(exc)) from exc
+            return None if resolution is None else (resolution.revision_sequence, resolution.revision_id)
+        raise BindingPreconditionError(
+            f"repoint for '{client_app_id}' did not converge within {_MAX_REPOINT_ATTEMPTS} attempts."
+        )
 
     def revoke(
         self, revoking_revision: RuntimeDeploymentMapping, *, actor_id: str, now: datetime

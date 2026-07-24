@@ -303,6 +303,16 @@ def test_stale_revision_ref_is_a_distinct_reason() -> None:
     assert decision.reason is RuntimeAuthzReason.MAPPING_REVISION_STALE
 
 
+def test_malformed_ref_classifies_as_ref_mismatch_without_raising() -> None:
+    # Classification must be TOTAL and NON-THROWING: a malformed/truncated ref
+    # that does not share the schema:deployment prefix falls to REF_MISMATCH and
+    # never turns the audit-classification path into an exception path.
+    mapping = _mapping()
+    for bad in ("", "garbage", "runtime-deployment-mapping:v1", f"{mapping.schema_version}:other-dep:1"):
+        decision, _ = _authorize(mapping, presented_mapping_ref=bad)
+        assert decision.reason is RuntimeAuthzReason.MAPPING_REF_MISMATCH
+
+
 def test_mapping_digest_mismatch_is_denied() -> None:
     mapping = _mapping()
     decision, _ = _authorize(mapping, presented_mapping_digest="runtime-deployment-mapping:v1:sha256:deadbeef")

@@ -22,7 +22,9 @@ from research_assistant_api.agent_studio.runtime_mapping_store import (
 )
 
 
-def _mapping(*, deployment_id: str = "dep-1", backend_version: str = "1.2.3") -> RuntimeDeploymentMapping:
+def _mapping(
+    *, deployment_id: str = "dep-1", backend_version: str = "1.2.3", revision_sequence: int = 1
+) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
         provider_contract_version="provider.contract.v7",
@@ -46,59 +48,62 @@ def _mapping(*, deployment_id: str = "dep-1", backend_version: str = "1.2.3") ->
         allowed_client_app_role_bindings=(
             AllowedClientAppRoleBinding(client_app_id="client-app-1", app_role="research-assistant.runtime"),
         ),
-        revision_sequence=1,
+        revision_sequence=revision_sequence,
         revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         deployment_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="release-service",
     )
 
 
-def test_get_returns_none_for_unknown_revision() -> None:
+def test_get_returns_none_for_unknown_sequence() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    assert store.get("missing", "no-such-revision") is None
+    assert store.get("missing", 1) is None
 
 
-def test_put_then_get_round_trips_by_deployment_and_revision() -> None:
+def test_put_then_get_round_trips_by_deployment_and_sequence() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping(deployment_id="dep-xyz")
     returned = store.put(mapping)
     assert returned is mapping
-    assert store.get("dep-xyz", mapping.revision_id) is mapping
+    assert store.get("dep-xyz", 1) is mapping
 
 
-def test_get_with_wrong_revision_is_none() -> None:
-    # Exact point read: a present deployment but an unknown revision is a miss,
-    # never a fall-through to "latest".
+def test_get_with_wrong_sequence_is_none() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    mapping = _mapping(deployment_id="dep-1")
-    store.put(mapping)
-    assert store.get("dep-1", "some-other-revision") is None
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
+    assert store.get("dep-1", 2) is None
 
 
 def test_put_is_idempotent_for_identical_content() -> None:
-    # Identical inputs materialize the SAME revision id; a re-put retains and
-    # returns the first-stored revision (the control-plane idempotent-retry path).
+    # A control-plane retry of the identical caller-supplied payload lands on the
+    # same deployment_id:sequence with the SAME digest -> idempotent (the branch
+    # R4 showed was previously unreachable).
     store = InMemoryRuntimeDeploymentMappingStore()
-    first = _mapping(deployment_id="dep-1")
+    first = _mapping(deployment_id="dep-1", revision_sequence=1)
     store.put(first)
-    second = _mapping(deployment_id="dep-1")
+    second = _mapping(deployment_id="dep-1", revision_sequence=1)
     assert first.mapping_digest == second.mapping_digest
-    assert first.revision_id == second.revision_id
     assert store.put(second) is first
-    assert store.get("dep-1", second.revision_id) is first
+    assert store.get("dep-1", 1) is first
 
 
-def test_distinct_revisions_of_one_deployment_coexist() -> None:
-    # The revision model: two revisions of one deployment_id have distinct
-    # revision ids and both remain point-readable (supersession without conflict).
+def test_put_rejects_diverging_content_at_same_sequence() -> None:
+    # Store-adjudicated single succession: a DIFFERENT content at an occupied
+    # sequence is a forged/racing competitor, refused (never a silent overwrite).
     store = InMemoryRuntimeDeploymentMappingStore()
-    a = _mapping(deployment_id="dep-1", backend_version="1.2.3")
-    b = _mapping(deployment_id="dep-1", backend_version="9.9.9")
-    assert a.revision_id != b.revision_id
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3"))
+    with pytest.raises(RuntimeMappingConflictError, match="different content"):
+        store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="9.9.9"))
+
+
+def test_distinct_sequences_of_one_deployment_coexist() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    a = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3")
+    b = _mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9")
     store.put(a)
     store.put(b)
-    assert store.get("dep-1", a.revision_id) is a
-    assert store.get("dep-1", b.revision_id) is b
+    assert store.get("dep-1", 1) is a
+    assert store.get("dep-1", 2) is b
 
 
 def test_distinct_deployment_ids_are_isolated() -> None:
@@ -107,8 +112,8 @@ def test_distinct_deployment_ids_are_isolated() -> None:
     b = _mapping(deployment_id="dep-b")
     store.put(a)
     store.put(b)
-    assert store.get("dep-a", a.revision_id) is a
-    assert store.get("dep-b", b.revision_id) is b
+    assert store.get("dep-a", 1) is a
+    assert store.get("dep-b", 1) is b
 
 
 # --- Cosmos adapter --------------------------------------------------------
@@ -130,8 +135,7 @@ class _FakeContainer:
         return dict(body)
 
     def read_item(self, *, item: str, partition_key: str) -> dict[str, object]:
-        # Item id carries the revision; the partition key is the deployment_id.
-        assert item.startswith(f"{partition_key}::")
+        assert item.startswith(f"{partition_key}:")
         if item not in self.items or (self._read_returns_none_on_conflict and item in self.items):
             raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
         return dict(self.items[item])
@@ -139,7 +143,7 @@ class _FakeContainer:
 
 def test_cosmos_get_returns_none_when_absent() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
-    assert store.get("missing", "no-such-revision") is None
+    assert store.get("missing", 1) is None
 
 
 def test_cosmos_put_then_get_round_trips() -> None:
@@ -147,61 +151,51 @@ def test_cosmos_put_then_get_round_trips() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     mapping = _mapping(deployment_id="dep-1")
     assert store.put(mapping) is mapping
-    loaded = store.get("dep-1", mapping.revision_id)
+    loaded = store.get("dep-1", 1)
     assert loaded is not None
     assert loaded.mapping_digest == mapping.mapping_digest
-    assert loaded.deployment_id == "dep-1"
 
 
 def test_cosmos_put_is_idempotent_for_identical_content() -> None:
-    # Real mechanism: two constructions from identical inputs materialize the
-    # SAME revision id, so the second create 409s and the store returns the
-    # stored revision -- the idempotent-retry path a control-plane retry needs.
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     first = _mapping(deployment_id="dep-1")
     store.put(first)
     second = _mapping(deployment_id="dep-1")
-    assert first.revision_id == second.revision_id
     returned = store.put(second)
     assert returned is not None
-    assert returned.deployment_id == "dep-1"
     assert returned.mapping_digest == first.mapping_digest
 
 
-def test_cosmos_distinct_revisions_coexist() -> None:
+def test_cosmos_distinct_sequences_coexist() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    a = _mapping(deployment_id="dep-1", backend_version="1.2.3")
-    b = _mapping(deployment_id="dep-1", backend_version="9.9.9")
-    store.put(a)
-    store.put(b)  # different revision id -> new item, never a conflict
-    assert store.get("dep-1", a.revision_id) is not None
-    assert store.get("dep-1", b.revision_id) is not None
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3"))
+    store.put(_mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"))
+    assert store.get("dep-1", 1) is not None
+    assert store.get("dep-1", 2) is not None
 
 
 def test_cosmos_put_conflict_but_vanished_existing_is_conflict() -> None:
-    # 409 on create, but the existing revision is gone by the time we re-read
-    # (concurrent delete): fail closed as a conflict, never silently succeed.
     container = _FakeContainer(read_returns_none_on_conflict=True)
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     mapping = _mapping(deployment_id="dep-1")
-    container.items[f"dep-1::{mapping.revision_id}"] = {"id": f"dep-1::{mapping.revision_id}"}
+    container.items["dep-1:1"] = {"id": "dep-1:1"}
     with pytest.raises(RuntimeMappingConflictError):
         store.put(mapping)
 
 
-def test_cosmos_put_conflict_with_tampered_stored_payload_is_conflict() -> None:
-    # 409 on create and the stored revision is present but its payload hashes to
-    # a DIFFERENT digest than the id claims (out-of-band tampering/corruption):
-    # fail closed rather than treat it as an idempotent re-put.
+def test_cosmos_put_conflict_with_diverging_content_is_conflict() -> None:
+    # 409 on create and the stored revision at this sequence hashes to a
+    # DIFFERENT digest (a forged/racing competitor): fail closed.
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    mapping = _mapping(deployment_id="dep-1", backend_version="1.2.3")
-    tampered_payload = _mapping(deployment_id="dep-1", backend_version="9.9.9").model_dump(mode="json")
-    item_id = f"dep-1::{mapping.revision_id}"
-    container.items[item_id] = {"id": item_id, "payload": tampered_payload}
-    with pytest.raises(RuntimeMappingConflictError, match="already exists with different content"):
+    mapping = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3")
+    other_payload = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="9.9.9").model_dump(
+        mode="json"
+    )
+    container.items["dep-1:1"] = {"id": "dep-1:1", "payload": other_payload}
+    with pytest.raises(RuntimeMappingConflictError, match="different content"):
         store.put(mapping)
 
 
@@ -209,6 +203,6 @@ def test_cosmos_put_reraises_non_conflict_error() -> None:
     container = _FakeContainer(create_status=503)
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     mapping = _mapping(deployment_id="dep-1")
-    container.items[f"dep-1::{mapping.revision_id}"] = {"id": f"dep-1::{mapping.revision_id}"}
+    container.items["dep-1:1"] = {"id": "dep-1:1"}
     with pytest.raises(CosmosHttpResponseError):
         store.put(mapping)
