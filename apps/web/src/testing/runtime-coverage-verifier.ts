@@ -324,10 +324,36 @@ export function specPassed(spec: PlaywrightJsonSpec): boolean {
  * An entry with no `projectName` cannot be attributed and therefore cannot
  * contribute evidence -- fail closed, consistent with `collectProjectNames`.
  */
-export function passingProjectsForSpec(spec: PlaywrightJsonSpec): Set<string> {
+export function passingProjectsForSpec(
+  spec: PlaywrightJsonSpec,
+  knownProjectNames?: readonly string[],
+): Set<string> {
   const projects = new Set<string>();
-  for (const testEntry of spec.tests ?? []) {
+  // Literal `Array.isArray` rather than `spec.tests ?? []`: the report is
+  // untrusted input, and a non-array `tests` (a string, an object, a number)
+  // is not "no tests" -- it is a malformed report. `?? []` only guards
+  // null/undefined, so anything else fell through to `for...of` and threw,
+  // which is fail-closed by accident rather than by design. Treating it as
+  // "no passing projects" is the same outcome, stated deliberately.
+  const tests = Array.isArray(spec.tests) ? spec.tests : [];
+  // Only projects this configuration actually declares can contribute
+  // evidence. Without the allowlist, a fabricated or mis-merged report could
+  // invent a `projectName` -- or carry one in from an unrelated
+  // configuration -- and have its tokens counted, while
+  // `projectsWithoutEvidence` still looked clean because that check runs over
+  // the required list rather than over the set that actually produced the
+  // evidence. This module is deliberately import-free (it is loaded
+  // standalone via `ts.transpileModule` by the CLI scripts), so the list
+  // cannot be imported here and is threaded in from `computeRuntimeCoverage`,
+  // whose production caller always supplies
+  // `REQUIRED_PLAYWRIGHT_PROJECT_NAMES`. Omitting it disables filtering and
+  // is a unit-test affordance only; `computeRuntimeCoverage` additionally
+  // reports `unknownEvidenceProjects` so an unrecognized project can never
+  // pass the gate silently.
+  const allowed = knownProjectNames ? new Set(knownProjectNames) : null;
+  for (const testEntry of tests) {
     if (!testEntry.projectName) continue;
+    if (allowed && !allowed.has(testEntry.projectName)) continue;
     if (testEntry.expectedStatus !== "passed") continue;
     if (!PASSING_OUTCOME_STATUSES.has(testEntry.status ?? "")) continue;
     if (!hasWellFormedAttemptHistory(testEntry)) continue;
@@ -344,7 +370,24 @@ export interface ManifestInteractionShape {
   id: string;
   states: readonly string[];
   playwrightTestIds: readonly string[];
+  /** Declared viewport scope for this interaction (`"desktop"`, `"tablet"`,
+   * `"mobile"`). A state belonging to an interaction that declares more than
+   * one viewport must be proven *in each of them*; a desktop-only
+   * interaction needs evidence from the desktop project alone. Optional so
+   * unit fixtures can omit it, in which case desktop-only is assumed. */
+  viewports?: readonly string[];
 }
+
+/** Map a manifest viewport name onto the Playwright project that runs it.
+ * Kept here rather than imported because this module is deliberately
+ * import-free (loaded standalone via `ts.transpileModule` by the CLI
+ * scripts); `playwright.config.ts` names its projects from the same three
+ * values via `REQUIRED_PLAYWRIGHT_PROJECT_NAMES`. */
+export const VIEWPORT_PROJECT_NAMES: Readonly<Record<string, string>> = {
+  desktop: "chromium",
+  tablet: "tablet-chromium",
+  mobile: "mobile-chromium",
+};
 
 export interface RuntimeCoverageResult {
   /** `manifest.length` -- the number of distinct *interaction entries*
@@ -383,6 +426,33 @@ export interface RuntimeCoverageResult {
    * coverage whatsoever; that is a silently empty viewport, and it fails the
    * gate. */
   projectsWithoutEvidence: string[];
+  /** `interaction:state@viewport` triples that a viewport-sensitive
+   * interaction declares but for which no project *attributable* to that
+   * viewport proved the state.
+   *
+   * Reported, deliberately not gated. The specs covering these states do
+   * exercise the breakpoints -- via explicit `page.setViewportSize(HANDHELD
+   * / MIDSCREEN)` calls inside the test bodies -- but they do so *within the
+   * desktop project*, overriding whatever viewport their project supplies.
+   * Re-running them under the tablet/mobile projects would therefore not
+   * prove anything about those viewports: the test discards the project's
+   * viewport on its first line. Gating on this would credit or deny evidence
+   * on a signal that does not mean what the field name implies, which is the
+   * precise failure mode this verifier exists to prevent. Making it gateable
+   * requires the covering tests to stop hard-coding viewports and take them
+   * from the project instead. */
+  viewportStatesWithoutProjectEvidence: string[];
+  /** How many (interaction, state, viewport) triples the manifest requires
+   * once viewport scope is taken into account, and how many have
+   * project-attributable evidence. Published alongside the flat state counts
+   * so the headline denominator can never be read as implying universal
+   * viewport coverage. */
+  requiredViewportStateCount: number;
+  passedViewportStateCount: number;
+  /** Project names that produced genuinely passing coverage tokens but are
+   * not in the required project list -- a fabricated or mis-merged report.
+   * Always empty for a run produced by this configuration. */
+  unknownEvidenceProjects: string[];
 }
 
 export interface RuntimeCoverageProjectEvidence {
@@ -403,9 +473,10 @@ function walkSuite(
   passedBareIds: Set<string>,
   passedStatePairs: Set<string>,
   passedByProject: Map<string, { ids: Set<string>; statePairs: Set<string> }>,
+  knownProjectNames?: readonly string[],
 ): void {
   for (const spec of suite.specs ?? []) {
-    const passingProjects = passingProjectsForSpec(spec);
+    const passingProjects = passingProjectsForSpec(spec, knownProjectNames);
     const passed = passingProjects.size > 0;
     const { bareIds, statePairs } = extractTokensFromTitle(spec.title ?? "");
     for (const id of bareIds) {
@@ -431,6 +502,7 @@ function walkSuite(
       passedBareIds,
       passedStatePairs,
       passedByProject,
+      knownProjectNames,
     );
   }
 }
@@ -481,8 +553,23 @@ export function computeRuntimeCoverage(
       passedBareIds,
       passedStatePairs,
       passedByProject,
+      requiredProjectNames.length > 0 ? requiredProjectNames : undefined,
     );
   }
+
+  // Any project that produced evidence but is not a required project. Only
+  // reachable from a fabricated or mis-merged report, since the allowlist
+  // above already filters them out of the evidence sets -- this reports the
+  // condition rather than silently dropping it. Empty when no required list
+  // was supplied (a unit-test affordance): with no allowlist there is no
+  // basis on which to call any project unknown, and reporting every project
+  // as unknown would be meaningless rather than strict.
+  const unknownEvidenceProjects =
+    requiredProjectNames.length === 0
+      ? []
+      : [...passedByProject.keys()]
+          .filter((projectName) => !requiredProjectNames.includes(projectName))
+          .sort();
 
   const missingIds = [...requiredIds]
     .filter((id) => !passedBareIds.has(id))
@@ -527,6 +614,41 @@ export function computeRuntimeCoverage(
     })
     .sort();
 
+  // Viewport-scoped requirement. Each (interaction, state) pair is required
+  // once per viewport the interaction declares, and must be proven by the
+  // project that runs that viewport. A desktop-only interaction therefore
+  // needs exactly one triple; a viewport-sensitive one needs three, and
+  // desktop evidence alone no longer satisfies it. This is what stops the
+  // flat 298 figure from implying coverage at breakpoints it was never
+  // exercised at.
+  const viewportStatesWithoutProjectEvidence: string[] = [];
+  let requiredViewportStateCount = 0;
+  let passedViewportStateCount = 0;
+  for (const interaction of manifest) {
+    const viewports =
+      interaction.viewports && interaction.viewports.length > 0
+        ? interaction.viewports
+        : ["desktop"];
+    for (const state of interaction.states) {
+      const pair = `${interaction.id}::${state}`;
+      for (const viewport of viewports) {
+        requiredViewportStateCount += 1;
+        const projectName = VIEWPORT_PROJECT_NAMES[viewport];
+        const proven = Boolean(
+          projectName && passedByProject.get(projectName)?.statePairs.has(pair),
+        );
+        if (proven) {
+          passedViewportStateCount += 1;
+        } else {
+          viewportStatesWithoutProjectEvidence.push(
+            `${interaction.id}:${state}@${viewport}`,
+          );
+        }
+      }
+    }
+  }
+  viewportStatesWithoutProjectEvidence.sort();
+
   return {
     interactionCount: manifest.length,
     requiredIdCount: requiredIds.size,
@@ -542,6 +664,10 @@ export function computeRuntimeCoverage(
     statesPresentButNeverPassed,
     perProject,
     projectsWithoutEvidence,
+    viewportStatesWithoutProjectEvidence,
+    requiredViewportStateCount,
+    passedViewportStateCount,
+    unknownEvidenceProjects,
   };
 }
 

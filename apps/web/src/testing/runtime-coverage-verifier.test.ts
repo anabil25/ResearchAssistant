@@ -10,10 +10,12 @@ import {
   resolveTestResults,
   specPassed,
   validateReportSchema,
+  VIEWPORT_PROJECT_NAMES,
   type PlaywrightJsonReport,
   type PlaywrightJsonSpec,
   type PlaywrightJsonTest,
 } from "./runtime-coverage-verifier";
+import { REQUIRED_PLAYWRIGHT_PROJECT_NAMES } from "./playwright-projects";
 
 describe("resolveTestResults", () => {
   it("returns the test entry's own results array when one is present", () => {
@@ -477,6 +479,31 @@ describe("specPassed", () => {
   });
 });
 
+describe("VIEWPORT_PROJECT_NAMES", () => {
+  it("maps every manifest viewport onto a real configured Playwright project", () => {
+    // This mapping is the join between two independently-maintained
+    // vocabularies: the manifest's viewport names and the Playwright project
+    // names. A drift between them would not fail loudly -- viewport
+    // attribution would just silently find no evidence for the renamed
+    // viewport and report it as unproven forever. `runtime-coverage-verifier`
+    // is deliberately import-free so it cannot reference the project list
+    // directly, which is exactly why the agreement needs asserting here.
+    expect(Object.keys(VIEWPORT_PROJECT_NAMES).sort()).toEqual([
+      "desktop",
+      "mobile",
+      "tablet",
+    ]);
+    for (const projectName of Object.values(VIEWPORT_PROJECT_NAMES)) {
+      expect(REQUIRED_PLAYWRIGHT_PROJECT_NAMES).toContain(projectName);
+    }
+    // Every configured project is reachable from some viewport, so no
+    // project can execute tests that no viewport scope can ever credit.
+    expect(Object.values(VIEWPORT_PROJECT_NAMES).sort()).toEqual(
+      [...REQUIRED_PLAYWRIGHT_PROJECT_NAMES].sort(),
+    );
+  });
+});
+
 describe("hasWellFormedAttemptHistory", () => {
   it("rejects each disqualifying condition independently while the entry is otherwise attributable", () => {
     // Every rejection reason in `passingProjectsForSpec` exercised with a
@@ -704,6 +731,10 @@ describe("computeRuntimeCoverage", () => {
         { projectName: "chromium", passedIdCount: 2, passedStateCount: 3 },
       ],
       projectsWithoutEvidence: [],
+      viewportStatesWithoutProjectEvidence: [],
+      requiredViewportStateCount: 3,
+      passedViewportStateCount: 3,
+      unknownEvidenceProjects: [],
     });
   });
 
@@ -845,12 +876,178 @@ describe("computeRuntimeCoverage", () => {
         },
       ],
       projectsWithoutEvidence: [],
+      // The fixture manifest declares no viewports, so every state is
+      // desktop-scoped: three triples, and the beta state is proven only by
+      // mobile-chromium, so it has no desktop-attributable evidence.
+      viewportStatesWithoutProjectEvidence: ["beta:ready@desktop"],
+      requiredViewportStateCount: 3,
+      passedViewportStateCount: 2,
+      unknownEvidenceProjects: [],
     });
   });
 
   it("handles a report with no suites at all", () => {
     const result = computeRuntimeCoverage({}, manifest);
     expect(result.missingIds).toEqual(["pw.alpha-group", "pw.beta-group"]);
+  });
+
+  it("treats a non-array `tests` field as no tests instead of throwing", () => {
+    // The report is untrusted input. `spec.tests ?? []` only guards
+    // null/undefined, so a string/object/number fell through to `for...of`
+    // and threw -- fail-closed by accident. `Array.isArray` states it.
+    const spec = { title: "[pw.beta-group] beta ready [pw.beta:ready]", tests: "nope" };
+    expect(() =>
+      passingProjectsForSpec(spec as unknown as PlaywrightJsonSpec),
+    ).not.toThrow();
+    expect([
+      ...passingProjectsForSpec(spec as unknown as PlaywrightJsonSpec),
+    ]).toEqual([]);
+  });
+
+  it("refuses evidence from a project name outside the required project list", () => {
+    // A fabricated or mis-merged report could invent a projectName, or carry
+    // one in from an unrelated Playwright configuration. Without an
+    // allowlist its tokens counted, and `projectsWithoutEvidence` still
+    // looked clean because that check runs over the required list rather
+    // than over the set that actually produced the evidence.
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title:
+                "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
+              tests: [
+                {
+                  projectName: "some-other-config-project",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, ["chromium"]);
+
+    expect(result.passedStateCount).toBe(0);
+    expect(result.perProject).toEqual([]);
+    expect(result.projectsWithoutEvidence).toEqual(["chromium"]);
+  });
+
+  it("requires per-viewport evidence for an interaction that declares multiple viewports", () => {
+    // Viewport scope in action: a viewport-sensitive interaction needs one
+    // triple per declared viewport, so desktop evidence alone no longer
+    // satisfies it and the required denominator grows accordingly.
+    const scopedManifest = [
+      {
+        id: "alpha",
+        states: ["ready"],
+        playwrightTestIds: ["pw.alpha-group"],
+        viewports: ["desktop", "tablet", "mobile"],
+      },
+      {
+        id: "beta",
+        states: ["ready"],
+        playwrightTestIds: ["pw.beta-group"],
+        viewports: ["desktop"],
+      },
+    ];
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title: "[pw.alpha-group] alpha ready [pw.alpha:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+                {
+                  projectName: "tablet-chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, scopedManifest, [
+      "chromium",
+      "tablet-chromium",
+    ]);
+
+    // Flat view is complete -- which is exactly why it cannot be the whole
+    // story.
+    expect(result.missingStates).toEqual([]);
+    expect(result.passedStateCount).toBe(2);
+    // Viewport-scoped view: alpha needs three triples and has two.
+    expect(result.requiredViewportStateCount).toBe(4);
+    expect(result.passedViewportStateCount).toBe(3);
+    expect(result.viewportStatesWithoutProjectEvidence).toEqual([
+      "alpha:ready@mobile",
+    ]);
+  });
+
+  it("treats an interaction with no declared viewports as desktop-scoped", () => {
+    const result = computeRuntimeCoverage(
+      {
+        suites: [
+          {
+            title: "a.spec.ts",
+            specs: [
+              {
+                title: "[pw.beta-group] beta ready [pw.beta:ready]",
+                tests: [
+                  {
+                    projectName: "chromium",
+                    expectedStatus: "passed",
+                    status: "expected",
+                    results: [{ status: "passed" }],
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+      [
+        {
+          id: "beta",
+          states: ["ready"],
+          playwrightTestIds: ["pw.beta-group"],
+          viewports: [],
+        },
+      ],
+      ["chromium"],
+    );
+
+    expect(result.requiredViewportStateCount).toBe(1);
+    expect(result.passedViewportStateCount).toBe(1);
+    expect(result.viewportStatesWithoutProjectEvidence).toEqual([]);
   });
 
   it("does not credit a project whose only 'execution' is a malformed attempt history", () => {

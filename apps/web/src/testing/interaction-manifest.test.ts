@@ -5,6 +5,7 @@ import {
   INTERACTION_MANIFEST,
   STATE_SCREENSHOT_IDS,
   UI_COVERAGE_MANIFEST,
+  viewportsForInteraction,
 } from "./interaction-manifest";
 
 describe("V3 interaction manifest", () => {
@@ -54,9 +55,38 @@ describe("V3 interaction manifest", () => {
       "visual.state.authorization",
     ]);
     expect(UI_COVERAGE_MANIFEST).toHaveLength(INTERACTION_MANIFEST.length);
+    // The classification must be a real partition, not a constant wearing a
+    // function's clothes: some interactions genuinely scope to all three
+    // viewports and most genuinely scope to desktop only.
+    const multiViewport = UI_COVERAGE_MANIFEST.filter(
+      (interaction) => interaction.viewports.length > 1,
+    );
+    expect(multiViewport.length).toBeGreaterThan(0);
+    expect(multiViewport.length).toBeLessThan(UI_COVERAGE_MANIFEST.length);
+    // Everything classified viewport-sensitive is a shell surface -- the
+    // navigation rail, evidence inspector, command palette and approvals
+    // control are the elements this app's `@media (max-width: 1180px)` and
+    // `(max-width: 900px)` rules actually restructure.
+    for (const interaction of multiViewport) {
+      expect(interaction.id.startsWith("shell.")).toBe(true);
+      expect(interaction.viewports).toEqual(["desktop", "tablet", "mobile"]);
+    }
     for (const interaction of UI_COVERAGE_MANIFEST) {
       expect(interaction.route).toMatch(/^\/(?:\?|$)/);
-      expect(interaction.viewports).toEqual(["desktop", "tablet", "mobile"]);
+      // Previously asserted `["desktop","tablet","mobile"]` for *every*
+      // interaction, which is what a blanket `viewports: ALL_VIEWPORTS`
+      // produced. That assertion did not verify anything -- it restated a
+      // constant -- while the manifest claimed all 77 interactions and all
+      // 298 states were covered at three breakpoints, when runtime evidence
+      // showed tablet and mobile proving three states each. Scope is now
+      // classified per interaction and grounded in this app's actual media
+      // queries, so this asserts the classification instead of the constant.
+      expect(interaction.viewports).toEqual(
+        viewportsForInteraction(interaction.id),
+      );
+      expect(
+        interaction.viewports.length === 1 || interaction.viewports.length === 3,
+      ).toBe(true);
       expect(interaction.classifiedStates).toHaveLength(
         interaction.states.length,
       );

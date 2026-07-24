@@ -190,6 +190,15 @@ function main() {
           // that, and a project can execute tests while proving no coverage.
           perProject: coverage.perProject,
           projectsWithoutEvidence: coverage.projectsWithoutEvidence,
+          // Viewport scope, published so `requiredStateCount` above can never
+          // be read as "every state at every breakpoint". Only interactions
+          // the manifest classifies as viewport-sensitive (grounded in this
+          // app's actual media queries) declare tablet/mobile scope.
+          requiredViewportStateCount: coverage.requiredViewportStateCount,
+          passedViewportStateCount: coverage.passedViewportStateCount,
+          viewportStatesWithoutProjectEvidence:
+            coverage.viewportStatesWithoutProjectEvidence.length,
+          unknownEvidenceProjects: coverage.unknownEvidenceProjects,
         },
         null,
         2,

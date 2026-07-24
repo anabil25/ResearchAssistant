@@ -191,7 +191,8 @@ export async function verifyReport({
     coverage.missingStates.length === 0 &&
     coverage.idsPresentButNeverPassed.length === 0 &&
     coverage.statesPresentButNeverPassed.length === 0 &&
-    coverage.projectsWithoutEvidence.length === 0;
+    coverage.projectsWithoutEvidence.length === 0 &&
+    coverage.unknownEvidenceProjects.length === 0;
 
   return { ok, schemaProblems: [], coverage };
 }
@@ -237,6 +238,16 @@ function printResult(result) {
         // for a reviewer to recompute by hand from the raw report.
         perProject: coverage.perProject,
         projectsWithoutEvidence: coverage.projectsWithoutEvidence,
+        // Viewport-scoped denominator, published so the flat
+        // requiredStateCount above can never be read as implying that every
+        // state was exercised at every breakpoint. Only interactions the
+        // manifest classifies as viewport-sensitive require evidence from
+        // tablet and mobile; the rest are declared desktop-only.
+        requiredViewportStateCount: coverage.requiredViewportStateCount,
+        passedViewportStateCount: coverage.passedViewportStateCount,
+        viewportStatesWithoutProjectEvidence:
+          coverage.viewportStatesWithoutProjectEvidence.length,
+        unknownEvidenceProjects: coverage.unknownEvidenceProjects,
       },
       null,
       2,

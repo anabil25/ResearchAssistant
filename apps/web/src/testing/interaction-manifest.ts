@@ -1348,11 +1348,68 @@ function classifyState(name: string): CoverageStateKind {
 // required cross-product of `interaction.id x interaction.states` computed from
 // this manifest, failing on any missing pair (declared state with no token) or
 // orphaned pair (token whose id/state isn't declared here).
+/**
+ * Interactions whose DOM or interaction model genuinely differs by
+ * breakpoint, and which therefore require evidence from *every* declared
+ * viewport rather than desktop alone.
+ *
+ * Derived from this app's actual media queries in `src/app/globals.css`, not
+ * from intuition. Against the configured viewport widths (desktop 1440,
+ * tablet 834, mobile 390):
+ *
+ *  - `@media (max-width: 1180px)` restyles `.evidence-panel`,
+ *    `.evidence-close`, `.evidence-toggle` and `.evidence-scrim` -- the
+ *    evidence inspector stops being a docked column and becomes a scrimmed
+ *    overlay. Applies to tablet and mobile.
+ *  - `@media (max-width: 900px)` restyles `.project-rail`,
+ *    `.mobile-menu-button`, `.mobile-scrim` and `.topbar`/`.search-button`
+ *    -- the navigation rail becomes a drawer opened by a button that does
+ *    not exist at desktop width, and the search affordance changes shape.
+ *    Applies to tablet (834) and mobile.
+ *  - `@media (max-width: 680px)` further restyles `.topbar` and its
+ *    controls. Applies to mobile only.
+ *
+ * Everything else the remaining breakpoints touch (`.workspace-main`,
+ * `.institutional-grid`, `.dataset-grid`, `.capability-grid`, and similar)
+ * is pure layout reflow: the same elements, same roles, same handlers,
+ * rearranged. Those interactions are declared desktop-only because that is
+ * where they are actually proven, and claiming more would be the exact
+ * overstatement this classification exists to remove.
+ *
+ * This replaced a blanket `viewports: ALL_VIEWPORTS` applied to every
+ * interaction, which asserted that all 77 interactions and all 298 states
+ * were covered at desktop, tablet and mobile. Runtime evidence showed tablet
+ * and mobile proving three states each, so that claim was not merely
+ * unverified -- it was false, and it inflated what the 298 denominator
+ * appeared to mean.
+ */
+const VIEWPORT_SENSITIVE_INTERACTION_IDS: ReadonlySet<string> = new Set([
+  "shell.navigation.primary-routes",
+  "shell.navigation.open-mobile",
+  "shell.navigation.close-mobile",
+  "shell.evidence.open-close",
+  "shell.search.open",
+  "shell.search.close",
+  "shell.search.query",
+  "shell.search.select-result",
+  "shell.approvals.open",
+]);
+
+const DESKTOP_ONLY_VIEWPORTS = ["desktop"] as const;
+
+export function viewportsForInteraction(
+  interactionId: string,
+): readonly CoverageViewport[] {
+  return VIEWPORT_SENSITIVE_INTERACTION_IDS.has(interactionId)
+    ? ALL_VIEWPORTS
+    : DESKTOP_ONLY_VIEWPORTS;
+}
+
 export const UI_COVERAGE_MANIFEST: readonly UiCoverageContract[] =
   INTERACTION_MANIFEST.map((interaction) => ({
     ...interaction,
     route: SURFACE_ROUTES[interaction.surface],
-    viewports: ALL_VIEWPORTS,
+    viewports: viewportsForInteraction(interaction.id),
     rtlTestIds: interaction.testIds.filter((id) => id.startsWith("jest.")),
     playwrightTestIds: interaction.testIds.filter((id) => id.startsWith("pw.")),
     screenshotIds: SURFACE_SCREENSHOTS[interaction.surface],
