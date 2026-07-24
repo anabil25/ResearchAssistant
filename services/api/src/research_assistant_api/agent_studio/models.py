@@ -259,13 +259,14 @@ class CapabilityOperation(BaseModel):
         of truth for whether a binding may be attached/released/dispatched:
         it says nothing about a specific tenant/project's discovered
         instance readiness/health, connection auth/consent/scopes, policy/
-        approval satisfiability, or destination-constraint drift. Those are
-        evaluated together as a ``BindabilityDecision`` (see
-        ``CapabilityRegistry.evaluate_bindability``); this property is one
-        required input to that decision, checked in isolation by
+        approval satisfiability, or destination-constraint drift.
         ``CapabilityRegistry.validate_attachment``/``check_binding_freshness``
-        and by deterministic runtime selection (which has no tenant/instance
-        context and only needs the catalog-level fact).
+        are the single deterministic evaluators that check this alongside
+        every other axis (instance bindability, descriptor/operation/
+        destination freshness, connection, policy/approval) and collect
+        every disqualifying reason; deterministic runtime selection also
+        checks this property directly, since it has no tenant/instance
+        context and only needs the catalog-level fact.
         """
 
         return self.maturity == OperationMaturity.GA and self.lifecycle == OperationLifecycle.ACTIVE
@@ -396,62 +397,12 @@ class CapabilityInstance(BaseModel):
         ``UNAVAILABLE``) fails closed. A degraded-but-technically-reachable
         instance is deliberately *not* bindable: attach/gate/deploy must
         never silently pin a binding to an instance whose health is already
-        in question. This is one axis feeding ``BindabilityDecision`` below,
+        in question. This is one axis feeding the full, multi-axis
+        attach/release/deploy bindability check performed by
+        ``CapabilityRegistry.validate_attachment``/``check_binding_freshness``,
         not the whole decision by itself.
         """
         return self.readiness == InstanceReadiness.READY
-
-
-class BindabilityDecision(BaseModel):
-    """The full, multi-axis attach/release/runtime bindability decision.
-
-    Neither ``CapabilityOperation.is_catalog_eligible`` (GA+ACTIVE only) nor
-    ``CapabilityInstance.is_bindable`` (readiness only) is, by itself, the
-    single source of truth for whether a capability may be attached,
-    survive a release gate, or be dispatched at runtime — each is exactly
-    one required axis. This type aggregates every axis so a caller gets one
-    fail-closed answer plus every disqualifying reason (not just the
-    first), mirroring the collect-all-reasons pattern already used by
-    ``runtime_selection.select_runtime``:
-
-    * ``catalog_eligible`` — the operation's own ``GA``+``ACTIVE`` claim.
-    * ``instance_scope_valid``/``instance_ready`` — when an instance is
-      attached, whether it belongs to the requesting tenant/project and is
-      ``InstanceReadiness.READY``; ``None`` when no instance applies (an
-      operation that does not require a discovered resource).
-    * ``descriptor_fresh``/``operation_version_fresh``/
-      ``destination_constraints_fresh`` — descriptor content digest,
-      operation version, and declared side-effect destinations all still
-      match what was true when checked.
-    * ``connection_satisfied`` — every ``auth_requirements`` entry the
-      descriptor declares (e.g. a required workspace connection) is met.
-    * ``policy_satisfied``/``approval_satisfied`` — when the operation
-      ``requires_approval``, a policy reference is identified
-      (``policy_satisfied``) and, when approval records are supplied for
-      evaluation, a currently valid (approved/unexpired/unrevoked) record
-      exists (``approval_satisfied``); both are ``None`` when approval does
-      not apply.
-
-    A field left ``None`` because a check could not be *performed* (as
-    opposed to *not applicable*) must never be silently treated as passing:
-    ``bindable`` is only ``True`` when every applicable axis is
-    affirmatively ``True`` and ``reasons`` is empty — there is no
-    "assume-OK" default for an unevaluated axis.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    bindable: bool
-    reasons: tuple[str, ...] = Field(default_factory=tuple)
-    catalog_eligible: bool
-    instance_scope_valid: bool | None = None
-    instance_ready: bool | None = None
-    descriptor_fresh: bool
-    operation_version_fresh: bool
-    destination_constraints_fresh: bool
-    connection_satisfied: bool
-    policy_satisfied: bool
-    approval_satisfied: bool | None = None
 
 
 class CapabilityDescriptorRef(BaseModel):
@@ -1954,15 +1905,9 @@ class IdempotencyRecord(BaseModel):
         if self.state is IdempotencyState.COMPLETED and (
             self.completed_at is None or self.result_hash is None or self.result_ref is None
         ):
-            raise ValueError(
-                "A COMPLETED idempotency record must have completed_at, result_hash, and result_ref set."
-            )
-        if self.state is IdempotencyState.FAILED and (
-            self.failure_code is None or not self.reconciliation_required
-        ):
-            raise ValueError(
-                "A FAILED idempotency record must have failure_code set and reconciliation_required True."
-            )
+            raise ValueError("A COMPLETED idempotency record must have completed_at, result_hash, and result_ref set.")
+        if self.state is IdempotencyState.FAILED and (self.failure_code is None or not self.reconciliation_required):
+            raise ValueError("A FAILED idempotency record must have failure_code set and reconciliation_required True.")
         if self.irreversible_started and self.started_at is None:
             raise ValueError("irreversible_started requires started_at to be set.")
         return self

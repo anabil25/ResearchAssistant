@@ -36,10 +36,12 @@ def select_runtime(
       ``OperationLifecycle.ACTIVE``). Runtime selection is a pure function
       of manifest + catalog with no tenant/instance/connection/policy
       context, so it deliberately checks only this one catalog-level axis
-      (not the full ``BindabilityDecision`` a live attach/release/deploy
-      check would need) — a capability that is catalog-eligible here can
-      still fail full bindability at attach/gate/deploy time for reasons
-      (instance readiness, connection, approval) this function cannot see.
+      (not the full multi-axis bindability decision -- instance readiness,
+      connection, policy/approval, freshness -- that
+      ``CapabilityRegistry.validate_attachment``/``check_binding_freshness``
+      perform for a live attach/release/deploy) — a capability that is
+      catalog-eligible here can still fail full bindability at
+      attach/gate/deploy time for reasons this function cannot see.
 
     Any violation of the above appends a disqualifying reason and forces
     ``RuntimeTarget.CUSTOM_HOSTED``.
@@ -59,9 +61,7 @@ def select_runtime(
     for instance in manifest.capabilities:
         descriptor = capability_catalog.get(instance.descriptor_ref.id)
         if descriptor is None:
-            disqualifiers.append(
-                f"Capability '{instance.descriptor_ref.id}' is not present in the capability catalog."
-            )
+            disqualifiers.append(f"Capability '{instance.descriptor_ref.id}' is not present in the capability catalog.")
             continue
         if not descriptor.managed_foundry_native:
             disqualifiers.append(
