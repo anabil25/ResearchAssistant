@@ -766,14 +766,18 @@ def _map_instance(
     # An instance re-declares the contract generation and its owning provider;
     # both must agree with the enclosing provider discovery, or the instance is
     # an inconsistent payload we refuse to trust (fail closed, skip this item).
+    # The provider echo is compared as a *string*, never via ``str()`` coercion:
+    # ``str(None) == "None"``, so coercing would let a null echo satisfy the
+    # cross-check for a provider legitimately named "None".
     if payload.get("provider_contract_version") != EXPECTED_PROVIDER_CONTRACT_VERSION:
         raise CapabilityProviderProtocolError(
             f"instance provider_contract_version {payload.get('provider_contract_version')!r} does not "
             f"match {EXPECTED_PROVIDER_CONTRACT_VERSION!r}"
         )
-    if str(payload.get("provider_id")) != provider_id:
+    echoed_provider_id = payload.get("provider_id")
+    if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
         raise CapabilityProviderProtocolError(
-            f"instance provider_id {payload.get('provider_id')!r} does not match its enclosing provider "
+            f"instance provider_id {echoed_provider_id!r} does not match its enclosing provider "
             f"{provider_id!r}"
         )
     readiness = _map_readiness(payload["readiness"])
@@ -793,16 +797,19 @@ def _map_instance(
         discovered_at = datetime.fromisoformat(str(payload["last_checked_at"]))
     except ValueError as exc:
         raise CapabilityProviderProtocolError("last_checked_at is not a valid ISO-8601 timestamp") from exc
-    # Identity strings (they become the namespaced instance/descriptor ids);
-    # require them rather than str()-coercing a null/int into a bogus identity.
+    # Identity strings (they become the namespaced instance/descriptor ids, and
+    # the scope this instance claims); require them rather than str()-coercing a
+    # null/int into a bogus identity such as the literal string "None".
     raw_instance_id = _verbatim_required_text(payload.get("instance_id"), field="instance_id")
     raw_descriptor_id = _verbatim_required_text(payload.get("descriptor_id"), field="descriptor_id")
     descriptor_version = _verbatim_required_text(payload.get("descriptor_version"), field="descriptor_version")
+    tenant_id = _verbatim_required_text(payload.get("tenant_id"), field="tenant_id")
+    project_id = _verbatim_required_text(payload.get("project_id"), field="project_id")
     backend_id = _namespaced_id(provider_id, raw_instance_id)
     instance = CapabilityInstance(
         id=backend_id,
-        tenant_id=str(payload["tenant_id"]),
-        project_id=str(payload["project_id"]),
+        tenant_id=tenant_id,
+        project_id=project_id,
         descriptor_id=_namespaced_id(provider_id, raw_descriptor_id),
         descriptor_version=descriptor_version,
         # The descriptor digest is always recomputed by
@@ -1068,6 +1075,19 @@ class HttpCapabilityDiscoverySource:
                     f"({candidate!r}); skipped."
                 )
                 continue
+            if not _is_safe_provider_id(candidate):
+                # Reject unsafe ids at the catalog boundary, not merely before
+                # the request. This keeps them out of ``provider_ids`` entirely,
+                # and therefore out of ``refresh_metadata.provider_ids`` -- which
+                # exists to seed a future refresh scheduler and so must never
+                # carry an unsanitised wire value that a later consumer could
+                # interpolate into a URL. Structural impossibility rather than
+                # downstream re-validation.
+                entry_warnings.append(
+                    f"Capability provider catalog entry #{position} declares provider_id {candidate!r}, "
+                    "which is not a safe opaque identifier; skipped."
+                )
+                continue
             if candidate in seen_provider_ids:
                 entry_warnings.append(
                     f"Provider {candidate!r} appears more than once in the catalog; the duplicate was "
@@ -1183,9 +1203,11 @@ class HttpCapabilityDiscoverySource:
     async def _discover_one_provider(
         self, provider_id: str, headers: dict[str, str], registered_by: str
     ) -> _ProviderDiscoveryOutcome:
-        # Validate the wire-supplied provider id as a strict opaque identifier
-        # *before* it is interpolated into the authenticated URL, so a catalog
-        # value can never re-target or restructure the request path.
+        # Defence in depth. ``_discover`` already rejects unsafe ids at the
+        # catalog boundary, so this is unreachable via ``discover()``; it is
+        # retained (and unit-tested directly) so that any future caller of this
+        # private method cannot reintroduce path injection by bypassing that
+        # boundary check.
         if not _is_safe_provider_id(provider_id):
             raise CapabilityProviderProtocolError(
                 f"Provider id {provider_id!r} is not a safe opaque identifier; refusing to request it."
@@ -1205,10 +1227,14 @@ class HttpCapabilityDiscoverySource:
                 f"Provider {provider_id} reported unexpected canonicalization_version "
                 f"{payload.get('canonicalization_version')!r}."
             )
-        if str(payload.get("provider_id")) != provider_id:
+        # Compared as a *string*, never via ``str()`` coercion: ``str(None)`` is
+        # the literal "None", which would let a null echo satisfy this
+        # cross-check for a provider legitimately named "None".
+        echoed_provider_id = payload.get("provider_id")
+        if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} capabilities response provider_id mismatch: "
-                f"{payload.get('provider_id')!r}."
+                f"{echoed_provider_id!r}."
             )
         descriptors_payload = payload.get("descriptors") or []
         if len(descriptors_payload) > self._max_descriptors_per_provider:

@@ -14,6 +14,7 @@ from research_assistant_api.agent_studio.capability_discovery import (
     EXPECTED_CANONICALIZATION_VERSION,
     EXPECTED_PROVIDER_CONTRACT_VERSION,
     CapabilityDiscoveryRequest,
+    CapabilityProviderProtocolError,
     HttpCapabilityDiscoverySource,
     NullCapabilityDiscoverySource,
     build_capability_discovery_source,
@@ -1315,9 +1316,89 @@ async def test_discover_refuses_to_request_an_unsafe_provider_id() -> None:
 
     assert result.available is True
     assert result.descriptors == ()
-    assert any("safe opaque identifier" in warning for warning in result.warnings)
+    assert any("not a safe opaque identifier" in warning for warning in result.warnings)
     # The unsafe provider id was never interpolated into a request path.
     assert requested_paths == ["/v1/providers"]
+    # ...and never reaches refresh metadata, which exists to seed a future
+    # refresh scheduler and must not carry unsanitised wire values.
+    assert result.refresh_metadata is not None
+    assert result.refresh_metadata.provider_ids == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_one_provider_rejects_unsafe_id_as_defence_in_depth() -> None:
+    """The catalog boundary makes this unreachable via ``discover()``; the guard
+    is retained so a future direct caller cannot reintroduce path injection."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:  # pragma: no cover - never called
+        raise AssertionError("no request may be issued for an unsafe provider id")
+
+    source, client = _source(handler)
+    with pytest.raises(CapabilityProviderProtocolError, match="safe opaque identifier"):
+        await source._discover_one_provider("../admin", {}, "user-1")
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_discover_rejects_instance_whose_null_provider_id_coerces_to_the_string_none() -> None:
+    """``str(None) == "None"``, so a provider legitimately named "None" plus a
+    null echo would satisfy a coercing cross-check. Both sides must be real
+    strings."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["None"]))
+        instance = _instance_payload(provider_id=None)
+        return httpx.Response(200, json=_capabilities_payload("None", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert result.instance_pins == ()
+    assert any("does not match its enclosing provider" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_discover_rejects_capabilities_response_whose_null_provider_id_coerces_to_none() -> None:
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["None"]))
+        payload = _capabilities_payload("None", instances=[])
+        payload["provider_id"] = None
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any("provider_id mismatch" in warning for warning in result.warnings)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["tenant_id", "project_id"])
+async def test_discover_skips_instance_with_non_string_scope_field(field: str) -> None:
+    """A null scope value must not become the literal string "None".
+
+    Previously this reached ``CapabilityInstance`` as ``"None"`` and was caught
+    only downstream by ``CapabilityRegistry.from_source``'s scope check; it now
+    fails closed at the source."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(**{field: None})
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.instances == ()
+    assert result.instance_pins == ()
+    assert any(f"{field} must be a non-empty string" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio
