@@ -14,6 +14,7 @@ import unicodedata
 import pytest
 from research_assistant_api.agent_studio.authz import (
     ClaimsGroupMembershipResolver,
+    DemoSandboxMembershipPolicy,
     MembershipCheckRequest,
     MembershipDecision,
     MembershipOutcome,
@@ -182,3 +183,34 @@ def test_enforce_project_membership_works_with_alternate_resolver_implementation
     resolver: ProjectMembershipResolver = _AlwaysUnavailableResolver()
     with pytest.raises(ProjectMembershipError):
         enforce_project_membership(resolver, _request())
+
+
+def test_demo_sandbox_membership_policy_grants_member_unconditionally() -> None:
+    """The explicit demo sandbox policy always grants MEMBER -- it performs
+    no verification of its own (see its docstring for why: the caller is
+    responsible for only routing to it once ``IdentityContext.source`` is
+    already confirmed to be the demo sandbox source)."""
+    policy = DemoSandboxMembershipPolicy()
+    decision = policy.resolve_membership(
+        _request(project_id="any-project-at-all", claimed_groups=(), groups_known_complete=False)
+    )
+    assert decision.outcome is MembershipOutcome.MEMBER
+    assert decision.reason is not None
+
+
+def test_demo_sandbox_membership_policy_grants_member_regardless_of_project() -> None:
+    """Distinct requests for different projects/tenants/principals must all
+    still resolve MEMBER -- the policy is intentionally project-agnostic."""
+    policy = DemoSandboxMembershipPolicy()
+    for project_id in ("proj-a", "proj-b", "platform-reserved-lookalike"):
+        decision = policy.resolve_membership(_request(project_id=project_id))
+        assert decision.outcome is MembershipOutcome.MEMBER
+
+
+def test_demo_sandbox_membership_policy_satisfies_protocol() -> None:
+    """Confirms the demo policy structurally implements the same
+    ``ProjectMembershipResolver`` Protocol as any real adapter, so it can be
+    passed to ``enforce_project_membership``/substituted in router wiring
+    without any special-casing at the call site."""
+    resolver: ProjectMembershipResolver = DemoSandboxMembershipPolicy()
+    enforce_project_membership(resolver, _request())  # must not raise

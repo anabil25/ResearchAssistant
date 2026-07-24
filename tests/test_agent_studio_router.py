@@ -5160,6 +5160,43 @@ def test_router_denies_when_app_composed_resolver_reports_unavailable(client: Te
     assert "directory unreachable" in response.json()["detail"]
 
 
+def test_demo_sandbox_identity_is_isolated_from_app_composed_membership_resolver(
+    client: TestClient,
+) -> None:
+    """The demo-sandbox identity must always route to its own explicit
+    ``DemoSandboxMembershipPolicy`` -- never to whatever real
+    ``ProjectMembershipResolver`` the application composes on
+    ``app.state``. Proven here by installing a hostile always-UNAVAILABLE
+    resolver and confirming the (header-less, therefore demo-sandbox)
+    request still succeeds against an arbitrary project."""
+    hostile_resolver: ProjectMembershipResolver = _AlwaysUnavailableResolver()
+    cast(Any, client).app.state.agent_studio_membership_resolver = hostile_resolver
+    response = client.post(
+        "/api/agent-studio/agents",
+        json=_body(
+            OTHER_PROJECT_ID,
+            logical_agent_id="agent-demo-sandbox-isolated",
+            display_name="Isolated Sandbox Agent",
+        ),
+    )
+    assert response.status_code == 201, response.text
+    assert response.json()["manifest"]["owner_id"] == "demo-researcher"
+
+
+def test_demo_sandbox_identity_cannot_access_platform_scope(client: TestClient) -> None:
+    """The demo-sandbox identity's fabricated groups deliberately exclude
+    the platform-owner group, so routing its membership through
+    ``DemoSandboxMembershipPolicy`` (which unconditionally grants project
+    membership) must not widen access to the platform-reserved project --
+    that check is a separate, unaffected ``_is_platform_owner`` gate."""
+    response = client.get(
+        "/api/agent-studio/agents",
+        params={"project_id": PLATFORM_PROJECT_ID},
+    )
+    assert response.status_code == 403
+    assert "platform owners" in response.json()["detail"]
+
+
 def test_draft_and_version_routes_are_cross_project_and_cross_tenant_isolated(
     client: TestClient,
 ) -> None:

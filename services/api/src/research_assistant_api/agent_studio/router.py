@@ -35,6 +35,7 @@ from research_assistant_api.agent_studio.approvals import (
 from research_assistant_api.agent_studio.audit_service import AuditService
 from research_assistant_api.agent_studio.authz import (
     ClaimsGroupMembershipResolver,
+    DemoSandboxMembershipPolicy,
     MembershipCheckRequest,
     ProjectMembershipError,
     ProjectMembershipResolver,
@@ -184,6 +185,14 @@ PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 #: See ``agent_studio.authz`` for why this is a Protocol-backed seam rather
 #: than a direct ``identity.groups`` check.
 _DEFAULT_MEMBERSHIP_RESOLVER = ClaimsGroupMembershipResolver()
+
+#: The single, explicit, named local/test-only membership policy for the
+#: demo sandbox identity -- see ``DemoSandboxMembershipPolicy`` for why this
+#: exists instead of an ad hoc ``if identity.source == ...`` skip in
+#: ``_scope``. It is never influenced by (and never influences) whatever
+#: ``ProjectMembershipResolver`` the application composes for real
+#: identities via ``_membership_resolver``.
+_DEMO_SANDBOX_MEMBERSHIP_POLICY = DemoSandboxMembershipPolicy()
 
 router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
 
@@ -418,7 +427,7 @@ def _scope(request: Request, identity: IdentityContext, project_id: str) -> Scop
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="Only platform owners may access platform-scoped resources.",
             )
-    elif identity.source != DEMO_SANDBOX_SOURCE:
+    else:
         membership_request = MembershipCheckRequest(
             tenant_id=identity.tenant_id,
             project_id=project_id,
@@ -430,8 +439,21 @@ def _scope(request: Request, identity: IdentityContext, project_id: str) -> Scop
             # entirely and resolve membership out-of-band instead.
             groups_known_complete=not identity.groups_overage,
         )
+        # The demo sandbox identity always routes to its own explicit,
+        # named local/test-only policy (see ``DemoSandboxMembershipPolicy``)
+        # -- never to the application-composed resolver used for real
+        # identities. This still goes through the same
+        # ``enforce_project_membership`` seam (unlike a bare
+        # ``if identity.source == DEMO_SANDBOX_SOURCE: skip`` short-circuit)
+        # so the "any project is reachable" behavior is a single,
+        # unit-testable symbol rather than logic embedded here.
+        resolver = (
+            _DEMO_SANDBOX_MEMBERSHIP_POLICY
+            if identity.source == DEMO_SANDBOX_SOURCE
+            else _membership_resolver(request)
+        )
         try:
-            enforce_project_membership(_membership_resolver(request), membership_request)
+            enforce_project_membership(resolver, membership_request)
         except ProjectMembershipError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return ScopeContext(tenant_id=identity.tenant_id, project_id=project_id)

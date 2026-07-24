@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from research_assistant_api.config import DEMO_IDENTITY_SAFE_ENVIRONMENTS
+
 ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -100,3 +102,29 @@ def test_static_connector_openapi_is_bounded_for_apim_import() -> None:
         assert specification["components"]["schemas"][schema_name][
             "additionalProperties"
         ] is False
+
+
+def test_api_container_never_enables_demo_identity_and_has_unsafe_environment_value() -> None:
+    """Defense-in-depth for the Agent Studio demo-sandbox membership bypass
+    (see ``research_assistant_api.agent_studio.authz.DemoSandboxMembershipPolicy``):
+    ``allow_demo_identity`` already defaults to ``False`` and
+    ``Settings._forbid_demo_identity_outside_safe_environments`` refuses to
+    start if it is ever enabled outside a small safe-environment allowlist.
+    This test proves the deployed API container reinforces both invariants:
+    it never sets ``RESEARCH_ALLOW_DEMO_IDENTITY`` at all (so the safe
+    ``False`` default always applies in production), and its
+    ``RESEARCH_ENVIRONMENT`` value is not itself one of the safe-environment
+    names, so even a forced override could never pass the startup guard."""
+    container_apps = (
+        ROOT / "infra" / "modules" / "container-apps.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "RESEARCH_ALLOW_DEMO_IDENTITY" not in container_apps
+    assert "name: 'RESEARCH_ENVIRONMENT'" in container_apps
+    assert "value: '${name}-azure'" in container_apps
+
+    # The interpolated value always ends in the literal ``-azure`` suffix; no
+    # safe-environment name shares that suffix, so no resource ``name`` value
+    # could make the deployed ``RESEARCH_ENVIRONMENT`` collide with a safe
+    # environment even if ``allow_demo_identity`` were forcibly overridden.
+    assert not any(safe_name.endswith("-azure") for safe_name in DEMO_IDENTITY_SAFE_ENVIRONMENTS)
