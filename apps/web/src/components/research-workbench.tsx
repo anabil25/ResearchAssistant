@@ -375,7 +375,10 @@ export function ResearchWorkbench() {
     scheduleNext();
     return () => {
       cancelled = true;
-      if (timeoutId !== undefined) window.clearTimeout(timeoutId);
+      // `timeoutId` is always assigned synchronously above before this
+      // cleanup can ever run, but `clearTimeout` safely no-ops on
+      // `undefined` regardless, so no extra guard is needed here.
+      window.clearTimeout(timeoutId);
     };
   }, [data, refresh]);
 

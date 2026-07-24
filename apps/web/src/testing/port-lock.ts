@@ -71,9 +71,9 @@ export function isPortLockHeld(deps: PortLockDeps, port: number): boolean {
 }
 
 /**
- * Attempt to atomically claim `port` for this process by writing a lock
- * file naming `deps.pid`. This is what closes the residual TOCTOU window
- * between the OS reporting a port free (via a `listen(0)` probe) and this
+ * Attempt to atomically claim `port` for this process by creating a lock
+ * file naming `deps.pid`. This closes the residual TOCTOU window between
+ * the OS reporting a port free (via a `listen(0)` probe) and this
  * invocation's own webServer actually binding it: a *second*, concurrent
  * invocation of this same config on the same shared machine (e.g. another
  * worktree/session running `test:e2e` at the same moment) will see this
@@ -81,20 +81,73 @@ export function isPortLockHeld(deps: PortLockDeps, port: number): boolean {
  * invocation already claimed, even though the OS would happily hand the
  * same freed port to both processes' near-simultaneous probes.
  *
- * Returns true (and creates/overwrites the lock file) if the port is
- * unclaimed or its existing lock belongs to a process that is no longer
- * alive. Returns false without modifying anything if a still-live process
- * already holds this exact port's lock.
+ * The claim itself uses `openSync(path, "wx")` -- Node's binding for the
+ * POSIX/Win32 exclusive-create flag (`O_CREAT | O_EXCL`), which the
+ * kernel guarantees is a single atomic operation: if two processes race
+ * to create the same path this way, exactly one call succeeds and the
+ * other fails with `EEXIST`, with no gap either process could observe
+ * "not yet claimed" in between. This replaces a prior
+ * check-then-non-exclusive-write sequence (`isPortLockHeld` followed by
+ * a plain `"w"` open) that had exactly that gap: two simultaneous
+ * claimants could both observe the port as unclaimed and both then
+ * "successfully" write a lock file, each overwriting the other's PID.
+ *
+ * Returns true (and creates the lock file) if the port is unclaimed or
+ * its existing lock belongs to a process that is no longer alive.
+ * Returns false without modifying anything if a still-live process
+ * already holds this exact port's lock -- including when this
+ * invocation loses a genuine simultaneous race to reclaim a stale lock
+ * (see the reclaim branch below).
  */
 export function tryClaimPortLock(deps: PortLockDeps, port: number): boolean {
   mkdirSync(deps.lockDir, { recursive: true });
-  if (isPortLockHeld(deps, port)) {
-    return false;
-  }
   const lockPath = lockPathFor(deps, port);
-  const fd = openSync(lockPath, "w");
-  closeSync(fd);
-  writeFileSync(lockPath, String(deps.pid));
+
+  if (exclusiveCreateLock(lockPath, deps.pid)) {
+    return true;
+  }
+
+  // The lock file already exists. If its owner process is dead, this is a
+  // stale lock left behind by a prior invocation that crashed/didn't clean
+  // up -- reclaim it. A second, genuinely concurrent invocation may reach
+  // this same branch at the same instant; both may unlink the stale file,
+  // but only one of the two `exclusiveCreateLock` retries below can win
+  // the atomic re-create, so the loser correctly reports the port as
+  // held (by the winner) rather than both believing they own it.
+  if (!isPortLockHeld(deps, port)) {
+    try {
+      rmSync(lockPath, { force: true });
+    } catch {
+      // Another process may already be mid-reclaim; fall through to the
+      // exclusive re-create attempt below, which is the actual arbiter.
+    }
+    return exclusiveCreateLock(lockPath, deps.pid);
+  }
+
+  return false;
+}
+
+/**
+ * Core atomic primitive behind `tryClaimPortLock`: create `lockPath`
+ * exclusively and write `pid` into it in one uninterrupted sequence.
+ * Returns false (without side effects) if the path already exists;
+ * rethrows any other filesystem error.
+ */
+function exclusiveCreateLock(lockPath: string, pid: number): boolean {
+  let fd: number;
+  try {
+    fd = openSync(lockPath, "wx");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "EEXIST") {
+      return false;
+    }
+    throw error;
+  }
+  try {
+    writeFileSync(fd, String(pid));
+  } finally {
+    closeSync(fd);
+  }
   return true;
 }
 

@@ -685,6 +685,80 @@ def test_research_route_fetches_public_metadata_for_online_hosted_runs(
     assert calls["metadata"]["kwargs"]["requested_sources"] == ["PubMed"]
 
 
+def test_research_route_deselecting_all_grant_sources_makes_zero_gateway_calls() -> None:
+    # Full-stack regression for the "sources"/"funding_sources" key
+    # mismatch: the client sends `context["sources"]`, the route must
+    # forward it verbatim (not silently drop to `None`/defaults), and an
+    # explicit empty list -- every connector deselected in the UI -- must
+    # reach `retrieve_public_metadata` unmocked (the real production
+    # function, not a fake) and result in zero live connector-gateway
+    # calls. A raising fake gateway proves this: if any connector were
+    # still searched, the route would surface a 500 from the
+    # AssertionError instead of a clean 200 with empty metadata.
+    class _UnreachableConnectorGateway:
+        async def search(
+            self,
+            capability: Any,
+            source: str,
+            query: str,
+            *,
+            limit: int,
+        ) -> Any:
+            raise AssertionError(
+                f"connector gateway search() must not be called when every "
+                f"source was deselected (capability={capability}, "
+                f"source={source}, query={query}, limit={limit})"
+            )
+
+        async def close(self) -> None:
+            return None
+
+    calls: dict[str, Any] = {}
+
+    class FakeHostedGateway:
+        def invoke(
+            self,
+            message: str,
+            *,
+            agent_name: str | None = None,
+            allow_tools: bool = True,
+        ) -> HostedAgentReply:
+            calls["invoke"] = {
+                "message": message,
+                "agent_name": agent_name,
+                "allow_tools": allow_tools,
+            }
+            return HostedAgentReply(
+                agent_name=agent_name or "missing",
+                content="Hosted synthesis source_id: paper-workflow",
+                response_id="response-grant-empty-sources",
+            )
+
+    with TestClient(app) as client:
+        app.state.settings = Settings(
+            execution_mode="hosted",
+            foundry_project_endpoint="https://foundry.example.test/api/projects/test",
+        )
+        app.state.hosted = FakeHostedGateway()
+        app.state.connector_gateway = _UnreachableConnectorGateway()
+        response = client.post(
+            "/api/research/grant",
+            json={
+                "query": "Compare public funding opportunities",
+                "context": {
+                    "online_research": True,
+                    "public_search_query": "current public funding guidance",
+                    "public_research_acknowledged": True,
+                    "sources": [],
+                },
+            },
+        )
+
+    assert response.status_code == 200
+    assert response.json()["metadata"]["online_research"] is True
+    assert calls["invoke"]["agent_name"] == "grant-online-agent"
+
+
 @pytest.mark.parametrize(
     ("error", "status_code"),
     [

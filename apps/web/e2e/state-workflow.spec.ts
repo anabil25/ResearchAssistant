@@ -721,11 +721,6 @@ test.describe("workflow state coverage", () => {
       // a portal to document.body and marks the studio page `inert`).
       // A real browser refuses pointer/keyboard interaction with an inert
       // subtree, so a normal (non-forced) action never reaches the control.
-      // Defense layer 1: the background subtree is genuinely inert while
-      // the dialog is open (studio-components.tsx renders the dialog via
-      // a portal to document.body and marks the studio page `inert`).
-      // A real browser refuses pointer interaction with an inert subtree,
-      // so a normal (non-forced) click never reaches the control.
       await expect(
         page.locator(".studio-page.automation-studio"),
       ).toHaveJSProperty("inert", true);
@@ -744,12 +739,39 @@ test.describe("workflow state coverage", () => {
       // time and refuses to activate a stale fingerprint.
       const triggerSelect = studio.triggerSelect;
       await triggerSelect.selectOption("GitHub", { force: true });
-      await expect(
-        dialog.getByRole("button", { name: "Confirm activation" }),
-      ).toBeDisabled();
-      await dialog
-        .getByRole("button", { name: "Confirm activation" })
-        .click({ force: true });
+      const confirmButton = dialog.getByRole("button", {
+        name: "Confirm activation",
+      });
+      await expect(confirmButton).toBeDisabled();
+      // A genuinely `disabled` button never dispatches a real click event
+      // -- Playwright's `{ force: true }` only bypasses actionability
+      // checks (visibility/stability/receives-events), not the browser's
+      // native suppression of click delivery on disabled form controls, so
+      // it would not actually exercise the production handler's own guard.
+      // Clearing only the DOM `disabled` property is *also* insufficient:
+      // React's event delegation (`getListener`) separately checks its own
+      // internally recorded props snapshot for the element (not the live
+      // DOM attribute) before invoking `onClick`, and refuses to deliver
+      // the event if that snapshot still says `disabled`. Clear both the
+      // DOM property and React's internal props snapshot, then dispatch a
+      // real, native click so the click genuinely reaches the production
+      // handler -- which still holds the real, current (invalidated)
+      // `canActivate = false` -- proving its own recheck, not just the
+      // disabled attribute, blocks activation.
+      await confirmButton.evaluate((element: HTMLButtonElement) => {
+        element.disabled = false;
+        const propsKey = Object.keys(element).find((key) =>
+          key.startsWith("__reactProps$"),
+        );
+        if (propsKey) {
+          const target = element as unknown as Record<
+            string,
+            Record<string, unknown>
+          >;
+          target[propsKey] = { ...target[propsKey], disabled: false };
+        }
+        element.click();
+      });
       await expect(
         page.getByRole("button", { name: "Activated (draft workspace)" }),
       ).toHaveCount(0);

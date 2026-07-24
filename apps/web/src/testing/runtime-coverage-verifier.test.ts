@@ -1,12 +1,15 @@
 import {
+  computeExpectedOutcome,
   computeRuntimeCoverage,
   extractTokensFromTitle,
+  outcomeIsInternallyConsistent,
   PLAYWRIGHT_ID_PATTERN,
   PLAYWRIGHT_STATE_TOKEN_PATTERN,
   specPassed,
   validateReportSchema,
   type PlaywrightJsonReport,
   type PlaywrightJsonSpec,
+  type PlaywrightJsonTest,
 } from "./runtime-coverage-verifier";
 
 describe("extractTokensFromTitle", () => {
@@ -42,6 +45,134 @@ describe("extractTokensFromTitle", () => {
       bareIds: [],
       statePairs: [],
     });
+  });
+});
+
+describe("computeExpectedOutcome", () => {
+  it("returns 'skipped' for zero attempts, regardless of expectedStatus", () => {
+    expect(computeExpectedOutcome("passed", [])).toBe("skipped");
+    expect(computeExpectedOutcome(undefined, [])).toBe("skipped");
+  });
+
+  it("returns 'skipped' for a single genuinely-skipped attempt matching expectedStatus 'skipped'", () => {
+    expect(computeExpectedOutcome("skipped", [{ status: "skipped" }])).toBe(
+      "skipped",
+    );
+  });
+
+  it("returns 'expected' for a single attempt whose status matches expectedStatus", () => {
+    expect(computeExpectedOutcome("passed", [{ status: "passed" }])).toBe(
+      "expected",
+    );
+  });
+
+  it("returns 'unexpected' for a single attempt whose status does not match expectedStatus", () => {
+    expect(computeExpectedOutcome("passed", [{ status: "failed" }])).toBe(
+      "unexpected",
+    );
+  });
+
+  it("returns 'unexpected' when every attempt (including exhausted retries) fails to match expectedStatus", () => {
+    expect(
+      computeExpectedOutcome("passed", [
+        { status: "failed" },
+        { status: "failed" },
+      ]),
+    ).toBe("unexpected");
+  });
+
+  it("returns 'flaky' for a genuine fail-then-pass retry history", () => {
+    expect(
+      computeExpectedOutcome("passed", [
+        { status: "failed" },
+        { status: "passed" },
+      ]),
+    ).toBe("flaky");
+  });
+
+  it("never returns 'flaky' for a single already-passing attempt, even with expectedStatus mismatched to something else", () => {
+    // A single result can only ever produce "skipped", "expected", or
+    // "unexpected" under the real algorithm -- "flaky" structurally
+    // requires at least one genuinely unexpected attempt, which is
+    // impossible with only one result in the history.
+    expect(computeExpectedOutcome("passed", [{ status: "passed" }])).not.toBe(
+      "flaky",
+    );
+    expect(computeExpectedOutcome("failed", [{ status: "passed" }])).not.toBe(
+      "flaky",
+    );
+  });
+
+  it("treats a missing/malformed per-attempt status as never matching expectedStatus", () => {
+    expect(
+      computeExpectedOutcome("passed", [{ status: undefined }]),
+    ).toBe("unexpected");
+    expect(
+      computeExpectedOutcome("passed", [{ status: "bogus-status" }]),
+    ).toBe("unexpected");
+  });
+});
+
+describe("outcomeIsInternallyConsistent", () => {
+  it("is true for a genuine single-attempt pass", () => {
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "passed",
+      status: "expected",
+      results: [{ status: "passed" }],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(true);
+  });
+
+  it("is true for a genuine fail-then-pass flaky retry history", () => {
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "passed",
+      status: "flaky",
+      results: [{ status: "failed" }, { status: "passed" }],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(true);
+  });
+
+  it("is false for a claimed 'flaky' outcome backed by only one, already-passing attempt", () => {
+    // The exact adversarial example from review: a single passing attempt
+    // can never genuinely produce "flaky" (that requires at least one
+    // truly unexpected attempt first); the real outcome for this history
+    // is "expected", not "flaky".
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "passed",
+      status: "flaky",
+      results: [{ status: "passed" }],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(false);
+  });
+
+  it("is false for a claimed 'expected' outcome backed by a genuine fail-then-pass history", () => {
+    // The other exact adversarial example from review: a real
+    // fail-then-pass retry history always computes to "flaky" under
+    // Playwright's own algorithm, never "expected".
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "passed",
+      status: "expected",
+      results: [{ status: "failed" }, { status: "passed" }],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(false);
+  });
+
+  it("is false for any non-'skipped' claim backed by zero attempts", () => {
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "passed",
+      status: "expected",
+      results: [],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(false);
+  });
+
+  it("is true for a claimed 'skipped' outcome backed by zero attempts", () => {
+    const entry: PlaywrightJsonTest = {
+      expectedStatus: "skipped",
+      status: "skipped",
+      results: [],
+    };
+    expect(outcomeIsInternallyConsistent(entry)).toBe(true);
   });
 });
 
@@ -224,6 +355,46 @@ describe("specPassed", () => {
           expectedStatus: "passed",
           status: "skipped",
           results: [{ status: "passed" }],
+        },
+      ],
+    };
+    expect(specPassed(spec)).toBe(false);
+  });
+
+  it("is false for a claimed 'flaky' outcome backed by only one, already-passing attempt (adversarial history/status mismatch)", () => {
+    // Reproduced this exact gap before fixing it: `PASSING_OUTCOME_STATUSES`
+    // alone accepted a bare claim of "flaky" as long as the final result
+    // passed, without checking whether "flaky" was even a possible outcome
+    // of the attached `results` history. A single passing attempt can never
+    // genuinely produce "flaky" (see `computeExpectedOutcome`); the real
+    // outcome for this exact history is "expected", not "flaky".
+    const spec: PlaywrightJsonSpec = {
+      title: "x",
+      tests: [
+        {
+          expectedStatus: "passed",
+          status: "flaky",
+          results: [{ status: "passed" }],
+        },
+      ],
+    };
+    expect(specPassed(spec)).toBe(false);
+  });
+
+  it("is false for a claimed 'expected' outcome backed by a genuine fail-then-pass retry history (adversarial history/status mismatch)", () => {
+    // The mirror-image adversarial case: a real fail-then-pass retry
+    // history always computes to "flaky" under Playwright's own algorithm,
+    // never "expected" -- a report entry claiming "expected" here is
+    // self-contradictory and must not count, even though
+    // `PASSING_OUTCOME_STATUSES` alone would have accepted "expected" and
+    // the final attempt did genuinely pass.
+    const spec: PlaywrightJsonSpec = {
+      title: "x",
+      tests: [
+        {
+          expectedStatus: "passed",
+          status: "expected",
+          results: [{ status: "failed" }, { status: "passed" }],
         },
       ],
     };
@@ -515,16 +686,19 @@ describe("validateReportSchema", () => {
               tests: [
                 {
                   projectName: "chromium",
+                  expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],
                 },
                 {
                   projectName: "tablet-chromium",
+                  expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],
                 },
                 {
                   projectName: "mobile-chromium",
+                  expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],
                 },
@@ -638,16 +812,19 @@ describe("validateReportSchema", () => {
             tests: [
               {
                 projectName: "chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
               {
                 projectName: "tablet-chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
               {
                 projectName: "mobile-chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
@@ -676,6 +853,7 @@ describe("validateReportSchema", () => {
             tests: [
               {
                 projectName: "chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
@@ -725,6 +903,7 @@ describe("validateReportSchema", () => {
             tests: [
               {
                 projectName: "chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
@@ -808,6 +987,7 @@ describe("validateReportSchema", () => {
             tests: [
               {
                 projectName: "chromium",
+                expectedStatus: "passed",
                 status: "expected",
                 results: [{ status: "passed" }],
               },
@@ -850,16 +1030,19 @@ describe("validateReportSchema", () => {
                     tests: [
                       {
                         projectName: "chromium",
+                        expectedStatus: "passed",
                         status: "expected",
                         results: [{ status: "passed" }],
                       },
                       {
                         projectName: "tablet-chromium",
+                        expectedStatus: "passed",
                         status: "expected",
                         results: [{ status: "passed" }],
                       },
                       {
                         projectName: "mobile-chromium",
+                        expectedStatus: "passed",
                         status: "expected",
                         results: [{ status: "passed" }],
                       },
@@ -873,6 +1056,105 @@ describe("validateReportSchema", () => {
       },
     ];
     expect(validateReportSchema(report, requiredProjects)).toEqual([]);
+  });
+
+  it("rejects a required project whose only test entries claim a genuine outcome despite zero recorded attempts (fabricated 'project executed with no attempts' report)", () => {
+    // Reviewer-identified gap: a test entry with a matching projectName and
+    // a recognized top-level status ("expected"/"unexpected"/"flaky") used
+    // to count as "genuinely executed" regardless of whether its `results`
+    // array actually contained any attempts at all. A hand-crafted entry
+    // claiming `status: "expected"` with `results: []` -- which can only
+    // ever genuinely recompute to "skipped" -- must not satisfy project
+    // completeness.
+    const report = validReport();
+    report.suites = [
+      {
+        title: "a.spec.ts",
+        specs: [
+          {
+            title: "does something",
+            tests: [
+              {
+                projectName: "chromium",
+                expectedStatus: "passed",
+                status: "expected",
+                results: [{ status: "passed" }],
+              },
+              {
+                projectName: "tablet-chromium",
+                expectedStatus: "passed",
+                status: "expected",
+                results: [],
+              },
+              {
+                projectName: "mobile-chromium",
+                expectedStatus: "passed",
+                status: "flaky",
+                results: [{ status: "passed" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const problems = validateReportSchema(report, requiredProjects);
+    expect(
+      problems.some((p) => p.includes('"tablet-chromium"') && p.includes("actually executed")),
+    ).toBe(true);
+    expect(
+      problems.some((p) => p.includes('"mobile-chromium"') && p.includes("actually executed")),
+    ).toBe(true);
+    expect(
+      problems.some((p) => p.includes('"chromium"') && p.includes("actually executed")),
+    ).toBe(false);
+  });
+
+  it("flags a report whose top-level stats block does not match an independent recount of every test entry's status", () => {
+    // Reviewer-identified gap: the stats block's presence/numeric-ness was
+    // checked, but its actual values were never cross-checked against the
+    // report's own suite tree -- a stale report spliced with new suites, or
+    // one with a hand-edited stats block, could disagree with itself and
+    // still pass.
+    const report = validReport();
+    report.stats = { expected: 3, unexpected: 0, flaky: 0, skipped: 0 };
+    // Only 2 of the 3 declared "expected" test entries actually exist in
+    // this (deliberately truncated) suite tree.
+    report.suites = [
+      {
+        title: "a.spec.ts",
+        specs: [
+          {
+            title: "does something",
+            tests: [
+              {
+                projectName: "chromium",
+                expectedStatus: "passed",
+                status: "expected",
+                results: [{ status: "passed" }],
+              },
+              {
+                projectName: "tablet-chromium",
+                expectedStatus: "passed",
+                status: "expected",
+                results: [{ status: "passed" }],
+              },
+            ],
+          },
+        ],
+      },
+    ];
+    const problems = validateReportSchema(report, requiredProjects);
+    expect(
+      problems.some(
+        (p) =>
+          p.includes("top-level `stats` block") &&
+          p.includes("expected: header 3 vs recounted 2"),
+      ),
+    ).toBe(true);
+  });
+
+  it("does not flag a stats mismatch when the recount genuinely matches (no false positive on a real, internally consistent report)", () => {
+    expect(validateReportSchema(validReport(), requiredProjects)).toEqual([]);
   });
 });
 

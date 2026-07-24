@@ -11,20 +11,30 @@
 //
 // What it does, in order, and why each step matters:
 //
-//   1. Generates an invocation-unique report path (crypto.randomUUID())
-//      under `test-results/` and passes it to Playwright via the
-//      `PLAYWRIGHT_JSON_REPORT_PATH` env var, so this invocation's JSON
-//      reporter output can never collide with -- or be overwritten by --
-//      any other concurrent or prior invocation's report. Two gate runs
-//      started at the same instant on the same machine still each get
-//      their own file.
+//   1. Generates an invocation-unique *directory*
+//      (`test-results/gate-<uuid>/`, via `resolveInvocationPaths`) and
+//      passes it to Playwright as `outputDir` (via `PLAYWRIGHT_OUTPUT_DIR`,
+//      read by `playwright.config.ts`), with the JSON report nested inside
+//      it (`PLAYWRIGHT_JSON_REPORT_PATH`). A unique *filename* alone is not
+//      enough: Playwright's own test runner unconditionally deletes its
+//      entire configured `outputDir` recursively as the first step of
+//      every invocation (`createRemoveOutputDirsTask` in
+//      `playwright/lib/runner/index.js`), so a second, concurrently
+//      started invocation sharing the same parent `outputDir` would
+//      wholesale delete it -- including a first invocation's
+//      already-written, uniquely *named* report sitting inside that same
+//      shared folder -- before the first invocation's gate ever read it
+//      back. Giving each invocation its own, structurally distinct
+//      `outputDir` means each one only ever clears its own folder; two
+//      concurrent invocations can never observe or clear each other's.
 //   2. Records a start timestamp *before* spawning anything (kept as
 //      defense-in-depth alongside the unique path).
 //   3. Spawns the exact same `npm run test:e2e` command used for manual
 //      verification (unchanged: `next build && playwright test`, governed
 //      entirely by `playwright.config.ts` -- no `--workers` or other CLI
 //      flags are added here), inheriting stdio so its full output is
-//      visible, with `PLAYWRIGHT_JSON_REPORT_PATH` set in its environment.
+//      visible, with `PLAYWRIGHT_JSON_REPORT_PATH`/`PLAYWRIGHT_OUTPUT_DIR`
+//      set in its environment.
 //   4. If that process exits non-zero, fails immediately -- a failed
 //      Playwright run must never be handed to the coverage verifier at all.
 //   5. Otherwise, calls into `verify-playwright-runtime-coverage.mjs`'s
@@ -37,36 +47,40 @@
 //
 // This script is the intended CI/release-gate command
 // (`npm run test:e2e:gate`). The plain `npm run test:e2e` command remains
-// unchanged (no PLAYWRIGHT_JSON_REPORT_PATH set, so it keeps writing to the
-// fixed `test-results/report.json` path) and continues to serve as the
-// separate "exact command, run twice" manual-determinism proof.
+// unchanged (no PLAYWRIGHT_JSON_REPORT_PATH/PLAYWRIGHT_OUTPUT_DIR set, so it
+// keeps writing to the fixed `test-results/report.json` path/`test-results/`
+// outputDir) and continues to serve as the separate "exact command, run
+// twice" manual-determinism proof. See
+// `scripts/prove-concurrent-gate-report-isolation.mjs` for a standalone,
+// reproducible proof that two concurrent invocations of this script's path
+// scheme cannot clear or overwrite each other's report/output directory.
 import { existsSync, rmSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 import { verifyReport } from "./verify-playwright-runtime-coverage.mjs";
+import { resolveInvocationPaths } from "./gate-invocation-paths.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
 function main() {
-  const invocationReportPath = path.join(
-    repoRoot,
-    "test-results",
-    `report.${randomUUID()}.json`,
-  );
-  // Defensive only: a UUID collision with a leftover file is not expected,
-  // but if this exact path somehow already existed, remove it so a stale
-  // file at this unique path can never be mistaken for this run's output.
-  if (existsSync(invocationReportPath)) {
-    rmSync(invocationReportPath, { force: true });
+  const { outputDir: invocationOutputDir, reportPath: invocationReportPath } =
+    resolveInvocationPaths(repoRoot, randomUUID());
+  // Defensive only: a UUID collision with a leftover directory is not
+  // expected, but if this exact path somehow already existed, remove it so
+  // stale contents at this unique path can never be mistaken for this
+  // run's output.
+  if (existsSync(invocationOutputDir)) {
+    rmSync(invocationOutputDir, { recursive: true, force: true });
   }
 
   const startedAt = Date.now();
   console.log(
     `Starting atomic E2E coverage gate at ${new Date(startedAt).toISOString()}: ` +
       `spawning \`npm run test:e2e\` (unmodified: next build && playwright test) ` +
-      `with invocation-unique report path ${invocationReportPath}...`,
+      `with invocation-unique output directory ${invocationOutputDir} and ` +
+      `report path ${invocationReportPath}...`,
   );
 
   const run = spawnSync("npm run test:e2e", {
@@ -76,6 +90,7 @@ function main() {
     env: {
       ...process.env,
       PLAYWRIGHT_JSON_REPORT_PATH: invocationReportPath,
+      PLAYWRIGHT_OUTPUT_DIR: invocationOutputDir,
     },
   });
 

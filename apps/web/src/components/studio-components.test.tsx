@@ -75,6 +75,33 @@ afterEach(() => {
   mockedUploadLibraryItem.mockReset();
 });
 
+/**
+ * Forces a genuine `click` event through to a React `onClick` handler on an
+ * element that React currently considers `disabled`, to test a handler-level
+ * guard independent of (i.e. not merely relying on) the disabled attribute
+ * blocking the click. A disabled form control never dispatches a real click
+ * in either a browser or jsdom, and merely mutating the DOM `disabled`
+ * property is *not* sufficient to bypass this: React's own event
+ * delegation (`getListener`) additionally checks its own internally
+ * recorded props snapshot for the element (not the live DOM attribute)
+ * before invoking `onClick` on a `button`/`input`/`select`/`textarea`, and
+ * refuses to deliver the event at all if that snapshot says `disabled`.
+ * This clears both the DOM property and React's internal snapshot so the
+ * click genuinely reaches the production handler, which must then apply
+ * its own (independent) guard.
+ */
+function forceClickBypassingReactDisabled(element: HTMLElement): void {
+  (element as HTMLButtonElement).disabled = false;
+  const propsKey = Object.keys(element).find((key) =>
+    key.startsWith("__reactProps$"),
+  );
+  if (propsKey) {
+    const target = element as unknown as Record<string, Record<string, unknown>>;
+    target[propsKey] = { ...target[propsKey], disabled: false };
+  }
+  fireEvent.click(element);
+}
+
 function baseRun(overrides: Partial<StudioRun> = {}): StudioRun {
   return {
     capability: "literature",
@@ -431,7 +458,7 @@ describe("LiteratureStudio", () => {
   it("blocks submission for an out-of-order or future-dated protocol window and recovers once corrected", async () => {
     const user = userEvent.setup();
     const onRun = jest.fn().mockResolvedValue(undefined);
-    render(
+    const { container } = render(
       <LiteratureStudio
         result={literatureResult}
         running={false}
@@ -445,6 +472,20 @@ describe("LiteratureStudio", () => {
     const runButton = screen.getByRole("button", {
       name: "Search & screen evidence",
     });
+
+    fireEvent.change(publishedFrom, { target: { value: "" } });
+    fireEvent.change(through, { target: { value: "" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /enter a published-from and through year/i,
+    );
+    expect(runButton).toBeDisabled();
+
+    fireEvent.change(publishedFrom, { target: { value: "not-a-year" } });
+    fireEvent.change(through, { target: { value: "also-not-a-year" } });
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      /enter a published-from and through year/i,
+    );
+    expect(runButton).toBeDisabled();
 
     fireEvent.change(publishedFrom, { target: { value: "2022" } });
     fireEvent.change(through, { target: { value: "2019" } });
@@ -460,6 +501,18 @@ describe("LiteratureStudio", () => {
     fireEvent.change(through, { target: { value: futureYear } });
     expect(screen.getByRole("alert")).toHaveTextContent(/future/i);
     expect(runButton).toBeDisabled();
+
+    // The Run button being `disabled` already stops a real click, but the
+    // submit handler itself must independently refuse to run the search
+    // whenever `dateWindowError` is set -- proving the handler-level guard
+    // actually blocks submission (not merely that the button is inert), by
+    // dispatching a genuine `submit` event straight at the form, bypassing
+    // the disabled button entirely.
+    const form = container.querySelector(
+      "form.literature-protocol",
+    ) as HTMLFormElement;
+    fireEvent.submit(form);
+    expect(onRun).not.toHaveBeenCalled();
 
     fireEvent.change(through, { target: { value: "2024" } });
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
@@ -1049,7 +1102,7 @@ describe("GrantStudio", () => {
       screen.getByRole("checkbox", { name: /Foundation Directory/i }),
     );
     await user.click(screen.getByRole("button", { name: /red-team draft/i }));
-    expect(onRun.mock.calls[0][2].inputs.funding_sources).toContain(
+    expect(onRun.mock.calls[0][2].inputs.sources).toContain(
       "foundation_dir",
     );
     expect(screen.getByText(/80% ready · red-team pass/i)).toBeInTheDocument();
@@ -1127,7 +1180,7 @@ describe("GrantStudio", () => {
     expect(screen.getByText("Currently unavailable")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /red-team draft/i }));
-    const fundingSources = onRun.mock.calls[0][2].inputs.funding_sources;
+    const fundingSources = onRun.mock.calls[0][2].inputs.sources;
     expect(fundingSources).toContain("grants_gov");
     expect(fundingSources).not.toContain("foundation_dir");
     expect(fundingSources).not.toContain("crossref");
@@ -3074,9 +3127,24 @@ describe("AutomationStudio", () => {
       screen.getByRole("button", { name: "Remove Export" }),
     );
 
-    await user.click(
-      within(dialog).getByRole("button", { name: "Confirm activation" }),
-    );
+    const confirmButton = within(dialog).getByRole("button", {
+      name: "Confirm activation",
+    });
+    expect(confirmButton).toBeDisabled();
+
+    // A disabled button never dispatches a real click (both in real
+    // browsers and jsdom), so merely confirming the button stays disabled
+    // does not by itself prove the handler's own `if (!canActivate) return`
+    // recheck actually blocks activation -- it would pass identically if
+    // that guard were deleted. Force a genuine `click` event through
+    // (bypassing both the DOM `disabled` property and React's own internal
+    // disabled bookkeeping) so the click is actually dispatched and reaches
+    // the production handler, which still holds the real, now-invalidated
+    // `canActivate = false` in its last-committed closure. If the
+    // handler-level guard were removed, this would activate; because it is
+    // present, it must still refuse.
+    forceClickBypassingReactDisabled(confirmButton);
+
     expect(
       screen.queryByRole("button", { name: /activated \(draft workspace\)/i }),
     ).not.toBeInTheDocument();

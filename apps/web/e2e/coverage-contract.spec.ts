@@ -67,6 +67,93 @@ function pathEquals(actual: string[], expected: string[]): boolean {
   );
 }
 
+/** Strips any wrapping `ParenthesizedExpression`s, e.g. `((x))` -> `x`. */
+function unwrapParens(expr: ts.Expression): ts.Expression {
+  let current: ts.Expression = expr;
+  while (ts.isParenthesizedExpression(current)) {
+    current = current.expression;
+  }
+  return current;
+}
+
+/** True if `fn` is the callee of an Immediately Invoked Function Expression
+ * -- `(function () { ... })()` / `(() => { ... })()` -- i.e. provably
+ * invoked synchronously at exactly the point it's declared, regardless of
+ * whether anything recognizes it as a test/describe callback. */
+function isIIFECallee(
+  fn: ts.FunctionDeclaration | ts.FunctionExpression | ts.ArrowFunction,
+): boolean {
+  let parent: ts.Node = fn.parent;
+  while (parent && ts.isParenthesizedExpression(parent)) {
+    parent = parent.parent;
+  }
+  return (
+    parent !== undefined &&
+    ts.isCallExpression(parent) &&
+    unwrapParens(parent.expression) === fn
+  );
+}
+
+/** True if `fn` is exactly the resolved callback (per `getCallback`) of its
+ * own immediate parent call expression, and that parent call is a
+ * recognized test/describe-family shape (`test(...)`,
+ * `test.skip/fixme/fail(...)`, `test.describe(...)`,
+ * `test.describe.skip/fixme(...)`) -- i.e. this function body is the
+ * synchronously-invoked-at-registration callback of a call this scanner
+ * already understands and handles explicitly elsewhere. */
+function isRecognizedTestFamilyCallback(
+  fn: ts.FunctionExpression | ts.ArrowFunction,
+): boolean {
+  const parent = fn.parent;
+  if (!parent || !ts.isCallExpression(parent) || getCallback(parent) !== fn) {
+    return false;
+  }
+  const calleePath = getCalleePath(parent);
+  if (!calleePath) return false;
+  const isPlainTest = pathEquals(calleePath, ["test"]);
+  const isTestModifier =
+    calleePath.length === 2 &&
+    calleePath[0] === "test" &&
+    DISABLING_MODIFIERS.has(calleePath[1]);
+  const isDescribeFamily = calleePath[0] === "test" && calleePath[1] === "describe";
+  return isPlainTest || isTestModifier || isDescribeFamily;
+}
+
+/** True if the generic structural walker should refuse to descend into
+ * `node`'s body at all -- i.e. `node` is a function-like construct
+ * (`function foo() {}`, `function () {}`, `() => {}`) that is neither an
+ * IIFE nor the literal inline callback of a recognized test/describe-family
+ * call. This is the fix for two related gaps: (1) a `test(...)` call
+ * syntactically nested inside a named helper function that is declared but
+ * never actually invoked (dead code), or passed to something like
+ * `setTimeout(...)`/`.then(...)`/`.map(...)` that does not run synchronously
+ * as part of Playwright's registration pass, must never be credited as
+ * reachable coverage; (2) a `test.describe.skip(...)`/`.fixme(...)` call
+ * referencing a *named* callback (e.g. `test.describe.skip("g", helperFn)`)
+ * cannot be resolved by this static scan, and `helperFn`'s own separate
+ * top-level declaration must not be treated as an unconditionally-reachable
+ * sibling statement (which would silently bypass the skip-guard and credit
+ * its tests as trusted). Both cases fail closed: such bodies are simply
+ * never entered, so any tokens exclusively inside them are treated as
+ * wholly absent rather than trusted or even present. */
+function isUnreachableFunctionBody(node: ts.Node): boolean {
+  if (
+    !ts.isFunctionDeclaration(node) &&
+    !ts.isFunctionExpression(node) &&
+    !ts.isArrowFunction(node)
+  ) {
+    return false;
+  }
+  if (isIIFECallee(node)) return false;
+  if (
+    (ts.isFunctionExpression(node) || ts.isArrowFunction(node)) &&
+    isRecognizedTestFamilyCallback(node)
+  ) {
+    return false;
+  }
+  return true;
+}
+
 // `test.fail` is treated identically to `skip`/`fixme` for trust purposes: a
 // test that declares itself expected to fail must never satisfy required
 // coverage, since an "unexpected pass" for such a test is not evidence the
@@ -278,6 +365,17 @@ function extractTokensFromSource(filename: string, source: string): SpecTokens {
   // is handled by `processStatement`'s callers via
   // `mayIntroduceBareDisablingAnnotation`, not by this recursion itself.
   function walkGeneric(node: ts.Node, ancestorSkipped: boolean): void {
+    if (isUnreachableFunctionBody(node)) {
+      // Fail closed: refuse to descend into a function-like node's body
+      // unless it is provably invoked synchronously as part of
+      // Playwright's registration pass. See `isUnreachableFunctionBody`'s
+      // doc comment for the exact gaps this closes (dead/never-invoked
+      // helper functions, detached-timer/`.then`/`.map` callbacks, and
+      // named callbacks referenced by `test.describe.skip`/`.fixme` that
+      // this scan cannot resolve).
+      return;
+    }
+
     let childContext = ancestorSkipped;
 
     if (ts.isCallExpression(node)) {
@@ -1209,5 +1307,143 @@ test("a named-function callback reference is untrusted in the three-argument tes
       "synthetic-check::three-arg-named-callback",
     ),
   ).toBe(false);
+});
+
+test("a test() call syntactically nested inside a named helper function that is never invoked is not credited at all, trusted or untrusted", () => {
+  // Reproduces the exact reviewer-cited gap: the old generic recursion
+  // blanket-recursed into every function body reached anywhere in the
+  // file, including one that is declared but never actually called. Since
+  // Playwright only registers tests that run synchronously during its
+  // module-evaluation/registration pass, a `test(...)` call inside dead
+  // code like this can never really register -- it must be treated as
+  // wholly absent, not merely untrusted (which would still let it satisfy
+  // "is present but never trusted" diagnostics it has no business
+  // appearing in at all).
+  const source = `
+    import { test } from "@playwright/test";
+    function neverCalledHelper() {
+      test("does something [pw.synthetic-check:dead-code-only]", async () => {});
+    }
+    test("a real, separate test [pw.synthetic-check:dead-code-sibling]", async () => {});
+  `;
+  const result = extractTokensFromSource("synthetic-dead-helper.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::dead-code-only")).toBe(false);
+  expect(result.trustedStatePairs.has("synthetic-check::dead-code-only")).toBe(
+    false,
+  );
+  // The sibling real, top-level test must remain fully credited -- proving
+  // the fix is scoped to unreachable function bodies, not an over-broad
+  // regression against ordinary top-level tests.
+  expect(
+    result.trustedStatePairs.has("synthetic-check::dead-code-sibling"),
+  ).toBe(true);
+});
+
+test("a test() call inside a named function only ever referenced as a test.describe.skip callback is not credited, even via the function's own separate top-level declaration", () => {
+  // The other half of the reviewer-cited gap: `test.describe.skip("g",
+  // namedFn)` cannot be resolved by this static scan (`getCallback` only
+  // recognizes inline arrow/function expressions), so the *dedicated*
+  // describe-handling code path already correctly does nothing for it.
+  // But before this fix, `namedFn`'s own separate top-level
+  // `function namedFn() { ... }` declaration -- encountered later as an
+  // ordinary sibling statement while walking the rest of the file -- was
+  // blanket-recursed into with an unconditioned (non-skip-guarded)
+  // context, silently crediting its tests as trusted despite only ever
+  // being reachable through the skipped describe group.
+  const source = `
+    import { test } from "@playwright/test";
+    function groupBody() {
+      test("does something [pw.synthetic-check:named-describe-skip-callback]", async () => {});
+    }
+    test.describe.skip("a skipped group with a named callback", groupBody);
+  `;
+  const result = extractTokensFromSource(
+    "synthetic-named-describe-skip.spec.ts",
+    source,
+  );
+
+  expect(
+    result.statePairs.has("synthetic-check::named-describe-skip-callback"),
+  ).toBe(false);
+  expect(
+    result.trustedStatePairs.has(
+      "synthetic-check::named-describe-skip-callback",
+    ),
+  ).toBe(false);
+});
+
+test("a test() call inside a setTimeout callback (a detached, asynchronously-invoked timer) is not credited at all", () => {
+  // Playwright's registration pass evaluates the module body and every
+  // test/describe callback synchronously; a callback handed to
+  // `setTimeout` runs later, asynchronously, after registration has
+  // already completed, so any `test(...)` call inside it can never
+  // actually register with Playwright. The old blanket recursion found it
+  // anyway purely because it was reachable via `ts.forEachChild`, with no
+  // regard for whether it could possibly run during registration.
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("a group with a detached timer", () => {
+      setTimeout(() => {
+        test("does something [pw.synthetic-check:detached-timer-only]", async () => {});
+      }, 1000);
+      test("a real, sibling test [pw.synthetic-check:detached-timer-sibling]", async () => {});
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-detached-timer.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::detached-timer-only")).toBe(
+    false,
+  );
+  expect(
+    result.trustedStatePairs.has("synthetic-check::detached-timer-only"),
+  ).toBe(false);
+  expect(
+    result.trustedStatePairs.has("synthetic-check::detached-timer-sibling"),
+  ).toBe(true);
+});
+
+test("a test() call inside an Array.prototype.map callback is not credited at all", () => {
+  // Same class of gap as the detached timer above, via a different
+  // non-test-family higher-order function: `.map`'s callback is not a
+  // recognized test/describe-family shape, so a `test(...)` call
+  // syntactically nested inside it cannot be proven to run as part of
+  // registration (and in this exact case it also wouldn't actually run at
+  // all, since `.map`'s return values are discarded here -- but even a
+  // genuinely-invoked non-test-family callback must not be trusted, since
+  // this scan cannot verify *when* relative to registration it runs).
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("a group with a map-nested test", () => {
+      [1, 2, 3].map((n) => {
+        test(\`does something \${n} [pw.synthetic-check:map-nested-only]\`, async () => {});
+      });
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-map-nested.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::map-nested-only")).toBe(false);
+  expect(
+    result.trustedStatePairs.has("synthetic-check::map-nested-only"),
+  ).toBe(false);
+});
+
+test("an IIFE-wrapped test() call remains fully credited (positive control against over-broad unreachable-body blocking)", () => {
+  // Proves the fix is precisely scoped: an IIFE is provably invoked
+  // synchronously at exactly the point it's declared, so a real
+  // `test(...)` call inside one must remain trusted exactly as before.
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("a group with an IIFE-nested real test", () => {
+      (() => {
+        test("does something [pw.synthetic-check:iife-nested-test]", async () => {});
+      })();
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-iife-nested-test.spec.ts", source);
+
+  expect(
+    result.trustedStatePairs.has("synthetic-check::iife-nested-test"),
+  ).toBe(true);
 });
 

@@ -777,6 +777,47 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByText("Slow poll finally landed")).toBeInTheDocument();
   });
 
+  it("does not reschedule another poll when the component unmounts while a poll's refresh() call is still in flight", async () => {
+    jest.useFakeTimers();
+    const transitionalWorkspace = cloneWorkspaceData();
+    transitionalWorkspace.library[0].status = "processing";
+    transitionalWorkspace.runs[0].status = "running";
+
+    const inFlightPoll = createDeferred<WorkspaceData>();
+    mockedGetWorkspaceData
+      .mockResolvedValueOnce(transitionalWorkspace) // initial mount load
+      .mockReturnValueOnce(inFlightPoll.promise); // first poll, held open
+
+    const { unmount } = render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    act(() => {
+      jest.advanceTimersByTime(3_000);
+    });
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2));
+
+    // Unmount while the poll's refresh() promise is still pending: the
+    // effect's cleanup sets `cancelled = true` before the promise ever
+    // settles.
+    unmount();
+
+    // Resolve the in-flight poll only now, after unmount. If the
+    // `cancelled` guard were missing, this `.finally()` would call
+    // `scheduleNext()` again and schedule a further poll even though the
+    // component is gone.
+    await act(async () => {
+      inFlightPoll.resolve(cloneWorkspaceData());
+      await inFlightPoll.promise;
+    });
+
+    act(() => {
+      jest.advanceTimersByTime(30_000);
+    });
+    // No further poll was ever scheduled, so the call count stays at 2
+    // (initial load + the one in-flight poll) forever.
+    expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(2);
+  });
+
   it("discards a stale refresh response that resolves after a newer refresh was issued (workspace-ready / approval-notification race)", async () => {
     const user = userEvent.setup();
     const deferredStaleNavigateRefresh = createDeferred<WorkspaceData>();

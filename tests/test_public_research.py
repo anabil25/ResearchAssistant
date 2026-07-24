@@ -302,6 +302,37 @@ async def test_public_research_rejects_explicitly_requested_unassigned_connector
 
 
 @pytest.mark.asyncio
+async def test_public_research_rejects_explicitly_requested_source_with_no_connector_entry() -> None:
+    # A source ID that *is* part of the capability's own vocabulary
+    # (`_CAPABILITY_SOURCES`) but has no matching entry at all in the
+    # workspace's own connector list -- e.g. a workspace whose connector
+    # catalog was pared down, or a stale client referencing a source the
+    # workspace never provisioned -- must be rejected with its own
+    # "unavailable"/not-configured reason, not silently dropped or treated
+    # as `enabled` by a `None` fallback.
+    grants_gov = next(
+        item for item in WorkspaceStore().connectors() if item.id == "grants_gov"
+    )
+
+    results = await retrieve_public_metadata(
+        Capability.GRANT,
+        "public opportunity",
+        [grants_gov],
+        gateway=_UnreachableGateway(),
+        requested_sources=["NIH RePORTER"],
+    )
+
+    assert results == [
+        {
+            "source": "nih_reporter",
+            "status": "unavailable",
+            "error": "The 'nih_reporter' connector is not configured for this workspace.",
+            "records": [],
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_public_research_rejects_entirely_unknown_requested_source() -> None:
     # A requested source ID with no matching connector alias/definition
     # anywhere is not part of `_CAPABILITY_SOURCES` for any capability, so it
@@ -329,6 +360,26 @@ async def test_public_research_rejects_entirely_unknown_requested_source() -> No
             "records": [],
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_public_research_deselecting_all_sources_makes_zero_gateway_calls() -> None:
+    # An explicit empty list (as opposed to `None`, which falls back to the
+    # capability's own default source set) represents a caller who has
+    # deselected every connector in the UI. This must resolve to an
+    # entirely empty candidate set -- no default sources reinstated, no
+    # "unsupported" rejection entries (nothing was actually named), and,
+    # critically, no live call to the gateway for any connector, even ones
+    # that are otherwise enabled/ready/assigned.
+    results = await retrieve_public_metadata(
+        Capability.GRANT,
+        "public opportunity",
+        WorkspaceStore().connectors(),
+        gateway=_UnreachableGateway(),
+        requested_sources=[],
+    )
+
+    assert results == []
 
 
 @pytest.mark.asyncio

@@ -187,7 +187,23 @@ const { gatewayPort, apiPort, webPort } = deployedBaseUrl
 
 export default defineConfig({
   testDir: "./e2e",
-  outputDir: "./test-results",
+  // Overridable via PLAYWRIGHT_OUTPUT_DIR so the atomic release-gate
+  // wrapper (scripts/run-e2e-coverage-gate.mjs) can give each of its
+  // invocations its own invocation-unique directory instead of always
+  // using the shared `./test-results`. This matters because Playwright's
+  // own test runner unconditionally deletes its entire configured
+  // `outputDir` recursively as the very first step of every invocation
+  // (`createRemoveOutputDirsTask`); a fixed, shared `outputDir` meant a
+  // second, concurrently started invocation's startup would wholesale
+  // delete the first invocation's already-written artifacts/report --
+  // even one written under a uniquely named file -- since the *directory*
+  // itself, not just the filename, was shared. See
+  // resolveInvocationPaths in scripts/gate-invocation-paths.mjs and
+  // scripts/prove-concurrent-gate-report-isolation.mjs. The plain,
+  // unwrapped `npm run test:e2e` command (used for the manual "run it
+  // twice" determinism proof) leaves this env var unset and keeps using
+  // the fixed `./test-results` directory unchanged.
+  outputDir: process.env.PLAYWRIGHT_OUTPUT_DIR ?? "./test-results",
   forbidOnly: Boolean(process.env.CI),
   retries: process.env.CI ? 2 : 0,
   reporter: [

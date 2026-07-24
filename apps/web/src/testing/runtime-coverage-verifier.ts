@@ -139,6 +139,91 @@ export interface PlaywrightJsonReport {
  * status: "passed" }] }` returned `true` under the old exclusion-only logic. */
 const PASSING_OUTCOME_STATUSES = new Set(["expected", "flaky"]);
 
+/**
+ * Reimplementation of Playwright's own outcome-computation algorithm
+ * (`computeTestCaseOutcome` in `playwright/lib/common/index.js`, compiled
+ * from `packages/playwright/src/common/test.ts`), operating directly on a
+ * test entry's `expectedStatus` and its actual per-attempt `results[]`
+ * history:
+ *
+ * ```
+ * for each result:
+ *   if result.status === "interrupted": (tracked, does not affect outcome)
+ *   else if result.status === "skipped" && expectedStatus === "skipped": skipped += 1
+ *   else if result.status === "skipped": (did-not-run, does not affect outcome)
+ *   else if result.status === expectedStatus: expected += 1
+ *   else: unexpected += 1
+ * if expected === 0 && unexpected === 0: "skipped"
+ * else if unexpected === 0: "expected"
+ * else if expected === 0 && skipped === 0: "unexpected"
+ * else: "flaky"
+ * ```
+ *
+ * Used by `outcomeIsInternallyConsistent` below to prove a report's own
+ * claimed top-level `status` is exactly what this algorithm would produce
+ * from its own `expectedStatus`/`results` -- not merely trusted verbatim.
+ * A malformed/missing per-result `status` is deliberately never treated as
+ * a match for `expectedStatus` (fail-closed, same rationale as the
+ * allowlists above), so it can only ever land in the "unexpected" bucket.
+ */
+export function computeExpectedOutcome(
+  expectedStatus: string | undefined,
+  results: readonly PlaywrightJsonResult[],
+): "skipped" | "expected" | "unexpected" | "flaky" {
+  let skipped = 0;
+  let expected = 0;
+  let unexpected = 0;
+  for (const result of results) {
+    const status = result.status;
+    if (status === "interrupted") {
+      continue;
+    } else if (status === "skipped" && expectedStatus === "skipped") {
+      skipped += 1;
+    } else if (status === "skipped") {
+      continue; // "did not run" in upstream terms; never affects the outcome branches.
+    } else if (status !== undefined && status === expectedStatus) {
+      expected += 1;
+    } else {
+      unexpected += 1;
+    }
+  }
+  if (expected === 0 && unexpected === 0) return "skipped";
+  if (unexpected === 0) return "expected";
+  if (expected === 0 && skipped === 0) return "unexpected";
+  return "flaky";
+}
+
+/**
+ * True iff a test entry's own claimed top-level `status` is exactly what
+ * `computeExpectedOutcome` would independently derive from its
+ * `expectedStatus` and its actual `results[]` history. Closes the gap
+ * where a hand-crafted, corrupted, or partially-edited report could claim
+ * an outcome its own attempt history could never legitimately produce --
+ * reproduced both exact gaps before fixing them:
+ *
+ *  - `{ expectedStatus: "passed", status: "flaky", results: [{ status:
+ *    "passed" }] }` -- a single, already-passing attempt can never
+ *    genuinely produce "flaky" (that requires at least one *unexpected*
+ *    attempt per the real algorithm above); the real outcome for this
+ *    history is "expected".
+ *  - `{ expectedStatus: "passed", status: "expected", results: [{ status:
+ *    "failed" }, { status: "passed" }] }` -- a genuine fail-then-pass
+ *    history always computes to "flaky", never "expected", under the real
+ *    algorithm.
+ *
+ * Also implicitly requires at least one real attempt: `results: []`
+ * recomputes to `"skipped"` regardless of any claimed `status`, so a
+ * non-`"skipped"` claim backed by zero attempts is rejected here too --
+ * closing the "project execution with no attempts" gap in
+ * `collectProjectNames`.
+ */
+export function outcomeIsInternallyConsistent(
+  testEntry: PlaywrightJsonTest,
+): boolean {
+  const results = testEntry.results ?? [];
+  return computeExpectedOutcome(testEntry.expectedStatus, results) === testEntry.status;
+}
+
 /** A spec "genuinely passed" iff at least one of its per-project test
  * executions:
  *
@@ -150,8 +235,13 @@ const PASSING_OUTCOME_STATUSES = new Set(["expected", "flaky"]);
  *    `PASSING_OUTCOME_STATUSES` above) — rejects `"unexpected"` (an
  *    "unexpected pass" of a `test.fail()`-marked test — actual `passed` but
  *    expected `failed`, which is not evidence the behavior genuinely
- *    works), `"skipped"`, and any bogus/missing/fabricated status string; and
- * 3. has a final (last-retry) result whose status is literally "passed".
+ *    works), `"skipped"`, and any bogus/missing/fabricated status string;
+ * 3. has a claimed `status` that is internally consistent with its own
+ *    `expectedStatus`/`results` history (see `outcomeIsInternallyConsistent`
+ *    above) — rejects a report entry whose claimed outcome its own attempt
+ *    history could never legitimately produce (e.g. "flaky" backed by a
+ *    single already-passing attempt); and
+ * 4. has a final (last-retry) result whose status is literally "passed".
  *
  * A test that is skipped everywhere has no "passed" result at all; a test
  * that failed on every attempt (including exhausted retries) likewise has
@@ -162,6 +252,7 @@ export function specPassed(spec: PlaywrightJsonSpec): boolean {
   return (spec.tests ?? []).some((testEntry) => {
     if (testEntry.expectedStatus !== "passed") return false;
     if (!PASSING_OUTCOME_STATUSES.has(testEntry.status ?? "")) return false;
+    if (!outcomeIsInternallyConsistent(testEntry)) return false;
     const results = testEntry.results ?? [];
     const last = results[results.length - 1];
     return last?.status === "passed";
@@ -321,11 +412,65 @@ function collectProjectNames(suite: PlaywrightJsonSuite, into: Set<string>): voi
     for (const testEntry of spec.tests ?? []) {
       if (!testEntry.projectName) continue;
       if (!GENUINE_EXECUTION_STATUSES.has(testEntry.status ?? "")) continue;
+      // A claimed "expected"/"unexpected"/"flaky" outcome is not enough on
+      // its own: also require that outcome to be exactly what Playwright's
+      // own algorithm would derive from this entry's actual
+      // `expectedStatus`/`results[]` history (see
+      // `outcomeIsInternallyConsistent`). Closes the gap where a
+      // hand-crafted entry claiming e.g. `status: "expected"` with zero
+      // attempts (`results: []`) -- which can only ever genuinely
+      // recompute to `"skipped"` -- would otherwise count as this project
+      // having "genuinely executed" a test despite there being no actual
+      // attempt anywhere in the report.
+      if (!outcomeIsInternallyConsistent(testEntry)) continue;
       into.add(testEntry.projectName);
     }
   }
   for (const child of suite.suites ?? []) {
     collectProjectNames(child, into);
+  }
+}
+
+/** Per-outcome counts of individual `PlaywrightJsonTest` entries (each
+ * entry representing one project's execution of one spec), recomputed by
+ * walking every suite/spec in a report -- for cross-checking against the
+ * report's own top-level `stats` block in `validateReportSchema`. A
+ * malformed/missing/unrecognized per-entry `status` deliberately falls
+ * into none of the four buckets (rather than being coerced into one),
+ * since it can never genuinely match any of them; any such entry
+ * necessarily makes the recomputed total lower than an internally
+ * consistent report's own `stats` total, which the mismatch check below
+ * surfaces regardless of which specific bucket disagrees. */
+interface OutcomeTally {
+  expected: number;
+  unexpected: number;
+  flaky: number;
+  skipped: number;
+}
+
+function tallyReportedOutcomes(suite: PlaywrightJsonSuite, tally: OutcomeTally): void {
+  for (const spec of suite.specs ?? []) {
+    for (const testEntry of spec.tests ?? []) {
+      switch (testEntry.status) {
+        case "expected":
+          tally.expected += 1;
+          break;
+        case "unexpected":
+          tally.unexpected += 1;
+          break;
+        case "flaky":
+          tally.flaky += 1;
+          break;
+        case "skipped":
+          tally.skipped += 1;
+          break;
+        default:
+          break;
+      }
+    }
+  }
+  for (const child of suite.suites ?? []) {
+    tallyReportedOutcomes(child, tally);
   }
 }
 
@@ -359,6 +504,38 @@ export function validateReportSchema(
     problems.push(
       "Report is missing a complete `stats` block (numeric expected/unexpected/flaky/skipped counts) -- looks stale, minimal, or fabricated.",
     );
+  } else {
+    // Reconcile the report's own top-level aggregate counts against an
+    // independent recount of every individual test entry's status across
+    // the whole suite tree. A genuine, untampered report always agrees
+    // with itself here; a stale report spliced with new suites/specs, a
+    // partially hand-edited report, or one with a corrupted/truncated
+    // suite tree will not.
+    const tally: OutcomeTally = { expected: 0, unexpected: 0, flaky: 0, skipped: 0 };
+    for (const suite of report.suites ?? []) {
+      tallyReportedOutcomes(suite, tally);
+    }
+    const mismatches: string[] = [];
+    if (tally.expected !== stats.expected) {
+      mismatches.push(`expected: header ${stats.expected} vs recounted ${tally.expected}`);
+    }
+    if (tally.unexpected !== stats.unexpected) {
+      mismatches.push(`unexpected: header ${stats.unexpected} vs recounted ${tally.unexpected}`);
+    }
+    if (tally.flaky !== stats.flaky) {
+      mismatches.push(`flaky: header ${stats.flaky} vs recounted ${tally.flaky}`);
+    }
+    if (tally.skipped !== stats.skipped) {
+      mismatches.push(`skipped: header ${stats.skipped} vs recounted ${tally.skipped}`);
+    }
+    if (mismatches.length > 0) {
+      problems.push(
+        "Report's top-level `stats` block does not match an independent recount of every " +
+          `individual test entry's status across all suites (${mismatches.join("; ")}) -- ` +
+          "the report is internally inconsistent (stale, partially edited, or fabricated) " +
+          "and cannot be trusted.",
+      );
+    }
   }
 
   if (!Array.isArray(report.suites) || report.suites.length === 0) {

@@ -1066,7 +1066,7 @@ export function GrantStudio({
           project_facts: factsConfirmed
             ? ["Research office sponsor confirmed", "PI role confirmed"]
             : [],
-          funding_sources: runnableFundingSources,
+          sources: runnableFundingSources,
           red_team_pass: action === "red_team",
           ...(online
             ? {
@@ -2155,7 +2155,14 @@ export function DatasetStudio({
                   estimated_bytes: uploadedFile.size,
                   compute_adapter_configured: true,
                   analysis_approved: planApproved,
-                  ...(csvText ? { csv_text: csvText } : {}),
+                  // `runDisabled` (above) already requires `fileKind ===
+                  // "csv" && csvReadStatus === "ready"` to reach this
+                  // branch at all, and `csvReadStatus` only ever becomes
+                  // "ready" in the same state update that sets `csvText`
+                  // to real, non-empty text -- so `csvText` is always a
+                  // populated string here. No conditional/omission case is
+                  // reachable.
+                  csv_text: csvText as string,
                 }
               : assetMode === "large"
                 ? {

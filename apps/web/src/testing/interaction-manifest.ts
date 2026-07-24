@@ -391,7 +391,10 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     // checkboxes are now gated through the same
     // `src/lib/connector-availability.ts` mapping used by Matching's source
     // list: only "ready" connectors (test_status ready/ready_with_key) are
-    // selectable/checked and included in `funding_sources` at submit; a
+    // selectable/checked and included in the shared `sources` request key
+    // (the same key Literature/Matching use, so the server-side
+    // `retrieve_public_metadata` readiness gate applies uniformly) at
+    // submit; a
     // "needs-connection" (configuration_required), "unavailable"
     // (unavailable), or "disabled" (enabled === false) connector renders a
     // distinct caption and is unselectable, and is filtered out of the
