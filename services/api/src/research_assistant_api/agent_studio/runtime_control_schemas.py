@@ -128,7 +128,12 @@ class RuntimeContextResponse(BaseModel):
     operation_id: str = Field(min_length=1, max_length=200)
 
     approval_id: str = Field(min_length=1, max_length=200)
-    approval_version: str = Field(min_length=1, max_length=200)
+    #: MONOTONIC INTEGER decision-record revision (ordered -> rollback-detectable),
+    #: never a digest and never the pinned AgentVersion id.
+    approval_version: int = Field(ge=1)
+    #: Separate canonical digest over the immutable decision fields, for tamper
+    #: detection only (never overloaded onto ``approval_version``).
+    approval_decision_digest: str = Field(min_length=1, max_length=200)
     invocation_id: str = Field(min_length=1, max_length=200)
     #: The exact ``request_digest`` the runtime supplied, echoed back so a
     #: runtime/audit can correlate this resolved context to the precise request
@@ -302,7 +307,10 @@ class RuntimeConsumptionReceipt(BaseModel):
     consumption_id: str = Field(min_length=1, max_length=200)
     approval_id: str = Field(min_length=1, max_length=200)
     invocation_id: str = Field(min_length=1, max_length=200)
-    approval_version: str = Field(min_length=1, max_length=200)
+    #: MONOTONIC INTEGER decision-record revision (ordered), not a digest.
+    approval_version: int = Field(ge=1)
+    #: Separate canonical decision digest for tamper detection.
+    approval_decision_digest: str = Field(min_length=1, max_length=200)
     consumption_version: str = Field(min_length=1, max_length=200)
     approver_id: str = Field(min_length=1, max_length=200)
     expires_at: datetime

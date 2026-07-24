@@ -184,6 +184,16 @@ def test_decide_approval_sets_decision_fields(
     assert decided.rationale == rationale
 
 
+def test_decide_approval_advances_the_decision_revision() -> None:
+    pending = _pending_record()
+    assert pending.decision_revision == 0
+    decided = decide_approval(
+        pending, approver_id="approver-1", approver_role=AgentRole.MAINTAINER, approve=True
+    )
+    # Monotonic integer decision revision advances on decision (append-only 0->1).
+    assert decided.decision_revision == 1
+
+
 def test_decide_approval_rejects_non_pending_records() -> None:
     decided = decide_approval(
         _pending_record(),

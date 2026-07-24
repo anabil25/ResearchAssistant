@@ -137,6 +137,7 @@ def _approval(
         idempotency_key=f"approval-key-{approval_id}",
         approver_id=USER_ID if state is ApprovalState.APPROVED else None,
         decided_at=resolved_decided_at,
+        decision_revision=1 if state is not ApprovalState.PENDING else 0,
         expires_at=expires_at,
     )
 
@@ -377,11 +378,11 @@ async def test_resolved_returns_approval_id_and_fresh_invocation_id() -> None:
 
     assert result.outcome is ApprovalContextOutcome.RESOLVED
     assert result.approval_id == "approval-1"
-    # approval_version is the durable DECISION-RECORD revision, never the pinned
-    # agent version_id ("version-1").
-    assert result.approval_version is not None
-    assert result.approval_version.startswith("approval-decision:v1:sha256:")
-    assert result.approval_version != "version-1"
+    # approval_version is the MONOTONIC INTEGER decision-record revision, never
+    # the pinned agent version_id ("version-1"); the digest is a separate field.
+    assert result.approval_version == 1
+    assert result.approval_decision_digest is not None
+    assert result.approval_decision_digest.startswith("approval-decision:v1:sha256:")
     assert result.invocation_id is not None
     assert result.invocation_id.startswith("inv-")
 

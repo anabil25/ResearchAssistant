@@ -1715,6 +1715,13 @@ class StudioApprovalRecord(BaseModel):
     approver_id: str | None = None
     decided_at: datetime | None = None
     rationale: str | None = None
+    #: Explicit MONOTONIC INTEGER revision of the DECISION record, maintained by
+    #: the store contract and advanced only when the decision changes (0 while
+    #: PENDING, 1 once decided; decisions are append-only so it only ever
+    #: increases). Surfaced to a runtime as ``approval_version`` -- an integer,
+    #: NOT a content digest, because ordering is what makes a decision rollback
+    #: detectable (a digest merely confirms whatever state it is pointed at).
+    decision_revision: int = Field(default=0, ge=0)
     requested_role: AgentRole | None = None
     """Only set for ADMIN_ESCALATION requests: the elevated role requested."""
     content_hash: str | None = None

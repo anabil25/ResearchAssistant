@@ -51,15 +51,15 @@ _APPROVAL_DECISION_REVISION_PREFIX = "approval-decision:v1:sha256:"
 
 
 def compute_approval_decision_revision(record: StudioApprovalRecord) -> str:
-    """Durable revision of an approval *decision record*.
+    """Canonical, domain-separated digest over an approval *decision record*'s
+    immutable fields (id, decided state, deciding approver, decision timestamp,
+    rationale), for TAMPER detection.
 
-    This is the value surfaced as ``approval_version`` -- deliberately a
-    function of the decision's own authoritative fields (id, decided state,
-    deciding approver, decision timestamp, rationale), NOT of the agent
-    ``version_id`` the approval is pinned to. It changes if and only if the
-    decision changes, so a consumer can pin the exact decision revision that
-    authorized it; misusing the pinned AgentVersion id here was a confirmed
-    backend blocker and is never done.
+    This is carried as the SEPARATE ``approval_decision_digest`` field, never as
+    ``approval_version`` (which is the ordered monotonic integer
+    ``record.decision_revision``): a digest detects same-revision tampering but,
+    unlike an ordered revision, cannot detect a rollback. It is never a function
+    of the pinned agent ``version_id``.
     """
 
     canonical = json.dumps(
@@ -131,11 +131,15 @@ class ApprovalContextResult(BaseModel):
 
     outcome: ApprovalContextOutcome
     approval_id: str | None = None
-    #: The selected approval's durable *decision-record* revision (see
-    #: ``compute_approval_decision_revision``) -- a function of the decision's
-    #: own fields, never the pinned agent ``version_id``. Populated only for
-    #: ``RESOLVED``.
-    approval_version: str | None = None
+    #: The selected approval's MONOTONIC INTEGER decision-record revision
+    #: (``record.decision_revision``) -- ordered, so a decision rollback is
+    #: detectable; never a content digest and never the pinned agent
+    #: ``version_id``. Populated only for ``RESOLVED``.
+    approval_version: int | None = None
+    #: Optional canonical digest over the immutable decision fields, carried
+    #: separately for tamper detection (never overloaded onto
+    #: ``approval_version``). Populated only for ``RESOLVED``.
+    approval_decision_digest: str | None = None
     invocation_id: str | None = None
     reason: str | None = None
 
@@ -220,7 +224,8 @@ class StoreBackedApprovalContextResolver:
         return ApprovalContextResult(
             outcome=ApprovalContextOutcome.RESOLVED,
             approval_id=winner.id,
-            approval_version=compute_approval_decision_revision(winner),
+            approval_version=winner.decision_revision,
+            approval_decision_digest=compute_approval_decision_revision(winner),
             invocation_id=f"inv-{uuid4().hex}",
         )
 

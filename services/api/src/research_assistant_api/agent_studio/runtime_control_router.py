@@ -158,12 +158,14 @@ def build_runtime_control_app(
             raise _uniform_404()
         assert result.approval_id is not None
         assert result.approval_version is not None
+        assert result.approval_decision_digest is not None
         assert result.invocation_id is not None
         return _context_response(
             mapping,
             payload.request_digest,
             approval_id=result.approval_id,
             approval_version=result.approval_version,
+            approval_decision_digest=result.approval_decision_digest,
             invocation_id=result.invocation_id,
         )
 
@@ -179,7 +181,8 @@ def _context_response(
     request_digest: str,
     *,
     approval_id: str,
-    approval_version: str,
+    approval_version: int,
+    approval_decision_digest: str,
     invocation_id: str,
 ) -> RuntimeContextResponse:
     """Build the fully-resolved (200) mapping-derived context response."""
@@ -198,6 +201,7 @@ def _context_response(
         operation_id=mapping.binding.operation_ref.id,
         approval_id=approval_id,
         approval_version=approval_version,
+        approval_decision_digest=approval_decision_digest,
         invocation_id=invocation_id,
         request_digest=request_digest,
     )

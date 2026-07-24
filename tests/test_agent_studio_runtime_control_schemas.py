@@ -53,7 +53,8 @@ def _response(**overrides: object) -> RuntimeContextResponse:
         "binding_id": "binding-1",
         "operation_id": "search",
         "approval_id": "appr-1",
-        "approval_version": "approval-decision:v1:sha256:" + "1" * 64,
+        "approval_version": 1,
+        "approval_decision_digest": "approval-decision:v1:sha256:" + "1" * 64,
         "invocation_id": "inv-1",
         "request_digest": DIGEST,
     }
@@ -117,7 +118,8 @@ def test_request_is_frozen() -> None:
 def test_success_response_is_fully_resolved_with_non_null_approval_fields() -> None:
     response = _response()
     assert response.approval_id == "appr-1"
-    assert response.approval_version == "approval-decision:v1:sha256:" + "1" * 64
+    assert response.approval_version == 1
+    assert response.approval_decision_digest == "approval-decision:v1:sha256:" + "1" * 64
     assert response.invocation_id == "inv-1"
     assert response.request_digest == DIGEST
 
@@ -215,7 +217,8 @@ def _receipt(*, replayed: bool = False) -> RuntimeConsumptionReceipt:
         consumption_id="cons-1",
         approval_id="appr-1",
         invocation_id="inv-1",
-        approval_version="version-1",
+        approval_version=1,
+        approval_decision_digest="approval-decision:v1:sha256:" + "1" * 64,
         consumption_version="rev-1",
         approver_id="reviewer-1",
         expires_at=now,
@@ -231,7 +234,7 @@ def test_receipt_defaults_contract_version_and_one_time() -> None:
     receipt = _receipt()
     assert receipt.record_contract_version == APPROVAL_CONSUMPTION_RECORD_VERSION
     assert receipt.one_time is True
-    assert receipt.approval_version == "version-1"
+    assert receipt.approval_version == 1
     assert receipt.consumption_version == "rev-1"
 
 
@@ -244,7 +247,8 @@ def test_receipt_rejects_prefixed_idempotency_key_digest() -> None:
             consumption_id="cons-1",
             approval_id="appr-1",
             invocation_id="inv-1",
-            approval_version="version-1",
+            approval_version=1,
+            approval_decision_digest="approval-decision:v1:sha256:" + "1" * 64,
             consumption_version="rev-1",
             approver_id="reviewer-1",
             expires_at=now,

@@ -1049,6 +1049,17 @@
         "additionalProperties": false,
         "description": "Result of a single ``resolve_context`` call.\n\n``approval_id``/``invocation_id`` are populated only for ``RESOLVED``;\nboth are always ``None`` otherwise, so a caller can never mistake a\ndenial for a usable context by only checking for a non-``None`` field.",
         "properties": {
+          "approval_decision_digest": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Decision Digest"
+          },
           "approval_id": {
             "anyOf": [
               {
@@ -1059,6 +1070,17 @@
               }
             ],
             "title": "Approval Id"
+          },
+          "approval_version": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Approval Version"
           },
           "invocation_id": {
             "anyOf": [
@@ -7972,6 +7994,12 @@
               }
             ],
             "title": "Decided At"
+          },
+          "decision_revision": {
+            "default": 0,
+            "minimum": 0.0,
+            "title": "Decision Revision",
+            "type": "integer"
           },
           "destination": {
             "title": "Destination",

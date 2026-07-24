@@ -187,6 +187,7 @@ def _seeded_resolver(*, approval_state: ApprovalState = ApprovalState.APPROVED) 
             idempotency_key="approval-key-1",
             approver_id="user-1" if approval_state is ApprovalState.APPROVED else None,
             decided_at=datetime.now(UTC) if approval_state is ApprovalState.APPROVED else None,
+            decision_revision=1 if approval_state is ApprovalState.APPROVED else 0,
         ),
     )
     return StoreBackedApprovalContextResolver(store)
@@ -360,9 +361,11 @@ def test_context_resolved_returns_mapping_derived_approval() -> None:
     assert response.status_code == 200
     body = response.json()
     assert body["approval_id"] == "approval-1"
-    # Durable decision-record revision, never the pinned agent version_id.
-    assert body["approval_version"].startswith("approval-decision:v1:sha256:")
+    # Monotonic INTEGER decision-record revision (ordered, rollback-detectable),
+    # never the pinned agent version_id; the decision digest is a SEPARATE field.
+    assert body["approval_version"] == 1
     assert body["approval_version"] != "version-1"
+    assert body["approval_decision_digest"].startswith("approval-decision:v1:sha256:")
     assert body["invocation_id"].startswith("inv-")
     assert body["request_digest"] == REQUEST_DIGEST
     assert body["tenant_id"] == "tenant-1"

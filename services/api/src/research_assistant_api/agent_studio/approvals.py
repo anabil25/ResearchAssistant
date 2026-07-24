@@ -158,6 +158,8 @@ def decide_approval(
             "approver_id": approver_id,
             "decided_at": utc_now(),
             "rationale": rationale,
+            # Advance the monotonic decision revision (append-only: 0 -> 1).
+            "decision_revision": record.decision_revision + 1,
         }
     )
 
