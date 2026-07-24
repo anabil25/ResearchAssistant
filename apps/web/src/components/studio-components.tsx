@@ -46,6 +46,7 @@ import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
+import { openBlockingModal } from "@/lib/blocking-modal";
 import {
   connectorAvailability,
   connectorAvailabilityCaption,
@@ -3044,6 +3045,7 @@ export function AutomationStudio({
   // so we don't yank focus to the trigger button on first render.
   const activateTriggerRef = useRef<HTMLButtonElement | null>(null);
   const activationCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const activationStatusRef = useRef<HTMLParagraphElement | null>(null);
   const wasActivationOpenRef = useRef(false);
   useEffect(() => {
     if (activationConfirmOpen) {
@@ -3051,8 +3053,32 @@ export function AutomationStudio({
       activationCloseButtonRef.current?.focus();
     } else if (wasActivationOpenRef.current) {
       wasActivationOpenRef.current = false;
-      activateTriggerRef.current?.focus();
+      // Restore focus to the control that opened the dialog -- but only if it
+      // can still actually receive focus. A *successful* activation disables
+      // that trigger (`disabled={!canActivate || activated}`), and browsers
+      // silently refuse to focus a disabled element, so calling `.focus()` on
+      // it would strand focus on `document.body` and drop a keyboard user
+      // back to the top of the page with no announcement. In that case move
+      // focus to the activation status message instead, which is both
+      // programmatically focusable and the most relevant thing to read at
+      // that moment.
+      const trigger = activateTriggerRef.current;
+      if (trigger && !trigger.disabled) {
+        trigger.focus();
+      } else {
+        activationStatusRef.current?.focus();
+      }
     }
+  }, [activationConfirmOpen]);
+  // Suppress the surrounding shell (global shortcuts such as Ctrl/Cmd+K, and
+  // the shell's own focusable content) for as long as this dialog is open.
+  // See src/lib/blocking-modal.ts for why this cannot simply be passed down
+  // as a prop.
+  useEffect(() => {
+    if (!activationConfirmOpen) {
+      return;
+    }
+    return openBlockingModal();
   }, [activationConfirmOpen]);
   const [catalogPreviewKey, setCatalogPreviewKey] = useState<string | null>(
     null,
@@ -3409,6 +3435,18 @@ export function AutomationStudio({
             >
               {activated ? "Activated (draft workspace)" : "Activate after approval"}
             </button>
+            {activated ? (
+              <p
+                className="activation-status"
+                role="status"
+                tabIndex={-1}
+                ref={activationStatusRef}
+                data-testid="workflow-activation-status"
+              >
+                Workflow activated for this draft workspace. Edit the graph to
+                require a new passing dry run before activating again.
+              </p>
+            ) : null}
           </aside>
         </div>
 
@@ -3710,10 +3748,20 @@ export function AutomationStudio({
                 aria-modal="true"
                 aria-labelledby="activate-workflow-title"
                 onKeyDown={(event) => {
+                  // Every keydown that happens inside this dialog stops here.
+                  // The dialog is portalled into `document.body`, so without
+                  // this its native events keep bubbling to the `window`
+                  // keydown listener in research-workbench.tsx, where
+                  // Ctrl/Cmd+K would open the command palette *on top of*
+                  // this dialog -- a second modal outside this focus trap and
+                  // outside the shell's `inert` region. Stopping propagation
+                  // unconditionally (rather than per-shortcut) means a new
+                  // global shortcut added to the shell later cannot silently
+                  // reintroduce that escape hatch.
+                  event.stopPropagation();
                   if (event.key === "Escape") {
                     // Escape behaves exactly like Cancel/the close button: it
                     // never activates, regardless of `canActivate`.
-                    event.stopPropagation();
                     setActivationConfirmOpen(false);
                     return;
                   }

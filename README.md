@@ -162,6 +162,40 @@ executable test title. It writes 42 desktop, tablet, and mobile screenshots for
 core, loading, empty, error, and authorization states under
 `apps/web/test-results`.
 
+Note that `uv run pytest --cov-fail-under=100` on its own enforces nothing:
+`[tool.pytest.ini_options] addopts` does not include `--cov`, so `pytest-cov`
+never activates and the threshold has no coverage data to check. It exits 0 and
+prints no coverage table. Use the full command above.
+
+### Running the E2E gate concurrently
+
+`npm run test:e2e:gate` is safe to run concurrently, both across separate
+checkouts/worktrees on one machine and twice within a single checkout. Each
+invocation gets its own:
+
+- ephemeral ports for the gateway, API, and web server, allocated as one
+  simultaneously-bound set and held under a cross-process file lock
+  (`src/testing/port-lock.ts`), with an identity handshake after server
+  startup (`src/testing/port-lock-handshake.ts`);
+- Playwright `outputDir`, JSON report, and HTML report directory, all nested
+  under `test-results/gate-<uuid>/` — Playwright clears both its `outputDir`
+  and the HTML reporter's `outputFolder` at the start of every invocation, so
+  sharing either one means concurrent runs delete each other's artifacts;
+- Next.js build directory under `.next-gate/gate-<uuid>/`. This one matters
+  because `npm run test:e2e` is `next build && playwright test`: every gate
+  invocation runs a real build, and two builds into the same `.next` fail with
+  `Another next build process is already running` before Playwright even
+  starts.
+
+Plain `npm run test:e2e` (without the gate wrapper) still uses the shared
+`.next`, `test-results/`, and `playwright-report/` paths, and is therefore
+**not** safe to run concurrently with itself or with a gate invocation in the
+same checkout. It exists as the "exact command, run twice" determinism proof,
+where serial execution is the point.
+
+`scripts/prove-concurrent-gate-report-isolation.mjs` is a standalone,
+reproducible proof of the path-isolation scheme.
+
 ## Azure deployment
 
 The project uses one `azure.yaml` lifecycle for infrastructure, nine Hosted

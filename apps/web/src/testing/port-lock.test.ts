@@ -3,6 +3,7 @@ import {
   mkdtempSync,
   openSync,
   readFileSync,
+  renameSync,
   rmSync,
   writeFileSync,
 } from "node:fs";
@@ -12,6 +13,7 @@ import { join } from "node:path";
 import {
   defaultPortLockDeps,
   isPortLockHeld,
+  lockBelongsToInvocation,
   releasePortLock,
   touchPortLock,
   tryClaimPortLock,
@@ -35,6 +37,7 @@ jest.mock("node:fs", () => {
     rmSync: jest.fn(actual.rmSync),
     readFileSync: jest.fn(actual.readFileSync),
     writeFileSync: jest.fn(actual.writeFileSync),
+    renameSync: jest.fn(actual.renameSync),
   };
 });
 
@@ -42,6 +45,8 @@ const mockOpenSync = openSync as unknown as jest.Mock;
 const mockRmSync = rmSync as unknown as jest.Mock;
 const mockReadFileSync = readFileSync as unknown as jest.Mock;
 const mockWriteFileSync = writeFileSync as unknown as jest.Mock;
+const mockRenameSync = renameSync as unknown as jest.Mock;
+const actualFs = jest.requireActual<typeof import("node:fs")>("node:fs");
 
 let nonceCounter = 0;
 
@@ -87,6 +92,372 @@ function writeRawRecord(
 }
 
 describe("port-lock", () => {
+  it("does not delete a replacement lock when another invocation reclaims the port between the staleness judgement and the takeover", () => {
+    // The exact read-then-delete race. Invocation B reads a stale lock,
+    // judges it reclaimable, and is about to delete it -- but invocation C
+    // completes its own legitimate takeover in that window. The old code
+    // deleted C's brand-new lock and then created its own, leaving B and C
+    // both convinced they owned the port and both serving on it.
+    //
+    // The interleaving is injected at the precise race point rather than
+    // hoped for: the hook fires when B exclusively creates its mutation
+    // token, which is the first thing B does after judging the lock stale.
+    const { deps, cleanup } = makeDeps({
+      pid: 777,
+      isProcessAlive: (pid: number) => pid !== 999, // the seeded owner is dead
+      now: () => 1_000_000,
+    });
+    const lockPath = join(deps.lockDir, "53500.lock");
+    try {
+      writeRawRecord(lockPath, { pid: 999, nonce: "dead-owner", heartbeatAt: 0 });
+
+      let injected = false;
+      mockOpenSync.mockImplementation(
+        (target: unknown, flags: unknown, ...rest: unknown[]) => {
+          if (
+            !injected &&
+            typeof target === "string" &&
+            target.endsWith("53500.lock.mut")
+          ) {
+            injected = true;
+            // Invocation C's completed takeover: a live owner with a fresh
+            // heartbeat now holds this exact port.
+            actualFs.rmSync(lockPath, { force: true });
+            writeRawRecord(lockPath, {
+              pid: 555,
+              nonce: "live-replacement",
+              heartbeatAt: 1_000_000,
+            });
+          }
+          return actualFs.openSync(
+            target as never,
+            flags as never,
+            ...(rest as never[]),
+          );
+        },
+      );
+
+      expect(tryClaimPortLock(deps, 53500)).toBe(false);
+
+      // C's lock survives, byte-for-byte, and still names C.
+      const surviving = JSON.parse(
+        actualFs.readFileSync(lockPath, "utf8"),
+      ) as PortLockRecord;
+      expect(surviving.nonce).toBe("live-replacement");
+      expect(surviving.pid).toBe(555);
+    } finally {
+      mockOpenSync.mockImplementation(actualFs.openSync);
+      cleanup();
+    }
+  });
+
+  it("does not delete a successor's lock when a superseded owner reclaims a stale-looking record that changed underneath it", () => {
+    // The subtler half: the record is still stale-*looking* under the token
+    // (its owner is dead and its heartbeat is old), but it is no longer the
+    // same record we judged -- a different invocation's takeover landed
+    // first. Deleting it would silently steal that invocation's claim.
+    const { deps, cleanup } = makeDeps({
+      pid: 777,
+      isProcessAlive: () => false, // every recorded owner looks dead
+      now: () => 1_000_000,
+    });
+    const lockPath = join(deps.lockDir, "53600.lock");
+    try {
+      writeRawRecord(lockPath, { pid: 999, nonce: "first-owner", heartbeatAt: 0 });
+
+      let injected = false;
+      mockOpenSync.mockImplementation(
+        (target: unknown, flags: unknown, ...rest: unknown[]) => {
+          if (
+            !injected &&
+            typeof target === "string" &&
+            target.endsWith("53600.lock.mut")
+          ) {
+            injected = true;
+            actualFs.rmSync(lockPath, { force: true });
+            writeRawRecord(lockPath, {
+              pid: 888,
+              nonce: "second-owner",
+              heartbeatAt: 0,
+            });
+          }
+          return actualFs.openSync(
+            target as never,
+            flags as never,
+            ...(rest as never[]),
+          );
+        },
+      );
+
+      expect(tryClaimPortLock(deps, 53600)).toBe(false);
+      const surviving = JSON.parse(
+        actualFs.readFileSync(lockPath, "utf8"),
+      ) as PortLockRecord;
+      expect(surviving.nonce).toBe("second-owner");
+    } finally {
+      mockOpenSync.mockImplementation(actualFs.openSync);
+      cleanup();
+    }
+  });
+
+  it("releasePortLock leaves a successor's lock intact instead of deleting it on the way out", () => {
+    // A superseded invocation exiting must not free a port a live invocation
+    // is actively serving on. The old unconditional delete did exactly that,
+    // and the freed port could then be handed to a third invocation while the
+    // successor was still bound to it.
+    const { deps, cleanup } = makeDeps({ pid: 4242, nonce: "original-owner" });
+    const lockPath = join(deps.lockDir, "53700.lock");
+    try {
+      expect(tryClaimPortLock(deps, 53700)).toBe(true);
+
+      // A concurrent invocation reclaimed the port while we stalled.
+      actualFs.rmSync(lockPath, { force: true });
+      writeRawRecord(lockPath, { pid: 5555, nonce: "successor", heartbeatAt: 0 });
+
+      releasePortLock(deps, 53700);
+
+      const surviving = JSON.parse(
+        actualFs.readFileSync(lockPath, "utf8"),
+      ) as PortLockRecord;
+      expect(surviving.nonce).toBe("successor");
+      expect(surviving.pid).toBe(5555);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("releasePortLock still clears an unparseable lock file left at our own port", () => {
+    // Ownership cannot be proven either way for corrupt content, and leaving
+    // it behind would block the port until the staleness window elapsed. It
+    // is never a provable live claim, so clearing it is safe.
+    const { deps, cleanup } = makeDeps({ pid: 4242 });
+    const lockPath = join(deps.lockDir, "53800.lock");
+    try {
+      expect(tryClaimPortLock(deps, 53800)).toBe(true);
+      writeFileSync(lockPath, "{ not json");
+
+      releasePortLock(deps, 53800);
+
+      expect(actualFs.existsSync(lockPath)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("refuses to mutate a lock while another invocation holds that port's mutation token", () => {
+    // Serialization itself: while a live invocation is mid-mutation, every
+    // other mutation on that exact port declines rather than interleaving.
+    const { deps, cleanup } = makeDeps({ pid: 4242, isProcessAlive: () => true });
+    const tokenPath = join(deps.lockDir, "53900.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 53900)).toBe(true);
+      writeFileSync(
+        tokenPath,
+        JSON.stringify({ pid: 6001, nonce: "other", acquiredAt: 1_000_000 }),
+      );
+
+      expect(touchPortLock(deps, 53900)).toBe(false);
+      // Our own lock is untouched, and still ours.
+      expect(verifyLockIdentity(deps, 53900)).toBe(true);
+      // The foreign token is left strictly alone.
+      expect(actualFs.existsSync(tokenPath)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reclaims a mutation token abandoned by a dead process so one crash cannot wedge a port forever", () => {
+    const { deps, cleanup } = makeDeps({
+      pid: 4242,
+      isProcessAlive: (pid: number) => pid !== 6002, // the token holder crashed
+    });
+    const tokenPath = join(deps.lockDir, "54000.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54000)).toBe(true);
+      writeFileSync(
+        tokenPath,
+        JSON.stringify({ pid: 6002, nonce: "crashed", acquiredAt: 1_000_000 }),
+      );
+
+      expect(touchPortLock(deps, 54000)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reclaims a mutation token whose holder is alive but has been stalled past the staleness window", () => {
+    const { deps, cleanup } = makeDeps({
+      pid: 4242,
+      isProcessAlive: () => true,
+      now: () => 1_000_000,
+      heartbeatStaleMs: 45_000,
+    });
+    const tokenPath = join(deps.lockDir, "54100.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54100)).toBe(true);
+      writeFileSync(
+        tokenPath,
+        JSON.stringify({
+          pid: 6003,
+          nonce: "stalled",
+          acquiredAt: 1_000_000 - 45_001,
+        }),
+      );
+
+      expect(touchPortLock(deps, 54100)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("reclaims a mutation token with unparseable content", () => {
+    const { deps, cleanup } = makeDeps({ pid: 4242, isProcessAlive: () => true });
+    const tokenPath = join(deps.lockDir, "54200.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54200)).toBe(true);
+      writeFileSync(tokenPath, "{ not json at all");
+
+      expect(touchPortLock(deps, 54200)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("loses the atomic rename race for an abandoned mutation token rather than proceeding alongside the winner", () => {
+    const { deps, cleanup } = makeDeps({
+      pid: 4242,
+      isProcessAlive: (pid: number) => pid !== 6004,
+    });
+    const tokenPath = join(deps.lockDir, "54300.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54300)).toBe(true);
+      writeFileSync(
+        tokenPath,
+        JSON.stringify({ pid: 6004, nonce: "crashed", acquiredAt: 0 }),
+      );
+      // Another reclaimer's rename landed first, so ours fails with ENOENT.
+      mockRenameSync.mockImplementationOnce(() => {
+        throw Object.assign(new Error("ENOENT"), { code: "ENOENT" });
+      });
+
+      expect(touchPortLock(deps, 54300)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lockBelongsToInvocation matches on nonce alone so a worker process (different pid, same invocation) recognizes its own orchestrator's claim", () => {
+    // One Playwright invocation spans the orchestrator plus every worker it
+    // spawns. They share a nonce but necessarily have different pids, so a
+    // worker re-evaluating the config and asking "do we already own this
+    // port?" must not be answered with a pid-exact comparison -- doing so
+    // made every worker conclude the port was foreign and abort the run.
+    const { deps: orchestrator, cleanup } = makeDeps({
+      pid: 9100,
+      nonce: "shared-invocation-nonce",
+    });
+    try {
+      expect(tryClaimPortLock(orchestrator, 55000)).toBe(true);
+
+      const worker: PortLockDeps = { ...orchestrator, pid: 9101 };
+      expect(lockBelongsToInvocation(worker, 55000)).toBe(true);
+      // The stricter, pid-exact handshake check still (correctly) says no:
+      // it answers a different question, asked only by the orchestrator.
+      expect(verifyLockIdentity(worker, 55000)).toBe(false);
+      expect(verifyLockIdentity(orchestrator, 55000)).toBe(true);
+
+      // A genuinely foreign invocation is rejected by both.
+      const foreign: PortLockDeps = { ...orchestrator, nonce: "other-invocation" };
+      expect(lockBelongsToInvocation(foreign, 55000)).toBe(false);
+      expect(verifyLockIdentity(foreign, 55000)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("lockBelongsToInvocation reports false when no lock file exists at all", () => {
+    const { deps, cleanup } = makeDeps();
+    try {
+      expect(lockBelongsToInvocation(deps, 55100)).toBe(false);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("treats a mutation token with valid JSON but the wrong shape as abandoned rather than trusting it", () => {
+    // A legacy/corrupt token that happens to parse must not be able to wedge
+    // a port: it names no provable live holder, so it is reclaimable.
+    const { deps, cleanup } = makeDeps({ pid: 4242, isProcessAlive: () => true });
+    const tokenPath = join(deps.lockDir, "54400.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54400)).toBe(true);
+      writeFileSync(tokenPath, JSON.stringify({ pid: "not-a-number" }));
+
+      expect(touchPortLock(deps, 54400)).toBe(true);
+    } finally {
+      cleanup();
+    }
+  });
+
+  it("leaves a mutation token alone at release time when it is no longer ours", () => {
+    // If our token was reclaimed as abandoned while we were mid-mutation, it
+    // now belongs to another invocation's in-progress mutation. Deleting it
+    // on our way out would hand a third process a simultaneous mutation
+    // window -- exactly the race the token exists to prevent.
+    const { deps, cleanup } = makeDeps({ pid: 4242, isProcessAlive: () => true });
+    const tokenPath = join(deps.lockDir, "54500.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54500)).toBe(true);
+
+      // Swap in a foreign token exactly while our own mutation is running.
+      mockWriteFileSync.mockImplementation((target: unknown, data: unknown) => {
+        const result = actualFs.writeFileSync(target as never, data as never);
+        if (typeof target === "string" && target.endsWith("54500.lock")) {
+          actualFs.writeFileSync(
+            tokenPath,
+            JSON.stringify({ pid: 7001, nonce: "foreign", acquiredAt: 1_000_000 }),
+          );
+        }
+        return result;
+      });
+
+      expect(touchPortLock(deps, 54500)).toBe(true);
+
+      const surviving = JSON.parse(
+        actualFs.readFileSync(tokenPath, "utf8"),
+      ) as { nonce: string };
+      expect(surviving.nonce).toBe("foreign");
+    } finally {
+      mockWriteFileSync.mockImplementation(actualFs.writeFileSync);
+      cleanup();
+    }
+  });
+
+  it("treats a vanished mutation token as absent rather than throwing", () => {
+    // The token file can disappear between operations (another invocation
+    // reclaiming it, or a cleanup sweep). Reading it must degrade to "no
+    // token" rather than propagating ENOENT out of a release path.
+    const { deps, cleanup } = makeDeps({ pid: 4242, isProcessAlive: () => true });
+    const tokenPath = join(deps.lockDir, "54600.lock.mut");
+    try {
+      expect(tryClaimPortLock(deps, 54600)).toBe(true);
+
+      mockWriteFileSync.mockImplementation((target: unknown, data: unknown) => {
+        const result = actualFs.writeFileSync(target as never, data as never);
+        if (typeof target === "string" && target.endsWith("54600.lock")) {
+          actualFs.rmSync(tokenPath, { force: true });
+        }
+        return result;
+      });
+
+      expect(touchPortLock(deps, 54600)).toBe(true);
+      expect(actualFs.existsSync(tokenPath)).toBe(false);
+    } finally {
+      mockWriteFileSync.mockImplementation(actualFs.writeFileSync);
+      cleanup();
+    }
+  });
+
   it("claims an unclaimed port", () => {
     const { deps, cleanup } = makeDeps();
     try {
@@ -394,11 +765,21 @@ describe("port-lock", () => {
     const { deps, cleanup } = makeDeps({ pid: 14_000 });
     try {
       expect(tryClaimPortLock(deps, 69000)).toBe(true);
-      mockWriteFileSync.mockImplementationOnce(() => {
-        throw new Error("ENOENT: no such file or directory");
+      // Target the heartbeat rewrite specifically. `touchPortLock` now runs
+      // under a per-port mutation token, so the first write it performs is
+      // the token's own exclusive create (to a file descriptor); a blanket
+      // `mockImplementationOnce` would fail that instead and never reach the
+      // rewrite under test. Fail only the write addressed to the lock file
+      // itself, and let every other write through to the real implementation.
+      mockWriteFileSync.mockImplementation((target: unknown, data: unknown) => {
+        if (typeof target === "string" && target.endsWith(".lock")) {
+          throw new Error("ENOENT: no such file or directory");
+        }
+        return actualFs.writeFileSync(target as never, data as never);
       });
       expect(touchPortLock(deps, 69000)).toBe(false);
     } finally {
+      mockWriteFileSync.mockImplementation(actualFs.writeFileSync);
       cleanup();
     }
   });

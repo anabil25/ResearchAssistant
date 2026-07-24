@@ -28,6 +28,9 @@ build/
 # Node / Next / Playwright
 **/node_modules/
 apps/web/.next/
+# Invocation-unique Next build directories used by concurrent E2E gate runs
+# (see apps/web/scripts/gate-invocation-paths.mjs).
+apps/web/.next-gate/
 apps/web/out/
 apps/web/coverage/
 apps/web/playwright-report/

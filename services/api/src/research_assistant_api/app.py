@@ -677,14 +677,42 @@ def agents(request: Request) -> list[AgentSetting]:
 
 def _reject_conflicting_source_fields(payload: StudioRunRequest) -> None:
     # The canonical connector-selection key is `sources`. A retired legacy
-    # alias (`funding_sources`) must never be silently honored: if a caller
-    # sends both and they disagree, that is an ambiguous request (which list
-    # is authoritative?) rather than a harmless duplicate, and honoring
-    # either one unilaterally could silently widen or narrow the connector
-    # set the user actually selected. Reject it outright instead of guessing.
+    # alias (`funding_sources`) must never be silently honored *or* silently
+    # ignored, because both failure modes corrupt the user's selection:
+    #
+    # - Both keys present but disagreeing is an ambiguous request (which list
+    #   is authoritative?) rather than a harmless duplicate, and honoring
+    #   either one unilaterally could silently widen or narrow the connector
+    #   set the user actually selected.
+    # - `funding_sources` present *without* `sources` is worse, and is the
+    #   case this guard originally missed. Downstream, connector selection is
+    #   read only from `sources`, and a *missing* `sources` key deliberately
+    #   means "caller expressed no preference, use this capability's default
+    #   set" -- which is a different thing from "caller explicitly selected
+    #   nothing". So a legacy client sending `funding_sources: []`, an
+    #   explicit deselect-all in the retired vocabulary, was read as "no
+    #   preference" and silently *widened* back to the default connector set,
+    #   firing gateway calls for sources the user had just deselected. That is
+    #   precisely the deselection-ignored defect the canonical `sources` key
+    #   was introduced to fix, surviving on the legacy path.
+    #
+    # Rejecting outright keeps exactly one canonical key end-to-end. The only
+    # tolerated legacy presence is an exactly-agreeing duplicate, which cannot
+    # change the outcome no matter which key is read.
     sources = payload.inputs.get("sources")
     legacy_sources = payload.inputs.get("funding_sources")
-    if legacy_sources is not None and sources is not None and legacy_sources != sources:
+    if legacy_sources is None:
+        return
+    if sources is None:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Request specified the retired `funding_sources` field "
+                "without `sources`. Send connector selection only under "
+                "`sources` (send an empty list to select no connectors)."
+            ),
+        )
+    if legacy_sources != sources:
         raise HTTPException(
             status_code=422,
             detail=(

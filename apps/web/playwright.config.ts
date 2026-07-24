@@ -4,6 +4,7 @@ import { defineConfig, devices } from "@playwright/test";
 
 import {
   defaultPortLockDeps,
+  lockBelongsToInvocation,
   releasePortLock,
   touchPortLock,
   tryClaimPortLock,
@@ -51,41 +52,105 @@ const [chromiumProjectName, tabletProjectName, mobileProjectName] =
  * claimed by another live invocation, this retries with a fresh candidate
  * instead of both invocations proceeding with a doomed shared port.
  */
-function findFreePortSync(): number {
+/**
+ * Ask the OS for `count` simultaneously-free ephemeral ports, then claim a
+ * cross-process file lock on each, retrying the whole set if any candidate is
+ * already claimed by a concurrent invocation.
+ *
+ * All `count` sockets are bound **at the same time** inside a single child
+ * process and only closed once every port has been reported. That removes the
+ * bind-close-bind pattern this replaced, where each port was probed by its own
+ * child that bound, printed, and closed before the next child ran: the OS was
+ * free to hand probe N+1 the exact port probe N had just released, so the
+ * three "distinct" ports could collide with each other and the file lock was
+ * the only thing catching it. Binding the whole set at once makes intra-set
+ * distinctness a property of the OS allocator rather than of a retry loop.
+ *
+ * What genuinely cannot be closed here, and is stated plainly rather than
+ * implied: the interval between this child exiting (releasing all `count`
+ * sockets) and Playwright's `webServer` processes binding them. Handing a
+ * live listening socket to an unrelated child process is not portable, so
+ * every "find a free port" utility has this window. Two things bound its
+ * consequences. Within this tooling, the port lock means a concurrent
+ * invocation of this same config never *selects* a port we hold, which is the
+ * only collision source that was actually reproducible in practice. Against a
+ * genuinely unrelated process on the machine, the outcome is a loud
+ * `EADDRINUSE` at server startup, not silent cross-talk between two runs.
+ */
+function allocateLockedPortsSync(count: number): number[] {
   const lockDeps = defaultPortLockDeps();
   const maxAttempts = 25;
   for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
-    const output = execFileSync(
-      process.execPath,
-      [
-        "-e",
-        "const net=require('node:net');" +
-          "const s=net.createServer();" +
-          "s.on('error',(e)=>{process.stderr.write(String(e));process.exit(1);});" +
-          "s.listen(0,'127.0.0.1',()=>{" +
-          "const p=s.address().port;" +
-          "s.close(()=>{process.stdout.write(String(p));});" +
-          "});",
-      ],
-      { encoding: "utf8" },
-    );
-    const port = Number(output.trim());
-    if (!Number.isInteger(port) || port <= 0) {
-      throw new Error(
-        `Could not determine an assigned ephemeral port (got: ${JSON.stringify(output)}).`,
-      );
+    const candidates = probeSimultaneouslyFreePorts(count);
+    const claimed: number[] = [];
+    for (const port of candidates) {
+      if (!tryClaimPortLock(lockDeps, port, [...claimedPorts, ...claimed, port])) {
+        break;
+      }
+      claimed.push(port);
     }
-    if (tryClaimPortLock(lockDeps, port, [...claimedPorts, port])) {
-      registerPortLockRelease(lockDeps, port);
-      return port;
+    if (claimed.length === count) {
+      for (const port of claimed) {
+        registerPortLockRelease(lockDeps, port);
+      }
+      return claimed;
     }
-    // A concurrent invocation on this shared machine already claimed this
-    // exact port in the race window between the OS freeing it and either
-    // invocation's server binding it -- ask the OS for a different one.
+    // A concurrent invocation on this shared machine already claimed one of
+    // these ports. Release the partial set so we never strand a claim we are
+    // not going to use, and ask the OS for a whole new set.
+    for (const port of claimed) {
+      releasePortLock(lockDeps, port);
+    }
   }
   throw new Error(
-    `Could not claim a free ephemeral port after ${maxAttempts} attempts (every candidate was claimed by a concurrent invocation).`,
+    `Could not claim ${count} free ephemeral ports after ${maxAttempts} attempts (a concurrent invocation claimed at least one candidate every time).`,
   );
+}
+
+/** Bind `count` ephemeral sockets at once in a short-lived child process and
+ * return the ports the OS assigned. Synchronous (via `execFileSync`) because
+ * a Playwright config file is loaded as CommonJS in some of the processes
+ * that read it, where a top-level `await` is a syntax error. */
+function probeSimultaneouslyFreePorts(count: number): number[] {
+  const output = execFileSync(
+    process.execPath,
+    [
+      "-e",
+      "const net=require('node:net');" +
+        `const count=${count};` +
+        "const servers=[];const ports=[];" +
+        "const fail=(e)=>{process.stderr.write(String(e));process.exit(1);};" +
+        "const bindOne=()=>{" +
+        "const s=net.createServer();" +
+        "s.on('error',fail);" +
+        "s.listen(0,'127.0.0.1',()=>{" +
+        "servers.push(s);ports.push(s.address().port);" +
+        // Every socket stays bound until the whole set is allocated, so the
+        // OS can never hand the same port to two entries of this set.
+        "if(ports.length<count){bindOne();return;}" +
+        "let remaining=servers.length;" +
+        "for(const server of servers){server.close(()=>{" +
+        "remaining-=1;" +
+        "if(remaining===0){process.stdout.write(ports.join(','));}" +
+        "});}" +
+        "});};" +
+        "bindOne();",
+    ],
+    { encoding: "utf8" },
+  );
+  const ports = output
+    .trim()
+    .split(",")
+    .map((value) => Number(value.trim()));
+  if (
+    ports.length !== count ||
+    ports.some((port) => !Number.isInteger(port) || port <= 0)
+  ) {
+    throw new Error(
+      `Could not determine ${count} assigned ephemeral ports (got: ${JSON.stringify(output)}).`,
+    );
+  }
+  return ports;
 }
 
 let portLockCleanupRegistered = false;
@@ -143,45 +208,33 @@ function registerPortLockRelease(
 }
 
 /**
- * Resolve one port, memoized into `process.env[envVarName]`.
+ * All three ports are resolved together (see `resolveLocalPorts`) and
+ * memoized into `process.env` immediately.
  *
  * Playwright reloads this config file in more than one process per
  * invocation: the top-level orchestrator (which actually starts the
  * `webServer` entries) evaluates it once, and each parallel test worker it
  * spawns evaluates it again independently to rebuild its own config/project
- * view. If port resolution called `findFreePortSync()` fresh every time the
- * config module runs, the orchestrator and its workers would each land on a
- * *different* OS-assigned ephemeral port -- the orchestrator's servers would
- * come up correctly on ports A/B/C, but a worker re-evaluating the config
- * would compute new ports A'/B'/C', point `baseURL`/env at those instead, and
- * every `page.goto` would hit `ERR_CONNECTION_REFUSED` against a port nothing
- * is listening on (reproduced while debugging this fix).
+ * view. If port resolution allocated fresh ports every time the config module
+ * ran, the orchestrator and its workers would each land on a *different*
+ * OS-assigned set -- the orchestrator's servers would come up correctly on
+ * ports A/B/C, but a worker re-evaluating the config would compute new ports
+ * A'/B'/C', point `baseURL`/env at those instead, and every `page.goto` would
+ * hit `ERR_CONNECTION_REFUSED` against a port nothing is listening on
+ * (reproduced while debugging this fix).
  *
- * Writing the freshly-resolved port back into `process.env` immediately
- * after resolving it fixes this: worker processes spawned by the
- * orchestrator inherit its environment at spawn time, so they see the
- * already-resolved value via the same "env var already set" branch below
- * instead of calling `findFreePortSync()` again -- one OS-allocated port per
- * invocation, shared by every process that loads this config, not one per
- * config-module evaluation.
- */
-function resolvePort(envVarName: string): number {
-  const existing = process.env[envVarName];
-  if (existing) {
-    return Number(existing);
-  }
-  const port = findFreePortSync();
-  process.env[envVarName] = String(port);
-  return port;
-}
-
-/**
+ * Writing the resolved ports back into `process.env` fixes this: worker
+ * processes spawned by the orchestrator inherit its environment at spawn
+ * time, so they see the already-resolved values instead of allocating again
+ * -- one OS-allocated set per invocation, shared by every process that loads
+ * this config, not one per config-module evaluation.
+ *
  * Resolve the three local ports this config's `webServer` entries and
  * `baseURL` use for the connector adapter, the API, and the web app.
- * Overridable per-port via env var (to reproduce or pin a specific run, or
- * to share one already-resolved value across the processes described in
- * `resolvePort` above); otherwise each defaults to a freshly OS-allocated
- * ephemeral port for this invocation. Replaces the previous fixed
+ * Overridable via env var (to reproduce or pin a specific run, or to share
+ * already-resolved values across the processes described above); otherwise
+ * they default to a freshly OS-allocated, lock-claimed set for this
+ * invocation. Replaces the previous fixed
  * 3000/8100/8200, which made any two concurrent
  * `npm run test:e2e`/`test:e2e:gate` invocations on this shared machine
  * mutually exclusive (the second would fail with EADDRINUSE against
@@ -195,11 +248,94 @@ function resolveLocalPorts(): {
   apiPort: number;
   webPort: number;
 } {
-  return {
-    gatewayPort: resolvePort("PLAYWRIGHT_GATEWAY_PORT"),
-    apiPort: resolvePort("PLAYWRIGHT_API_PORT"),
-    webPort: resolvePort("PLAYWRIGHT_WEB_PORT"),
-  };
+  const envVarNames = [
+    "PLAYWRIGHT_GATEWAY_PORT",
+    "PLAYWRIGHT_API_PORT",
+    "PLAYWRIGHT_WEB_PORT",
+  ] as const;
+  const preset = envVarNames.map((name) => process.env[name]);
+
+  if (preset.every((value) => value)) {
+    const ports = preset.map((value) => Number(value));
+    // Two very different situations reach here and must be told apart,
+    // because the globalSetup identity handshake requires this invocation to
+    // hold a lock on every port it uses:
+    //
+    //  - A worker process re-loading this config after our own orchestrator
+    //    memoized its freshly-allocated ports into the environment. The
+    //    orchestrator already holds the locks; the worker must not try to
+    //    claim them again. `PLAYWRIGHT_PORTS_RESOLVED_BY` carries the nonce
+    //    of the invocation that resolved them, which is what distinguishes
+    //    this case unambiguously. Comparing the *lock file's* nonce instead
+    //    is not equivalent and was wrong: if a concurrent invocation ever
+    //    reclaims one of our locks as stale, every worker then treats the
+    //    port as an unclaimable external override and dies during config
+    //    load, turning a condition the handshake is designed to report
+    //    cleanly into a pile of unrelated-looking test failures.
+    //  - A human or CI job pinning ports explicitly. Nothing claimed a lock
+    //    for those, so the handshake would fail the run outright -- an
+    //    override that made the tooling refuse to start. Claim them here
+    //    through the same lock instead, so a pinned port participates in
+    //    exactly the same mutual exclusion as an allocated one.
+    if (process.env.PLAYWRIGHT_PORTS_RESOLVED_BY !== invocationNonce()) {
+      claimPresetPorts(ports);
+      process.env.PLAYWRIGHT_PORTS_RESOLVED_BY = invocationNonce();
+    }
+    const [gatewayPort, apiPort, webPort] = ports;
+    return { gatewayPort, apiPort, webPort };
+  }
+
+  if (preset.some((value) => value)) {
+    throw new Error(
+      "Partial port override: set all of " +
+        `${envVarNames.join(", ")} or none of them. Mixing a pinned port with ` +
+        "an OS-allocated one silently leaves the pinned port outside this " +
+        "invocation's port-lock set.",
+    );
+  }
+
+  const [gatewayPort, apiPort, webPort] = allocateLockedPortsSync(3);
+  envVarNames.forEach((name, index) => {
+    process.env[name] = String([gatewayPort, apiPort, webPort][index]);
+  });
+  process.env.PLAYWRIGHT_PORTS_RESOLVED_BY = invocationNonce();
+  return { gatewayPort, apiPort, webPort };
+}
+
+/** This invocation's identity, shared by the orchestrator and every worker it
+ * spawns (see `defaultPortLockDeps`, which memoizes it into the environment). */
+function invocationNonce(): string {
+  return defaultPortLockDeps().nonce;
+}
+
+/** Bring explicitly pinned ports under this invocation's port lock.
+ *
+ * Reached only for ports this invocation did not resolve itself. A genuinely
+ * unclaimed pinned port is claimed now. A pinned port held by a *different*
+ * live invocation is a hard error: proceeding would start servers on a port
+ * another run is already serving on, which is the exact collision the lock
+ * exists to prevent, and failing here names the problem far more clearly than
+ * the EADDRINUSE (or, worse, the silent cross-talk) that would follow. */
+function claimPresetPorts(ports: readonly number[]): void {
+  const lockDeps = defaultPortLockDeps();
+  for (const port of ports) {
+    if (!Number.isInteger(port) || port <= 0) {
+      throw new Error(
+        `Invalid pinned Playwright port ${JSON.stringify(port)}: expected a positive integer.`,
+      );
+    }
+    if (lockBelongsToInvocation(lockDeps, port)) {
+      continue;
+    }
+    if (!tryClaimPortLock(lockDeps, port, [...claimedPorts, ...ports])) {
+      throw new Error(
+        `Pinned Playwright port ${port} is already locked by another live invocation on this machine. ` +
+          "Release it, wait for that invocation to finish, or unset the " +
+          "PLAYWRIGHT_*_PORT overrides to let this invocation allocate its own ports.",
+      );
+    }
+    registerPortLockRelease(lockDeps, port);
+  }
 }
 
 const { gatewayPort, apiPort, webPort } = deployedBaseUrl
@@ -237,7 +373,7 @@ export default defineConfig({
   retries: process.env.CI ? 2 : 0,
   reporter: [
     ["list"],
-    ["html", { open: "never", outputFolder: "playwright-report" }],
+    ["html", { open: "never", outputFolder: process.env.PLAYWRIGHT_HTML_REPORT_DIR ?? "playwright-report" }],
     // Machine-readable output consumed by
     // scripts/verify-playwright-runtime-coverage.mjs: proves every required
     // (interaction, state) pair has at least one execution whose *final*

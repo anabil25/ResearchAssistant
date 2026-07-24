@@ -12,6 +12,7 @@ import {
 } from "@/components/studio-components";
 import { uploadLibraryItem } from "@/lib/api";
 import type { WorkspaceData } from "@/lib/api";
+import { isBlockingModalOpen } from "@/lib/blocking-modal";
 import type {
   AutomationStudioResult,
   DatasetStudioResult,
@@ -3028,6 +3029,106 @@ describe("AutomationStudio", () => {
     // Focus is restored to the exact trigger element that opened the
     // dialog, not merely somewhere on the page.
     expect(activateButton).toHaveFocus();
+  });
+
+  it("moves focus to the activation status instead of the now-disabled trigger after a successful activation", async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
+
+    const activateButton = screen.getByRole("button", {
+      name: "Activate after approval",
+    });
+    await user.click(
+      screen.getByRole("button", { name: "Validate & dry run" }),
+    );
+    await user.click(activateButton);
+
+    const dialog = screen.getByRole("dialog", { name: /activate graph/i });
+    await user.click(
+      within(dialog).getByRole("button", { name: "Confirm activation" }),
+    );
+
+    // A *successful* activation disables the trigger that opened the dialog.
+    // Restoring focus to it would be a no-op in a real browser (disabled
+    // elements refuse focus), silently dumping the keyboard user back on
+    // document.body with nothing announced. Focus must land on a real,
+    // focusable, relevant element instead.
+    const disabledTrigger = screen.getByRole("button", {
+      name: /activated \(draft workspace\)/i,
+    });
+    expect(disabledTrigger).toBeDisabled();
+    expect(disabledTrigger).not.toHaveFocus();
+    expect(document.body).not.toHaveFocus();
+
+    const status = screen.getByTestId("workflow-activation-status");
+    expect(status).toHaveFocus();
+    expect(status).toHaveAttribute("role", "status");
+    expect(status).toHaveTextContent(/workflow activated for this draft workspace/i);
+  });
+
+  it("suppresses global shell shortcuts while the activation dialog is open and releases them when it closes", async () => {
+    const user = userEvent.setup();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    // Stands in for research-workbench.tsx's `window` keydown listener, which
+    // is what turns Ctrl/Cmd+K into a command palette. It is registered on
+    // `window`, above the portalled dialog in the DOM, so it would fire for
+    // keystrokes made inside the dialog unless the dialog stops them.
+    const shellShortcut = jest.fn();
+    window.addEventListener("keydown", shellShortcut);
+
+    try {
+      render(
+        <AutomationStudio
+          result={automationResult}
+          running={false}
+          error={null}
+          onRun={onRun}
+        />,
+      );
+
+      expect(isBlockingModalOpen()).toBe(false);
+
+      await user.click(
+        screen.getByRole("button", { name: "Validate & dry run" }),
+      );
+      await user.click(
+        screen.getByRole("button", { name: "Activate after approval" }),
+      );
+
+      // The shell is told to suppress itself for as long as the dialog lives.
+      expect(isBlockingModalOpen()).toBe(true);
+
+      shellShortcut.mockClear();
+      await user.keyboard("{Control>}k{/Control}");
+      // Independent of the shell's own guard: the keystroke never reaches
+      // `window` at all, so a command palette cannot open on top of this
+      // dialog even if the shell forgot to check.
+      expect(shellShortcut).not.toHaveBeenCalled();
+      expect(
+        screen.getByRole("dialog", { name: /activate graph/i }),
+      ).toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+      expect(
+        screen.queryByRole("dialog", { name: /activate graph/i }),
+      ).not.toBeInTheDocument();
+      // Suppression is scoped to the dialog's lifetime, not left latched on.
+      expect(isBlockingModalOpen()).toBe(false);
+
+      shellShortcut.mockClear();
+      await user.keyboard("{Control>}k{/Control}");
+      expect(shellShortcut).toHaveBeenCalled();
+    } finally {
+      window.removeEventListener("keydown", shellShortcut);
+    }
   });
 
   it("invalidates a passing dry run after edits and while revalidation is pending or errored", async () => {

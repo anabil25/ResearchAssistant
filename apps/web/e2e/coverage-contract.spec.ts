@@ -137,6 +137,26 @@ function isRecognizedTestFamilyCallback(
  * never entered, so any tokens exclusively inside them are treated as
  * wholly absent rather than trusted or even present. */
 function isUnreachableFunctionBody(node: ts.Node): boolean {
+  // Class members and object-literal methods/accessors. A method body only
+  // runs when something constructs the class or invokes the member, which
+  // this static scan cannot prove and Playwright's registration pass (which
+  // evaluates the module's top level, not arbitrary members) does not do by
+  // the mere act of declaring them. A `test(...)` inside `class Helpers {
+  // register() { test("[pw.x:y] ...", ...) } }` or `const helpers = {
+  // register() { test(...) } }` therefore registers nothing at all, and was
+  // being credited as reachable coverage purely because the generic walker
+  // descended into member bodies. These node kinds can never be an IIFE
+  // callee nor a recognized test-family callback (passing a method to
+  // `test.describe` passes an identifier/property-access reference, not the
+  // declaration node), so they are unconditionally unreachable here.
+  if (
+    ts.isMethodDeclaration(node) ||
+    ts.isGetAccessorDeclaration(node) ||
+    ts.isSetAccessorDeclaration(node) ||
+    ts.isConstructorDeclaration(node)
+  ) {
+    return true;
+  }
   if (
     !ts.isFunctionDeclaration(node) &&
     !ts.isFunctionExpression(node) &&
@@ -421,29 +441,79 @@ function extractTokensFromSource(filename: string, source: string): SpecTokens {
     ts.forEachChild(node, (child) => walkGeneric(child, childContext));
   }
 
-  // Ordered statement-list walker: threads a running "block skipped" flag
-  // across sibling statements so a bare `test.skip(condition, description)`
-  // annotation statement disables every test declared after it in the same
-  // block, in addition to the structural describe.skip/fixme nesting and
-  // declarative-form handling shared with the generic fallback above.
+  // Suite-level statement-list walker. A bare `test.skip(condition,
+  // description)` / `test.fixme(...)` / `test.fail(...)` annotation called
+  // directly in a suite body is a *suite* modifier in Playwright: it applies
+  // to every test in that file or `test.describe()` group, not merely to the
+  // ones declared textually after it. Threading a running flag forward
+  // therefore produced order-dependent -- and unsound -- results: a test
+  // declared above the annotation was credited as trusted even though
+  // Playwright would skip it at runtime, so simply moving the annotation to
+  // the bottom of a describe block silently restored trust to every test in
+  // it. Detection is now a pre-pass over the whole list, so the annotation
+  // disables the entire suite subtree regardless of position.
   function walkStatements(
     statements: readonly ts.Statement[],
     ancestorSkipped: boolean,
   ): void {
-    let running = ancestorSkipped;
+    const suiteSkipped =
+      ancestorSkipped ||
+      statements.some((statement) =>
+        statementIntroducesBareDisablingAnnotation(statement),
+      );
     for (const statement of statements) {
-      if (processStatement(statement, running)) {
-        running = true;
-      }
+      processStatement(statement, suiteSkipped);
     }
   }
 
-  /** Returns `true` iff `statement` is a bare block-level skip/fixme/fail
-   * annotation (no title/body of its own), meaning every subsequent sibling
-   * statement in the same list must be treated as skip-guarded from this
-   * point forward. Describe-group statements always return `false` here —
-   * their skip/fixme effect is purely structural (scoped to their own
-   * nested subtree) and must never leak forward to their own siblings. */
+  /** True iff `statement`, evaluated at its own suite level, introduces a
+   * bare (title-less) skip/fixme/fail annotation for the enclosing suite.
+   *
+   * Describe-group statements deliberately return `false`: a
+   * `test.describe.skip(...)` group's effect is structural and scoped to its
+   * own nested subtree (handled in `processStatement`), and a bare annotation
+   * *inside* a nested describe body likewise belongs to that nested suite,
+   * not to this one. Anything this scan cannot classify falls through to the
+   * conservative `mayIntroduceBareDisablingAnnotation` check, which fails
+   * closed. */
+  function statementIntroducesBareDisablingAnnotation(
+    statement: ts.Statement,
+  ): boolean {
+    if (
+      !ts.isExpressionStatement(statement) ||
+      !ts.isCallExpression(statement.expression)
+    ) {
+      return mayIntroduceBareDisablingAnnotation(statement);
+    }
+    const call = statement.expression;
+    const calleePath = getCalleePath(call);
+    if (!calleePath) {
+      return mayIntroduceBareDisablingAnnotation(statement);
+    }
+    if (calleePath[0] === "test" && calleePath[1] === "describe") {
+      return false;
+    }
+    const isTestModifier =
+      calleePath.length === 2 &&
+      calleePath[0] === "test" &&
+      DISABLING_MODIFIERS.has(calleePath[1]);
+    if (isTestModifier) {
+      return !isDeclarativeDefinitionShape(call);
+    }
+    if (pathEquals(calleePath, ["test"])) {
+      return false;
+    }
+    return mayIntroduceBareDisablingAnnotation(statement);
+  }
+
+  /** Walk one statement, recording any test titles it declares with the
+   * given skip-guard state. Bare block-level skip/fixme/fail annotations are
+   * detected separately by `statementIntroducesBareDisablingAnnotation` in a
+   * pre-pass (see `walkStatements`), so this function's boolean return is
+   * retained only as documentation of which shapes are bare annotations and
+   * is not used to thread state across siblings. Describe-group statements
+   * always return `false` here — their skip/fixme effect is purely structural
+   * (scoped to their own nested subtree) and must never leak to siblings. */
   function processStatement(
     statement: ts.Statement,
     ancestorSkipped: boolean,
@@ -769,6 +839,151 @@ test("a token nested inside test.describe.fixme is untrusted", () => {
   ).toBe(false);
 });
 
+test("a token inside a never-invoked class method is not credited at all", () => {
+  // Reviewer-identified gap: the generic structural walker refused to descend
+  // into function declarations/expressions/arrows it could not prove
+  // reachable, but happily walked into class *member* bodies. Declaring a
+  // class registers nothing with Playwright, so a `test(...)` inside a method
+  // is never registered -- yet its token was credited as trusted coverage.
+  const source = `
+    import { test } from "@playwright/test";
+    class NeverConstructed {
+      register() {
+        test("does something [pw.synthetic-check:dead-class-method]", async () => {
+          // never registered: declaring a class does not invoke its methods
+        });
+      }
+    }
+  `;
+  const result = extractTokensFromSource("synthetic-dead-class.spec.ts", source);
+
+  // Wholly absent, not merely untrusted: the walker never enters the body.
+  expect(result.statePairs.has("synthetic-check::dead-class-method")).toBe(false);
+  expect(
+    result.trustedStatePairs.has("synthetic-check::dead-class-method"),
+  ).toBe(false);
+});
+
+test("a token inside a never-invoked object-literal method is not credited at all", () => {
+  const source = `
+    import { test } from "@playwright/test";
+    const helpers = {
+      register() {
+        test("does something [pw.synthetic-check:dead-object-method]", async () => {
+          // never registered: the object literal is never used
+        });
+      },
+    };
+  `;
+  const result = extractTokensFromSource("synthetic-dead-object.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::dead-object-method")).toBe(
+    false,
+  );
+  expect(
+    result.trustedStatePairs.has("synthetic-check::dead-object-method"),
+  ).toBe(false);
+});
+
+test("a token inside a class getter or constructor is not credited at all", () => {
+  const source = `
+    import { test } from "@playwright/test";
+    class NeverConstructed {
+      constructor() {
+        test("ctor [pw.synthetic-check:dead-ctor]", async () => {});
+      }
+      get registered() {
+        test("getter [pw.synthetic-check:dead-getter]", async () => {});
+        return true;
+      }
+      set registered(value: boolean) {
+        test("setter [pw.synthetic-check:dead-setter]", async () => {});
+      }
+    }
+  `;
+  const result = extractTokensFromSource("synthetic-dead-members.spec.ts", source);
+
+  for (const state of ["dead-ctor", "dead-getter", "dead-setter"]) {
+    expect(result.statePairs.has(`synthetic-check::${state}`)).toBe(false);
+    expect(result.trustedStatePairs.has(`synthetic-check::${state}`)).toBe(
+      false,
+    );
+  }
+});
+
+test("a bare test.skip annotation disables tests declared BEFORE it in the same describe block", () => {
+  // Reviewer-identified gap: bare suite modifiers were threaded forward
+  // across siblings, so only tests declared after the annotation were
+  // guarded. Playwright applies `test.skip(condition, description)` to the
+  // whole enclosing suite, so the earlier test is skipped at runtime too --
+  // meaning its token was being credited for a test that never runs, and
+  // moving the annotation to the end of a block silently restored trust to
+  // everything in it.
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("a group with a trailing bare skip", () => {
+      test("declared first [pw.synthetic-check:before-bare-skip]", async () => {
+        // Playwright skips this too: the modifier below is suite-scoped.
+      });
+      test.skip(someRuntimeCondition, "not implemented on this platform");
+      test("declared last [pw.synthetic-check:after-bare-skip]", async () => {});
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-bare-skip-order.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::before-bare-skip")).toBe(true);
+  expect(result.statePairs.has("synthetic-check::after-bare-skip")).toBe(true);
+  expect(
+    result.trustedStatePairs.has("synthetic-check::before-bare-skip"),
+  ).toBe(false);
+  expect(result.trustedStatePairs.has("synthetic-check::after-bare-skip")).toBe(
+    false,
+  );
+  expect(result.skipGuardedTests.map((entry) => entry.title).sort()).toEqual([
+    "declared first [pw.synthetic-check:before-bare-skip]",
+    "declared last [pw.synthetic-check:after-bare-skip]",
+  ]);
+});
+
+test("a bare test.fail annotation at file top level disables tests declared before it", () => {
+  const source = `
+    import { test } from "@playwright/test";
+    test("declared first [pw.synthetic-check:before-bare-fail]", async () => {});
+    test.fail(someRuntimeCondition, "expected to fail on this platform");
+  `;
+  const result = extractTokensFromSource("synthetic-bare-fail-order.spec.ts", source);
+
+  expect(result.statePairs.has("synthetic-check::before-bare-fail")).toBe(true);
+  expect(
+    result.trustedStatePairs.has("synthetic-check::before-bare-fail"),
+  ).toBe(false);
+});
+
+test("a bare skip inside a nested describe does not disable the outer suite's earlier tests", () => {
+  // The precise scoping counterpart: suite modifiers apply to their OWN
+  // suite. A bare skip inside a nested group must not retroactively disable
+  // tests belonging to the enclosing group, or the pre-pass would be just as
+  // wrong in the opposite direction.
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("an outer group", () => {
+      test("outer test [pw.synthetic-check:outer-unaffected]", async () => {});
+      test.describe("an inner group", () => {
+        test("inner test [pw.synthetic-check:inner-guarded]", async () => {});
+        test.skip(someRuntimeCondition, "inner only");
+      });
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-bare-skip-scope.spec.ts", source);
+
+  expect(
+    result.trustedStatePairs.has("synthetic-check::outer-unaffected"),
+  ).toBe(true);
+  expect(result.trustedStatePairs.has("synthetic-check::inner-guarded")).toBe(
+    false,
+  );
+});
+
 test("a token nested two levels deep inside test.describe.skip is untrusted", () => {
   const source = `
     import { test } from "@playwright/test";
@@ -893,13 +1108,17 @@ test("a top-level, non-nested test with no skip marker remains trusted (sanity)"
 // *lexical* `test.skip(condition, description)` / `test.fixme(...)` /
 // `test.fail(...)` statement called directly inside a `describe` callback
 // (or at the top level of a file) — not wrapping any individual test — is a
-// documented Playwright feature that disables every test declared *after*
-// it in that same block. The original ancestor-context fix only tracked
-// *structural* nesting (inside a call's own subtree), so this sequential,
-// statement-order-dependent form could slip through uncaught. Each case
-// below is exercised directly against `extractTokensFromSource`.
+// documented Playwright feature that disables every test in that block,
+// including ones declared *before* it: the modifier is scoped to the suite,
+// not to the statements that follow it. The original ancestor-context fix
+// only tracked *structural* nesting (inside a call's own subtree), so this
+// form slipped through entirely; a later fix threaded the effect forward
+// across siblings, which caught the common case but was still unsound,
+// because relocating the annotation to the end of a block silently restored
+// trust to every test above it. Each case below is exercised directly
+// against `extractTokensFromSource`.
 
-test("a bare test.skip(condition, description) annotation disables later sibling tests in the same describe block", () => {
+test("a bare test.skip(condition, description) annotation disables every test in the same describe block", () => {
   const source = `
     import { test } from "@playwright/test";
     test.describe("a group with a block-level skip annotation", () => {
@@ -911,7 +1130,7 @@ test("a bare test.skip(condition, description) annotation disables later sibling
   const result = extractTokensFromSource("synthetic-block-skip.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-block-skip")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-block-skip")).toBe(
     false,
@@ -919,7 +1138,7 @@ test("a bare test.skip(condition, description) annotation disables later sibling
   expect(result.statePairs.has("synthetic-check::after-block-skip")).toBe(true);
 });
 
-test("a bare test.fixme(condition, description) annotation disables later sibling tests in the same describe block", () => {
+test("a bare test.fixme(condition, description) annotation disables every test in the same describe block", () => {
   const source = `
     import { test } from "@playwright/test";
     test.describe("a group with a block-level fixme annotation", () => {
@@ -931,14 +1150,14 @@ test("a bare test.fixme(condition, description) annotation disables later siblin
   const result = extractTokensFromSource("synthetic-block-fixme.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-block-fixme")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-block-fixme")).toBe(
     false,
   );
 });
 
-test("a bare test.fail(condition, description) annotation disables later sibling tests in the same describe block", () => {
+test("a bare test.fail(condition, description) annotation disables every test in the same describe block", () => {
   const source = `
     import { test } from "@playwright/test";
     test.describe("a group with a block-level fail annotation", () => {
@@ -950,14 +1169,14 @@ test("a bare test.fail(condition, description) annotation disables later sibling
   const result = extractTokensFromSource("synthetic-block-fail.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-block-fail")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-block-fail")).toBe(
     false,
   );
 });
 
-test("a bare test.skip annotation at the top level of a file disables later sibling tests outside any describe", () => {
+test("a bare test.skip annotation at the top level of a file disables every test outside any describe", () => {
   const source = `
     import { test } from "@playwright/test";
     test("before the annotation [pw.synthetic-check:before-file-skip]", async () => {});
@@ -967,14 +1186,14 @@ test("a bare test.skip annotation at the top level of a file disables later sibl
   const result = extractTokensFromSource("synthetic-file-skip.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-file-skip")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-file-skip")).toBe(
     false,
   );
 });
 
-test("a bare test.skip annotation nested inside an `if` block conservatively disables later sibling tests in the enclosing describe", () => {
+test("a bare test.skip annotation nested inside an `if` block conservatively disables every test in the enclosing describe", () => {
   // Real gap fix: previously, a bare skip/fixme/fail annotation encountered
   // only via walkGeneric's fallback (i.e. not a direct statement in the
   // block) never propagated its disabling effect forward to later
@@ -996,7 +1215,7 @@ test("a bare test.skip annotation nested inside an `if` block conservatively dis
   const result = extractTokensFromSource("synthetic-if-block-skip.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-if-skip")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-if-skip")).toBe(
     false,
@@ -1004,7 +1223,7 @@ test("a bare test.skip annotation nested inside an `if` block conservatively dis
   expect(result.statePairs.has("synthetic-check::after-if-skip")).toBe(true);
 });
 
-test("a bare test.fixme annotation nested inside a `for` loop conservatively disables later sibling tests in the enclosing describe", () => {
+test("a bare test.fixme annotation nested inside a `for` loop conservatively disables every test in the enclosing describe", () => {
   const source = `
     import { test } from "@playwright/test";
     test.describe("a group with a loop-nested block-level fixme annotation", () => {
@@ -1018,14 +1237,14 @@ test("a bare test.fixme annotation nested inside a `for` loop conservatively dis
   const result = extractTokensFromSource("synthetic-loop-block-fixme.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-loop-fixme")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-loop-fixme")).toBe(
     false,
   );
 });
 
-test("a bare test.fail annotation nested inside an IIFE conservatively disables later sibling tests in the enclosing describe", () => {
+test("a bare test.fail annotation nested inside an IIFE conservatively disables every test in the enclosing describe", () => {
   const source = `
     import { test } from "@playwright/test";
     test.describe("a group with an IIFE-nested block-level fail annotation", () => {
@@ -1039,14 +1258,14 @@ test("a bare test.fail annotation nested inside an IIFE conservatively disables 
   const result = extractTokensFromSource("synthetic-iife-block-fail.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-iife-fail")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-iife-fail")).toBe(
     false,
   );
 });
 
-test("a bare test.skip annotation nested inside a `while` loop at the top level of a file conservatively disables later top-level siblings", () => {
+test("a bare test.skip annotation nested inside a `while` loop at the top level of a file conservatively disables every top-level test", () => {
   const source = `
     import { test } from "@playwright/test";
     test("before the while [pw.synthetic-check:before-while-skip]", async () => {});
@@ -1059,7 +1278,7 @@ test("a bare test.skip annotation nested inside a `while` loop at the top level 
   const result = extractTokensFromSource("synthetic-while-block-skip.spec.ts", source);
 
   expect(result.trustedStatePairs.has("synthetic-check::before-while-skip")).toBe(
-    true,
+    false,
   );
   expect(result.trustedStatePairs.has("synthetic-check::after-while-skip")).toBe(
     false,
@@ -1182,9 +1401,14 @@ test("a describe.skip group's effect does not leak forward to its own siblings (
   ).toBe(true);
 });
 
-test("a token declared before a block-level annotation remains trusted (order matters)", () => {
-  // Sanity check for statement ordering: the annotation must only affect
-  // tests declared *after* it textually, never ones declared before.
+test("a bare block-level annotation disables the whole suite regardless of declaration order", () => {
+  // This test previously asserted the opposite ("order matters"), encoding
+  // the very unsoundness the pre-pass fixes. Playwright's bare
+  // `test.skip(condition, description)` is a *suite* modifier: it applies to
+  // every test in the enclosing file or describe group. Crediting the test
+  // declared above it meant a token could be trusted for a test Playwright
+  // would never run, and that simply reordering the annotation to the bottom
+  // of a block silently re-trusted everything in it.
   const source = `
     import { test } from "@playwright/test";
     test.describe("ordering sanity", () => {
@@ -1195,8 +1419,33 @@ test("a token declared before a block-level annotation remains trusted (order ma
   `;
   const result = extractTokensFromSource("synthetic-order-sanity.spec.ts", source);
 
-  expect(result.trustedStatePairs.has("synthetic-check::order-before")).toBe(true);
+  expect(result.trustedStatePairs.has("synthetic-check::order-before")).toBe(false);
   expect(result.trustedStatePairs.has("synthetic-check::order-after")).toBe(false);
+  // Both remain *present* -- untrusted is not the same as absent, and the
+  // orphan check still sees them.
+  expect(result.statePairs.has("synthetic-check::order-before")).toBe(true);
+  expect(result.statePairs.has("synthetic-check::order-after")).toBe(true);
+});
+
+test("a suite with no bare annotation trusts every test regardless of order", () => {
+  // The necessary counterpart: the pre-pass must not become a blanket
+  // disabler. With no bare annotation anywhere in the block, ordinary
+  // registration is fully trusted.
+  const source = `
+    import { test } from "@playwright/test";
+    test.describe("ordering sanity, unguarded", () => {
+      test("first [pw.synthetic-check:unguarded-first]", async () => {});
+      test("second [pw.synthetic-check:unguarded-second]", async () => {});
+    });
+  `;
+  const result = extractTokensFromSource("synthetic-order-unguarded.spec.ts", source);
+
+  expect(result.trustedStatePairs.has("synthetic-check::unguarded-first")).toBe(
+    true,
+  );
+  expect(result.trustedStatePairs.has("synthetic-check::unguarded-second")).toBe(
+    true,
+  );
 });
 
 test("self-skip detection still works inside the test(title, testDetails, callback) three-argument overload", () => {

@@ -54,19 +54,52 @@
 // `scripts/prove-concurrent-gate-report-isolation.mjs` for a standalone,
 // reproducible proof that two concurrent invocations of this script's path
 // scheme cannot clear or overwrite each other's report/output directory.
-import { existsSync, rmSync } from "node:fs";
+import { existsSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
 import { spawnSync } from "node:child_process";
 
 import { verifyReport } from "./verify-playwright-runtime-coverage.mjs";
-import { resolveInvocationPaths } from "./gate-invocation-paths.mjs";
+import {
+  resolveInvocationPaths,
+  stripGateDistDirIncludes,
+} from "./gate-invocation-paths.mjs";
 
 const repoRoot = path.resolve(import.meta.dirname, "..");
 
+/** Undo `next build`'s in-place `tsconfig.json` rewrite for this invocation's
+ * throwaway build directory (see `stripGateDistDirIncludes`). Called whether
+ * the run passed or failed, so a failing gate never leaves the tree dirty
+ * either. */
+function cleanGateEntriesFromTsconfig() {
+  const tsconfigPath = path.join(repoRoot, "tsconfig.json");
+  let raw;
+  try {
+    raw = readFileSync(tsconfigPath, "utf8");
+  } catch {
+    return;
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    // Never rewrite a file we could not parse.
+    return;
+  }
+  const { config, changed } = stripGateDistDirIncludes(parsed);
+  if (!changed) {
+    return;
+  }
+  writeFileSync(tsconfigPath, `${JSON.stringify(config, null, 2)}\n`);
+}
+
 function main() {
-  const { outputDir: invocationOutputDir, reportPath: invocationReportPath } =
-    resolveInvocationPaths(repoRoot, randomUUID());
+  const {
+    outputDir: invocationOutputDir,
+    reportPath: invocationReportPath,
+    htmlReportDir: invocationHtmlReportDir,
+    distDir: invocationDistDir,
+  } = resolveInvocationPaths(repoRoot, randomUUID());
   // Defensive only: a UUID collision with a leftover directory is not
   // expected, but if this exact path somehow already existed, remove it so
   // stale contents at this unique path can never be mistaken for this
@@ -79,8 +112,9 @@ function main() {
   console.log(
     `Starting atomic E2E coverage gate at ${new Date(startedAt).toISOString()}: ` +
       `spawning \`npm run test:e2e\` (unmodified: next build && playwright test) ` +
-      `with invocation-unique output directory ${invocationOutputDir} and ` +
-      `report path ${invocationReportPath}...`,
+      `with invocation-unique output directory ${invocationOutputDir}, ` +
+      `report path ${invocationReportPath}, HTML report directory ` +
+      `${invocationHtmlReportDir}, and Next build directory ${invocationDistDir}...`,
   );
 
   const run = spawnSync("npm run test:e2e", {
@@ -91,10 +125,13 @@ function main() {
       ...process.env,
       PLAYWRIGHT_JSON_REPORT_PATH: invocationReportPath,
       PLAYWRIGHT_OUTPUT_DIR: invocationOutputDir,
+      PLAYWRIGHT_HTML_REPORT_DIR: invocationHtmlReportDir,
+      NEXT_DIST_DIR: invocationDistDir,
     },
   });
 
   if (run.status !== 0) {
+    cleanGateEntriesFromTsconfig();
     console.error(
       `\nAtomic E2E coverage gate FAILED: \`npm run test:e2e\` itself exited ` +
         `with status ${run.status ?? "unknown"} (or signal ${run.signal ?? "none"}). ` +
@@ -109,6 +146,7 @@ function main() {
     reportPath: invocationReportPath,
     requireFreshSince: startedAt,
   }).then((result) => {
+    cleanGateEntriesFromTsconfig();
     if (result.schemaProblems.length > 0) {
       console.error(
         "\nAtomic E2E coverage gate FAILED (fail-closed): the report produced " +
@@ -147,6 +185,11 @@ function main() {
           missingStates: coverage.missingStates,
           idsPresentButNeverPassed: coverage.idsPresentButNeverPassed,
           statesPresentButNeverPassed: coverage.statesPresentButNeverPassed,
+          // Per-viewport/project attribution: which project actually proved
+          // each token. The global counts above deliberately cannot show
+          // that, and a project can execute tests while proving no coverage.
+          perProject: coverage.perProject,
+          projectsWithoutEvidence: coverage.projectsWithoutEvidence,
         },
         null,
         2,
@@ -155,9 +198,14 @@ function main() {
 
     if (!result.ok) {
       console.error(
-        "\nAtomic E2E coverage gate FAILED: at least one required " +
-          "(interaction, state) pair never had a genuinely, expectedly " +
-          "passed execution in this exact invocation's report.",
+        coverage.projectsWithoutEvidence.length > 0
+          ? "\nAtomic E2E coverage gate FAILED: required Playwright " +
+              `project(s) ${coverage.projectsWithoutEvidence.join(", ")} ` +
+              "contributed no genuinely passed coverage token in this " +
+              "invocation's report."
+          : "\nAtomic E2E coverage gate FAILED: at least one required " +
+              "(interaction, state) pair never had a genuinely, expectedly " +
+              "passed execution in this exact invocation's report.",
       );
       process.exitCode = 1;
       return;
@@ -170,7 +218,14 @@ function main() {
         `required (interaction, state) pairs + ${coverage.passedIdCount}/${coverage.requiredIdCount} ` +
         "required playwrightTestId aliases (spanning " +
         `${coverage.interactionCount} manifest interaction entries) each had ` +
-        "a genuinely, expectedly passed execution.",
+        "a genuinely, expectedly passed execution, with every required " +
+        "project contributing genuine evidence (" +
+        `${coverage.perProject
+          .map(
+            (entry) =>
+              `${entry.projectName}: ${entry.passedIdCount} ids / ${entry.passedStateCount} states`,
+          )
+          .join("; ")}).`,
     );
   });
 }

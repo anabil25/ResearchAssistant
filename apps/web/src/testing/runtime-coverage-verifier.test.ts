@@ -2,7 +2,9 @@ import {
   computeExpectedOutcome,
   computeRuntimeCoverage,
   extractTokensFromTitle,
+  hasWellFormedAttemptHistory,
   outcomeIsInternallyConsistent,
+  passingProjectsForSpec,
   PLAYWRIGHT_ID_PATTERN,
   PLAYWRIGHT_STATE_TOKEN_PATTERN,
   resolveTestResults,
@@ -232,6 +234,7 @@ describe("specPassed", () => {
       title: "x",
       tests: [
         {
+          projectName: "chromium",
           expectedStatus: "passed",
           status: "expected",
           results: [{ status: "passed" }],
@@ -287,6 +290,7 @@ describe("specPassed", () => {
       title: "x",
       tests: [
         {
+          projectName: "chromium",
           expectedStatus: "passed",
           status: "flaky",
           results: [{ status: "failed" }, { status: "passed" }],
@@ -296,15 +300,14 @@ describe("specPassed", () => {
     expect(specPassed(spec)).toBe(true);
   });
 
-  it("is true when any one of several project executions passed", () => {
+  it("is false for an otherwise-passing test entry that carries no projectName", () => {
+    // Evidence that cannot be attributed to a project cannot be counted:
+    // per-project accounting is what proves each viewport genuinely covered
+    // something, and an unattributable entry would silently inflate the
+    // global totals without belonging to any project's column.
     const spec: PlaywrightJsonSpec = {
       title: "x",
       tests: [
-        {
-          expectedStatus: "skipped",
-          status: "skipped",
-          results: [{ status: "skipped" }],
-        },
         {
           expectedStatus: "passed",
           status: "expected",
@@ -312,7 +315,29 @@ describe("specPassed", () => {
         },
       ],
     };
+    expect(specPassed(spec)).toBe(false);
+  });
+
+  it("is true when any one of several project executions passed", () => {
+    const spec: PlaywrightJsonSpec = {
+      title: "x",
+      tests: [
+        {
+          projectName: "mobile-chromium",
+          expectedStatus: "skipped",
+          status: "skipped",
+          results: [{ status: "skipped" }],
+        },
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          status: "expected",
+          results: [{ status: "passed" }],
+        },
+      ],
+    };
     expect(specPassed(spec)).toBe(true);
+    expect([...passingProjectsForSpec(spec)]).toEqual(["chromium"]);
   });
 
   it("is false for a test.fail-marked test that unexpectedly passed (expectedStatus 'failed')", () => {
@@ -452,6 +477,169 @@ describe("specPassed", () => {
   });
 });
 
+describe("hasWellFormedAttemptHistory", () => {
+  it("rejects each disqualifying condition independently while the entry is otherwise attributable", () => {
+    // Every rejection reason in `passingProjectsForSpec` exercised with a
+    // `projectName` present, so each one is reached on its own merits rather
+    // than short-circuiting on attribution first.
+    const cases: Array<[string, PlaywrightJsonTest]> = [
+      [
+        "expectedStatus is not 'passed' (a test.fail-marked test)",
+        {
+          projectName: "chromium",
+          expectedStatus: "failed",
+          status: "unexpected",
+          results: [{ status: "passed" }],
+        },
+      ],
+      [
+        "outcome is not a passing one",
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          status: "unexpected",
+          results: [{ status: "failed" }],
+        },
+      ],
+      [
+        "outcome field is missing entirely",
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          results: [{ status: "passed" }],
+        },
+      ],
+      [
+        "attempt history is malformed",
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          status: "expected",
+          results: [{ status: "not-a-real-status" }],
+        },
+      ],
+      [
+        "claimed outcome contradicts its own history",
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          status: "flaky",
+          results: [{ status: "passed" }],
+        },
+      ],
+      [
+        "final attempt did not pass",
+        {
+          projectName: "chromium",
+          expectedStatus: "passed",
+          status: "flaky",
+          results: [{ status: "passed" }, { status: "failed" }],
+        },
+      ],
+    ];
+
+    for (const [reason, testEntry] of cases) {
+      const spec: PlaywrightJsonSpec = { title: "x", tests: [testEntry] };
+      expect([reason, [...passingProjectsForSpec(spec)]]).toEqual([reason, []]);
+    }
+  });
+
+  it("accepts a recognized expectedStatus with a recognized non-empty attempt history", () => {
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "passed",
+        status: "flaky",
+        results: [{ status: "failed" }, { status: "passed" }],
+      }),
+    ).toBe(true);
+  });
+
+  it("rejects an unrecognized expectedStatus", () => {
+    // The load-bearing case. `computeExpectedOutcome` classifies every
+    // attempt that does not match `expectedStatus` as "unexpected", so an
+    // unrecognized expectedStatus makes *every* attempt unexpected. The entry
+    // then recomputes to exactly "unexpected", agrees with a claimed
+    // `status: "unexpected"`, and -- because "unexpected" is a genuinely
+    // executed outcome -- was credited as proof its project ran a test.
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "definitely-not-a-status",
+        status: "unexpected",
+        results: [{ status: "failed" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a missing expectedStatus", () => {
+    expect(
+      hasWellFormedAttemptHistory({
+        status: "unexpected",
+        results: [{ status: "failed" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an empty attempt history", () => {
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "passed",
+        status: "expected",
+        results: [],
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects a missing attempt history", () => {
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "passed",
+        status: "expected",
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an attempt with no status field at all", () => {
+    // `results: [{}]` is the minimal fabrication: an object-shaped attempt
+    // carrying no outcome. It matches nothing, lands in the unexpected
+    // bucket, and manufactures an "unexpected" outcome out of nothing.
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "passed",
+        status: "unexpected",
+        results: [{}],
+      }),
+    ).toBe(false);
+  });
+
+  it("rejects an attempt with an unrecognized status, even alongside valid attempts", () => {
+    expect(
+      hasWellFormedAttemptHistory({
+        expectedStatus: "passed",
+        status: "flaky",
+        results: [{ status: "failed" }, { status: "invented" }],
+      }),
+    ).toBe(false);
+  });
+
+  it("accepts every status in Playwright's real vocabulary", () => {
+    for (const status of [
+      "passed",
+      "failed",
+      "timedOut",
+      "skipped",
+      "interrupted",
+    ]) {
+      expect(
+        hasWellFormedAttemptHistory({
+          expectedStatus: status,
+          status: "expected",
+          results: [{ status }],
+        }),
+      ).toBe(true);
+    }
+  });
+});
+
 describe("computeRuntimeCoverage", () => {
   const manifest = [
     {
@@ -477,6 +665,7 @@ describe("computeRuntimeCoverage", () => {
                 "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
               tests: [
                 {
+                  projectName: "chromium",
                   expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],
@@ -487,6 +676,7 @@ describe("computeRuntimeCoverage", () => {
               title: "[pw.beta-group] beta ready [pw.beta:ready]",
               tests: [
                 {
+                  projectName: "chromium",
                   expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],
@@ -510,6 +700,10 @@ describe("computeRuntimeCoverage", () => {
       missingStates: [],
       idsPresentButNeverPassed: [],
       statesPresentButNeverPassed: [],
+      perProject: [
+        { projectName: "chromium", passedIdCount: 2, passedStateCount: 3 },
+      ],
+      projectsWithoutEvidence: [],
     });
   });
 
@@ -583,6 +777,7 @@ describe("computeRuntimeCoverage", () => {
                     "[pw.alpha-group] alpha ready [pw.alpha:ready]",
                   tests: [
                     {
+                      projectName: "chromium",
                       expectedStatus: "passed",
                       status: "expected",
                       results: [{ status: "passed" }],
@@ -599,6 +794,7 @@ describe("computeRuntimeCoverage", () => {
                         "[pw.alpha-group] alpha loading [pw.alpha:loading]",
                       tests: [
                         {
+                          projectName: "chromium",
                           expectedStatus: "passed",
                           status: "expected",
                           results: [{ status: "passed" }],
@@ -609,6 +805,7 @@ describe("computeRuntimeCoverage", () => {
                       title: "[pw.beta-group] beta ready [pw.beta:ready]",
                       tests: [
                         {
+                          projectName: "mobile-chromium",
                           expectedStatus: "passed",
                           status: "expected",
                           results: [{ status: "passed" }],
@@ -636,12 +833,278 @@ describe("computeRuntimeCoverage", () => {
       missingStates: [],
       idsPresentButNeverPassed: [],
       statesPresentButNeverPassed: [],
+      // Attribution survives the recursion: chromium proved the two alpha
+      // states, mobile-chromium proved the single beta state. A global-only
+      // count would report "3/3 states" and hide that split entirely.
+      perProject: [
+        { projectName: "chromium", passedIdCount: 1, passedStateCount: 2 },
+        {
+          projectName: "mobile-chromium",
+          passedIdCount: 1,
+          passedStateCount: 1,
+        },
+      ],
+      projectsWithoutEvidence: [],
     });
   });
 
   it("handles a report with no suites at all", () => {
     const result = computeRuntimeCoverage({}, manifest);
     expect(result.missingIds).toEqual(["pw.alpha-group", "pw.beta-group"]);
+  });
+
+  it("does not credit a project whose only 'execution' is a malformed attempt history", () => {
+    // End-to-end form of the fabrication `hasWellFormedAttemptHistory`
+    // blocks. Every entry here claims a genuinely-executed outcome that its
+    // own (garbage) history recomputes to exactly, so the internal-consistency
+    // check alone waves all of them through. None of them is evidence of
+    // anything.
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title:
+                "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "unexpected",
+                  results: [{}],
+                },
+              ],
+            },
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "not-a-real-expected-status",
+                  status: "unexpected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, ["chromium"]);
+
+    expect(result.passedIdCount).toBe(0);
+    expect(result.passedStateCount).toBe(0);
+    expect(result.perProject).toEqual([]);
+    expect(result.projectsWithoutEvidence).toEqual(["chromium"]);
+  });
+
+  it("flags a required project that executed tests but proved no coverage token", () => {
+    // The per-viewport gap: chromium covers the whole manifest, so every
+    // global count reads as complete, while mobile-chromium contributes
+    // nothing at all. Attributing evidence per project is the only way that
+    // shows up -- a union of tokens cannot distinguish "all three projects
+    // proved this" from "chromium proved everything".
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title:
+                "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+                {
+                  projectName: "mobile-chromium",
+                  expectedStatus: "passed",
+                  status: "unexpected",
+                  results: [{ status: "failed" }],
+                },
+              ],
+            },
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, [
+      "chromium",
+      "mobile-chromium",
+    ]);
+
+    // Globally indistinguishable from a healthy run:
+    expect(result.missingIds).toEqual([]);
+    expect(result.missingStates).toEqual([]);
+    expect(result.passedIdCount).toBe(2);
+    expect(result.passedStateCount).toBe(3);
+    // Per project, the empty viewport is exposed:
+    expect(result.perProject).toEqual([
+      { projectName: "chromium", passedIdCount: 2, passedStateCount: 3 },
+    ]);
+    expect(result.projectsWithoutEvidence).toEqual(["mobile-chromium"]);
+  });
+
+  it("reports no missing projects when every required project proves at least one token", () => {
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title:
+                "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+                {
+                  projectName: "mobile-chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, [
+      "chromium",
+      "mobile-chromium",
+    ]);
+
+    expect(result.projectsWithoutEvidence).toEqual([]);
+    expect(result.perProject).toEqual([
+      { projectName: "chromium", passedIdCount: 2, passedStateCount: 3 },
+      { projectName: "mobile-chromium", passedIdCount: 1, passedStateCount: 1 },
+    ]);
+  });
+
+  it("ignores unattributed evidence when computing per-project coverage but still reports it globally as missing", () => {
+    // An entry with no projectName cannot be filed under any project, so it
+    // proves nothing for anyone -- including globally.
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, ["chromium"]);
+
+    expect(result.passedStateCount).toBe(0);
+    expect(result.statesPresentButNeverPassed).toEqual(["beta:ready"]);
+    expect(result.projectsWithoutEvidence).toEqual(["chromium"]);
+  });
+
+  it("flags a project that passed only specs carrying tokens outside the manifest", () => {
+    // A project can genuinely pass tests and still prove nothing *required*:
+    // its evidence entry exists, but every token it proved is an orphan the
+    // manifest never declared, so both of its counts are zero. Distinct from
+    // the "no evidence entry at all" case above, and it must fail the gate
+    // just the same.
+    const report: PlaywrightJsonReport = {
+      suites: [
+        {
+          title: "a.spec.ts",
+          specs: [
+            {
+              title:
+                "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+            {
+              title: "[pw.beta-group] beta ready [pw.beta:ready]",
+              tests: [
+                {
+                  projectName: "chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+            {
+              title: "[pw.gamma-group] gamma something [pw.gamma:undeclared]",
+              tests: [
+                {
+                  projectName: "mobile-chromium",
+                  expectedStatus: "passed",
+                  status: "expected",
+                  results: [{ status: "passed" }],
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+
+    const result = computeRuntimeCoverage(report, manifest, [
+      "chromium",
+      "mobile-chromium",
+    ]);
+
+    expect(result.missingStates).toEqual([]);
+    expect(result.perProject).toEqual([
+      { projectName: "chromium", passedIdCount: 2, passedStateCount: 3 },
+      { projectName: "mobile-chromium", passedIdCount: 0, passedStateCount: 0 },
+    ]);
+    expect(result.projectsWithoutEvidence).toEqual(["mobile-chromium"]);
   });
 
   it("does not count a test.fail-marked test's unexpected pass toward required coverage", () => {
@@ -659,6 +1122,7 @@ describe("computeRuntimeCoverage", () => {
                 "[pw.alpha-group] alpha ready and loading [pw.alpha:ready][pw.alpha:loading]",
               tests: [
                 {
+                  projectName: "chromium",
                   expectedStatus: "failed",
                   status: "unexpected",
                   results: [{ status: "passed" }],
@@ -669,6 +1133,7 @@ describe("computeRuntimeCoverage", () => {
               title: "[pw.beta-group] beta ready [pw.beta:ready]",
               tests: [
                 {
+                  projectName: "chromium",
                   expectedStatus: "passed",
                   status: "expected",
                   results: [{ status: "passed" }],

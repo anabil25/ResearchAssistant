@@ -37,6 +37,7 @@ import {
   runStudio,
   type WorkspaceData,
 } from "@/lib/api";
+import { useBlockingModalOpen } from "@/lib/blocking-modal";
 import type {
   CapabilityId,
   Citation,
@@ -254,6 +255,7 @@ export function ResearchWorkbench() {
   const [navOpen, setNavOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const blockingModalOpen = useBlockingModalOpen();
   const [searchQuery, setSearchQuery] = useState("");
   const [studioResult, setStudioResult] = useState<StudioResult | null>(null);
   const [studioRunning, setStudioRunning] = useState(false);
@@ -392,6 +394,19 @@ export function ResearchWorkbench() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // While an application-modal dialog is open elsewhere (it is portalled
+      // outside `.workbench-shell` precisely so the shell can be inerted
+      // behind it), every global shell shortcut is suppressed. Ctrl/Cmd+K in
+      // particular would otherwise open the command palette *on top of* that
+      // dialog -- a second modal living outside the first one's focus trap
+      // and outside the inert region -- and Escape would close shell surfaces
+      // the user cannot even see. The dialog stops propagation of its own
+      // keydowns too; this is the independent guard for events that never
+      // pass through it (dispatched directly on `window`, or fired while
+      // focus somehow sits outside both regions).
+      if (blockingModalOpen) {
+        return;
+      }
       if (event.key === "Escape") {
         setNavOpen(false);
         setEvidenceOpen(false);
@@ -404,7 +419,7 @@ export function ResearchWorkbench() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [blockingModalOpen]);
 
   useEffect(() => {
     if (navOpen) {
@@ -511,7 +526,19 @@ export function ResearchWorkbench() {
   }, [searchQuery]);
 
   return (
-    <div className="workbench-shell" data-workspace-ready={Boolean(data)}>
+    <div
+      className="workbench-shell"
+      data-workspace-ready={Boolean(data)}
+      // The entire shell -- rail, main content, evidence inspector, command
+      // palette -- is inert while an application-modal dialog is open. That
+      // dialog is portalled into `document.body`, outside this subtree, so it
+      // is unaffected. Without this, the dialog's own focus trap is the only
+      // thing keeping keyboard and assistive-technology users out of the
+      // shell, and anything that moved focus programmatically (or any control
+      // the trap's focusable-element query did not match) would land on
+      // background content the user cannot see.
+      inert={blockingModalOpen}
+    >
       {navOpen ? (
         <button
           className="mobile-scrim"

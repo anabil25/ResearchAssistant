@@ -139,6 +139,53 @@ export interface PlaywrightJsonReport {
  * status: "passed" }] }` returned `true` under the old exclusion-only logic. */
 const PASSING_OUTCOME_STATUSES = new Set(["expected", "flaky"]);
 
+/** The complete vocabulary Playwright uses for an individual *attempt's*
+ * `status` and for a test entry's `expectedStatus` (`TestStatus` in
+ * `@playwright/test`). Anything outside this set -- `undefined`, `""`, a
+ * number, an object, or an invented string -- is not something this run's
+ * reporter could have produced.
+ *
+ * This is load-bearing because of how `computeExpectedOutcome` classifies
+ * attempts: an attempt whose status does not match `expectedStatus` falls
+ * into the `unexpected` bucket, and *malformed* attempts fall there too (they
+ * match nothing). So a fabricated entry like `{ expectedStatus: {}, status:
+ * "unexpected", results: [{}] }` recomputes to exactly `"unexpected"`, is
+ * therefore "internally consistent" with its own claimed status, and -- since
+ * `"unexpected"` is a genuinely-executed outcome -- was credited as proof
+ * that its project really executed a test. Garbage in, project-completeness
+ * out. Validating the vocabulary *before* any credit closes that. */
+const VALID_TEST_STATUSES = new Set([
+  "passed",
+  "failed",
+  "timedOut",
+  "skipped",
+  "interrupted",
+]);
+
+/**
+ * True iff a test entry carries a genuine, well-formed attempt history that
+ * is safe to derive any credit from: a recognized `expectedStatus`, at least
+ * one recorded attempt, and a recognized `status` on every one of them.
+ *
+ * Fails closed on each of the three independently, because each is a distinct
+ * fabrication route: an unrecognized `expectedStatus` makes every attempt
+ * "unexpected"; an empty history makes the entry unfalsifiable; and a single
+ * malformed attempt is enough to manufacture an `"unexpected"`/`"flaky"`
+ * outcome that no real run produced.
+ */
+export function hasWellFormedAttemptHistory(
+  testEntry: PlaywrightJsonTest,
+): boolean {
+  if (!VALID_TEST_STATUSES.has(testEntry.expectedStatus ?? "")) {
+    return false;
+  }
+  const results = resolveTestResults(testEntry);
+  if (results.length === 0) {
+    return false;
+  }
+  return results.every((result) => VALID_TEST_STATUSES.has(result.status ?? ""));
+}
+
 /**
  * Reimplementation of Playwright's own outcome-computation algorithm
  * (`computeTestCaseOutcome` in `playwright/lib/common/index.js`, compiled
@@ -259,14 +306,38 @@ export function outcomeIsInternallyConsistent(
  * still counts (outcome `"flaky"`), since its *final* attempt is what the
  * run actually reports as the outcome. */
 export function specPassed(spec: PlaywrightJsonSpec): boolean {
-  return (spec.tests ?? []).some((testEntry) => {
-    if (testEntry.expectedStatus !== "passed") return false;
-    if (!PASSING_OUTCOME_STATUSES.has(testEntry.status ?? "")) return false;
-    if (!outcomeIsInternallyConsistent(testEntry)) return false;
+  return passingProjectsForSpec(spec).size > 0;
+}
+
+/**
+ * The set of `projectName`s (viewport/browser projects) in which this spec
+ * genuinely passed, applying every condition documented on `specPassed`.
+ *
+ * Returning the *set* rather than a single boolean is what lets coverage
+ * evidence stay attributed to the project that actually produced it. Folding
+ * per-project executions into one boolean at this point discarded
+ * `projectName` irrecoverably, so a token proven only in chromium and a token
+ * proven in all three projects were indistinguishable downstream, and a
+ * project could contribute no coverage evidence at all while the global
+ * totals still read as complete.
+ *
+ * An entry with no `projectName` cannot be attributed and therefore cannot
+ * contribute evidence -- fail closed, consistent with `collectProjectNames`.
+ */
+export function passingProjectsForSpec(spec: PlaywrightJsonSpec): Set<string> {
+  const projects = new Set<string>();
+  for (const testEntry of spec.tests ?? []) {
+    if (!testEntry.projectName) continue;
+    if (testEntry.expectedStatus !== "passed") continue;
+    if (!PASSING_OUTCOME_STATUSES.has(testEntry.status ?? "")) continue;
+    if (!hasWellFormedAttemptHistory(testEntry)) continue;
+    if (!outcomeIsInternallyConsistent(testEntry)) continue;
     const results = resolveTestResults(testEntry);
     const last = results[results.length - 1];
-    return last?.status === "passed";
-  });
+    if (last?.status !== "passed") continue;
+    projects.add(testEntry.projectName);
+  }
+  return projects;
 }
 
 export interface ManifestInteractionShape {
@@ -299,6 +370,28 @@ export interface RuntimeCoverageResult {
   missingStates: string[];
   idsPresentButNeverPassed: string[];
   statesPresentButNeverPassed: string[];
+  /** Per-project attribution of the evidence above, sorted by project name.
+   * Reported (not merely computed) so a reader can see at a glance that e.g.
+   * chromium proved 64 ids / 298 states while tablet and mobile each proved 3
+   * -- a distribution that a single global "64/298 passed" line hides
+   * entirely, and which is exactly what an independent reviewer had to
+   * recompute by hand from the raw report. */
+  perProject: RuntimeCoverageProjectEvidence[];
+  /** Required Playwright projects that contributed *no* genuinely passed
+   * coverage token at all. A project can execute tests (satisfying
+   * `validateReportSchema`'s project-completeness check) while proving no
+   * coverage whatsoever; that is a silently empty viewport, and it fails the
+   * gate. */
+  projectsWithoutEvidence: string[];
+}
+
+export interface RuntimeCoverageProjectEvidence {
+  projectName: string;
+  /** Required ids/states this project alone genuinely proved. Counted
+   * against the same manifest denominators as the global figures, so the
+   * per-project numbers and the global numbers are directly comparable. */
+  passedIdCount: number;
+  passedStateCount: number;
 }
 
 /** Recursively collect every spec across a suite tree, tracking whether each
@@ -309,22 +402,49 @@ function walkSuite(
   allStatePairs: Set<string>,
   passedBareIds: Set<string>,
   passedStatePairs: Set<string>,
+  passedByProject: Map<string, { ids: Set<string>; statePairs: Set<string> }>,
 ): void {
   for (const spec of suite.specs ?? []) {
-    const passed = specPassed(spec);
+    const passingProjects = passingProjectsForSpec(spec);
+    const passed = passingProjects.size > 0;
     const { bareIds, statePairs } = extractTokensFromTitle(spec.title ?? "");
     for (const id of bareIds) {
       allBareIds.add(id);
       if (passed) passedBareIds.add(id);
+      for (const projectName of passingProjects) {
+        projectEvidence(passedByProject, projectName).ids.add(id);
+      }
     }
     for (const pair of statePairs) {
       allStatePairs.add(pair);
       if (passed) passedStatePairs.add(pair);
+      for (const projectName of passingProjects) {
+        projectEvidence(passedByProject, projectName).statePairs.add(pair);
+      }
     }
   }
   for (const child of suite.suites ?? []) {
-    walkSuite(child, allBareIds, allStatePairs, passedBareIds, passedStatePairs);
+    walkSuite(
+      child,
+      allBareIds,
+      allStatePairs,
+      passedBareIds,
+      passedStatePairs,
+      passedByProject,
+    );
   }
+}
+
+function projectEvidence(
+  passedByProject: Map<string, { ids: Set<string>; statePairs: Set<string> }>,
+  projectName: string,
+): { ids: Set<string>; statePairs: Set<string> } {
+  let entry = passedByProject.get(projectName);
+  if (!entry) {
+    entry = { ids: new Set<string>(), statePairs: new Set<string>() };
+    passedByProject.set(projectName, entry);
+  }
+  return entry;
 }
 
 /** Compare a completed Playwright JSON report against the manifest's
@@ -333,6 +453,7 @@ function walkSuite(
 export function computeRuntimeCoverage(
   report: PlaywrightJsonReport,
   manifest: readonly ManifestInteractionShape[],
+  requiredProjectNames: readonly string[] = [],
 ): RuntimeCoverageResult {
   const requiredIds = new Set(
     manifest.flatMap((interaction) => interaction.playwrightTestIds),
@@ -347,9 +468,20 @@ export function computeRuntimeCoverage(
   const allStatePairs = new Set<string>();
   const passedBareIds = new Set<string>();
   const passedStatePairs = new Set<string>();
+  const passedByProject = new Map<
+    string,
+    { ids: Set<string>; statePairs: Set<string> }
+  >();
 
   for (const suite of report.suites ?? []) {
-    walkSuite(suite, allBareIds, allStatePairs, passedBareIds, passedStatePairs);
+    walkSuite(
+      suite,
+      allBareIds,
+      allStatePairs,
+      passedBareIds,
+      passedStatePairs,
+      passedByProject,
+    );
   }
 
   const missingIds = [...requiredIds]
@@ -373,6 +505,28 @@ export function computeRuntimeCoverage(
     .map((pair) => pair.replace("::", ":"))
     .sort();
 
+  const perProject: RuntimeCoverageProjectEvidence[] = [...passedByProject]
+    .map(([projectName, evidence]) => ({
+      projectName,
+      passedIdCount: [...requiredIds].filter((id) => evidence.ids.has(id)).length,
+      passedStateCount: [...requiredStatePairs].filter((pair) =>
+        evidence.statePairs.has(pair),
+      ).length,
+    }))
+    .sort((left, right) => left.projectName.localeCompare(right.projectName));
+
+  const projectsWithoutEvidence = [...requiredProjectNames]
+    .filter((projectName) => {
+      const evidence = perProject.find(
+        (entry) => entry.projectName === projectName,
+      );
+      return (
+        evidence === undefined ||
+        (evidence.passedIdCount === 0 && evidence.passedStateCount === 0)
+      );
+    })
+    .sort();
+
   return {
     interactionCount: manifest.length,
     requiredIdCount: requiredIds.size,
@@ -386,6 +540,8 @@ export function computeRuntimeCoverage(
     missingStates,
     idsPresentButNeverPassed,
     statesPresentButNeverPassed,
+    perProject,
+    projectsWithoutEvidence,
   };
 }
 
@@ -423,15 +579,26 @@ function collectProjectNames(suite: PlaywrightJsonSuite, into: Set<string>): voi
       if (!testEntry.projectName) continue;
       if (!GENUINE_EXECUTION_STATUSES.has(testEntry.status ?? "")) continue;
       // A claimed "expected"/"unexpected"/"flaky" outcome is not enough on
-      // its own: also require that outcome to be exactly what Playwright's
-      // own algorithm would derive from this entry's actual
-      // `expectedStatus`/`results[]` history (see
-      // `outcomeIsInternallyConsistent`). Closes the gap where a
+      // its own. Two independent checks follow.
+      //
+      // First, the entry's attempt history must use Playwright's real status
+      // vocabulary and contain at least one attempt. Without this, a
+      // fabricated entry carrying a malformed `expectedStatus` and a single
+      // malformed attempt (e.g. `{ expectedStatus: {}, results: [{}] }`)
+      // recomputes to exactly `"unexpected"` -- because malformed attempts
+      // match nothing and therefore land in the unexpected bucket -- which is
+      // both a genuinely-executed status and perfectly "consistent" with a
+      // claimed `status: "unexpected"`. Such an entry would have counted as
+      // this project genuinely executing a test.
+      if (!hasWellFormedAttemptHistory(testEntry)) continue;
+      // Second, that outcome must be exactly what Playwright's own algorithm
+      // would derive from this entry's actual `expectedStatus`/`results[]`
+      // history (see `outcomeIsInternallyConsistent`). Closes the gap where a
       // hand-crafted entry claiming e.g. `status: "expected"` with zero
-      // attempts (`results: []`) -- which can only ever genuinely
-      // recompute to `"skipped"` -- would otherwise count as this project
-      // having "genuinely executed" a test despite there being no actual
-      // attempt anywhere in the report.
+      // attempts (`results: []`) -- which can only ever genuinely recompute
+      // to `"skipped"` -- would otherwise count as this project having
+      // "genuinely executed" a test despite there being no actual attempt
+      // anywhere in the report.
       if (!outcomeIsInternallyConsistent(testEntry)) continue;
       into.add(testEntry.projectName);
     }

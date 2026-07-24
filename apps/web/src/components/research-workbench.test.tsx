@@ -4,6 +4,7 @@ import { axe } from "jest-axe";
 
 import { ResearchWorkbench } from "@/components/research-workbench";
 import { CAPABILITY_CARDS } from "@/components/workspace-views";
+import { openBlockingModal } from "@/lib/blocking-modal";
 import {
   decideApproval,
   getWorkspaceData,
@@ -1071,6 +1072,70 @@ describe("ResearchWorkbench", () => {
     await user.click(
       screen.getByRole("button", { name: "Open evidence inspector" }),
     );
+    fireEvent.keyDown(window, { key: "Escape" });
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "Search workspace" }),
+      ).not.toBeInTheDocument(),
+    );
+    expect(evidencePanel).toHaveAttribute("data-open", "false");
+  });
+
+  it("suppresses global shortcuts and inerts the shell while a blocking modal is open", async () => {
+    const user = userEvent.setup();
+    const { container } = render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const shell = container.querySelector(".workbench-shell");
+    expect(shell).not.toBeNull();
+    expect(shell).not.toHaveAttribute("inert");
+
+    // Open the evidence inspector first so there is visible shell state that
+    // a stray Escape would wrongly collapse behind the modal.
+    await user.click(
+      screen.getByRole("button", { name: "Open evidence inspector" }),
+    );
+    const evidencePanel = screen.getByLabelText("Evidence and lineage inspector");
+    expect(evidencePanel).toHaveAttribute("data-open", "true");
+
+    let release!: () => void;
+    act(() => {
+      release = openBlockingModal();
+    });
+
+    // The whole shell -- rail, main, evidence inspector, palette -- is inert,
+    // so nothing behind the modal is reachable by keyboard or assistive tech.
+    expect(shell).toHaveAttribute("inert");
+
+    // Ctrl+K must not open the command palette on top of the modal: that
+    // second dialog would live outside the first one's focus trap and
+    // outside this inert region.
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(
+      screen.queryByRole("dialog", { name: "Search workspace" }),
+    ).not.toBeInTheDocument();
+
+    // The macOS chord is the same shortcut and must be suppressed too.
+    fireEvent.keyDown(window, { key: "K", metaKey: true });
+    expect(
+      screen.queryByRole("dialog", { name: "Search workspace" }),
+    ).not.toBeInTheDocument();
+
+    // Escape belongs to the modal while it is open; it must not reach through
+    // and collapse shell surfaces the user cannot currently see.
+    fireEvent.keyDown(window, { key: "Escape" });
+    expect(evidencePanel).toHaveAttribute("data-open", "true");
+
+    act(() => {
+      release();
+    });
+
+    // Suppression is scoped to the modal's lifetime, not latched permanently.
+    expect(shell).not.toHaveAttribute("inert");
+    fireEvent.keyDown(window, { key: "k", ctrlKey: true });
+    expect(
+      screen.getByRole("dialog", { name: "Search workspace" }),
+    ).toBeInTheDocument();
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() =>
       expect(

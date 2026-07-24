@@ -20,7 +20,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from "node:os";
 import path from "node:path";
 
-import { resolveInvocationPaths } from "./gate-invocation-paths.mjs";
+import { resolveInvocationPaths, stripGateDistDirIncludes } from "./gate-invocation-paths.mjs";
 
 /** Mirrors Playwright's own unconditional `outputDir` wipe at the start of
  * every invocation (`createRemoveOutputDirsTask`, `playwright/lib/runner/index.js`). */
@@ -64,6 +64,77 @@ function proveFixedSchemeIsolatesConcurrentInvocations(root) {
   assert.ok(existsSync(invocationB.reportPath), "invocation B's own report must still exist");
 }
 
+function proveHtmlReportAndBuildDirsAreIsolated(root) {
+  const invocationA = resolveInvocationPaths(root, "invocation-A");
+  const invocationB = resolveInvocationPaths(root, "invocation-B");
+
+  // The HTML reporter clears and rewrites its `outputFolder` on every
+  // invocation exactly as the test runner clears `outputDir`, so a fixed
+  // `playwright-report/` is the same hazard one level over.
+  assert.notStrictEqual(
+    invocationA.htmlReportDir,
+    invocationB.htmlReportDir,
+    "two invocation IDs must resolve to two structurally distinct HTML report directories",
+  );
+
+  mkdirSync(invocationA.htmlReportDir, { recursive: true });
+  const htmlA = path.join(invocationA.htmlReportDir, "index.html");
+  writeFileSync(htmlA, "<html>A</html>");
+
+  simulatePlaywrightClearOutputDir(invocationB.htmlReportDir);
+  mkdirSync(invocationB.htmlReportDir, { recursive: true });
+  writeFileSync(path.join(invocationB.htmlReportDir, "index.html"), "<html>B</html>");
+
+  assert.ok(
+    existsSync(htmlA),
+    "FAIL: invocation A's HTML report was deleted when invocation B's HTML reporter cleared its own folder",
+  );
+  assert.strictEqual(
+    readFileSync(htmlA, "utf8"),
+    "<html>A</html>",
+    "invocation A's HTML report content must be exactly what A wrote",
+  );
+
+  // Playwright refuses to start when the HTML reporter's output folder lives
+  // inside the test output folder ("HTML reporter output folder clashes with
+  // the tests output folder"), because the runner's own cleanup would delete
+  // the report it had just written. Nesting the HTML directory inside the
+  // per-invocation outputDir is the obvious-looking way to keep an
+  // invocation's artifacts together, and it is exactly what tripped this --
+  // so the constraint is asserted here rather than rediscovered at runtime.
+  for (const invocation of [invocationA, invocationB]) {
+    assert.ok(
+      !path
+        .resolve(invocation.htmlReportDir)
+        .startsWith(path.resolve(invocation.outputDir) + path.sep),
+      "the HTML report directory must not be nested inside the Playwright outputDir",
+    );
+    assert.notStrictEqual(
+      path.resolve(invocation.htmlReportDir),
+      path.resolve(invocation.outputDir),
+      "the HTML report directory must not be the Playwright outputDir itself",
+    );
+  }
+
+  // `npm run test:e2e` is `next build && playwright test`, so every gate
+  // invocation runs a real build. Two builds into one `.next` fail with
+  // "Another next build process is already running" before Playwright starts,
+  // which no report-path isolation could address.
+  assert.notStrictEqual(
+    invocationA.distDir,
+    invocationB.distDir,
+    "two invocation IDs must resolve to two structurally distinct Next build directories",
+  );
+  // The build directory must also not sit inside the directory Playwright
+  // clears, or the running server's own build would be deleted mid-run.
+  assert.ok(
+    !path.resolve(root, invocationA.distDir).startsWith(
+      path.resolve(invocationA.outputDir) + path.sep,
+    ),
+    "the Next build directory must not be nested inside the Playwright outputDir that gets cleared",
+  );
+}
+
 function proveLegacySharedOutputDirSchemeWasVulnerable(root) {
   // Reproduces the *previous* scheme this gate script used: one shared
   // `outputDir` (here, a stand-in for the old fixed `test-results/`) with
@@ -92,20 +163,66 @@ function proveLegacySharedOutputDirSchemeWasVulnerable(root) {
   assert.ok(existsSync(reportB), "invocation B's own report must still exist under the legacy scheme");
 }
 
+function proveGateDistDirEntriesAreStrippedFromTsconfig() {
+  // `next build` rewrites tsconfig.json in place, appending an include entry
+  // per distDir it sees. With a per-invocation distDir that silently turns a
+  // tracked file into unbounded generated churn -- two more lines per gate
+  // run, each naming a directory that no longer exists.
+  const polluted = {
+    include: [
+      "**/*.ts",
+      ".next/types/**/*.ts",
+      ".next/dev/types/**/*.ts",
+      ".next-gate/gate-aaaa/types/**/*.ts",
+      ".next-gate/gate-aaaa/dev/types/**/*.ts",
+      ".next-gate/gate-bbbb/types/**/*.ts",
+    ],
+    exclude: ["node_modules"],
+  };
+
+  const first = stripGateDistDirIncludes(polluted);
+  assert.strictEqual(first.changed, true);
+  assert.deepStrictEqual(
+    first.config.include,
+    ["**/*.ts", ".next/types/**/*.ts", ".next/dev/types/**/*.ts"],
+    "every .next-gate entry must be removed and the committed .next entries kept",
+  );
+  assert.deepStrictEqual(
+    first.config.exclude,
+    ["node_modules"],
+    "unrelated config keys must be preserved verbatim",
+  );
+
+  // Idempotent, and reports no change when there is nothing to strip -- this
+  // is what makes it safe for two concurrent gates to run it in either order
+  // without one undoing or duplicating the other's work.
+  const second = stripGateDistDirIncludes(first.config);
+  assert.strictEqual(second.changed, false);
+  assert.deepStrictEqual(second.config.include, first.config.include);
+
+  // A config with no include list at all must not throw or invent one.
+  const withoutInclude = stripGateDistDirIncludes({ compilerOptions: {} });
+  assert.strictEqual(withoutInclude.changed, false);
+  assert.deepStrictEqual(withoutInclude.config, { compilerOptions: {} });
+}
+
 function main() {
   const root = mkdtempSync(path.join(tmpdir(), "gate-isolation-proof-"));
   try {
     proveFixedSchemeIsolatesConcurrentInvocations(root);
+    proveHtmlReportAndBuildDirsAreIsolated(root);
+    proveGateDistDirEntriesAreStrippedFromTsconfig();
     proveLegacySharedOutputDirSchemeWasVulnerable(root);
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
 
   console.log(
-    "PASSED: resolveInvocationPaths' per-invocation outputDir scheme isolates " +
-      "concurrent gate invocations from each other's report/output-dir cleanup " +
-      "(and the legacy shared-outputDir scheme was confirmed genuinely vulnerable " +
-      "to the exact defect this fix closes).",
+    "PASSED: resolveInvocationPaths' per-invocation scheme isolates concurrent " +
+      "gate invocations across all four shared artifacts -- Playwright outputDir, " +
+      "JSON report, HTML report directory, and Next build directory -- and the " +
+      "legacy shared-outputDir scheme was confirmed genuinely vulnerable to the " +
+      "exact defect this fix closes.",
   );
 }
 

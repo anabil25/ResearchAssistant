@@ -802,7 +802,109 @@ def test_research_route_allows_matching_sources_and_legacy_funding_sources() -> 
     assert response.status_code == 200
 
 
-def test_studio_run_route_rejects_conflicting_sources_and_legacy_funding_sources() -> None:
+def test_research_route_rejects_legacy_only_empty_funding_sources_without_widening() -> None:
+    # The deselection defect that survived on the legacy path. `sources` is
+    # absent and `funding_sources` is an explicit empty list -- a deselect-all
+    # expressed in the retired vocabulary. Before this guard, the absent
+    # `sources` key was read as "no preference" and the request silently
+    # widened back to this capability's *default* connector set, firing live
+    # gateway searches for the very sources the caller had deselected.
+    #
+    # The raising gateway is the load-bearing assertion, not the status code:
+    # it proves the request is refused *before* any connector is searched, so
+    # a future regression that reverted the rejection but kept a 4xx would
+    # still fail here.
+    class _UnreachableConnectorGateway:
+        async def search(
+            self,
+            capability: Any,
+            source: str,
+            query: str,
+            *,
+            limit: int,
+        ) -> Any:
+            raise AssertionError(
+                "connector gateway search() must not be called for a request "
+                "that only carries the retired `funding_sources` key "
+                f"(capability={capability}, source={source}, query={query}, "
+                f"limit={limit})"
+            )
+
+        async def close(self) -> None:
+            return None
+
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        app.state.connector_gateway = _UnreachableConnectorGateway()
+        response = client.post(
+            "/api/research/grant",
+            json={
+                "query": "Compare public funding opportunities",
+                "context": {
+                    "online_research": True,
+                    "public_search_query": "current public funding guidance",
+                    "public_research_acknowledged": True,
+                    "funding_sources": [],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert "funding_sources" in detail
+    assert "sources" in detail
+
+
+def test_research_route_rejects_legacy_only_non_empty_funding_sources() -> None:
+    # The non-empty half of the same rule: a legacy client naming connectors
+    # under the retired key is refused rather than having its selection
+    # silently discarded and replaced by the capability defaults.
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/research/grant",
+            json={
+                "query": "Compare public funding opportunities",
+                "context": {
+                    "funding_sources": ["NIH"],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert "funding_sources" in response.json()["detail"]
+
+
+def test_research_route_absent_source_keys_still_use_capability_defaults() -> None:
+    # The deliberate counterpart that must NOT be broken by the rule above:
+    # a request carrying neither key expressed no preference at all, which is
+    # semantically distinct from an explicit empty selection, and continues to
+    # fall back to the capability's default connector set.
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/research/grant",
+            json={"query": "Compare public funding opportunities", "context": {}},
+        )
+
+    assert response.status_code == 200
+
+
+def test_studio_run_route_rejects_legacy_only_funding_sources() -> None:
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="mock")
+        response = client.post(
+            "/api/studios/grant/run",
+            json={
+                "objective": "Compare public funding opportunities in depth",
+                "inputs": {
+                    "funding_sources": [],
+                },
+            },
+        )
+
+    assert response.status_code == 422
+    assert "funding_sources" in response.json()["detail"]
     with TestClient(app) as client:
         app.state.settings = Settings(execution_mode="mock")
         response = client.post(

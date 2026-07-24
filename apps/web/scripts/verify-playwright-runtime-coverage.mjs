@@ -181,12 +181,17 @@ export async function verifyReport({
     return { ok: false, schemaProblems, coverage: null };
   }
 
-  const coverage = computeRuntimeCoverage(report, UI_COVERAGE_MANIFEST);
+  const coverage = computeRuntimeCoverage(
+    report,
+    UI_COVERAGE_MANIFEST,
+    REQUIRED_PLAYWRIGHT_PROJECT_NAMES,
+  );
   const ok =
     coverage.missingIds.length === 0 &&
     coverage.missingStates.length === 0 &&
     coverage.idsPresentButNeverPassed.length === 0 &&
-    coverage.statesPresentButNeverPassed.length === 0;
+    coverage.statesPresentButNeverPassed.length === 0 &&
+    coverage.projectsWithoutEvidence.length === 0;
 
   return { ok, schemaProblems: [], coverage };
 }
@@ -225,6 +230,13 @@ function printResult(result) {
         missingStates: coverage.missingStates,
         idsPresentButNeverPassed: coverage.idsPresentButNeverPassed,
         statesPresentButNeverPassed: coverage.statesPresentButNeverPassed,
+        // Per-viewport/project attribution of the evidence above. A single
+        // global "passed" count cannot distinguish "every project proved
+        // this" from "chromium proved everything and the mobile project
+        // proved nothing", so the breakdown is published rather than left
+        // for a reviewer to recompute by hand from the raw report.
+        perProject: coverage.perProject,
+        projectsWithoutEvidence: coverage.projectsWithoutEvidence,
       },
       null,
       2,
@@ -232,6 +244,18 @@ function printResult(result) {
   );
 
   if (!result.ok) {
+    if (coverage.projectsWithoutEvidence.length > 0) {
+      console.error(
+        "\nRuntime coverage verification FAILED: required Playwright " +
+          `project(s) ${coverage.projectsWithoutEvidence.join(", ")} ` +
+          "contributed no genuinely passed coverage token at all. Executing " +
+          "tests is not the same as proving coverage: a project whose every " +
+          "token-bearing spec failed, was skipped, or carried no token is a " +
+          "silently empty viewport, and the global totals would hide that " +
+          "because the other projects cover for it.",
+      );
+      return;
+    }
     console.error(
       "\nRuntime coverage verification FAILED: at least one required " +
         "(interaction, state) pair has no execution that was both expected " +
@@ -249,7 +273,14 @@ function printResult(result) {
       `${coverage.requiredStateCount} required (interaction, state) pairs and ` +
       `${coverage.passedIdCount}/${coverage.requiredIdCount} required ` +
       `playwrightTestId aliases (spanning ${coverage.interactionCount} manifest ` +
-      "interaction entries) each had a genuinely passed execution in this run.",
+      "interaction entries) each had a genuinely passed execution in this run, " +
+      `attributed per project as ${coverage.perProject
+        .map(
+          (entry) =>
+            `${entry.projectName} ${entry.passedIdCount}/${coverage.requiredIdCount} ids, ` +
+            `${entry.passedStateCount}/${coverage.requiredStateCount} states`,
+        )
+        .join("; ")}.`,
   );
 }
 
