@@ -13,6 +13,37 @@ import {
 import { uploadLibraryItem } from "@/lib/api";
 import type { WorkspaceData } from "@/lib/api";
 import { isBlockingModalOpen } from "@/lib/blocking-modal";
+
+/**
+ * `userEvent.setup` with the artificial inter-event delay removed.
+ *
+ * userEvent v14 defaults to `delay: 0`, which is not "no delay" -- it awaits a
+ * real `setTimeout(..., 0)` between *every* dispatched event. An omnibus test
+ * here performs 25+ interactions plus multi-character `type()` calls, so it
+ * accumulates well over a hundred of those hops. In isolation each costs
+ * roughly nothing; under the full `--runInBand` suite, with a large
+ * accumulated heap and a busy event loop, each hop costs far more and varies
+ * run to run. That is what made this file's slowest tests sit at ~3.0s and
+ * ~4.0s against Jest's 5s default -- ~80% of the budget consumed by waiting
+ * that serves no purpose -- and flake intermittently only when the whole
+ * suite is loaded.
+ *
+ * `delay: null` removes the waiting and nothing else: every event userEvent
+ * would dispatch is still dispatched, in the same order, through the same
+ * code paths. It is safe here specifically because `studio-components.tsx`
+ * contains no `setTimeout`/`setInterval`/`requestAnimationFrame` and no
+ * debounce, so no assertion in this file depends on time passing between
+ * events.
+ *
+ * Deliberately not fixed by raising the Jest timeout: that hides the
+ * contention instead of removing it, and a flake at 5s becomes the same flake
+ * at 10s.
+ */
+function setupUser(
+  options: Parameters<typeof userEvent.setup>[0] = {},
+): ReturnType<typeof userEvent.setup> {
+  return userEvent.setup({ delay: null, ...options });
+}
 import type {
   AutomationStudioResult,
   DatasetStudioResult,
@@ -201,7 +232,7 @@ describe("LiteratureStudio", () => {
   };
 
   it("switches Screen/Extract/Synthesize/Audit tabs to distinct content", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <LiteratureStudio
         result={literatureResult}
@@ -231,7 +262,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("marks the audit tab not-verified when no hosted-agent insight is present, even with resolved citations", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const noInsightResult = {
       ...literatureResult,
       insight: undefined,
@@ -254,7 +285,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("adds and removes inclusion/exclusion criteria and sends them on run", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <LiteratureStudio
@@ -290,7 +321,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("records Include/Exclude/Maybe screening decisions and updates downstream counts", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <LiteratureStudio
         result={literatureResult}
@@ -317,7 +348,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("edits an extraction cell and exports the current version as CSV", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     jest
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
@@ -347,7 +378,7 @@ describe("LiteratureStudio", () => {
   it(
     "supports workflow metadata, protocol keyboard input, online research, and empty extraction states",
     async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <LiteratureStudio
@@ -457,7 +488,7 @@ describe("LiteratureStudio", () => {
   );
 
   it("blocks submission for an out-of-order or future-dated protocol window and recovers once corrected", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const { container } = render(
       <LiteratureStudio
@@ -526,7 +557,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("updates every extraction field and clears the export notice on edit", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     jest
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
@@ -561,7 +592,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("covers literature fallbacks for normalization, audit counts, and single-row CSV export", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     jest
       .spyOn(HTMLAnchorElement.prototype, "click")
       .mockImplementation(() => undefined);
@@ -633,7 +664,7 @@ describe("LiteratureStudio", () => {
   });
 
   it("ignores blank or duplicate criteria changes", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <LiteratureStudio
         result={null}
@@ -742,7 +773,7 @@ describe("GrantStudio", () => {
   };
 
   it("switches document tabs between drafted and not-yet-drafted sections", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <GrantStudio
         result={grantResult}
@@ -764,7 +795,7 @@ describe("GrantStudio", () => {
   });
 
   it("runs a distinct red-team pass separate from the primary build action", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <GrantStudio
@@ -785,7 +816,7 @@ describe("GrantStudio", () => {
   });
 
   it("selects funding sources and records a connector draft request requiring review", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <GrantStudio
         result={null}
@@ -826,7 +857,7 @@ describe("GrantStudio", () => {
   });
 
   it("filters opportunity discovery to selected governed connectors and populates the opportunity ID", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <GrantStudio
         result={null}
@@ -866,7 +897,7 @@ describe("GrantStudio", () => {
   });
 
   it("opens source evidence for a mapped requirement and reports gaps for an unmapped one", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <GrantStudio
         result={grantResult}
@@ -963,7 +994,7 @@ describe("GrantStudio", () => {
   );
 
   it("filters discovery connectors, dismisses connector dialogs, and renders readiness blockers", async () => {
-    const user = userEvent.setup({ applyAccept: false });
+    const user = setupUser({ applyAccept: false });
     const readinessResult = {
       ...grantResult,
       fact_gaps: [
@@ -1067,7 +1098,7 @@ describe("GrantStudio", () => {
   });
 
   it("tracks red-team status while running and includes newly added funding sources", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const data: Pick<WorkspaceData, "connectors"> = {
       connectors: [
@@ -1123,7 +1154,7 @@ describe("GrantStudio", () => {
   });
 
   it("maps configuration_required and unavailable funding connector test_status to distinct non-runnable states and excludes them from the run payload", async () => {
-    const user = userEvent.setup();    const onRun = jest.fn().mockResolvedValue(undefined);
+    const user = setupUser();    const onRun = jest.fn().mockResolvedValue(undefined);
     const data: Pick<WorkspaceData, "connectors"> = {
       connectors: [
         workspaceData.connectors[0],
@@ -1247,7 +1278,7 @@ describe("GrantStudio", () => {
   });
 
   it("keeps incomplete connector requests out of the draft list and shows mapped requirements without matching evidence", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const sparseGrant = {
       ...grantResult,
       requirements: [
@@ -1363,7 +1394,7 @@ describe("MatchingStudio", () => {
   };
 
   it("sends selected record types and hard filters as run inputs", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <MatchingStudio
@@ -1389,7 +1420,7 @@ describe("MatchingStudio", () => {
   });
 
   it("toggles a persistent shortlist and shows a transparent score comparison", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <MatchingStudio
         result={matchingResult}
@@ -1417,7 +1448,7 @@ describe("MatchingStudio", () => {
   });
 
   it("controls public/institutional source selection and keeps Work IQ disabled, sending sources on run", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const data: Pick<WorkspaceData, "connectors"> = {
       connectors: [
@@ -1468,7 +1499,7 @@ describe("MatchingStudio", () => {
   });
 
   it("can opt into a newly assigned public source before running", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <MatchingStudio
@@ -1506,7 +1537,7 @@ describe("MatchingStudio", () => {
   });
 
   it("explains empty states and submits revised criteria with online public research", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <MatchingStudio
@@ -1557,7 +1588,7 @@ describe("MatchingStudio", () => {
   });
 
   it("selects alternate matches, surfaces disabled connectors, and hides comparison views", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data: Pick<WorkspaceData, "connectors"> = {
       connectors: [
         {
@@ -1642,7 +1673,7 @@ describe("MatchingStudio", () => {
   });
 
   it("maps configuration_required and unavailable test_status to distinct non-runnable states and excludes them from the run payload", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const data: Pick<WorkspaceData, "connectors"> = {
       connectors: [
@@ -1731,7 +1762,7 @@ describe("MatchingStudio", () => {
   });
 
   it("re-adds hard filters and flags matches that still have hard-filter gaps", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const gapResult = {
       ...matchingResult,
@@ -1834,7 +1865,7 @@ describe("DatasetStudio", () => {
   } as DatasetStudioResult;
 
   it("validates a bounded CSV file, uploads it, and requires plan approval before profiling", async () => {
-    const user = userEvent.setup({ applyAccept: false });
+    const user = setupUser({ applyAccept: false });
     mockedUploadLibraryItem.mockResolvedValue({
       item: {
         id: "lib-1",
@@ -1910,7 +1941,7 @@ describe("DatasetStudio", () => {
   });
 
   it("rejects an oversized file client-side without pretending to profile it", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <DatasetStudio
         result={null}
@@ -1943,7 +1974,7 @@ describe("DatasetStudio", () => {
   });
 
   it("handles invalid files, upload failures, and large-asset approvals", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     mockedUploadLibraryItem.mockRejectedValueOnce(new Error("Upload denied"));
@@ -2071,7 +2102,7 @@ describe("DatasetStudio", () => {
   });
 
   it("uses sample defaults and generic upload failure messaging", async () => {
-    const user = userEvent.setup({ applyAccept: false });
+    const user = setupUser({ applyAccept: false });
     const onRun = jest.fn().mockResolvedValue(undefined);
     mockedUploadLibraryItem.mockRejectedValueOnce("denied");
     render(
@@ -2154,7 +2185,7 @@ describe("DatasetStudio", () => {
   });
 
   it("handles canceled uploads and non-text CSV previews, and never enables Run for a JSON upload", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const fileReaderSpy = jest
       .spyOn(window, "FileReader")
@@ -2628,7 +2659,7 @@ describe("InstitutionalStudio", () => {
   };
 
   it("controls authorized corpus scopes and locks the legal-hold corpus", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <InstitutionalStudio
@@ -2655,7 +2686,7 @@ describe("InstitutionalStudio", () => {
   });
 
   it("opens an evidence detail dialog from an inline citation", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <InstitutionalStudio
         result={institutionalResult}
@@ -2694,7 +2725,7 @@ describe("InstitutionalStudio", () => {
   });
 
   it("submits updated questions and renders abstentions with version history", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const abstainedResult = {
       ...institutionalResult,
@@ -2782,7 +2813,7 @@ describe("InstitutionalStudio", () => {
   });
 
   it("renders citation detail without a page range when only a start page is available", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <InstitutionalStudio
         result={{
@@ -2869,7 +2900,7 @@ describe("AutomationStudio", () => {
   };
 
   it("zooms the workflow graph within bounds", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(
       <AutomationStudio
         result={null}
@@ -2888,7 +2919,7 @@ describe("AutomationStudio", () => {
   });
 
   it("adds, configures, and removes a bounded workflow step and sends edits to dry run", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -2927,7 +2958,7 @@ describe("AutomationStudio", () => {
   });
 
   it("gates activation behind a passing dry run and an explicit confirmation", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -2963,7 +2994,7 @@ describe("AutomationStudio", () => {
   });
 
   it("moves focus into the dialog on open, contains Tab within it, restores focus to the trigger on close, and closes (without activating) on Escape", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -3032,7 +3063,7 @@ describe("AutomationStudio", () => {
   });
 
   it("moves focus to the activation status instead of the now-disabled trigger after a successful activation", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -3075,7 +3106,7 @@ describe("AutomationStudio", () => {
   });
 
   it("suppresses global shell shortcuts while the activation dialog is open and releases them when it closes", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     // Stands in for research-workbench.tsx's `window` keydown listener, which
     // is what turns Ctrl/Cmd+K into a command palette. It is registered on
@@ -3132,7 +3163,7 @@ describe("AutomationStudio", () => {
   });
 
   it("invalidates a passing dry run after edits and while revalidation is pending or errored", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     let resolveRun!: () => void;
     const onRun = jest.fn(
       () =>
@@ -3234,7 +3265,7 @@ describe("AutomationStudio", () => {
     // validated content again. An edit that is undone (reverted to
     // byte-identical configuration) must still require a new dry run
     // before activation is allowed.
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -3271,7 +3302,7 @@ describe("AutomationStudio", () => {
     // opened. Opening the dialog and then invalidating the draft (an edit,
     // here removing a step) before pressing "Confirm activation" must not
     // activate.
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -3322,7 +3353,7 @@ describe("AutomationStudio", () => {
   });
 
   it("adds only an authorized capability catalog entry to the graph and blocks an unauthorized one", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data: Pick<WorkspaceData, "agents" | "connectors" | "runs"> = {
       agents: [
         {
@@ -3382,7 +3413,7 @@ describe("AutomationStudio", () => {
   });
 
   it("closes a manual draft when catalog additions reach the workflow step limit", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data = {
       agents: [
         {
@@ -3436,7 +3467,7 @@ describe("AutomationStudio", () => {
   });
 
   it("manages workflow runs by inspecting via existing Runs state and cloning a fresh draft", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onNavigateToRun = jest.fn();
     const data: Pick<WorkspaceData, "runs"> = {
       runs: [
@@ -3496,7 +3527,7 @@ describe("AutomationStudio", () => {
   });
 
   it("submits updated templates, toggles catalog previews, and shows validation failures", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     const failedResult = {
       ...automationResult,
@@ -3563,8 +3594,8 @@ describe("AutomationStudio", () => {
     );
   });
 
-  it("supports canceling drafts, editing dependencies, removing steps, and dismissing activation dialogs", async () => {
-    const user = userEvent.setup();
+  it("dismisses the activation dialog via both the close button and Cancel", async () => {
+    const user = setupUser();
     const onRun = jest.fn().mockResolvedValue(undefined);
     render(
       <AutomationStudio
@@ -3599,6 +3630,19 @@ describe("AutomationStudio", () => {
     expect(
       screen.queryByRole("dialog", { name: /activate graph/i }),
     ).not.toBeInTheDocument();
+  });
+
+  it("keeps a step draft unsubmittable while its label is empty and discards it on cancel", async () => {
+    const user = setupUser();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Add step" }));
     const stepEditor = screen.getByRole("region", {
@@ -3614,6 +3658,19 @@ describe("AutomationStudio", () => {
     ).toBeDisabled();
     await user.click(within(stepEditor).getByRole("button", { name: "Cancel" }));
     expect(screen.queryByRole("button", { name: /^Add$/ })).not.toBeInTheDocument();
+  });
+
+  it("adds a configured step, discards an edit on cancel, and removes the step", async () => {
+    const user = setupUser();
+    const onRun = jest.fn().mockResolvedValue(undefined);
+    render(
+      <AutomationStudio
+        result={automationResult}
+        running={false}
+        error={null}
+        onRun={onRun}
+      />,
+    );
 
     await user.click(screen.getByRole("button", { name: "Add step" }));
     await user.type(screen.getByLabelText("Step label"), "Temporary export");
@@ -3647,7 +3704,7 @@ describe("AutomationStudio", () => {
   });
 
   it("catalogs connector tools and shows the active graph version for current runs", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data: Pick<WorkspaceData, "agents" | "connectors" | "runs"> = {
       agents: [],
       connectors: [
@@ -3783,10 +3840,19 @@ describe("AutomationStudio", () => {
     expect(within(runManager).getByText(/Graph 2\.0/)).toBeInTheDocument();
   });
 
+  // Deliberately one test despite covering three concerns: each phase below
+  // consumes the graph state the previous phase produced. The single-step
+  // assertions are only reachable after the removal sequence, and the
+  // activation-fallback assertions need the local draft to match that reduced
+  // graph -- neither state can be constructed from props, so splitting would
+  // mean re-performing the removals in each test and doing strictly more
+  // total work. The 15s budget reflects genuine sequential UI work, not a
+  // timeout raised to paper over contention; this is not the test that
+  // flaked (that one ran on the 5s default and has been split).
   it(
     "surfaces capacity, one-step, and activation fallback states without weakening guards",
     async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data: Pick<WorkspaceData, "agents" | "connectors" | "runs"> = {
       agents: [
         {
