@@ -32,11 +32,23 @@ trusted from the caller alone -- so a request naming the right
 ``approval_id`` cannot be used to spend it against a different
 binding/operation/instance than what was actually approved (the same
 fail-closed doctrine already applied to draft/gate/deploy binding
-revalidation in ``policy_gates.py``).
+revalidation in ``policy_gates.py``). The request's ``destination_hash`` is
+likewise never trusted as an opaque, self-certifying string: it is
+independently recomputed via ``scope.compute_destination_hash`` from the
+already-revalidated destination pin and compared with a constant-time
+comparison, denying (fail closed) on any mismatch.
+
+The durably created ``ApprovalConsumptionRecord`` carries ``approval_version``/
+``approver_id``/``expires_at`` copied verbatim from the spent
+``StudioApprovalRecord`` at consumption time, plus its own
+``consumption_version`` schema tag, so a caller building a harness/runtime
+``ApprovalReceipt`` never has to re-fetch the approval record or invent
+values this backend already knows authoritatively.
 """
 
 from __future__ import annotations
 
+import hmac
 from typing import Protocol
 from uuid import uuid4
 
@@ -49,7 +61,7 @@ from research_assistant_api.agent_studio.models import (
     ApprovalEffectiveState,
     ApprovalKind,
 )
-from research_assistant_api.agent_studio.scope import ScopeContext
+from research_assistant_api.agent_studio.scope import ScopeContext, compute_destination_hash
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
 
@@ -197,6 +209,32 @@ class StoreBackedApprovalConsumptionPort:
                     f"'{request.approval_id}' is pinned to version '{approval.version_id}'."
                 )
 
+        # The caller-supplied ``destination_hash`` is never trusted as an
+        # opaque, self-certifying string: independently recompute the same
+        # versioned, canonical hash (``scope.compute_destination_hash``) from
+        # the destination pin already revalidated above (never from the
+        # request's own claimed binding/operation/instance/policy in
+        # isolation) and require an exact match. A caller that named the
+        # right binding/operation/instance/policy but supplied a stale,
+        # mismatched, or ad hoc "destination_hash" is denied here rather
+        # than silently accepted -- closing the "destination_hash
+        # canonicalization is unversioned" gap.
+        expected_destination_hash = compute_destination_hash(
+            tenant_id=scope.tenant_id,
+            project_id=scope.project_id,
+            release_id=request.release_id,
+            binding_id=request.binding_id,
+            operation_id=request.operation_id,
+            instance_fingerprint=request.instance_fingerprint,
+            policy_ref=request.policy_ref,
+        )
+        if not hmac.compare_digest(expected_destination_hash, request.destination_hash):
+            return _denied(
+                f"Binding '{request.binding_id}' destination_hash does not match the canonical hash "
+                "for this invocation's revalidated destination pin (binding/operation/instance/policy/"
+                "release); refusing to trust a caller-supplied hash that was not independently verified."
+            )
+
         candidate = ApprovalConsumptionRecord(
             id=str(uuid4()),
             approval_id=request.approval_id,
@@ -213,6 +251,9 @@ class StoreBackedApprovalConsumptionPort:
             release_id=request.release_id,
             invocation_id=request.invocation_id,
             idempotency_key=request.idempotency_key,
+            approval_version=approval.version_id,
+            approver_id=approval.approver_id,
+            expires_at=approval.expires_at,
         )
         winner = self._store.create_approval_consumption(scope, candidate)
         if winner.id == candidate.id:

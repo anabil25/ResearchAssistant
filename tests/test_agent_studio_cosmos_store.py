@@ -271,6 +271,7 @@ def _consumption(
         destination_hash="destination-hash-1",
         invocation_id=invocation_id,
         idempotency_key=idempotency_key,
+        approval_version="version-1",
     )
 
 

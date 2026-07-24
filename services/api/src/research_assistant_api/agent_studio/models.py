@@ -1723,6 +1723,17 @@ class ApprovalConsumptionOutcome(StrEnum):
     EXHAUSTED = "exhausted"
 
 
+#: Schema/contract version tag embedded on every ``ApprovalConsumptionRecord``
+#: (``ApprovalConsumptionRecord.consumption_version``), mirroring
+#: ``release_attestation._SIGNATURE_PREFIX``'s and ``scope.compute_scope_key``'s
+#: ``<name>:v1:`` convention. A harness/runtime caller building its own
+#: ``ApprovalReceipt`` from this record must be able to tell which shape/
+#: semantics version it received rather than assuming byte-for-byte parity
+#: with whatever it independently defines as ``ApprovalReceipt`` -- bumping
+#: this is the only sanctioned way to change this record's field set/meaning.
+APPROVAL_CONSUMPTION_RECORD_VERSION = "approval-consumption-record:v1"
+
+
 class ApprovalConsumptionRecord(BaseModel):
     """Durable, append-only record that a ``CAPABILITY_OPERATION``
     ``StudioApprovalRecord`` was actually spent by one specific runtime
@@ -1743,6 +1754,16 @@ class ApprovalConsumptionRecord(BaseModel):
     and the policy/release/invocation identifiers in force at the time — so
     a later audit can distinguish one legitimate consumption from any
     attempted replay. Never mutated once created.
+
+    ``approval_version``/``approver_id``/``expires_at`` are copied verbatim
+    from the ``StudioApprovalRecord`` this consumption spent (its pinned
+    ``version_id``, deciding ``approver_id``, and ``expires_at``) at the
+    moment of consumption, so a caller building a harness ``ApprovalReceipt``
+    never has to re-fetch or re-derive the approval record itself, and never
+    has to invent values this backend already knows authoritatively.
+    ``consumption_version`` is this record's own schema/contract version tag
+    (``APPROVAL_CONSUMPTION_RECORD_VERSION``), letting a caller detect a
+    future field-shape change rather than assuming today's shape forever.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
@@ -1763,6 +1784,17 @@ class ApprovalConsumptionRecord(BaseModel):
     invocation_id: str = Field(min_length=1, max_length=200)
     idempotency_key: str
     consumed_at: datetime = Field(default_factory=utc_now)
+    approval_version: str = Field(min_length=1, max_length=200)
+    """The exact agent ``version_id`` the spent ``StudioApprovalRecord`` was pinned to."""
+    approver_id: str | None = None
+    """The identity that decided (approved) the spent ``StudioApprovalRecord``."""
+    expires_at: datetime | None = None
+    """The spent approval's own expiry, copied verbatim so a caller can tell
+    how long this consumption's authority window was valid for without a
+    separate approval lookup."""
+    consumption_version: str = Field(default=APPROVAL_CONSUMPTION_RECORD_VERSION, min_length=1)
+    """Schema/contract version of this record's own field set (see
+    ``APPROVAL_CONSUMPTION_RECORD_VERSION``)."""
 
 
 # --------------------------------------------------------------------------

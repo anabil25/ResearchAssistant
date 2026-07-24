@@ -30,7 +30,7 @@ from research_assistant_api.agent_studio.models import (
     ReleaseStatus,
     StudioApprovalRecord,
 )
-from research_assistant_api.agent_studio.scope import ScopeContext
+from research_assistant_api.agent_studio.scope import ScopeContext, compute_destination_hash
 from research_assistant_api.agent_studio.store import AgentStudioStore
 
 TENANT = "tenant-1"
@@ -149,7 +149,21 @@ def _request(
     release_id: str | None = None,
     invocation_id: str = "invocation-1",
     idempotency_key: str = "invocation-key-1",
+    destination_hash: str | None = None,
 ) -> ApprovalConsumptionRequest:
+    resolved_destination_hash = (
+        destination_hash
+        if destination_hash is not None
+        else compute_destination_hash(
+            tenant_id=TENANT,
+            project_id=PROJECT,
+            release_id=release_id,
+            binding_id=binding_id,
+            operation_id=operation_id,
+            instance_fingerprint=instance_fingerprint,
+            policy_ref=policy_ref,
+        )
+    )
     return ApprovalConsumptionRequest(
         scope=SCOPE,
         approval_id=approval_id,
@@ -159,7 +173,7 @@ def _request(
         operation_id=operation_id,
         operation_version=None,
         args_hash="args-hash-1",
-        destination_hash="destination-hash-1",
+        destination_hash=resolved_destination_hash,
         policy_ref=policy_ref,
         release_id=release_id,
         invocation_id=invocation_id,
@@ -425,6 +439,39 @@ async def test_denied_when_release_pins_a_different_version() -> None:
     assert "is pinned to version" in (result.reason or "")
 
 
+@pytest.mark.asyncio
+async def test_denied_when_destination_hash_does_not_match_canonical_recomputation() -> None:
+    store = AgentStudioStore()
+    _seed(store)
+    port = StoreBackedApprovalConsumptionPort(store)
+
+    result = await port.consume_approval(_request(destination_hash="not-the-canonical-hash"))
+
+    assert result.outcome is ApprovalConsumptionOutcome.DENIED
+    assert result.record is None
+    assert "destination_hash does not match" in (result.reason or "")
+
+
+@pytest.mark.asyncio
+async def test_destination_hash_check_runs_after_identity_revalidation() -> None:
+    """A wrong destination_hash never masks a more specific identity denial:
+
+    the operation-id mismatch (checked earlier) is what is reported, not a
+    generic destination_hash mismatch, even though the request's supplied
+    hash also happens to not match anything (it was computed for
+    ``operation_id="search"``, not ``"other-operation"``)."""
+    store = AgentStudioStore()
+    _seed(store)
+    port = StoreBackedApprovalConsumptionPort(store)
+
+    result = await port.consume_approval(
+        _request(operation_id="other-operation", destination_hash="irrelevant-value")
+    )
+
+    assert result.outcome is ApprovalConsumptionOutcome.DENIED
+    assert "is bound to operation" in (result.reason or "")
+
+
 # --- happy path / single-use enforcement -----------------------------------
 
 
@@ -449,9 +496,31 @@ async def test_first_consumption_succeeds_and_records_all_pins() -> None:
     assert result.record.idempotency_key == "invocation-key-1"
     assert result.record.tenant_id == TENANT
     assert result.record.project_id == PROJECT
+    # Finding #4 (complete approval receipt): approval_version/approver_id/
+    # expires_at are copied verbatim from the spent StudioApprovalRecord, and
+    # consumption_version is this record's own schema tag -- a caller never
+    # has to re-fetch the approval or invent these values itself.
+    assert result.record.approval_version == "version-1"
+    assert result.record.approver_id == USER_ID
+    assert result.record.expires_at is None
+    assert result.record.consumption_version == "approval-consumption-record:v1"
 
     stored = store.get_approval_consumption(SCOPE, "approval-1")
     assert stored == result.record
+
+
+@pytest.mark.asyncio
+async def test_receipt_copies_approval_expiry_verbatim() -> None:
+    store = AgentStudioStore()
+    expires_at = datetime.now(UTC) + timedelta(hours=2)
+    _seed(store, expires_at=expires_at)
+    port = StoreBackedApprovalConsumptionPort(store)
+
+    result = await port.consume_approval(_request())
+
+    assert result.outcome is ApprovalConsumptionOutcome.CONSUMED
+    assert result.record is not None
+    assert result.record.expires_at == expires_at
 
 
 @pytest.mark.asyncio

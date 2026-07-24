@@ -87,7 +87,7 @@ from research_assistant_api.agent_studio.release_service import (
 from research_assistant_api.agent_studio.router import HOSTED_RUNTIME_SERVICE_ROLE, claim_idempotency_route
 from research_assistant_api.agent_studio.router import router as agent_studio_router
 from research_assistant_api.agent_studio.schemas import ClaimIdempotencyRequest
-from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
+from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext, compute_destination_hash
 from research_assistant_api.agent_studio.store import AgentStudioStore
 from research_assistant_api.agent_studio.template_catalog import default_template_catalog
 from research_assistant_api.config import Settings
@@ -2876,14 +2876,28 @@ def _consume_body(
     operation_id: str = "invoke",
     invocation_id: str = "invocation-1",
     idempotency_key: str = "idem-1",
+    destination_hash: str | None = None,
     **kwargs: Any,
 ) -> dict[str, Any]:
+    resolved_destination_hash = (
+        destination_hash
+        if destination_hash is not None
+        else compute_destination_hash(
+            tenant_id="demo",
+            project_id=project_id,
+            release_id=kwargs.get("release_id"),
+            binding_id=binding_id,
+            operation_id=operation_id,
+            instance_fingerprint=kwargs.get("instance_fingerprint"),
+            policy_ref=kwargs.get("policy_ref"),
+        )
+    )
     return _body(
         project_id,
         binding_id=binding_id,
         operation_id=operation_id,
         args_hash="hash-args-1",
-        destination_hash="hash-dest-1",
+        destination_hash=resolved_destination_hash,
         invocation_id=invocation_id,
         idempotency_key=idempotency_key,
         **kwargs,
@@ -2910,6 +2924,12 @@ def test_consume_approval_route_consumes_once_then_reconciles_then_exhausts(
     assert first_body["record"]["binding_id"] == binding["binding_id"]
     assert first_body["record"]["invocation_id"] == "invocation-1"
     assert first_body["record"]["principal_id"] == "hosted-runtime-service"
+    # Finding #4 (complete approval receipt): the response carries the
+    # approval's own version/approver/expiry plus this record's own schema
+    # tag, so a caller never has to re-fetch the approval or invent values.
+    assert first_body["record"]["approval_version"] is not None
+    assert first_body["record"]["approver_id"] is not None
+    assert first_body["record"]["consumption_version"] == "approval-consumption-record:v1"
 
     # Same invocation retrying (identical idempotency_key) reconciles to the
     # original durable record rather than re-consuming or being denied.

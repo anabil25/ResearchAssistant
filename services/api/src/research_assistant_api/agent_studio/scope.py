@@ -129,3 +129,58 @@ def compute_scope_key(tenant_id: str, project_id: str) -> str:
     canonical = json.dumps([tenant_id, project_id], ensure_ascii=False, separators=(",", ":"))
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
     return f"{_SCOPE_KEY_PREFIX}{digest}"
+
+
+#: Versioned prefix for ``compute_destination_hash`` output, mirroring
+#: ``_SCOPE_KEY_PREFIX``'s ``scope:v1:sha256:`` convention. Bumping this to a
+#: new version is the only sanctioned way to ever change the canonical
+#: encoding below.
+_DESTINATION_HASH_PREFIX = "destination:v1:sha256:"
+
+
+def compute_destination_hash(
+    *,
+    tenant_id: str,
+    project_id: str,
+    release_id: str | None,
+    binding_id: str,
+    operation_id: str,
+    instance_fingerprint: str | None,
+    policy_ref: str | None,
+) -> str:
+    """Canonical, versioned hash of exactly which pinned destination a
+    capability-operation invocation is exercising.
+
+    A runtime/harness caller and this backend must agree, byte-for-byte, on
+    what "this specific destination" means before a caller-supplied
+    ``destination_hash`` can be trusted as anything more than an opaque
+    string neither side actually verifies. Prior to this function, backend
+    approval consumption accepted whatever ``destination_hash`` a caller
+    supplied at face value and only separately checked identifiers
+    (``binding_id``/``operation_id``/etc.) individually -- so a caller could
+    not be caught claiming a stale or mismatched hash for an otherwise
+    correctly-identified destination, and there was no single, versioned
+    algorithm a harness-side caller could reproduce independently to
+    pre-validate its own claim.
+
+    Encodes the full destination-pin tuple as a canonical, finite JSON array
+    (never a separator-joined string, for the same collision-safety reason
+    ``compute_scope_key`` documents) and hashes it with SHA-256.
+    ``release_id``/``instance_fingerprint``/``policy_ref`` are included as
+    JSON ``null`` when absent (a binding may legitimately have no instance
+    or policy pin, and a request may legitimately omit ``release_id``) so
+    "absent" and "present but empty string" can never collide.
+
+    This is the versioned destination-hash algorithm callers (backend
+    verification in ``approval_consumption.py``, and any future harness-side
+    pre-computation) must use to reproduce the identical hash for the
+    identical destination pin -- never invented ad hoc per caller.
+    """
+
+    canonical = json.dumps(
+        [tenant_id, project_id, release_id, binding_id, operation_id, instance_fingerprint, policy_ref],
+        ensure_ascii=False,
+        separators=(",", ":"),
+    )
+    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+    return f"{_DESTINATION_HASH_PREFIX}{digest}"
