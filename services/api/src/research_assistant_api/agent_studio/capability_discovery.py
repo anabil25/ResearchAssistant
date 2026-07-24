@@ -31,13 +31,14 @@ test-only, mirroring the ``InMemoryModelDiscovery`` pattern used for model
 discovery, and additionally supports simulating a slow/cancelled provider
 for ``discover_with_timeout`` contract tests.
 
-Until a real adapter is wired (translating the operational provider layer's
-``ProviderRegistry``/``DiscoveryResult`` into this module's
-``CapabilityDiscoveryResult``), production composition
-(``research_assistant_api.app``) wires ``NullCapabilityDiscoverySource`` (or
-an equivalent explicit-unavailable source) — never a hard-coded seed catalog
-masquerading as discovery output. See ``capability_registry.seeded_test_registry``
-for the test-only fixture that still exercises a populated catalog.
+Production composition (``research_assistant_api.app._init_agent_studio``)
+wires ``build_capability_discovery_source(settings)``: the real
+``HttpCapabilityDiscoverySource`` when a provider URL is configured
+(``agent_studio_capability_provider_url``), else the honest
+``NullCapabilityDiscoverySource`` -- never a hard-coded seed catalog
+masquerading as discovery output. See
+``capability_registry.seeded_test_registry`` for the test-only fixture that
+still exercises a populated catalog.
 """
 
 from __future__ import annotations
@@ -49,6 +50,7 @@ from typing import Any, Protocol
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import ClientAuthenticationError
 from azure.identity.aio import ManagedIdentityCredential
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -569,12 +571,23 @@ class HttpCapabilityDiscoverySource:
         return {}
 
     async def discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
-        headers = await self._headers()
         try:
+            headers = await self._headers()
             catalog_response = await self._client.get("v1/providers", headers=headers)
             catalog_response.raise_for_status()
             catalog = catalog_response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+        except (httpx.HTTPError, ValueError, ClientAuthenticationError) as exc:
+            # ``_headers()`` (managed-identity token acquisition) lives inside
+            # this same try: an unreachable/misconfigured credential (e.g.
+            # ``ClientAuthenticationError``/``CredentialUnavailableError``,
+            # entirely plausible whenever this adapter runs somewhere without
+            # a real managed identity, including most non-Azure dev/test
+            # hosts) is exactly as much a "capability provider unavailable"
+            # condition as an unreachable catalog endpoint, and must degrade
+            # to an honest ``available=False`` result -- never propagate
+            # uncaught through ``discover_with_timeout``/``CapabilityRegistry
+            # .from_source`` and crash whatever composed this adapter (e.g.
+            # application startup).
             return CapabilityDiscoveryResult(
                 available=False,
                 unavailable_reason=f"Capability provider catalog request failed: {exc}",
@@ -601,12 +614,35 @@ class HttpCapabilityDiscoverySource:
                     f"{catalog.get('canonicalization_version')!r}."
                 ),
             )
-        providers_payload = catalog.get("providers") or []
+        providers_payload = catalog.get("providers")
+        if providers_payload is None:
+            providers_payload = []
+        elif not isinstance(providers_payload, list):
+            # A catalog whose ``providers`` field is not itself an array is a
+            # catalog-level schema failure (not a single malformed entry), so
+            # it degrades the whole pass to ``available=False`` rather than
+            # raising ``TypeError`` while iterating a non-iterable/wrongly
+            # shaped value below.
+            return CapabilityDiscoveryResult(
+                available=False,
+                unavailable_reason="Capability provider catalog 'providers' field was not a JSON array.",
+            )
+        warnings_payload = catalog.get("warnings")
+        if not isinstance(warnings_payload, list):
+            warnings_payload = []
         catalog_warnings = tuple(
-            str(warning.get("message") or warning.get("reason_code") or "unknown catalog warning")
-            for warning in (catalog.get("warnings") or [])
+            (
+                str(warning.get("message") or warning.get("reason_code") or "unknown catalog warning")
+                if isinstance(warning, dict)
+                else f"unrecognized catalog warning entry: {warning!r}"
+            )
+            for warning in warnings_payload
         )
-        provider_ids = [str(entry["provider_id"]) for entry in providers_payload if "provider_id" in entry]
+        provider_ids = [
+            str(entry["provider_id"])
+            for entry in providers_payload
+            if isinstance(entry, dict) and "provider_id" in entry
+        ]
         if not provider_ids:
             return CapabilityDiscoveryResult(available=True, warnings=catalog_warnings)
 
