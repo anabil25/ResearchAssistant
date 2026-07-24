@@ -16,6 +16,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     CosmosClientDeploymentBindingIndex,
     InMemoryClientDeploymentBindingIndex,
     NonMonotonicRepointError,
+    ReinstateStateError,
     RevokedBindingResurrectionError,
     RuntimeBindingStatus,
     build_authorized_mapping_loader,
@@ -186,6 +187,49 @@ def test_repoint_revoked_reaffirmation_is_allowed() -> None:
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is REVOKED
+
+
+def test_reinstate_flips_revoked_to_active_at_current_head() -> None:
+    # The ONE sanctioned REVOKED->ACTIVE transition: points at the CURRENT head
+    # (a higher sequence than the tombstone), never behind it.
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    index.reinstate(CLIENT, "dep-1", 3, "rev-3", expected_current_sequence=1)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is ACTIVE
+    assert resolution.revision_sequence == 3
+    assert resolution.revision_id == "rev-3"
+
+
+def test_reinstate_requires_a_revoked_tombstone() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)  # ACTIVE, not revoked
+    with pytest.raises(ReinstateStateError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=1)
+
+
+def test_reinstate_absent_binding_is_state_error() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    with pytest.raises(ReinstateStateError):
+        index.reinstate(CLIENT, "dep-1", 1, REV, expected_current_sequence=None)
+
+
+def test_reinstate_rejects_pointing_behind_the_tombstone() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 3, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 3, REV, REVOKED, expected_current_sequence=3)
+    with pytest.raises(NonMonotonicRepointError):
+        index.reinstate(CLIENT, "dep-1", 2, "rev-2", expected_current_sequence=3)
+
+
+def test_reinstate_precondition_on_stale_expected() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(BindingPreconditionError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=0)
 
 
 # --- authorized loader -----------------------------------------------------
@@ -360,6 +404,77 @@ def test_cosmos_repoint_active_over_revoked_is_terminal() -> None:
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is REVOKED
+
+
+def test_cosmos_reinstate_flips_revoked_to_active() -> None:
+    container = _FakeBindingContainer()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    index.reinstate(CLIENT, "dep-1", 3, "rev-3", expected_current_sequence=1)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is ACTIVE
+    assert resolution.revision_sequence == 3
+
+
+def test_cosmos_reinstate_requires_revoked_tombstone() -> None:
+    container = _FakeBindingContainer()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)  # ACTIVE
+    with pytest.raises(ReinstateStateError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=1)
+
+
+def test_cosmos_reinstate_absent_binding_is_state_error() -> None:
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
+    with pytest.raises(ReinstateStateError):
+        index.reinstate(CLIENT, "dep-1", 1, REV, expected_current_sequence=None)
+
+
+def test_cosmos_reinstate_precondition_on_stale_expected() -> None:
+    container = _FakeBindingContainer()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(BindingPreconditionError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=9)
+
+
+def test_cosmos_reinstate_conflict_surfaces_as_precondition() -> None:
+    # A concurrent modification between the read and the conditional replace (412)
+    # surfaces as BindingPreconditionError for the caller to re-read and retry.
+    class _RacingOnReinstate(_FakeBindingContainer):
+        def replace_item(
+            self, *, item: str, body: dict[str, object], etag: str, match_condition: MatchConditions
+        ) -> dict[str, object]:
+            if body["status"] == ACTIVE.value:  # only the reinstate replace races
+                raise CosmosHttpResponseError(status_code=412, message="precondition failed")  # type: ignore[no-untyped-call]
+            return super().replace_item(item=item, body=body, etag=etag, match_condition=match_condition)
+
+    container = _RacingOnReinstate()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(BindingPreconditionError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=1)
+
+
+def test_cosmos_reinstate_reraises_unexpected_error() -> None:
+    class _BrokenOnReinstate(_FakeBindingContainer):
+        def replace_item(
+            self, *, item: str, body: dict[str, object], etag: str, match_condition: MatchConditions
+        ) -> dict[str, object]:
+            if body["status"] == ACTIVE.value:  # only the reinstate replace breaks
+                raise CosmosHttpResponseError(status_code=503, message="unavailable")  # type: ignore[no-untyped-call]
+            return super().replace_item(item=item, body=body, etag=etag, match_condition=match_condition)
+
+    container = _BrokenOnReinstate()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(CosmosHttpResponseError):
+        index.reinstate(CLIENT, "dep-1", 2, REV2, expected_current_sequence=1)
 
 
 def test_cosmos_precondition_on_stale_expected() -> None:

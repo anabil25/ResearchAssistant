@@ -40,13 +40,19 @@ Ratified design constraints (do not reinvent):
    revision FIRST then repoints the binding (a binding never points at a missing
    revision); REVOKE is a SINGLE CAS status-flip of the binding to a REVOKED
    tombstone (authority withdrawn immediately; no new mapping revision is
-   written). Revocation NEVER hard-deletes the row -- deleting it would lose the
-   succession counter and force a sequence-1 collision or the forbidden
-   latest-query on the next re-grant; the tombstone retains the sequence + pinned
-   digest and denies on ``status != ACTIVE``, so the counter and audit chain
-   survive. Revocation is also TERMINAL: no repoint may resurrect a REVOKED
-   binding to ACTIVE, so a SUPERSEDE racing a REVOKE on the same row can never
-   silently undo the revocation (see ``_validate_repoint_admission``).
+   written). Revocation NEVER hard-deletes the row, but NOT (as an earlier
+   rationale claimed) to preserve a succession counter -- under the head-record
+   ruling the per-deployment HEAD owns succession, so a deleted binding row would
+   NOT break ``next``. The tombstone is still required for two DIFFERENT reasons:
+   (a) it preserves the audit record of the revocation, and (b) it keeps "absent"
+   unambiguous -- without it a revoked client and a never-granted client are
+   indistinguishable (present-and-ACTIVE = bound, present-and-REVOKED = tombstoned,
+   absent = never granted). The row denies on ``status != ACTIVE``. Revocation is
+   also TERMINAL: no repoint may resurrect a REVOKED binding to ACTIVE, so a
+   SUPERSEDE racing a REVOKE on the same row can never silently undo the
+   revocation (see ``_validate_repoint_admission``); the ONE sanctioned
+   REVOKED->ACTIVE transition is the explicit, separately-audited ``reinstate``,
+   which points at the CURRENT head, never the tombstone's retained sequence.
 6. **Access is not usability.** A present binding authorizes *access* only.
    After the binding check and mapping load, the mapping's creation-time window
    still applies (``lifecycle_fault``: not-yet-effective/expired both still deny);
@@ -63,7 +69,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from enum import StrEnum
-from typing import Protocol
+from typing import Protocol, cast
 
 from azure.core import MatchConditions
 from azure.cosmos import ContainerProxy
@@ -158,6 +164,13 @@ class RevokedBindingResurrectionError(RuntimeError):
     """
 
 
+class ReinstateStateError(RuntimeError):
+    """Raised when ``reinstate`` is asked to reinstate a binding that is not a
+    REVOKED tombstone (absent, or already ACTIVE). Reinstate is the ONE sanctioned
+    REVOKED->ACTIVE transition and applies only to a revoked row; a fresh grant of
+    a never-revoked client is an ordinary ``repoint``, not a reinstate."""
+
+
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
@@ -178,19 +191,41 @@ class ClientDeploymentBindingWriter(Protocol):
         caller expects no current binding for this deployment). Raises
         ``BindingPreconditionError`` if that precondition fails (concurrent
         modification), ``NonMonotonicRepointError`` if the new sequence is not a
-        monotonic advance of -- or an idempotent re-affirmation of -- the observed
-        current, and ``RevokedBindingResurrectionError`` if it would flip a
-        REVOKED tombstone back to ACTIVE (revocation is terminal). The FULL
+        NON-DECREASING advance of -- or an idempotent re-affirmation of -- the
+        observed current, and ``RevokedBindingResurrectionError`` if it would flip
+        a REVOKED tombstone back to ACTIVE (revocation is terminal). The FULL
         admission check runs atomically with the write, and is re-run in its
         entirety on every CAS retry -- never just the condition that failed.
 
         ``status`` is ``ACTIVE`` for a grant and ``REVOKED`` for a revocation
-        TOMBSTONE. Revocation NEVER hard-deletes the row: deleting it would lose
-        the succession counter (a later re-grant would have no current value to
-        derive ``next`` from, forcing either a sequence-1 collision or the
-        forbidden latest-query). The tombstone retains the sequence and pinned
-        digest, authority is withdrawn immediately (the loader denies on
-        ``status != ACTIVE``), and the counter + audit chain survive.
+        TOMBSTONE. Revocation NEVER hard-deletes the row -- NOT to preserve a
+        succession counter (the HEAD owns succession now), but to keep the
+        revocation AUDIT RECORD and to keep "absent" unambiguous (a revoked client
+        must remain distinguishable from a never-granted one). The row denies on
+        ``status != ACTIVE``.
+        """
+        ...
+
+    def reinstate(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        """The ONE sanctioned REVOKED->ACTIVE transition: explicit, audited re-grant.
+
+        Distinct from ``repoint`` (which is terminal on a REVOKED current) so the
+        supersede/retry path can never reach it. The current binding MUST be a
+        REVOKED tombstone (else ``ReinstateStateError``); the CAS is conditional on
+        ``expected_current_sequence`` matching the tombstone's retained sequence;
+        and the new sequence must be NON-DECREASING relative to that retained
+        sequence -- the caller points at the CURRENT head revision, never behind
+        the tombstone (pointing behind it would roll the re-granted client back to
+        its pre-revocation revision). On success the row becomes ACTIVE at the
+        given (revision_sequence, revision_id).
         """
         ...
 
@@ -220,6 +255,16 @@ def _validate_repoint_admission(
 ) -> None:
     """Run the FULL repoint admission check, atomically with the CAS.
 
+    NOTE ON THE TWO DISTINCT MONOTONICITY RULES (deliberately NOT shared): the
+    per-deployment HEAD is STRICTLY INCREASING (next == current + 1; a repeat is a
+    duplicate-sequence conflict) and that rule lives in the store/producer, NOT
+    here. A per-client BINDING's ``current_sequence`` is only NON-DECREASING: it
+    may legitimately stay EQUAL (an idempotent re-affirmation of the same head
+    revision) or jump ahead (a lagging client catching up), so this check must
+    never demand a strict successor. Sharing one comparison helper between the two
+    is exactly how a ``>`` vs ``>=`` bug arrives at re-grant, so the binding rule
+    is kept in this function and the head rule in the succession store.
+
     On the first attempt AND on every CAS retry, the caller re-reads the current
     binding and re-runs this ENTIRE check -- never just the condition that failed.
     Two rules, in order:
@@ -230,24 +275,25 @@ def _validate_repoint_admission(
        (``RevokedBindingResurrectionError``). This is what stops a SUPERSEDE that
        races a REVOKE on the same row from writing an ACTIVE binding back: because
        REVOKE keeps the sequence, the monotonic check alone would accept N -> N+1
-       and silently undo the revocation. Re-granting a revoked client is an
-       explicit control-plane GRANT, never a retry/supersede side effect.
-    2. **Monotonic advance (or idempotent re-affirmation).** A binding row answers
-       only "which revision may THIS client see" and may legitimately LAG the
-       succession head during a partial multi-client repoint, so it need not be a
-       STRICT successor -- a client at N may jump straight to N+2 if it missed a
-       supersession. It may only ever ADVANCE, though: a first binding
+       and silently undo the revocation. Re-granting a revoked client is the
+       explicit, separately-audited ``reinstate``, never a repoint/supersede side
+       effect.
+    2. **Non-decreasing advance (or idempotent re-affirmation).** A binding row
+       answers only "which revision may THIS client see" and may legitimately LAG
+       the succession head during a partial multi-client repoint, so it need not
+       be a STRICT successor -- a client at N may jump straight to N+2 if it missed
+       a supersession. It may only ever be NON-DECREASING, though: a first binding
        (``observed_sequence is None``) may take any sequence; otherwise the new
-       sequence must be strictly greater than the observed one, unless it
-       re-affirms the identical current revision (same sequence AND same digest),
-       which is idempotent. A lower sequence, or an equal sequence with different
-       content, is a rollback and is refused. (Strict single-succession is
-       enforced at the head/succession record, not per binding.)
+       sequence must be greater than the observed one, unless it re-affirms the
+       identical current revision (same sequence AND same digest), which is
+       idempotent. A lower sequence, or an equal sequence with different content,
+       is a rollback and is refused. (Strict single-succession is enforced at the
+       head/succession record, not per binding.)
     """
     if observed_status is RuntimeBindingStatus.REVOKED and new_status is not RuntimeBindingStatus.REVOKED:
         raise RevokedBindingResurrectionError(
             f"repoint to sequence {new_sequence} would resurrect a REVOKED binding to '{new_status.value}'; "
-            "revocation is terminal (re-granting a revoked client is an explicit control-plane GRANT)."
+            "revocation is terminal (re-granting a revoked client is the explicit reinstate operation)."
         )
     if observed_sequence is None:
         return
@@ -256,6 +302,31 @@ def _validate_repoint_admission(
     if not (is_idempotent or is_advance):
         raise NonMonotonicRepointError(
             f"repoint to sequence {new_sequence} does not advance the current binding at {observed_sequence}."
+        )
+
+
+def _validate_reinstate_admission(
+    *,
+    observed_status: RuntimeBindingStatus | None,
+    observed_sequence: int | None,
+    new_sequence: int,
+) -> None:
+    """Admission for the explicit REVOKED->ACTIVE reinstate (distinct from repoint).
+
+    Requires the current binding to be a REVOKED tombstone (only a revoked row can
+    be reinstated). The target (the CURRENT head revision) must be NON-DECREASING
+    relative to the tombstone's retained sequence -- equal if the head has not
+    advanced since revocation, or greater if it has, but NEVER behind it, which
+    would roll the re-granted client back to its pre-revocation revision.
+    """
+    if observed_status is not RuntimeBindingStatus.REVOKED or observed_sequence is None:
+        raise ReinstateStateError(
+            f"reinstate requires a REVOKED tombstone, observed status "
+            f"{None if observed_status is None else observed_status.value}."
+        )
+    if new_sequence < observed_sequence:
+        raise NonMonotonicRepointError(
+            f"reinstate to sequence {new_sequence} points behind the revoked tombstone at {observed_sequence}."
         )
 
 
@@ -303,6 +374,33 @@ class InMemoryClientDeploymentBindingIndex:
             new_status=status,
         )
         self._by_client[client_app_id] = _StoredBinding(deployment_id, revision_id, revision_sequence, status)
+
+    def reinstate(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        binding = self._by_client.get(client_app_id)
+        observed_sequence: int | None = None
+        observed_status: RuntimeBindingStatus | None = None
+        if binding is not None and binding.deployment_id == deployment_id:
+            observed_sequence = binding.revision_sequence
+            observed_status = binding.status
+        if observed_sequence != expected_current_sequence:
+            raise BindingPreconditionError(
+                f"binding for '{client_app_id}' changed under the reinstate "
+                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
+            )
+        _validate_reinstate_admission(
+            observed_status=observed_status, observed_sequence=observed_sequence, new_sequence=revision_sequence
+        )
+        self._by_client[client_app_id] = _StoredBinding(
+            deployment_id, revision_id, revision_sequence, RuntimeBindingStatus.ACTIVE
+        )
 
     def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
         binding = self._by_client.get(client_app_id)
@@ -385,8 +483,11 @@ class CosmosClientDeploymentBindingIndex:
     concurrent modification (409 on create, 412 on replace) surfaces as
     ``BindingPreconditionError`` for the caller to re-read and retry -- so two
     overlapping repoints can never lost-update a rollback in. Revocation is a
-    ``repoint`` to a ``REVOKED`` TOMBSTONE (never a hard delete), so the
-    succession counter and pinned digest survive.
+    ``repoint`` to a ``REVOKED`` TOMBSTONE (never a hard delete) -- kept not for a
+    succession counter (the HEAD owns succession) but for the revocation audit
+    record and to keep "absent" unambiguous. ``reinstate`` is the ONE sanctioned
+    REVOKED->ACTIVE transition (explicit, separately audited), pointing at the
+    current head, never the tombstone's retained sequence.
     """
 
     def __init__(self, container: ContainerProxy) -> None:
@@ -442,6 +543,57 @@ class CosmosClientDeploymentBindingIndex:
                     etag=str(document["_etag"]),
                     match_condition=MatchConditions.IfNotModified,
                 )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code in (409, 412):
+                raise BindingPreconditionError(
+                    f"binding for '{client_app_id}' was modified concurrently; re-read and retry."
+                ) from exc
+            raise
+
+    def reinstate(
+        self,
+        client_app_id: str,
+        deployment_id: str,
+        revision_sequence: int,
+        revision_id: str,
+        *,
+        expected_current_sequence: int | None,
+    ) -> None:
+        document = self._read(client_app_id)
+        observed_sequence: int | None = None
+        observed_status: RuntimeBindingStatus | None = None
+        observed_etag: str | None = None
+        if document is not None and document.get("deployment_id") == deployment_id:
+            observed_sequence = int(str(document["current_revision_sequence"]))
+            observed_status = RuntimeBindingStatus(str(document["status"]))
+            observed_etag = str(document["_etag"])
+        if observed_sequence != expected_current_sequence:
+            raise BindingPreconditionError(
+                f"binding for '{client_app_id}' changed under the reinstate "
+                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
+            )
+        # A reinstate always REPLACES an existing REVOKED tombstone (never creates);
+        # the admission below rejects any non-REVOKED observed status, so a matching
+        # tombstone -- and therefore ``observed_etag`` -- is guaranteed past it.
+        _validate_reinstate_admission(
+            observed_status=observed_status, observed_sequence=observed_sequence, new_sequence=revision_sequence
+        )
+        body = {
+            "id": client_app_id,
+            "documentType": RUNTIME_BINDING_DOCUMENT_TYPE,
+            "client_app_id": client_app_id,
+            "deployment_id": deployment_id,
+            "current_revision_id": revision_id,
+            "current_revision_sequence": revision_sequence,
+            "status": RuntimeBindingStatus.ACTIVE.value,
+        }
+        try:
+            self._container.replace_item(
+                item=client_app_id,
+                body=body,
+                etag=cast(str, observed_etag),
+                match_condition=MatchConditions.IfNotModified,
+            )
         except CosmosHttpResponseError as exc:
             if exc.status_code in (409, 412):
                 raise BindingPreconditionError(

@@ -103,6 +103,16 @@ class SuccessionBuilderContractError(RuntimeDeploymentProducerError):
     error in the caller, surfaced loudly rather than silently committed)."""
 
 
+class BindingLeadsHeadError(RuntimeDeploymentProducerError):
+    """Raised when an observed binding LEADS the head it is being repointed against.
+
+    A per-client binding may LAG the head but must NEVER lead it -- leading means
+    pointing at a revision sequence greater than the current head, i.e. a revision
+    that does not exist. Asserted at every repoint as a cheap corruption/
+    reconciliation check (``binding.current_sequence <= head.sequence``, always).
+    """
+
+
 class RuntimeBindingAuditRecorder(Protocol):
     """The subset of ``AuditService`` the producer needs to append binding events."""
 
@@ -266,6 +276,15 @@ class RuntimeDeploymentProducer:
         for _attempt in range(_MAX_REPOINT_ATTEMPTS):
             resolution = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
             expected = None if resolution is None else resolution.revision_sequence
+            # Third invariant: a binding may LAG the head but never LEAD it. The
+            # mapping being pointed at IS the current head revision, so an observed
+            # binding ahead of it is corruption (a pointer to a nonexistent
+            # revision) -- fail loud rather than write over it.
+            if resolution is not None and resolution.revision_sequence > mapping.revision_sequence:
+                raise BindingLeadsHeadError(
+                    f"binding for '{client_app_id}' at sequence {resolution.revision_sequence} leads the head "
+                    f"revision {mapping.revision_sequence} of '{mapping.deployment_id}'."
+                )
             try:
                 self._binding_writer.repoint(
                     client_app_id,
@@ -300,17 +319,90 @@ class RuntimeDeploymentProducer:
         Under the ratified split, revocation is NOT a mapping fact (an immutable,
         digest-covered document can never be flipped to revoked). It is a SINGLE
         CAS write per client that flips the binding ``status`` to ``REVOKED`` at
-        the SAME (sequence, revision_id) -- a tombstone that retains the
-        succession counter and pinned digest so a later re-grant can derive the
-        next sequence without a latest-query. No new mapping revision is written,
-        so the cross-container ordering problem and the half-finished-revoke
-        reconciliation case disappear. Authority is withdrawn immediately (the
-        loader denies on ``status != ACTIVE``); ``mapping`` must be the CURRENT
-        active revision, else the CAS precondition fails.
+        the SAME (sequence, revision_id) -- a tombstone. It is a tombstone (not a
+        hard delete) NOT to preserve a succession counter (the HEAD owns
+        succession), but to keep the revocation AUDIT RECORD and to keep "absent"
+        unambiguous (a revoked client must stay distinguishable from a never-granted
+        one). No new mapping revision is written. Authority is withdrawn immediately
+        (the loader denies on ``status != ACTIVE``); ``mapping`` must be the CURRENT
+        active revision, else the CAS precondition fails. Revocation is TERMINAL: an
+        ordinary grant/supersede can never resurrect it -- only the explicit,
+        separately-audited ``reinstate`` can.
         """
         now = _require_aware_utc_now(now)
         for binding in mapping.allowed_client_app_role_bindings:
             self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
+
+    def reinstate(
+        self, deployment_id: str, client_app_ids: tuple[str, ...], *, actor_id: str, now: datetime
+    ) -> RuntimeDeploymentMapping:
+        """Explicitly re-grant revoked client(s), pointing at the CURRENT head.
+
+        This is the ONE sanctioned REVOKED->ACTIVE transition and a distinct,
+        audited control-plane action (never a side effect of a supersede/retry).
+        It reads the HEAD to find the CURRENT revision and repoints each named
+        client's REVOKED tombstone to THAT revision -- crucially NOT to the
+        tombstone's retained pre-revocation sequence, which would silently roll the
+        client back to its weaker pre-revocation state. Each client must currently
+        be a REVOKED tombstone (else ``ReinstateStateError``); the head must exist
+        and its revision be present (else it cannot be re-granted). Returns the head
+        mapping the clients were reinstated to.
+        """
+        now = _require_aware_utc_now(now)
+        head = self._mapping_store.get_head(deployment_id)
+        if head is None:
+            raise RuntimeDeploymentProducerError(
+                f"cannot reinstate '{deployment_id}': no head (deployment was never granted)."
+            )
+        current = self._mapping_store.get(deployment_id, head.current_sequence)
+        if current is None:
+            raise RuntimeDeploymentProducerError(
+                f"cannot reinstate '{deployment_id}': head points at missing revision {head.current_sequence}."
+            )
+        for client_app_id in client_app_ids:
+            self._cas_reinstate(client_app_id, current, actor_id=actor_id, now=now)
+        return current
+
+    def _cas_reinstate(
+        self, client_app_id: str, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
+    ) -> None:
+        """CAS-reinstate one client's REVOKED tombstone to the head ``mapping``, audited INTENT-FIRST.
+
+        Same intent-first discipline and bounded re-read retry as ``_cas_repoint``,
+        but through the writer's ``reinstate`` (the ONLY REVOKED->ACTIVE path) and
+        recorded under a distinct ``RUNTIME_BINDING_REINSTATED`` audit kind. A
+        target that is not a REVOKED tombstone surfaces as ``ReinstateStateError``;
+        a target pointing behind the tombstone surfaces as ``RollbackRepointError``.
+        """
+        intent_id = uuid4().hex
+        prior = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
+        self._record_binding_event(
+            mapping, kind=AuditEventKind.RUNTIME_BINDING_REINSTATED, phase="intent", intent_id=intent_id,
+            actor_id=actor_id, now=now, client_app_id=client_app_id, prior=prior,
+        )
+        for _attempt in range(_MAX_REPOINT_ATTEMPTS):
+            resolution = self._binding_resolver.resolve_binding(client_app_id, mapping.deployment_id)
+            expected = None if resolution is None else resolution.revision_sequence
+            try:
+                self._binding_writer.reinstate(
+                    client_app_id,
+                    mapping.deployment_id,
+                    mapping.revision_sequence,
+                    mapping.revision_id,
+                    expected_current_sequence=expected,
+                )
+            except BindingPreconditionError:
+                continue
+            except NonMonotonicRepointError as exc:
+                raise RollbackRepointError(str(exc)) from exc
+            self._record_binding_event(
+                mapping, kind=AuditEventKind.RUNTIME_BINDING_REINSTATED, phase="applied", intent_id=intent_id,
+                actor_id=actor_id, now=now, client_app_id=client_app_id, prior=resolution,
+            )
+            return
+        raise BindingPreconditionError(
+            f"reinstate for '{client_app_id}' did not converge within {_MAX_REPOINT_ATTEMPTS} attempts."
+        )
 
     def retire_revision(
         self, deployment_id: str, revision_sequence: int, revision_id: str, client_app_ids: tuple[str, ...]

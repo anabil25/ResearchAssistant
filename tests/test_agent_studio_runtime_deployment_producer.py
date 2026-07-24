@@ -9,6 +9,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     BindingPreconditionError,
     InMemoryClientDeploymentBindingIndex,
     NonMonotonicRepointError,
+    ReinstateStateError,
     RevokedBindingResurrectionError,
     RuntimeBindingStatus,
 )
@@ -22,9 +23,11 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_producer import (
     _MAX_SUCCESSION_ATTEMPTS,
+    BindingLeadsHeadError,
     RevisionStillReferencedError,
     RollbackRepointError,
     RuntimeDeploymentProducer,
+    RuntimeDeploymentProducerError,
     SuccessionBuilderContractError,
     SuccessionExhaustedError,
 )
@@ -46,6 +49,7 @@ def _mapping(
     deployment_id: str = "dep-1",
     backend_version: str = "1.2.3",
     revision_sequence: int = 1,
+    client_app_id: str = CLIENT,
 ) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
@@ -68,7 +72,7 @@ def _mapping(
         provider_artifact_digest="sha256:provider-artifact",
         binding=binding,
         allowed_client_app_role_bindings=(
-            AllowedClientAppRoleBinding(client_app_id=CLIENT, app_role="research-assistant.runtime"),
+            AllowedClientAppRoleBinding(client_app_id=client_app_id, app_role="research-assistant.runtime"),
         ),
         revision_sequence=revision_sequence,
         revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -250,6 +254,15 @@ class _RevokeThenDelegateWriter:
             expected_current_sequence=expected_current_sequence,
         )
 
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:
+        self._index.reinstate(
+            client_app_id, deployment_id, revision_sequence, revision_id,
+            expected_current_sequence=expected_current_sequence,
+        )
+
 
 def test_supersede_retry_after_concurrent_revoke_is_terminal() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
@@ -322,6 +335,12 @@ class _FlakyWriter:
             expected_current_sequence=expected_current_sequence,
         )
 
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:  # pragma: no cover - not exercised by these grant-path tests
+        raise NotImplementedError
+
 
 def test_grant_retries_on_precondition_then_succeeds() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
@@ -356,6 +375,12 @@ class _NonMonotonicWriter:
         expected_current_sequence: int | None,
     ) -> None:
         raise NonMonotonicRepointError("cas-detected rollback")
+
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:  # pragma: no cover - not exercised by these grant-path tests
+        raise NotImplementedError
 
 
 def test_grant_maps_cas_nonmonotonic_to_rollback() -> None:
@@ -477,3 +502,170 @@ def test_grant_succession_binding_admission_runs_after_commit() -> None:
         )
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None and resolution.status is RuntimeBindingStatus.REVOKED
+
+
+# --- explicit reinstate (the ONE sanctioned REVOKED->ACTIVE re-grant) -------
+
+OTHER = "other-app-2"
+
+
+def test_reinstate_points_at_current_head_not_tombstone() -> None:
+    # BLOCKING negative: revoke at N, advance head to N+k, re-grant, and assert the
+    # binding points at the CURRENT head (N+k) and NOT the tombstone's retained
+    # sequence N (which would silently roll the client back to its pre-revocation
+    # revision -- Flaw A through the re-grant path).
+    producer, store, index, audit = _producer()
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)  # CLIENT active@1
+    producer.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)  # CLIENT revoked, tombstone retains 1
+    # Advance head to 3 WITHOUT touching CLIENT's binding (revisions bind a different client).
+    producer.grant_succession(
+        "dep-1", lambda seq: _mapping(revision_sequence=seq, client_app_id=OTHER), actor_id=ACTOR, now=NOW
+    )
+    producer.grant_succession(
+        "dep-1", lambda seq: _mapping(revision_sequence=seq, client_app_id=OTHER), actor_id=ACTOR, now=NOW
+    )
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 3
+    reinstated = producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+    assert reinstated.revision_sequence == 3
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.status is RuntimeBindingStatus.ACTIVE
+    assert resolution.revision_sequence == 3  # points at CURRENT head N+k...
+    assert resolution.revision_sequence != 1  # ...NOT the tombstone's retained sequence
+    assert resolution.revision_id == head.current_revision_id
+    # Recorded under a DISTINCT audit kind, intent-first.
+    assert len(_events(audit, AuditEventKind.RUNTIME_BINDING_REINSTATED, "intent")) == 1
+    assert len(_events(audit, AuditEventKind.RUNTIME_BINDING_REINSTATED, "applied")) == 1
+
+
+def test_reinstate_requires_a_revoked_tombstone() -> None:
+    producer, _store, _index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)  # CLIENT still ACTIVE
+    with pytest.raises(ReinstateStateError):
+        producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+
+
+def test_reinstate_without_head_raises() -> None:
+    producer, _store, _index, _audit = _producer()
+    with pytest.raises(RuntimeDeploymentProducerError, match="no head"):
+        producer.reinstate("dep-unknown", (CLIENT,), actor_id=ACTOR, now=NOW)
+
+
+def test_reinstate_head_pointing_at_missing_revision_raises() -> None:
+    producer, store, _index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    store.delete("dep-1", 1)  # head still points at 1, but the revision is gone
+    with pytest.raises(RuntimeDeploymentProducerError, match="missing revision"):
+        producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+
+
+def test_reinstate_rejects_naive_now() -> None:
+    producer, _store, _index, _audit = _producer()
+    with pytest.raises(ValueError, match="now must be timezone-aware"):
+        producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=datetime(2026, 1, 2, 12, 0, 0))
+
+
+# --- third invariant: a binding may LAG head but never LEAD it -------------
+
+
+def test_repoint_refuses_a_binding_that_leads_the_head() -> None:
+    producer, _store, index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)  # head@1, CLIENT active@1
+    # Corrupt the binding so it LEADS the head (points at a nonexistent seq 5).
+    index.repoint(CLIENT, "dep-1", 5, "rev-5", RuntimeBindingStatus.ACTIVE, expected_current_sequence=1)
+    # Any repoint against the head@1 mapping must now detect the lead and fail loud.
+    with pytest.raises(BindingLeadsHeadError):
+        producer.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+
+
+# --- reinstate CAS retry / rollback / non-convergence ----------------------
+
+
+def _grant_then_revoke() -> tuple[
+    InMemoryRuntimeDeploymentMappingStore, InMemoryClientDeploymentBindingIndex
+]:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    setup = RuntimeDeploymentProducer(store, index, index, AuditService(InMemoryAuditStore()))
+    setup.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    setup.revoke(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    return store, index
+
+
+class _FlakyReinstateWriter:
+    def __init__(self, index: InMemoryClientDeploymentBindingIndex, fail_times: int) -> None:
+        self._index = index
+        self._remaining = fail_times
+
+    def repoint(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        status: RuntimeBindingStatus, *, expected_current_sequence: int | None,
+    ) -> None:  # pragma: no cover - reinstate-focused double
+        raise NotImplementedError
+
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:
+        if self._remaining > 0:
+            self._remaining -= 1
+            raise BindingPreconditionError("flaky reinstate")
+        self._index.reinstate(
+            client_app_id, deployment_id, revision_sequence, revision_id,
+            expected_current_sequence=expected_current_sequence,
+        )
+
+
+def test_reinstate_retries_on_precondition_then_succeeds() -> None:
+    store, index = _grant_then_revoke()
+    producer = RuntimeDeploymentProducer(
+        store, _FlakyReinstateWriter(index, 1), index, AuditService(InMemoryAuditStore())
+    )
+    producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.status is RuntimeBindingStatus.ACTIVE
+
+
+class _RollbackReinstateWriter:
+    def repoint(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        status: RuntimeBindingStatus, *, expected_current_sequence: int | None,
+    ) -> None:  # pragma: no cover - reinstate-focused double
+        raise NotImplementedError
+
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:
+        raise NonMonotonicRepointError("reinstate points behind the tombstone")
+
+
+def test_reinstate_maps_nonmonotonic_to_rollback() -> None:
+    store, index = _grant_then_revoke()
+    producer = RuntimeDeploymentProducer(store, _RollbackReinstateWriter(), index, AuditService(InMemoryAuditStore()))
+    with pytest.raises(RollbackRepointError):
+        producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+
+
+class _AlwaysPreconditionReinstateWriter:
+    def repoint(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        status: RuntimeBindingStatus, *, expected_current_sequence: int | None,
+    ) -> None:  # pragma: no cover - reinstate-focused double
+        raise NotImplementedError
+
+    def reinstate(
+        self, client_app_id: str, deployment_id: str, revision_sequence: int, revision_id: str,
+        *, expected_current_sequence: int | None,
+    ) -> None:
+        raise BindingPreconditionError("never converges")
+
+
+def test_reinstate_non_convergence_raises_precondition() -> None:
+    store, index = _grant_then_revoke()
+    producer = RuntimeDeploymentProducer(
+        store, _AlwaysPreconditionReinstateWriter(), index, AuditService(InMemoryAuditStore())
+    )
+    with pytest.raises(BindingPreconditionError):
+        producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
