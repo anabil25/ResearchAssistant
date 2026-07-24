@@ -99,6 +99,11 @@ class ApprovalContextResult(BaseModel):
 
     outcome: ApprovalContextOutcome
     approval_id: str | None = None
+    #: The selected approval's durable pinned ``version_id`` (the exact agent
+    #: version the decision was bound to), surfaced as selection output so a
+    #: caller can report the durable decision version without re-fetching the
+    #: approval record. Populated only for ``RESOLVED``.
+    approval_version: str | None = None
     invocation_id: str | None = None
     reason: str | None = None
 
@@ -183,6 +188,7 @@ class StoreBackedApprovalContextResolver:
         return ApprovalContextResult(
             outcome=ApprovalContextOutcome.RESOLVED,
             approval_id=winner.id,
+            approval_version=winner.version_id,
             invocation_id=f"inv-{uuid4().hex}",
         )
 

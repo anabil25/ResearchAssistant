@@ -55,6 +55,7 @@ def _response(
         approval_id=approval_id,
         approval_decision_version=approval_decision_version,
         invocation_id=invocation_id,
+        request_digest=DIGEST,
     )
 
 

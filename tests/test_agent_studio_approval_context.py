@@ -351,6 +351,7 @@ async def test_resolved_returns_approval_id_and_fresh_invocation_id() -> None:
 
     assert result.outcome is ApprovalContextOutcome.RESOLVED
     assert result.approval_id == "approval-1"
+    assert result.approval_version == "version-1"
     assert result.invocation_id is not None
     assert result.invocation_id.startswith("inv-")
 

@@ -103,6 +103,11 @@ class RuntimeContextResponse(BaseModel):
     approval_id: str | None = Field(default=None, max_length=200)
     approval_decision_version: str | None = Field(default=None, max_length=200)
     invocation_id: str | None = Field(default=None, max_length=200)
+    #: The exact ``request_digest`` the runtime supplied, echoed back so a
+    #: runtime/audit can correlate this resolved context to the precise request
+    #: attempt. It is a correlation value only -- never treated as approval
+    #: authority.
+    request_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     resolved_at: datetime = Field(default_factory=utc_now)
 
     @model_validator(mode="after")

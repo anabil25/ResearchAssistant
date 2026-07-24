@@ -24,8 +24,13 @@ the existing ``approval_context``/``approval_consumption``/``idempotency``/
 
 from __future__ import annotations
 
-from fastapi import FastAPI, HTTPException, Request, status
+from fastapi import FastAPI, Header, HTTPException, Request, status
 
+from research_assistant_api.agent_studio.approval_context import (
+    ApprovalContextOutcome,
+    ApprovalContextRequest,
+    ApprovalContextResolver,
+)
 from research_assistant_api.agent_studio.runtime_authz import (
     RuntimeAuthorizationError,
     RuntimeAuthPolicy,
@@ -34,15 +39,24 @@ from research_assistant_api.agent_studio.runtime_authz import (
 )
 from research_assistant_api.agent_studio.runtime_control_schemas import (
     RuntimeBindingView,
+    RuntimeContextDecision,
+    RuntimeContextRequest,
+    RuntimeContextResponse,
     RuntimeMappingRetrieveRequest,
     RuntimeMappingView,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_identity import resolve_runtime_principal
 from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
 RUNTIME_CONTROL_BASE_PATH = "/internal/v1/runtime"
+
+#: Header carrying the mapping digest a runtime must present as auth material
+#: for the strict-protocol endpoints (context/consume), keeping the b796 JSON
+#: request body free of any field beyond the operation facts.
+MAPPING_DIGEST_HEADER = "x-runtime-mapping-digest"
 
 
 def build_runtime_control_app(
@@ -50,6 +64,7 @@ def build_runtime_control_app(
     mapping_store: RuntimeDeploymentMappingStore,
     auth_policy: RuntimeAuthPolicy,
     settings: Settings,
+    context_resolver: ApprovalContextResolver,
 ) -> FastAPI:
     """Construct the internal runtime-control ASGI app with explicit deps."""
 
@@ -94,7 +109,75 @@ def build_runtime_control_app(
         )
         return _mapping_view(mapping)
 
+    @app.post(f"{RUNTIME_CONTROL_BASE_PATH}/context", response_model=RuntimeContextResponse)
+    async def resolve_context(
+        payload: RuntimeContextRequest,
+        request: Request,
+        x_runtime_mapping_digest: str = Header(...),
+    ) -> RuntimeContextResponse:
+        mapping = _authorize(
+            request,
+            deployment_id=payload.deployment_id,
+            mapping_ref=payload.mapping_ref,
+            mapping_digest=x_runtime_mapping_digest,
+        )
+        # Scope/release/binding/operation are derived from the authorized
+        # mapping -- never taken from the request. The request's operation_id is
+        # only accepted when it matches the mapping's bound operation.
+        if payload.operation_id != mapping.binding.operation_ref.id:
+            return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_FOUND)
+        result = await context_resolver.resolve_context(
+            ApprovalContextRequest(
+                scope=ScopeContext(tenant_id=mapping.tenant_id, project_id=mapping.project_id),
+                release_id=mapping.backend_release_id,
+                binding_id=mapping.binding.binding_id,
+                operation_id=mapping.binding.operation_ref.id,
+            )
+        )
+        if result.outcome is ApprovalContextOutcome.RESOLVED:
+            return _context_response(
+                mapping,
+                payload.request_digest,
+                decision=RuntimeContextDecision.RESOLVED,
+                approval_id=result.approval_id,
+                approval_decision_version=result.approval_version,
+                invocation_id=result.invocation_id,
+            )
+        if result.outcome is ApprovalContextOutcome.NOT_APPROVED:
+            return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_APPROVED)
+        return _context_response(mapping, payload.request_digest, decision=RuntimeContextDecision.NOT_FOUND)
+
     return app
+
+
+def _context_response(
+    mapping: RuntimeDeploymentMapping,
+    request_digest: str,
+    *,
+    decision: RuntimeContextDecision,
+    approval_id: str | None = None,
+    approval_decision_version: str | None = None,
+    invocation_id: str | None = None,
+) -> RuntimeContextResponse:
+    """Build a fully mapping-derived context response with the server decision."""
+    return RuntimeContextResponse(
+        deployment_id=mapping.deployment_id,
+        mapping_ref=mapping.mapping_ref,
+        mapping_digest=mapping.mapping_digest,
+        tenant_id=mapping.tenant_id,
+        project_id=mapping.project_id,
+        environment=mapping.environment,
+        logical_agent_id=mapping.logical_agent_id,
+        backend_release_id=mapping.backend_release_id,
+        backend_version=mapping.backend_version,
+        binding_id=mapping.binding.binding_id,
+        operation_id=mapping.binding.operation_ref.id,
+        decision=decision,
+        approval_id=approval_id,
+        approval_decision_version=approval_decision_version,
+        invocation_id=invocation_id,
+        request_digest=request_digest,
+    )
 
 
 def _mapping_view(mapping: RuntimeDeploymentMapping) -> RuntimeMappingView:
