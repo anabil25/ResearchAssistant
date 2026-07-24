@@ -53,7 +53,7 @@ class ReleaseAttestation(BaseModel):
     release_attestation_contract_schema_digest: str = Field(
         pattern=r"^[0-9a-f]{64}$"
     )
-    source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     model_deployment_ref: str = Field(min_length=1, max_length=2048)
     model_version: str = Field(min_length=1, max_length=128)
     provider_contracts: tuple[tuple[str, str, str], ...]
@@ -104,7 +104,7 @@ class ReleaseMetadata(BaseModel):
     deployment_scope: DeploymentScope | None
     input_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     output_schema_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
-    source_bundle_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
+    source_tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_revision: str
     model_deployment: str
     model_deployment_ref: str
@@ -143,7 +143,7 @@ def build_release_metadata(
     manifest: AgentManifest,
     *,
     model_deployment: str,
-    source_bundle_hash: str,
+    source_tree_digest: str,
     source_revision: str | None = None,
     parent_release_id: str | None = None,
     built_at: datetime | None = None,
@@ -261,7 +261,7 @@ def build_release_metadata(
         ),
         "input_schema_hash": manifest.input_schema.sha256,
         "output_schema_hash": manifest.output_schema.sha256,
-        "source_bundle_hash": source_bundle_hash,
+        "source_tree_digest": source_tree_digest,
         "source_revision": revision,
         "model_deployment": model_deployment,
         "model_deployment_ref": manifest.model_policy.selected_deployment_ref,
@@ -292,7 +292,7 @@ def build_release_metadata(
         deployment_scope=manifest.deployment_scope,
         input_schema_hash=manifest.input_schema.sha256,
         output_schema_hash=manifest.output_schema.sha256,
-        source_bundle_hash=source_bundle_hash,
+        source_tree_digest=source_tree_digest,
         source_revision=revision,
         model_deployment=model_deployment,
         model_deployment_ref=manifest.model_policy.selected_deployment_ref,
@@ -353,7 +353,7 @@ def validate_release_attestation(
         != release.approval_contract_schema_digest
         or attestation.release_attestation_contract_schema_digest
         != release.release_attestation_contract_schema_digest
-        or attestation.source_bundle_hash != release.source_bundle_hash
+        or attestation.source_tree_digest != release.source_tree_digest
         or attestation.model_deployment_ref != release.model_deployment_ref
         or attestation.model_version != release.model_version
         or attestation.provider_contracts != release.provider_contracts
@@ -401,7 +401,7 @@ class InMemoryReleaseAttestor:
             release_attestation_contract_schema_digest=(
                 release.release_attestation_contract_schema_digest
             ),
-            source_bundle_hash=release.source_bundle_hash,
+            source_tree_digest=release.source_tree_digest,
             model_deployment_ref=release.model_deployment_ref,
             model_version=release.model_version,
             provider_contracts=release.provider_contracts,

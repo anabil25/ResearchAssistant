@@ -27,7 +27,7 @@ jobs:
         run: uv sync --all-packages --group dev --frozen
 
       - name: Bake committed Hosted Agent source identity
-        run: python -m scripts.build_agent_source_bundle
+        run: python -m scripts.build_agent_source_tree
 
       - name: Lint, type-check, test, and audit Python
         run: |

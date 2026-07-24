@@ -8,21 +8,21 @@ from pathlib import Path, PurePosixPath
 import pytest
 from shared.errors import ConfigurationError
 from shared.source_identity import (
-    BakedSourceBundleManifest,
-    load_baked_source_bundle_manifest,
+    BakedSourceTreeManifest,
+    load_baked_source_tree_manifest,
 )
 
-from scripts import build_agent_source_bundle as source_build
-from scripts.build_agent_source_bundle import (
-    SourceBundleManifest,
+from scripts import build_agent_source_tree as source_build
+from scripts.build_agent_source_tree import (
     SourceIdentityBuildError,
-    build_source_bundle_manifest,
+    SourceTreeManifest,
+    build_source_tree_manifest,
     committed_source_entries,
     main,
-    source_bundle_hash,
+    source_tree_digest,
     validate_worktree_matches_commit,
     worktree_source_entries,
-    write_source_bundle_manifest,
+    write_source_tree_manifest,
 )
 
 
@@ -56,52 +56,62 @@ def _write_agent(repo: Path, content: bytes, name: str = "main.py") -> Path:
 
 
 def _manifest_payload(**overrides: object) -> dict[str, object]:
-    payload: dict[str, object] = {
+    identity: dict[str, object] = {
         "entry_count": 1,
-        "producer": "research-assistant.git-source-bundle",
+        "inclusion_policy_version": "1",
+        "producer": "research-assistant.git-source-tree",
         "schema_version": "1",
-        "source_bundle_hash": source_bundle_hash((("main.py", b"VALUE = 1\n"),)),
-        "source_revision": "a" * 40,
+        "source_commit": "a" * 40,
         "source_root": "agents",
+        "source_tree": "b" * 40,
+        "source_tree_digest": source_tree_digest((("main.py", b"VALUE = 1\n"),)),
     }
-    payload.update(overrides)
-    return payload
+    requested_manifest_digest = overrides.pop("source_manifest_digest", None)
+    identity.update(overrides)
+    return {
+        **identity,
+        "source_manifest_digest": (
+            requested_manifest_digest
+            if requested_manifest_digest is not None
+            else source_build._canonical_digest(identity)
+        ),
+    }
 
 
 def test_source_hash_normalizes_newlines_and_preserves_final_newline() -> None:
-    lf = source_bundle_hash((("main.py", b"first\nsecond\n"),))
-    crlf = source_bundle_hash((("main.py", b"first\r\nsecond\r\n"),))
-    bare_cr = source_bundle_hash((("main.py", b"first\rsecond\r"),))
+    lf = source_tree_digest((("main.py", b"first\nsecond\n"),))
+    crlf = source_tree_digest((("main.py", b"first\r\nsecond\r\n"),))
+    bare_cr = source_tree_digest((("main.py", b"first\rsecond\r"),))
     assert lf == crlf == bare_cr
-    assert source_bundle_hash((("main.py", b"first\nsecond"),)) != lf
-    assert source_bundle_hash((("main.py", b"first\nchanged\n"),)) != lf
+    assert source_tree_digest((("main.py", b"first\nsecond"),)) != lf
+    assert source_tree_digest((("main.py", b"first\nchanged\n"),)) != lf
 
 
 def test_committed_source_tracks_content_final_newline_add_remove_and_rename(tmp_path: Path) -> None:
     repo = _initialize_repo(tmp_path)
     source = _write_agent(repo, b"VALUE = 1\n")
     _commit(repo, "baseline")
-    baseline = build_source_bundle_manifest(repo).source_bundle_hash
+    baseline = build_source_tree_manifest(repo).source_tree_digest
 
     source.write_bytes(b"VALUE = 2\n")
     _commit(repo, "content")
-    content_changed = build_source_bundle_manifest(repo).source_bundle_hash
+    content_changed = build_source_tree_manifest(repo).source_tree_digest
 
     source.write_bytes(b"VALUE = 2")
     _commit(repo, "final newline")
-    final_newline_changed = build_source_bundle_manifest(repo).source_bundle_hash
+    final_newline_changed = build_source_tree_manifest(repo).source_tree_digest
 
     support = _write_agent(repo, b"SUPPORT = True\n", "support.py")
     _commit(repo, "add")
-    added = build_source_bundle_manifest(repo).source_bundle_hash
+    added = build_source_tree_manifest(repo).source_tree_digest
 
     support.unlink()
     _commit(repo, "remove")
-    removed = build_source_bundle_manifest(repo).source_bundle_hash
+    removed = build_source_tree_manifest(repo).source_tree_digest
 
     source.rename(source.with_name("renamed.py"))
     _commit(repo, "rename")
-    renamed = build_source_bundle_manifest(repo).source_bundle_hash
+    renamed = build_source_tree_manifest(repo).source_tree_digest
 
     assert baseline != content_changed
     assert content_changed != final_newline_changed
@@ -112,46 +122,52 @@ def test_committed_source_tracks_content_final_newline_add_remove_and_rename(tmp
 
 def test_source_hash_rejects_invalid_content_paths_and_collisions() -> None:
     with pytest.raises(SourceIdentityBuildError, match="valid UTF-8"):
-        source_bundle_hash((("main.py", b"\xff"),))
+        source_tree_digest((("main.py", b"\xff"),))
     with pytest.raises(SourceIdentityBuildError, match="non-empty and relative"):
-        source_bundle_hash((("", b"value"),))
+        source_tree_digest((("", b"value"),))
     with pytest.raises(SourceIdentityBuildError, match="non-empty and relative"):
-        source_bundle_hash((("/main.py", b"value"),))
+        source_tree_digest((("/main.py", b"value"),))
     with pytest.raises(SourceIdentityBuildError, match="not canonical"):
-        source_bundle_hash((("folder//main.py", b"value"),))
+        source_tree_digest((("folder//main.py", b"value"),))
     with pytest.raises(SourceIdentityBuildError, match="NFC normalization"):
-        source_bundle_hash(
+        source_tree_digest(
             (
                 ("caf\u00e9.py", b"one"),
                 ("cafe\u0301.py", b"two"),
             )
         )
     with pytest.raises(SourceIdentityBuildError, match="case folding"):
-        source_bundle_hash(
+        source_tree_digest(
             (
                 ("Agent.py", b"one"),
                 ("agent.py", b"two"),
             )
         )
     with pytest.raises(SourceIdentityBuildError, match="empty"):
-        source_bundle_hash(())
+        source_tree_digest(())
 
 
 def test_committed_source_ignores_worktree_and_non_source_files(tmp_path: Path) -> None:
     repo = _initialize_repo(tmp_path)
     _write_agent(repo, b"VALUE = 1\r\n")
+    _write_agent(repo, b"IGNORED = True\n", "tests/ignored.py")
     (repo / "agents" / "notes.md").write_text("ignored", encoding="utf-8")
     _commit(repo, "baseline")
 
-    first = build_source_bundle_manifest(repo)
+    first = build_source_tree_manifest(repo)
     _write_agent(repo, b"UNTRACKED = True\n", "scratch.py")
     (repo / "agents" / "notes.md").write_text("changed but irrelevant", encoding="utf-8")
-    second = build_source_bundle_manifest(repo)
+    second = build_source_tree_manifest(repo)
 
-    assert second.source_bundle_hash == first.source_bundle_hash
-    assert second.source_revision == first.source_revision
+    assert second.source_tree_digest == first.source_tree_digest
+    assert second.source_commit == first.source_commit
+    assert second.source_tree == first.source_tree
     assert second.entry_count == 1
-    assert second.payload()["producer"] == "research-assistant.git-source-bundle"
+    assert second.payload()["producer"] == "research-assistant.git-source-tree"
+    assert second.inclusion_policy_version == "1"
+    assert second.source_manifest_digest == source_build._canonical_digest(
+        second.identity_payload()
+    )
 
 
 def test_predeploy_rejects_package_eligible_worktree_drift(tmp_path: Path) -> None:
@@ -181,15 +197,15 @@ def test_committed_source_digest_is_checkout_newline_independent(tmp_path: Path)
     repo = _initialize_repo(tmp_path)
     source = _write_agent(repo, b"first\nsecond\n")
     _commit(repo, "lf")
-    lf = build_source_bundle_manifest(repo).source_bundle_hash
+    lf = build_source_tree_manifest(repo).source_tree_digest
 
     source.write_bytes(b"first\r\nsecond\r\n")
     _commit(repo, "crlf")
-    crlf = build_source_bundle_manifest(repo).source_bundle_hash
+    crlf = build_source_tree_manifest(repo).source_tree_digest
 
     source.write_bytes(b"first\rsecond\r")
     _commit(repo, "cr")
-    bare_cr = build_source_bundle_manifest(repo).source_bundle_hash
+    bare_cr = build_source_tree_manifest(repo).source_tree_digest
 
     assert lf == crlf == bare_cr
 
@@ -199,7 +215,7 @@ def test_committed_source_reports_git_and_path_failures(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     with pytest.raises(SourceIdentityBuildError, match="Git command failed"):
-        build_source_bundle_manifest(tmp_path)
+        build_source_tree_manifest(tmp_path)
     with pytest.raises(SourceIdentityBuildError, match="not valid UTF-8"):
         source_build._decode_git_path(b"\xff")
 
@@ -216,15 +232,17 @@ def test_manifest_write_load_and_cli_are_deterministic(
     repo = _initialize_repo(tmp_path)
     _write_agent(repo, b"VALUE = 1\n")
     _commit(repo, "source")
-    manifest = build_source_bundle_manifest(repo)
-    output = tmp_path / "nested" / "source-bundle.json"
-    write_source_bundle_manifest(manifest, output)
+    manifest = build_source_tree_manifest(repo)
+    output = tmp_path / "nested" / "source-tree.json"
+    write_source_tree_manifest(manifest, output)
 
-    loaded = load_baked_source_bundle_manifest(output)
-    assert loaded.source_bundle_hash == manifest.source_bundle_hash
+    loaded = load_baked_source_tree_manifest(output)
+    assert loaded.source_tree_digest == manifest.source_tree_digest
+    assert loaded.source_commit == manifest.source_commit
+    assert loaded.source_tree == manifest.source_tree
     assert output.read_bytes().endswith(b"\n")
 
-    relative_output = Path("agents/.release/test-source-bundle.json")
+    relative_output = Path("agents/.release/test-source-tree.json")
     assert main(
         (
             "--repo-root",
@@ -234,7 +252,7 @@ def test_manifest_write_load_and_cli_are_deterministic(
         )
     ) == 0
     assert (repo / relative_output).is_file()
-    assert manifest.source_bundle_hash in capsys.readouterr().out
+    assert manifest.source_tree_digest in capsys.readouterr().out
 
     absolute_output = tmp_path / "absolute.json"
     assert main(
@@ -252,22 +270,35 @@ def test_manifest_write_cleans_up_failed_atomic_replace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    manifest = SourceBundleManifest(
+    identity = {
+        "entry_count": 1,
+        "inclusion_policy_version": "1",
+        "producer": "research-assistant.git-source-tree",
+        "schema_version": "1",
+        "source_commit": "a" * 40,
+        "source_root": "agents",
+        "source_tree": "b" * 40,
+        "source_tree_digest": "c" * 64,
+    }
+    manifest = SourceTreeManifest(
         schema_version="1",
-        producer="research-assistant.git-source-bundle",
-        source_revision="a" * 40,
+        inclusion_policy_version="1",
+        producer="research-assistant.git-source-tree",
+        source_commit="a" * 40,
+        source_tree="b" * 40,
         source_root="agents",
-        source_bundle_hash="b" * 64,
+        source_tree_digest="c" * 64,
         entry_count=1,
+        source_manifest_digest=source_build._canonical_digest(identity),
     )
-    output = tmp_path / "source-bundle.json"
+    output = tmp_path / "source-tree.json"
 
     def fail_replace(_source: Path, _destination: Path) -> None:
         raise OSError("replace failed")
 
     monkeypatch.setattr(os, "replace", fail_replace)
     with pytest.raises(OSError, match="replace failed"):
-        write_source_bundle_manifest(manifest, output)
+        write_source_tree_manifest(manifest, output)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -277,24 +308,41 @@ def test_baked_manifest_loader_fails_closed(
 ) -> None:
     valid = tmp_path / "valid.json"
     valid.write_text(json.dumps(_manifest_payload()), encoding="utf-8")
-    assert load_baked_source_bundle_manifest(valid).entry_count == 1
+    assert load_baked_source_tree_manifest(valid).entry_count == 1
 
     monkeypatch.setattr("shared.source_identity.SOURCE_MANIFEST_PATH", valid)
-    assert load_baked_source_bundle_manifest().source_root == "agents"
+    assert load_baked_source_tree_manifest().source_root == "agents"
 
     missing = tmp_path / "missing.json"
     with pytest.raises(ConfigurationError, match="missing or invalid"):
-        load_baked_source_bundle_manifest(missing)
+        load_baked_source_tree_manifest(missing)
 
     invalid = tmp_path / "invalid.json"
     invalid.write_text(json.dumps(_manifest_payload(entry_count=0)), encoding="utf-8")
     with pytest.raises(ConfigurationError, match="missing or invalid"):
-        load_baked_source_bundle_manifest(invalid)
+        load_baked_source_tree_manifest(invalid)
+
+    coerced = tmp_path / "coerced.json"
+    coerced.write_text(json.dumps(_manifest_payload(entry_count="1")), encoding="utf-8")
+    with pytest.raises(ConfigurationError, match="missing or invalid"):
+        load_baked_source_tree_manifest(coerced)
+
+    tampered = tmp_path / "tampered.json"
+    tampered.write_text(
+        json.dumps(
+            _manifest_payload(
+                source_manifest_digest="0" * 64,
+            )
+        ),
+        encoding="utf-8",
+    )
+    with pytest.raises(ConfigurationError, match="canonical digest"):
+        load_baked_source_tree_manifest(tampered)
 
     invalid_utf8 = tmp_path / "invalid-utf8.json"
     invalid_utf8.write_bytes(b"\xff")
     with pytest.raises(ConfigurationError, match="missing or invalid"):
-        load_baked_source_bundle_manifest(invalid_utf8)
+        load_baked_source_tree_manifest(invalid_utf8)
 
     with pytest.raises(ValueError):
-        BakedSourceBundleManifest.model_validate(_manifest_payload(source_revision="not-a-commit"))
+        BakedSourceTreeManifest.model_validate(_manifest_payload(source_commit="not-a-commit"))

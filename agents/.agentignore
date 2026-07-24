@@ -2,7 +2,7 @@
 .venv/
 .foundry/
 !.release/
-!.release/source-bundle.json
+!.release/source-tree.json
 __pycache__/
 *.py[cod]
 tests/

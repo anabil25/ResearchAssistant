@@ -13,9 +13,10 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 SOURCE_MANIFEST_SCHEMA_VERSION = "1"
-SOURCE_MANIFEST_PRODUCER = "research-assistant.git-source-bundle"
+SOURCE_INCLUSION_POLICY_VERSION = "1"
+SOURCE_MANIFEST_PRODUCER = "research-assistant.git-source-tree"
 DEFAULT_SOURCE_ROOT = PurePosixPath("agents")
-DEFAULT_OUTPUT = Path("agents/.release/source-bundle.json")
+DEFAULT_OUTPUT = Path("agents/.release/source-tree.json")
 IGNORED_PACKAGE_DIRECTORIES = frozenset(
     {".foundry", ".release", ".venv", "__pycache__", "evals", "tests"}
 )
@@ -26,22 +27,33 @@ class SourceIdentityBuildError(RuntimeError):
 
 
 @dataclass(frozen=True)
-class SourceBundleManifest:
+class SourceTreeManifest:
     schema_version: str
+    inclusion_policy_version: str
     producer: str
-    source_revision: str
+    source_commit: str
+    source_tree: str
     source_root: str
-    source_bundle_hash: str
+    source_tree_digest: str
     entry_count: int
+    source_manifest_digest: str
+
+    def identity_payload(self) -> dict[str, str | int]:
+        return {
+            "entry_count": self.entry_count,
+            "inclusion_policy_version": self.inclusion_policy_version,
+            "producer": self.producer,
+            "schema_version": self.schema_version,
+            "source_commit": self.source_commit,
+            "source_root": self.source_root,
+            "source_tree": self.source_tree,
+            "source_tree_digest": self.source_tree_digest,
+        }
 
     def payload(self) -> dict[str, str | int]:
         return {
-            "entry_count": self.entry_count,
-            "producer": self.producer,
-            "schema_version": self.schema_version,
-            "source_bundle_hash": self.source_bundle_hash,
-            "source_revision": self.source_revision,
-            "source_root": self.source_root,
+            **self.identity_payload(),
+            "source_manifest_digest": self.source_manifest_digest,
         }
 
 
@@ -101,10 +113,10 @@ def canonical_source_entries(entries: Iterable[tuple[str, bytes]]) -> tuple[tupl
     return tuple(result)
 
 
-def source_bundle_hash(entries: Iterable[tuple[str, bytes]]) -> str:
+def source_tree_digest(entries: Iterable[tuple[str, bytes]]) -> str:
     canonical_entries = canonical_source_entries(entries)
     if not canonical_entries:
-        raise SourceIdentityBuildError("The committed agent source bundle is empty")
+        raise SourceIdentityBuildError("The committed agent source tree is empty")
     return _canonical_digest(canonical_entries)
 
 
@@ -155,6 +167,8 @@ def committed_source_entries(
             raise SourceIdentityBuildError(f"Tracked source escaped the configured root: {tracked_path!r}")
         relative_path = tracked_path.removeprefix(prefix)
         parsed = PurePosixPath(relative_path)
+        if any(part in IGNORED_PACKAGE_DIRECTORIES for part in parsed.parts):
+            continue
         if parsed.suffix != ".py" and parsed.name != "requirements.txt":
             continue
         content = _git(root, "cat-file", "blob", f"{commit}:{tracked_path}")
@@ -197,28 +211,48 @@ def validate_worktree_matches_commit(
         )
 
 
-def build_source_bundle_manifest(
+def build_source_tree_manifest(
     repo_root: Path,
     *,
     revision: str = "HEAD",
     source_root: PurePosixPath = DEFAULT_SOURCE_ROOT,
-) -> SourceBundleManifest:
+) -> SourceTreeManifest:
     commit, entries = committed_source_entries(
         repo_root,
         revision=revision,
         source_root=source_root,
     )
-    return SourceBundleManifest(
+    source_tree = _git(
+        repo_root.resolve(),
+        "rev-parse",
+        "--verify",
+        f"{commit}:{source_root.as_posix()}",
+    ).decode("ascii").strip()
+    tree_digest = source_tree_digest(entries)
+    values: dict[str, str | int] = {
+        "schema_version": SOURCE_MANIFEST_SCHEMA_VERSION,
+        "inclusion_policy_version": SOURCE_INCLUSION_POLICY_VERSION,
+        "producer": SOURCE_MANIFEST_PRODUCER,
+        "source_commit": commit,
+        "source_tree": source_tree,
+        "source_root": source_root.as_posix(),
+        "source_tree_digest": tree_digest,
+        "entry_count": len(entries),
+    }
+    return SourceTreeManifest(
         schema_version=SOURCE_MANIFEST_SCHEMA_VERSION,
+        inclusion_policy_version=SOURCE_INCLUSION_POLICY_VERSION,
         producer=SOURCE_MANIFEST_PRODUCER,
-        source_revision=commit,
+        source_commit=commit,
+        source_tree=source_tree,
         source_root=source_root.as_posix(),
-        source_bundle_hash=source_bundle_hash(entries),
+        source_tree_digest=tree_digest,
         entry_count=len(entries),
+        source_manifest_digest=_canonical_digest(values),
     )
 
 
-def write_source_bundle_manifest(manifest: SourceBundleManifest, output: Path) -> None:
+def write_source_tree_manifest(manifest: SourceTreeManifest, output: Path) -> None:
     destination = output.resolve()
     destination.parent.mkdir(parents=True, exist_ok=True)
     encoded = (
@@ -264,7 +298,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     output = arguments.output
     if not output.is_absolute():
         output = repo_root / output
-    manifest = build_source_bundle_manifest(
+    manifest = build_source_tree_manifest(
         repo_root,
         revision=arguments.revision,
         source_root=arguments.source_root,
@@ -274,8 +308,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         revision=arguments.revision,
         source_root=arguments.source_root,
     )
-    write_source_bundle_manifest(manifest, output)
-    print(manifest.source_bundle_hash)
+    write_source_tree_manifest(manifest, output)
+    print(manifest.source_tree_digest)
     return 0
 
 

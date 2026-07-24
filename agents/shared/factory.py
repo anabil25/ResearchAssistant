@@ -163,7 +163,7 @@ class GovernedAgentFactory:
         return build_release_metadata(
             prepared.manifest,
             model_deployment=settings.model_deployment_name,
-            source_bundle_hash=settings.source_bundle_hash,
+            source_tree_digest=settings.source_tree_digest,
             registrations=prepared.registrations,
         )
 
@@ -218,7 +218,7 @@ class GovernedAgentFactory:
             release = build_release_metadata(
                 prepared.manifest,
                 model_deployment=settings.model_deployment_name,
-                source_bundle_hash=settings.source_bundle_hash,
+                source_tree_digest=settings.source_tree_digest,
                 registrations=prepared.registrations,
             )
             validate_release_attestation(
@@ -364,7 +364,7 @@ class GovernedAgentFactory:
         release = build_release_metadata(
             prepared.manifest,
             model_deployment=settings.model_deployment_name,
-            source_bundle_hash=settings.source_bundle_hash,
+            source_tree_digest=settings.source_tree_digest,
             registrations=prepared.registrations,
         )
         validate_release_attestation(

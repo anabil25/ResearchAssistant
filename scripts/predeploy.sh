@@ -8,4 +8,4 @@ if [ ! -x "$python" ]; then
   python="python3"
 fi
 
-(cd "$repo_root" && "$python" -m scripts.build_agent_source_bundle)
+(cd "$repo_root" && "$python" -m scripts.build_agent_source_tree)

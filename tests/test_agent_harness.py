@@ -187,9 +187,9 @@ from shared.workflows import (
     specialist_handler_resolver,
 )
 
-from scripts.build_agent_source_bundle import source_bundle_hash
+from scripts.build_agent_source_tree import source_tree_digest
 
-TEST_SOURCE_BUNDLE_HASH = source_bundle_hash((("fixture.py", b"VALUE = 1\n"),))
+TEST_SOURCE_TREE_DIGEST = source_tree_digest((("fixture.py", b"VALUE = 1\n"),))
 
 
 def _request(**overrides: Any) -> dict[str, Any]:
@@ -226,7 +226,7 @@ def _settings(**overrides: Any) -> HarnessSettings:
         "foundry_project_endpoint": "https://example.services.ai.azure.com/api/projects/p",
         "model_deployment_name": "gpt-5.4-mini",
         "model_deployment_version": "2026-03-17",
-        "source_bundle_hash": TEST_SOURCE_BUNDLE_HASH,
+        "source_tree_digest": TEST_SOURCE_TREE_DIGEST,
         "deployment_tenant_id": "tenant-a",
         "deployment_project_id": "project-a",
     }
@@ -834,16 +834,22 @@ def test_memory_scopes_and_objective_release_gates_are_explicit() -> None:
 
 
 def test_settings_validate_environment_and_readiness(tmp_path: Path) -> None:
-    source_manifest_path = tmp_path / "source-bundle.json"
+    source_manifest_path = tmp_path / "source-tree.json"
+    source_identity = {
+        "entry_count": 1,
+        "inclusion_policy_version": "1",
+        "producer": "research-assistant.git-source-tree",
+        "schema_version": "1",
+        "source_commit": "a" * 40,
+        "source_root": "agents",
+        "source_tree": "b" * 40,
+        "source_tree_digest": TEST_SOURCE_TREE_DIGEST,
+    }
     source_manifest_path.write_text(
         json.dumps(
             {
-                "entry_count": 1,
-                "producer": "research-assistant.git-source-bundle",
-                "schema_version": "1",
-                "source_bundle_hash": TEST_SOURCE_BUNDLE_HASH,
-                "source_revision": "a" * 40,
-                "source_root": "agents",
+                **source_identity,
+                "source_manifest_digest": canonical_digest(source_identity),
             }
         ),
         encoding="utf-8",
@@ -3697,7 +3703,7 @@ async def test_stale_leases_require_reconciliation_and_local_harness_is_explicit
     local = LocalHarness(
         get_manifest("literature"),
         lambda _request: _evidence_response(),
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         idempotency_store=store,
     )
     local_executor = local.capability_executor(registry)
@@ -4286,7 +4292,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             template,
             model_deployment=template.model_policy.deployment_name,
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         )
     provider_adapter = _ManifestProviderAdapter(template.capability_bindings)
     prepared = GovernedAgentFactory(template).prepare(
@@ -4317,7 +4323,7 @@ def test_release_metadata_is_immutable_and_deterministic(
     release = build_release_metadata(
         manifest,
         model_deployment="gpt-5.4-mini",
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=built_at,
         registrations=registrations,
@@ -4361,7 +4367,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         manifest,
         model_deployment="gpt-5.4-mini",
         source_revision="explicit",
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         built_at=built_at,
         registrations=registrations,
     )
@@ -4369,13 +4375,13 @@ def test_release_metadata_is_immutable_and_deterministic(
     same_content = build_release_metadata(
         manifest,
         model_deployment="gpt-5.4-mini",
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         parent_release_id=f"sha256:{'b' * 64}",
         built_at=datetime(2026, 7, 23, tzinfo=UTC),
         registrations=registrations,
     )
     assert same_content.release_id == release.release_id
-    with pytest.raises(TypeError, match="source_bundle_hash"):
+    with pytest.raises(TypeError, match="source_tree_digest"):
         cast(Any, build_release_metadata)(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
@@ -4385,13 +4391,13 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             manifest,
             model_deployment="unapproved-model",
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         )
     with pytest.raises(ConfigurationError, match="attested provider registrations"):
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         )
     unattested = tuple(
         ToolRegistration(
@@ -4406,7 +4412,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
             registrations=unattested,
         )
     versions["agent-framework-foundry-hosting"] = "1.0.0"
@@ -4414,7 +4420,7 @@ def test_release_metadata_is_immutable_and_deterministic(
         build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
             registrations=registrations,
         )
     versions["agent-framework-foundry-hosting"] = "1.0.0b260721"
@@ -4521,7 +4527,7 @@ def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
         valid.model_copy(update={"idempotency_contract_schema_digest": "0" * 64}),
         valid.model_copy(update={"approval_contract_schema_digest": "0" * 64}),
         valid.model_copy(update={"release_attestation_contract_schema_digest": "0" * 64}),
-        valid.model_copy(update={"source_bundle_hash": "0" * 64}),
+        valid.model_copy(update={"source_tree_digest": "0" * 64}),
         valid.model_copy(update={"model_deployment_ref": "app://model/other"}),
         valid.model_copy(update={"model_version": "other"}),
         valid.model_copy(update={"provider_contracts": (("other", "v1", "6" * 64),)}),
@@ -5810,7 +5816,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     harness = LocalHarness(
         manifest,
         lambda _request: _evidence_response(),
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
     )
     assert harness.readiness()["input_contract"] == "LiteratureRequestV2"
     assert harness.readiness()["idempotency_store_configured"] is True
@@ -5828,7 +5834,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     async_result = await LocalHarness(
         manifest,
         async_runner,
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
     ).invoke(
         LocalInvocation(manifest_id="literature", payload=_request())
     )
@@ -5836,7 +5842,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     failed = await LocalHarness(
         manifest,
         lambda _request: (_ for _ in ()).throw(ContractError("blocked")),
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
     ).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
     assert failed.error is not None and failed.error.code == "contract_error"
 
@@ -5847,7 +5853,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         await LocalHarness(
             manifest,
             cancelled,
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         ).invoke(LocalInvocation(manifest_id="literature", payload=_request()))
 
     dataset = get_manifest("dataset")
@@ -5861,7 +5867,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
     local_dataset = LocalHarness(
         dataset,
         lambda _request: ResearchResponse(summary="not executed"),
-        source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+        source_tree_digest=TEST_SOURCE_TREE_DIGEST,
         registrations=dataset_registrations,
     )
     assert local_dataset.readiness()["ready"] is False
@@ -5869,7 +5875,7 @@ async def test_local_harness_validates_protocol_and_runner_failures() -> None:
         LocalHarness(
             dataset,
             lambda _request: ResearchResponse(summary="not executed"),
-            source_bundle_hash=TEST_SOURCE_BUNDLE_HASH,
+            source_tree_digest=TEST_SOURCE_TREE_DIGEST,
             registrations=dataset_registrations,
             idempotency_store=InMemoryIdempotencyStore(),
             approval_adapter=_AutoApprovalAdapter(),

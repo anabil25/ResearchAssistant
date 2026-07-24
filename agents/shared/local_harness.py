@@ -54,7 +54,7 @@ class LocalHarness:
         manifest: AgentManifest,
         runner: LocalRunner,
         *,
-        source_bundle_hash: str,
+        source_tree_digest: str,
         registrations: tuple[ToolRegistration, ...] = (),
         idempotency_store: IdempotencyStore | None = None,
         approval_adapter: ApprovalConsumptionAdapter | None = None,
@@ -80,7 +80,7 @@ class LocalHarness:
         self.release = build_release_metadata(
             manifest,
             model_deployment=manifest.model_policy.deployment_name,
-            source_bundle_hash=source_bundle_hash,
+            source_tree_digest=source_tree_digest,
             registrations=registrations,
         )
 
