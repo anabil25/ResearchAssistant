@@ -4,6 +4,7 @@ import json
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
@@ -112,6 +113,8 @@ from research_assistant_api.workspace import (
     ConnectorSetting,
     ConnectorUpdate,
     DatasetApprovalDecisionRequest,
+    DatasetApprovalDenialReason,
+    DatasetApprovalError,
     DatasetApprovalRequest,
     DatasetApprovalRequestCreate,
     LibraryIngestRecord,
@@ -787,6 +790,7 @@ def request_dataset_approval(
         objective=payload.objective,
         requested_by=identity.display_name,
         ttl_minutes=payload.ttl_minutes,
+        requested_by_principal_id=identity.user_id,
     )
 
 
@@ -809,6 +813,8 @@ def decide_dataset_approval(
         raise HTTPException(status_code=404, detail="Dataset approval request not found.")
     try:
         record = store.decide_dataset_approval_request(request_id, payload, identity)
+    except DatasetApprovalError as exc:
+        raise _dataset_denial(exc) from exc
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
     if record is None:
@@ -1049,11 +1055,47 @@ def _online_policy(capability: Capability, payload: StudioRunRequest) -> None:
         )
 
 
+def _require_dataset_send_grant(
+    payload: StudioRunRequest,
+    raw_csv: str,
+    grant: DatasetSendGrant | None,
+) -> None:
+    """Structural backstop at the single point where raw ``csv_text`` is
+    embedded into a hosted-agent message.
+
+    Reaching here with CSV present but no matching :class:`DatasetSendGrant`
+    means a caller tried to send dataset bytes to Foundry without first
+    consuming an approval (or is sending a *different* CSV than the one that
+    was consumed). Either is a fail-closed server invariant violation: raise
+    before returning the message so ``gateway.invoke`` is never reached and no
+    bytes leave. This is what makes the boundary un-bypassable even if a new
+    route forgets to gate itself.
+    """
+    if grant is None:
+        raise RuntimeError(
+            "Refusing to send dataset CSV to the hosted agent without a consumed "
+            "dataset approval grant."
+        )
+    expected = compute_dataset_plan_fingerprint(
+        project_id=grant.project_id,
+        objective=payload.objective,
+        filename=str(payload.inputs.get("filename", "dataset.csv")),
+        csv_text=raw_csv,
+    )
+    if expected != grant.plan_fingerprint:
+        raise RuntimeError(
+            "Dataset send grant does not match the dataset plan being sent; "
+            "refusing to send unapproved dataset material."
+        )
+
+
 def _agent_message(
     capability: Capability,
     payload: StudioRunRequest,
     generic: ResearchResult,
     public_metadata: list[dict[str, Any]] | None = None,
+    *,
+    dataset_grant: DatasetSendGrant | None = None,
 ) -> str:
     blueprint = WORKFLOW_BLUEPRINTS[capability]
     if payload.online_research:
@@ -1079,7 +1121,10 @@ def _agent_message(
         for citation in generic.citations
     ]
     if capability == Capability.DATASET:
-        dataset_text = str(payload.inputs.get("csv_text", ""))[:100_000]
+        raw_csv = str(payload.inputs.get("csv_text", ""))
+        if raw_csv:
+            _require_dataset_send_grant(payload, raw_csv, dataset_grant)
+        dataset_text = raw_csv[:100_000]
         dataset_material = (
             dataset_text
             if dataset_text
@@ -1210,15 +1255,71 @@ def _record_studio_result(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class DatasetSendGrant:
+    """A server-minted receipt proving that exactly one durable, reviewer-decided
+    dataset approval was atomically consumed for a specific dataset plan.
+
+    It is the *only* thing that authorizes embedding raw ``csv_text`` in a
+    hosted-agent message: :func:`_agent_message` refuses to build a dataset
+    message without a grant whose ``plan_fingerprint`` matches the CSV it is
+    about to send. Because a grant can only be produced by consuming an
+    approval, no route (studios, research, or any other ``_agent_message``
+    caller) can send dataset bytes to Foundry without that single-use
+    consumption having already happened.
+    """
+
+    approval_request_id: str
+    project_id: str
+    plan_fingerprint: str
+    invocation_id: str
+
+
+#: Deterministic mapping from a fail-closed dataset-approval denial reason to the
+#: HTTP status the API returns. Every consumption-time denial is a 409 (the
+#: request is well-formed but cannot be authorized in the resource's current
+#: state); a separation-of-duties violation at decision time is a 403.
+_DATASET_DENIAL_STATUS: dict[DatasetApprovalDenialReason, int] = {
+    DatasetApprovalDenialReason.NOT_FOUND: 409,
+    DatasetApprovalDenialReason.FINGERPRINT_MISMATCH: 409,
+    DatasetApprovalDenialReason.ALREADY_CONSUMED: 409,
+    DatasetApprovalDenialReason.REJECTED: 409,
+    DatasetApprovalDenialReason.PENDING: 409,
+    DatasetApprovalDenialReason.EXPIRED: 409,
+    DatasetApprovalDenialReason.CONCURRENT_CONFLICT: 409,
+    DatasetApprovalDenialReason.ALREADY_DECIDED: 409,
+    DatasetApprovalDenialReason.MISSING_APPROVAL_REFERENCE: 409,
+    DatasetApprovalDenialReason.SEPARATION_OF_DUTIES: 403,
+}
+
+
+def _dataset_denial(exc: DatasetApprovalError) -> HTTPException:
+    """Translate a typed dataset-approval denial into an ``HTTPException``.
+
+    The wire ``detail`` stays a human-readable string (the web client renders
+    it directly) while the stable, machine-readable reason code is surfaced in
+    the ``X-Dataset-Approval-Denial`` response header for programmatic callers.
+    """
+    status = _DATASET_DENIAL_STATUS.get(exc.reason, 409)
+    return HTTPException(
+        status_code=status,
+        detail=str(exc),
+        headers={"X-Dataset-Approval-Denial": exc.reason.value},
+    )
+
+
 def _authorize_dataset_analysis(
     capability: Capability,
     payload: StudioRunRequest,
     store: WorkspaceStore,
-) -> None:
+    identity: IdentityContext,
+) -> DatasetSendGrant | None:
     """Fail closed, before any local or hosted processing of dataset
     content, unless a durable, previously-decided ``DatasetApprovalRequest``
     exists for this exact project/objective/filename/CSV plan and has not
-    already been consumed or expired.
+    already been consumed or expired. Returns a single-use
+    :class:`DatasetSendGrant` on success (``None`` when there is no CSV to
+    authorize), which callers must thread into :func:`_agent_message`.
 
     A client-supplied ``analysis_approved``/``compute_adapter_configured``
     boolean grants nothing here -- it is never even inspected. The only
@@ -1230,19 +1331,19 @@ def _authorize_dataset_analysis(
     operations.
     """
     if capability != Capability.DATASET:
-        return
+        return None
     csv_text = payload.inputs.get("csv_text")
     if not csv_text:
-        return
+        return None
     approval_request_id = payload.inputs.get("approval_request_id")
     if not isinstance(approval_request_id, str) or not approval_request_id:
-        raise HTTPException(
-            status_code=409,
-            detail=(
+        raise _dataset_denial(
+            DatasetApprovalError(
+                DatasetApprovalDenialReason.MISSING_APPROVAL_REFERENCE,
                 "Dataset analysis requires a decided dataset approval request "
                 "referenced by 'approval_request_id'; client-supplied approval "
-                "flags are not accepted."
-            ),
+                "flags are not accepted.",
+            )
         )
     fingerprint = compute_dataset_plan_fingerprint(
         project_id=store.project_id,
@@ -1251,13 +1352,20 @@ def _authorize_dataset_analysis(
         csv_text=str(csv_text),
     )
     try:
-        store.consume_dataset_approval_request(
+        record = store.consume_dataset_approval_request(
             approval_request_id,
             plan_fingerprint=fingerprint,
             invocation_id=f"inv-{uuid4().hex}",
+            consumed_by_principal_id=identity.user_id,
         )
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    except DatasetApprovalError as exc:
+        raise _dataset_denial(exc) from exc
+    return DatasetSendGrant(
+        approval_request_id=record.id,
+        project_id=store.project_id,
+        plan_fingerprint=record.plan_fingerprint,
+        invocation_id=str(record.consumed_invocation_id),
+    )
 
 
 @app.post(
@@ -1273,7 +1381,7 @@ async def run_studio(
     current = cast(Settings, request.app.state.settings)
     store, identity = _workspace_access(request)
     _online_policy(capability, payload)
-    _authorize_dataset_analysis(capability, payload, store)
+    dataset_grant = _authorize_dataset_analysis(capability, payload, store, identity)
 
     research = cast(ResearchService, request.app.state.research)
     try:
@@ -1319,6 +1427,7 @@ async def run_studio(
                     payload,
                     generic,
                     public_metadata,
+                    dataset_grant=dataset_grant,
                 ),
                 agent_name=(
                     CAPABILITY_ONLINE_AGENTS[capability] if payload.online_research else CAPABILITY_AGENTS[capability]
@@ -1444,6 +1553,12 @@ async def run_capability(
         online_research=online,
         inputs=payload.context,
     )
+    # Central hosted-gateway boundary: consume the exact-bound, single-use
+    # dataset approval before any csv_text can be embedded in a hosted-agent
+    # message. Fails closed (no gateway call) if unauthorized. This is the same
+    # server-resolved consumption /api/studios/dataset/run performs, so no
+    # alternate route can reach Foundry with dataset bytes unapproved.
+    dataset_grant = _authorize_dataset_analysis(capability, studio_request, store, identity)
     public_metadata = (
         await retrieve_public_metadata(
             capability,
@@ -1472,6 +1587,7 @@ async def run_capability(
                 studio_request,
                 result,
                 public_metadata,
+                dataset_grant=dataset_grant,
             ),
             agent_name=(CAPABILITY_ONLINE_AGENTS[capability] if online else CAPABILITY_AGENTS[capability]),
             allow_tools=online,

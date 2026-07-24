@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from copy import deepcopy
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -11,7 +12,7 @@ from uuid import uuid4
 from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
 from research_assistant_core.models import Capability, RunStatus
 
-from research_assistant_api.identity import IdentityContext
+from research_assistant_api.identity import DEMO_SANDBOX_SOURCE, IdentityContext
 
 
 def utc_now() -> datetime:
@@ -181,6 +182,45 @@ class DatasetApprovalState(StrEnum):
     CONSUMED = "consumed"
 
 
+class DatasetApprovalDenialReason(StrEnum):
+    """Stable, machine-readable reason a dataset approval could not authorize
+    an analysis. Every denial path fails closed and maps to exactly one of
+    these; there is no reason value that means "allowed"."""
+
+    NOT_FOUND = "not_found"
+    FINGERPRINT_MISMATCH = "fingerprint_mismatch"
+    ALREADY_CONSUMED = "already_consumed"
+    REJECTED = "rejected"
+    PENDING = "pending"
+    EXPIRED = "expired"
+    CONCURRENT_CONFLICT = "concurrent_conflict"
+    ALREADY_DECIDED = "already_decided"
+    SEPARATION_OF_DUTIES = "separation_of_duties"
+    MISSING_APPROVAL_REFERENCE = "missing_approval_reference"
+
+
+class DatasetApprovalError(ValueError):
+    """Typed dataset-approval domain error carrying a stable
+    :class:`DatasetApprovalDenialReason`.
+
+    Subclasses ``ValueError`` so existing ``except ValueError`` call sites and
+    tests that assert on the human message keep working, while new callers can
+    branch on ``.reason`` for a deterministic status/policy mapping.
+    """
+
+    def __init__(self, reason: DatasetApprovalDenialReason, message: str) -> None:
+        super().__init__(message)
+        self.reason = reason
+
+
+#: Domain tag + version baked into every dataset-plan fingerprint. Bumping the
+#: version deliberately invalidates every previously-issued approval, so an
+#: algorithm change can never let an approval decided under the old encoding
+#: silently authorize a plan hashed under the new one.
+_DATASET_FINGERPRINT_DOMAIN = "research_assistant.dataset_plan"
+_DATASET_FINGERPRINT_VERSION = 2
+
+
 def compute_dataset_plan_fingerprint(
     *,
     project_id: str,
@@ -194,13 +234,40 @@ def compute_dataset_plan_fingerprint(
     A decided approval can never be replayed against a different project,
     objective, filename, or CSV content: changing any one of those facts
     changes the fingerprint, so ``consume_dataset_approval_request`` will
-    reject the mismatch rather than silently accepting a look-alike
-    request. This closes the gap where a client-supplied
-    ``analysis_approved``/``compute_adapter_configured`` boolean asserted
-    its own authority with no binding to what was actually reviewed.
+    reject the mismatch rather than silently accepting a look-alike request.
+    This closes the gap where a client-supplied
+    ``analysis_approved``/``compute_adapter_configured`` boolean asserted its
+    own authority with no binding to what was actually reviewed.
+
+    Each field is hashed independently and combined through canonical,
+    key-sorted JSON with an explicit domain/version tag -- not a delimiter
+    join. Per-field hashing makes cross-field boundary-shift collisions
+    impossible: no attacker-controlled character in ``objective``/``filename``/
+    ``csv_text`` can be used to move the boundary between two fields (the old
+    ``"\u241f".join(...)`` encoding used a printable separator, so an attacker
+    could shift bytes across the ``csv_text`` boundary to collide two distinct
+    plans onto one fingerprint).
     """
-    material = "\u241f".join([project_id, objective, filename, csv_text])
-    return sha256(material.encode("utf-8")).hexdigest()
+
+    def _field(value: str) -> str:
+        return sha256(value.encode("utf-8")).hexdigest()
+
+    canonical = json.dumps(
+        {
+            "domain": _DATASET_FINGERPRINT_DOMAIN,
+            "version": _DATASET_FINGERPRINT_VERSION,
+            "fields": {
+                "project_id": _field(project_id),
+                "objective": _field(objective),
+                "filename": _field(filename),
+                "csv_text": _field(csv_text),
+            },
+        },
+        sort_keys=True,
+        separators=(",", ":"),
+        ensure_ascii=True,
+    )
+    return sha256(canonical.encode("utf-8")).hexdigest()
 
 
 class DatasetApprovalRequest(BaseModel):
@@ -219,6 +286,31 @@ class DatasetApprovalRequest(BaseModel):
     rationale: str | None = None
     consumed_at: datetime | None = None
     consumed_invocation_id: str | None = None
+
+
+class DatasetApprovalAuditEntry(BaseModel):
+    """Durable, append-only audit/outbox intent for a dataset-approval state
+    transition (a reviewer decision or a single-use consumption).
+
+    Written atomically with the state mutation it records (in-memory: under the
+    same lock; Cosmos: inside the same document under the same ETag CAS), so
+    the audit trail can never be lost by a crash *after* the mutation
+    succeeded. ``delivery`` is the outbox marker: a pending entry is a durable
+    intent that a downstream emitter can recover and (re)deliver, then mark
+    ``delivered`` -- there is no post-mutation "best effort" audit write that
+    could silently drop.
+    """
+
+    id: str
+    request_id: str
+    project_id: str
+    action: Literal["decided", "consumed"]
+    actor_principal_id: str
+    decision: str | None = None
+    invocation_id: str | None = None
+    plan_fingerprint: str
+    recorded_at: datetime
+    delivery: Literal["pending", "delivered"] = "pending"
 
 
 class DatasetApprovalRequestCreate(BaseModel):
@@ -306,6 +398,13 @@ class WorkspaceStore:
         self._runs = _seed_runs(project_id)
         self._approvals = _seed_approvals()
         self._dataset_approvals: list[DatasetApprovalRequest] = []
+        #: Requester principal id (``IdentityContext.user_id``) per approval id,
+        #: kept distinct from the public read model (which exposes only the
+        #: ``requested_by`` display name) so a reviewer-vs-requester
+        #: separation-of-duties check has an authoritative identifier without
+        #: broadening what the API returns to project members.
+        self._dataset_requester_principals: dict[str, str] = {}
+        self._dataset_audit: list[DatasetApprovalAuditEntry] = []
         self._connectors = _seed_connectors()
         self._settings = ProjectSettings(
             project_id=project_id,
@@ -650,6 +749,7 @@ class WorkspaceStore:
         objective: str,
         requested_by: str,
         ttl_minutes: int,
+        requested_by_principal_id: str | None = None,
     ) -> DatasetApprovalRequest:
         now = utc_now()
         record = DatasetApprovalRequest(
@@ -665,7 +765,58 @@ class WorkspaceStore:
         )
         with self._lock:
             self._dataset_approvals.append(record)
+            if requested_by_principal_id is not None:
+                self._dataset_requester_principals[record.id] = requested_by_principal_id
             return deepcopy(record)
+
+    def dataset_requester_principal(self, request_id: str) -> str | None:
+        """Authoritative requester principal id for a dataset approval, held
+        separately from the public read model."""
+        with self._lock:
+            return self._dataset_requester_principals.get(request_id)
+
+    @staticmethod
+    def _dataset_sod_exempt(identity: IdentityContext) -> bool:
+        """Deterministic separation-of-duties policy exemption.
+
+        The only identity allowed to both request and decide the same dataset
+        approval is the local/dev demo-sandbox identity (issued solely when
+        ``Settings.allow_demo_identity`` is explicitly enabled and never
+        carrying a real Entra principal). This mirrors the existing
+        ``DEMO_SANDBOX_SOURCE`` exemption in ``identity``/``agent_studio.authz``
+        and keeps SOD strictly enforced for every real platform identity.
+        """
+        return identity.source == DEMO_SANDBOX_SOURCE
+
+    def _append_dataset_audit(
+        self,
+        *,
+        request_id: str,
+        project_id: str,
+        action: Literal["decided", "consumed"],
+        actor_principal_id: str,
+        plan_fingerprint: str,
+        decision: str | None = None,
+        invocation_id: str | None = None,
+    ) -> DatasetApprovalAuditEntry:
+        """Append a durable audit/outbox intent. Callers already hold
+        ``self._lock`` around the state mutation this records; the reentrant
+        lock here keeps the append part of that same atomic section."""
+        entry = DatasetApprovalAuditEntry(
+            id=f"dsaudit-{uuid4().hex[:12]}",
+            request_id=request_id,
+            project_id=project_id,
+            action=action,
+            actor_principal_id=actor_principal_id,
+            decision=decision,
+            invocation_id=invocation_id,
+            plan_fingerprint=plan_fingerprint,
+            recorded_at=utc_now(),
+            delivery="pending",
+        )
+        with self._lock:
+            self._dataset_audit.append(entry)
+        return entry
 
     def decide_dataset_approval_request(
         self,
@@ -681,7 +832,30 @@ class WorkspaceStore:
             if record is None:
                 return None
             if record.state != DatasetApprovalState.PENDING:
-                raise ValueError("This dataset approval request has already been decided.")
+                # Idempotent same-decision retry: an APPROVED request re-decided
+                # "approved" (or REJECTED re-decided "rejected") returns the
+                # existing record rather than raising, matching the Cosmos
+                # 412-reconcile path. A conflicting decision (or a re-decide of
+                # an already-CONSUMED request) fails closed.
+                if (
+                    record.state == DatasetApprovalState.APPROVED and decision.decision == "approved"
+                ) or (record.state == DatasetApprovalState.REJECTED and decision.decision == "rejected"):
+                    return deepcopy(record)
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.ALREADY_DECIDED,
+                    "This dataset approval request has already been decided.",
+                )
+            requester_principal = self._dataset_requester_principals.get(request_id)
+            if (
+                requester_principal is not None
+                and not self._dataset_sod_exempt(identity)
+                and requester_principal == identity.user_id
+            ):
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.SEPARATION_OF_DUTIES,
+                    "The requester of a dataset approval cannot also approve or reject "
+                    "it; a different reviewer must decide (separation of duties).",
+                )
             record.state = (
                 DatasetApprovalState.APPROVED
                 if decision.decision == "approved"
@@ -691,6 +865,14 @@ class WorkspaceStore:
             record.approver_name = identity.display_name
             record.decided_at = utc_now()
             record.rationale = decision.rationale
+            self._append_dataset_audit(
+                request_id=record.id,
+                project_id=record.project_id,
+                action="decided",
+                actor_principal_id=identity.user_id,
+                plan_fingerprint=record.plan_fingerprint,
+                decision=decision.decision,
+            )
             return deepcopy(record)
 
     def consume_dataset_approval_request(
@@ -699,6 +881,7 @@ class WorkspaceStore:
         *,
         plan_fingerprint: str,
         invocation_id: str,
+        consumed_by_principal_id: str | None = None,
     ) -> DatasetApprovalRequest:
         """Atomically resolve and single-use-consume a decided dataset
         approval, failing closed with a specific reason for every
@@ -707,9 +890,9 @@ class WorkspaceStore:
         A caller can never mistake a denial for a grant: this either
         returns a ``CONSUMED`` record (never previously consumed, decided
         ``APPROVED``, matching this exact plan fingerprint, and not yet
-        expired) or raises ``ValueError``. Never fabricates a context and
-        never allows the same decided approval to authorize a second,
-        different, or replayed invocation.
+        expired) or raises :class:`DatasetApprovalError`. Never fabricates a
+        context and never allows the same decided approval to authorize a
+        second, different, or replayed invocation.
         """
         with self._lock:
             record = next(
@@ -717,24 +900,72 @@ class WorkspaceStore:
                 None,
             )
             if record is None:
-                raise ValueError("Dataset approval request was not found.")
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.NOT_FOUND,
+                    "Dataset approval request was not found.",
+                )
             if record.plan_fingerprint != plan_fingerprint:
-                raise ValueError(
-                    "Dataset approval request does not match the exact dataset plan submitted."
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.FINGERPRINT_MISMATCH,
+                    "Dataset approval request does not match the exact dataset plan submitted.",
                 )
             if record.state == DatasetApprovalState.CONSUMED:
-                raise ValueError("Dataset approval request has already been consumed.")
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.ALREADY_CONSUMED,
+                    "Dataset approval request has already been consumed.",
+                )
             if record.state == DatasetApprovalState.REJECTED:
-                raise ValueError("Dataset approval request was rejected.")
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.REJECTED,
+                    "Dataset approval request was rejected.",
+                )
             if record.state == DatasetApprovalState.PENDING:
-                raise ValueError("Dataset approval request has not been decided yet.")
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.PENDING,
+                    "Dataset approval request has not been decided yet.",
+                )
             now = utc_now()
             if record.expires_at <= now:
-                raise ValueError("Dataset approval request has expired.")
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.EXPIRED,
+                    "Dataset approval request has expired.",
+                )
             record.state = DatasetApprovalState.CONSUMED
             record.consumed_at = now
             record.consumed_invocation_id = invocation_id
+            self._append_dataset_audit(
+                request_id=record.id,
+                project_id=record.project_id,
+                action="consumed",
+                actor_principal_id=consumed_by_principal_id or "unknown",
+                plan_fingerprint=record.plan_fingerprint,
+                invocation_id=invocation_id,
+            )
             return deepcopy(record)
+
+    def dataset_approval_audit(self) -> list[DatasetApprovalAuditEntry]:
+        """Full append-only dataset-approval audit trail, oldest first."""
+        with self._lock:
+            return deepcopy(sorted(self._dataset_audit, key=lambda entry: entry.recorded_at))
+
+    def pending_dataset_approval_audit(self) -> list[DatasetApprovalAuditEntry]:
+        """Undelivered audit/outbox intents awaiting downstream delivery.
+
+        A recovery process reads these after a restart and re-emits them; each
+        one is durable because it was written atomically with the state
+        transition that produced it, so nothing is lost by a crash between the
+        mutation and delivery.
+        """
+        with self._lock:
+            return deepcopy([entry for entry in self._dataset_audit if entry.delivery == "pending"])
+
+    def mark_dataset_approval_audit_delivered(self, entry_id: str) -> DatasetApprovalAuditEntry | None:
+        with self._lock:
+            entry = next((item for item in self._dataset_audit if item.id == entry_id), None)
+            if entry is None:
+                return None
+            entry.delivery = "delivered"
+            return deepcopy(entry)
 
     def connectors(self) -> list[ConnectorSetting]:
         with self._lock:
