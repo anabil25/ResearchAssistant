@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 from datetime import UTC, datetime
-from typing import cast
+from typing import Any, cast
 
 import pytest
 from azure.cosmos import ContainerProxy
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
+from pydantic import ValidationError
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
@@ -16,8 +17,11 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeOperationRef,
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import (
+    RUNTIME_MAPPING_DOCUMENT_TYPE,
     CosmosRuntimeDeploymentMappingStore,
     InMemoryRuntimeDeploymentMappingStore,
+    RuntimeDeploymentHead,
+    RuntimeHeadPreconditionError,
     RuntimeMappingConflictError,
 )
 
@@ -55,71 +59,143 @@ def _mapping(
     )
 
 
+# --- RuntimeDeploymentHead model ------------------------------------------
+
+
+def test_head_model_is_frozen_and_extra_forbid() -> None:
+    head = RuntimeDeploymentHead(deployment_id="dep-1", current_sequence=1, current_revision_id="rev-1")
+    assert head.current_sequence == 1
+    with pytest.raises(ValidationError):
+        RuntimeDeploymentHead(deployment_id="dep-1", current_sequence=0, current_revision_id="rev-1")
+
+
+# --- InMemory: reads -------------------------------------------------------
+
+
 def test_get_returns_none_for_unknown_sequence() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     assert store.get("missing", 1) is None
 
 
-def test_put_then_get_round_trips_by_deployment_and_sequence() -> None:
+def test_get_head_is_none_before_bootstrap() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    assert store.get_head("dep-1") is None
+
+
+def test_bootstrap_then_get_round_trips_and_sets_head() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping(deployment_id="dep-xyz")
-    returned = store.put(mapping)
-    assert returned is mapping
+    store.commit_revision(mapping, expected_head_sequence=None)
     assert store.get("dep-xyz", 1) is mapping
+    head = store.get_head("dep-xyz")
+    assert head is not None
+    assert head.current_sequence == 1
+    assert head.current_revision_id == mapping.revision_id
 
 
 def test_get_with_wrong_sequence_is_none() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
+    store.commit_revision(_mapping(deployment_id="dep-1", revision_sequence=1), expected_head_sequence=None)
     assert store.get("dep-1", 2) is None
 
 
-def test_put_is_idempotent_for_identical_content() -> None:
-    # A control-plane retry of the identical caller-supplied payload lands on the
-    # same deployment_id:sequence with the SAME digest -> idempotent (the branch
-    # R4 showed was previously unreachable).
+# --- InMemory: commit_revision idempotency + conflict ----------------------
+
+
+def test_bootstrap_replay_is_idempotent() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     first = _mapping(deployment_id="dep-1", revision_sequence=1)
-    store.put(first)
+    store.commit_revision(first, expected_head_sequence=None)
     second = _mapping(deployment_id="dep-1", revision_sequence=1)
     assert first.mapping_digest == second.mapping_digest
-    assert store.put(second) is first
+    store.commit_revision(second, expected_head_sequence=None)  # replay: no-op
     assert store.get("dep-1", 1) is first
+    assert store.list_revisions("dep-1") == (1,)
 
 
-def test_put_rejects_diverging_content_at_same_sequence() -> None:
-    # Store-adjudicated single succession: a DIFFERENT content at an occupied
-    # sequence is a forged/racing competitor, refused (never a silent overwrite).
+def test_supersede_replay_is_idempotent() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3"))
-    with pytest.raises(RuntimeMappingConflictError, match="different content"):
-        store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="9.9.9"))
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    two = _mapping(revision_sequence=2, backend_version="2.0.0")
+    store.commit_revision(two, expected_head_sequence=1)
+    store.commit_revision(_mapping(revision_sequence=2, backend_version="2.0.0"), expected_head_sequence=1)
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 2
 
 
-def test_distinct_sequences_of_one_deployment_coexist() -> None:
+def test_bootstrap_when_head_exists_is_precondition_error() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    a = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3")
-    b = _mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9")
-    store.put(a)
-    store.put(b)
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadPreconditionError, match="expected no head"):
+        store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=None)
+
+
+def test_supersede_with_wrong_expected_head_is_precondition_error() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadPreconditionError, match="expected head at 5"):
+        store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=5)
+
+
+def test_supersede_before_bootstrap_is_precondition_error() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    with pytest.raises(RuntimeHeadPreconditionError, match="observed None"):
+        store.commit_revision(_mapping(revision_sequence=2), expected_head_sequence=1)
+
+
+def test_supersede_advances_head_and_coexists() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    a = _mapping(revision_sequence=1, backend_version="1.2.3")
+    b = _mapping(revision_sequence=2, backend_version="9.9.9")
+    store.commit_revision(a, expected_head_sequence=None)
+    store.commit_revision(b, expected_head_sequence=1)
     assert store.get("dep-1", 1) is a
     assert store.get("dep-1", 2) is b
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 2
+
+
+def test_torn_bootstrap_retry_with_divergent_content_is_conflict() -> None:
+    # A torn bootstrap left a revision item without its head; retrying at that
+    # sequence with DIFFERENT content is a forged/racing competitor -> conflict.
+    store = InMemoryRuntimeDeploymentMappingStore()
+    original = _mapping(revision_sequence=1, backend_version="1.2.3")
+    store._revisions["dep-1:1"] = original  # inject revision, leave head absent
+    with pytest.raises(RuntimeMappingConflictError, match="different content"):
+        store.commit_revision(_mapping(revision_sequence=1, backend_version="9.9.9"), expected_head_sequence=None)
 
 
 def test_distinct_deployment_ids_are_isolated() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     a = _mapping(deployment_id="dep-a")
     b = _mapping(deployment_id="dep-b")
-    store.put(a)
-    store.put(b)
+    store.commit_revision(a, expected_head_sequence=None)
+    store.commit_revision(b, expected_head_sequence=None)
     assert store.get("dep-a", 1) is a
     assert store.get("dep-b", 1) is b
 
 
+# --- InMemory: list_revisions + delete -------------------------------------
+
+
+def test_list_revisions_is_ascending_and_partition_scoped() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(deployment_id="dep-1", revision_sequence=1), expected_head_sequence=None)
+    store.commit_revision(
+        _mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1
+    )
+    store.commit_revision(_mapping(deployment_id="dep-2", revision_sequence=1), expected_head_sequence=None)
+    assert store.list_revisions("dep-1") == (1, 2)
+    assert store.list_revisions("dep-2") == (1,)
+    assert store.list_revisions("dep-missing") == ()
+
+
 def test_delete_removes_exact_revision() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"))
+    store.commit_revision(_mapping(deployment_id="dep-1", revision_sequence=1), expected_head_sequence=None)
+    store.commit_revision(
+        _mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1
+    )
     store.delete("dep-1", 1)
     assert store.get("dep-1", 1) is None
     assert store.get("dep-1", 2) is not None
@@ -134,23 +210,22 @@ def test_delete_missing_is_a_noop() -> None:
 
 
 class _FakeContainer:
-    """Minimal Cosmos container double honoring create_item/read_item semantics."""
+    """Cosmos container double honoring transactional-batch + point-read semantics."""
 
-    def __init__(self, *, read_returns_none_on_conflict: bool = False, create_status: int = 409) -> None:
-        self.items: dict[str, dict[str, object]] = {}
-        self._read_returns_none_on_conflict = read_returns_none_on_conflict
-        self._create_status = create_status
+    def __init__(self, *, force_batch_status: int | None = None) -> None:
+        self.items: dict[str, dict[str, Any]] = {}
+        self._etag = 0
+        self.force_batch_status = force_batch_status
 
-    def create_item(self, body: dict[str, object]) -> dict[str, object]:
-        item_id = str(body["id"])
-        if item_id in self.items:
-            raise CosmosHttpResponseError(status_code=self._create_status, message="conflict")  # type: ignore[no-untyped-call]
-        self.items[item_id] = dict(body)
-        return dict(body)
+    def _bump(self, doc: dict[str, Any]) -> dict[str, Any]:
+        self._etag += 1
+        stored = dict(doc)
+        stored["_etag"] = f"etag-{self._etag}"
+        return stored
 
-    def read_item(self, *, item: str, partition_key: str) -> dict[str, object]:
+    def read_item(self, *, item: str, partition_key: str) -> dict[str, Any]:
         assert item.startswith(f"{partition_key}:")
-        if item not in self.items or (self._read_returns_none_on_conflict and item in self.items):
+        if item not in self.items:
             raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
         return dict(self.items[item])
 
@@ -160,78 +235,141 @@ class _FakeContainer:
             raise CosmosResourceNotFoundError(message="not found")  # type: ignore[no-untyped-call]
         del self.items[item]
 
+    def query_items(self, *, query: str, parameters: list[dict[str, Any]], partition_key: str) -> list[dict[str, Any]]:
+        docs = [
+            dict(doc)
+            for doc in self.items.values()
+            if doc.get("deployment_id") == partition_key and doc.get("documentType") == RUNTIME_MAPPING_DOCUMENT_TYPE
+        ]
+        docs.sort(key=lambda doc: int(doc["revision_sequence"]))
+        return docs
+
+    def execute_item_batch(self, *, batch_operations: list[Any], partition_key: str) -> list[Any]:
+        if self.force_batch_status is not None:
+            raise CosmosHttpResponseError(status_code=self.force_batch_status, message="forced")  # type: ignore[no-untyped-call]
+        staged: dict[str, dict[str, Any]] = {}
+        for op in batch_operations:
+            kind = op[0]
+            if kind == "create":
+                (doc,) = op[1]
+                item_id = str(doc["id"])
+                if item_id in self.items or item_id in staged:
+                    raise CosmosHttpResponseError(status_code=409, message="conflict")  # type: ignore[no-untyped-call]
+                staged[item_id] = doc
+            else:  # replace
+                item_id, doc = op[1]
+                options = op[2] if len(op) > 2 else {}
+                etag = options.get("if_match_etag")
+                current = self.items.get(str(item_id))
+                if etag is not None and (current is None or current.get("_etag") != etag):
+                    raise CosmosHttpResponseError(status_code=412, message="precondition failed")  # type: ignore[no-untyped-call]
+                staged[str(item_id)] = doc
+        for item_id, doc in staged.items():
+            self.items[item_id] = self._bump(doc)
+        return []
+
 
 def test_cosmos_get_returns_none_when_absent() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
     assert store.get("missing", 1) is None
 
 
-def test_cosmos_put_then_get_round_trips() -> None:
+def test_cosmos_get_head_is_none_before_bootstrap() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    assert store.get_head("dep-1") is None
+
+
+def test_cosmos_bootstrap_then_get_and_head() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     mapping = _mapping(deployment_id="dep-1")
-    assert store.put(mapping) is mapping
+    store.commit_revision(mapping, expected_head_sequence=None)
     loaded = store.get("dep-1", 1)
     assert loaded is not None
     assert loaded.mapping_digest == mapping.mapping_digest
+    head = store.get_head("dep-1")
+    assert head is not None
+    assert head.current_sequence == 1
+    assert head.current_revision_id == mapping.revision_id
 
 
-def test_cosmos_put_is_idempotent_for_identical_content() -> None:
+def test_cosmos_bootstrap_replay_is_idempotent() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    first = _mapping(deployment_id="dep-1")
-    store.put(first)
-    second = _mapping(deployment_id="dep-1")
-    returned = store.put(second)
-    assert returned is not None
-    assert returned.mapping_digest == first.mapping_digest
+    store.commit_revision(_mapping(deployment_id="dep-1"), expected_head_sequence=None)
+    store.commit_revision(_mapping(deployment_id="dep-1"), expected_head_sequence=None)  # replay
+    assert store.list_revisions("dep-1") == (1,)
 
 
-def test_cosmos_distinct_sequences_coexist() -> None:
+def test_cosmos_supersede_via_batch_advances_head() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3"))
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"))
+    store.commit_revision(_mapping(revision_sequence=1, backend_version="1.2.3"), expected_head_sequence=None)
+    store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1)
     assert store.get("dep-1", 1) is not None
     assert store.get("dep-1", 2) is not None
+    head = store.get_head("dep-1")
+    assert head is not None and head.current_sequence == 2
+    assert store.list_revisions("dep-1") == (1, 2)
 
 
-def test_cosmos_put_conflict_but_vanished_existing_is_conflict() -> None:
-    container = _FakeContainer(read_returns_none_on_conflict=True)
-    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    mapping = _mapping(deployment_id="dep-1")
-    container.items["dep-1:1"] = {"id": "dep-1:1"}
-    with pytest.raises(RuntimeMappingConflictError):
-        store.put(mapping)
-
-
-def test_cosmos_put_conflict_with_diverging_content_is_conflict() -> None:
-    # 409 on create and the stored revision at this sequence hashes to a
-    # DIFFERENT digest (a forged/racing competitor): fail closed.
+def test_cosmos_supersede_before_bootstrap_is_precondition_error() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    mapping = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="1.2.3")
-    other_payload = _mapping(deployment_id="dep-1", revision_sequence=1, backend_version="9.9.9").model_dump(
-        mode="json"
-    )
-    container.items["dep-1:1"] = {"id": "dep-1:1", "payload": other_payload}
-    with pytest.raises(RuntimeMappingConflictError, match="different content"):
-        store.put(mapping)
+    with pytest.raises(RuntimeHeadPreconditionError, match="observed None"):
+        store.commit_revision(_mapping(revision_sequence=2), expected_head_sequence=1)
 
 
-def test_cosmos_put_reraises_non_conflict_error() -> None:
-    container = _FakeContainer(create_status=503)
+def test_cosmos_supersede_with_wrong_expected_head_is_precondition_error() -> None:
+    container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    mapping = _mapping(deployment_id="dep-1")
-    container.items["dep-1:1"] = {"id": "dep-1:1"}
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadPreconditionError, match="expected head at 5"):
+        store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=5)
+
+
+def test_cosmos_double_bootstrap_divergent_content_is_conflict() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(revision_sequence=1, backend_version="1.2.3"), expected_head_sequence=None)
+    with pytest.raises(RuntimeMappingConflictError, match="different content"):
+        store.commit_revision(_mapping(revision_sequence=1, backend_version="9.9.9"), expected_head_sequence=None)
+
+
+def test_cosmos_torn_bootstrap_same_content_retry_is_head_precondition() -> None:
+    # Revision landed but head did not (torn bootstrap); retry with the SAME
+    # content: create 409s, digests match, so it is NOT a conflict -- it surfaces
+    # as a head-precondition signal to re-read and retry.
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    mapping = _mapping(revision_sequence=1)
+    container.items["dep-1:1"] = container._bump(store._revision_document(mapping))
+    with pytest.raises(RuntimeHeadPreconditionError, match="re-read head"):
+        store.commit_revision(mapping, expected_head_sequence=None)
+
+
+def test_cosmos_supersede_head_moved_under_batch_is_precondition() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    container.force_batch_status = 412  # concurrent supersede moved the head
+    with pytest.raises(RuntimeHeadPreconditionError, match="re-read head"):
+        store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1)
+
+
+def test_cosmos_commit_reraises_non_precondition_error() -> None:
+    container = _FakeContainer()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
+    container.force_batch_status = 503
     with pytest.raises(CosmosHttpResponseError):
-        store.put(mapping)
+        store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1)
 
 
 def test_cosmos_delete_removes_exact_revision() -> None:
     container = _FakeContainer()
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
-    store.put(_mapping(deployment_id="dep-1", revision_sequence=1))
+    store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
     store.delete("dep-1", 1)
     assert store.get("dep-1", 1) is None
 

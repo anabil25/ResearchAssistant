@@ -85,7 +85,7 @@ def test_repoint_binds_exact_pair() -> None:
     assert index.resolve_binding(CLIENT, "dep-2") is None
 
 
-def test_repoint_strict_successor_advances() -> None:
+def test_repoint_monotonic_advance() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
     index.repoint(CLIENT, "dep-1", 2, REV2, ACTIVE, expected_current_sequence=1)
@@ -103,11 +103,25 @@ def test_repoint_idempotent_reaffirmation() -> None:
     assert resolution.revision_sequence == 1
 
 
-def test_repoint_rejects_non_successor() -> None:
+def test_repoint_allows_monotonic_skip() -> None:
+    # A binding may LAG the head and legitimately jump N -> N+2 if it missed an
+    # intervening supersession; monotonic advance permits any strictly-greater
+    # target (strict single-succession is enforced at the head, not per binding).
     index = InMemoryClientDeploymentBindingIndex()
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 3, "rev-3", ACTIVE, expected_current_sequence=1)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None
+    assert resolution.revision_sequence == 3
+
+
+def test_repoint_rejects_same_sequence_different_content() -> None:
+    # Same sequence with a DIFFERENT digest is not idempotent -- it is a rollback
+    # attempt against the pinned revision and is refused.
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 2, REV, ACTIVE, expected_current_sequence=None)
     with pytest.raises(NonMonotonicRepointError):
-        index.repoint(CLIENT, "dep-1", 3, "rev-3", ACTIVE, expected_current_sequence=1)
+        index.repoint(CLIENT, "dep-1", 2, "rev-other", ACTIVE, expected_current_sequence=2)
 
 
 def test_repoint_rejects_rollback() -> None:
@@ -166,7 +180,7 @@ def _loader(
     store = _CountingStore()
     mapping = _mapping()
     if mapping_present:
-        store.put(mapping)
+        store.commit_revision(mapping, expected_head_sequence=None)
     if bound:
         index.repoint(CLIENT, "dep-1", 1, pin or mapping.revision_id, ACTIVE, expected_current_sequence=None)
     return build_authorized_mapping_loader(index, store), mapping, store
@@ -203,7 +217,7 @@ def test_loader_denies_revoked_tombstone_without_reading_mapping() -> None:
     index = InMemoryClientDeploymentBindingIndex()
     store = _CountingStore()
     mapping = _mapping()
-    store.put(mapping)
+    store.commit_revision(mapping, expected_head_sequence=None)
     index.repoint(CLIENT, "dep-1", 1, mapping.revision_id, ACTIVE, expected_current_sequence=None)
     index.repoint(CLIENT, "dep-1", 2, REV2, REVOKED, expected_current_sequence=1)
     load = build_authorized_mapping_loader(index, store)
@@ -221,7 +235,7 @@ class _RevokedResolver:
 
 def test_loader_denies_soft_revoked_via_resolver() -> None:
     store = _CountingStore()
-    store.put(_mapping())
+    store.commit_revision(_mapping(), expected_head_sequence=None)
     resolver: ClientDeploymentBindingResolver = _RevokedResolver()
     load = build_authorized_mapping_loader(resolver, store)
     assert load(CLIENT, "dep-1") is None

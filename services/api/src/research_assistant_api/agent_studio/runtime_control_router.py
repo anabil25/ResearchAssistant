@@ -53,7 +53,7 @@ from research_assistant_api.agent_studio.runtime_control_schemas import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_identity import resolve_runtime_principal
-from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingReader
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
@@ -62,7 +62,7 @@ RUNTIME_CONTROL_BASE_PATH = "/internal/v1/runtime"
 
 def build_runtime_control_app(
     *,
-    mapping_store: RuntimeDeploymentMappingStore,
+    mapping_store: RuntimeDeploymentMappingReader,
     client_binding_resolver: ClientDeploymentBindingResolver,
     auth_policy: RuntimeAuthPolicy,
     settings: Settings,

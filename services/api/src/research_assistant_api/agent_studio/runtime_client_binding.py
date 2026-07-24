@@ -67,7 +67,7 @@ from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFo
 from pydantic import BaseModel, ConfigDict
 
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
-from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingReader
 
 #: A loader taking (trusted_client_app_id, asserted_deployment_id) and returning
 #: the authorized mapping or ``None`` (uniformly, without leaking why).
@@ -194,21 +194,26 @@ def _validate_monotonic_repoint(
     new_sequence: int,
     new_revision_id: str,
 ) -> None:
-    """Enforce strict-successor (or idempotent re-affirmation) against the observed current.
+    """Enforce MONOTONIC ADVANCE (or idempotent re-affirmation) for a binding repoint.
 
-    Shared by both adapters so the rollback rule is identical everywhere. A
-    first binding (``observed_sequence is None``) may take any sequence -- the
-    store already adjudicated the revision's uniqueness. Otherwise the new
-    sequence must be ``observed + 1``, unless it re-affirms the identical current
-    revision (same sequence AND same digest), which is idempotent.
+    A binding row answers only "which revision may THIS client see" and may
+    legitimately LAG the succession head during a partial multi-client repoint,
+    so it need not be a STRICT successor -- a client at N may jump straight to
+    N+2 if it missed a supersession. It may only ever ADVANCE, though: a first
+    binding (``observed_sequence is None``) may take any sequence; otherwise the
+    new sequence must be strictly greater than the observed one, unless it
+    re-affirms the identical current revision (same sequence AND same digest),
+    which is idempotent. A lower sequence, or an equal sequence with different
+    content, is a rollback and is refused. (Strict single-succession is enforced
+    at the head/succession record, not per binding.)
     """
     if observed_sequence is None:
         return
     is_idempotent = new_sequence == observed_sequence and new_revision_id == observed_revision_id
-    is_successor = new_sequence == observed_sequence + 1
-    if not (is_idempotent or is_successor):
+    is_advance = new_sequence > observed_sequence
+    if not (is_idempotent or is_advance):
         raise NonMonotonicRepointError(
-            f"repoint to sequence {new_sequence} is not the strict successor of {observed_sequence}."
+            f"repoint to sequence {new_sequence} does not advance the current binding at {observed_sequence}."
         )
 
 
@@ -267,7 +272,7 @@ class InMemoryClientDeploymentBindingIndex:
 
 def build_authorized_mapping_loader(
     resolver: ClientDeploymentBindingResolver,
-    mapping_store: RuntimeDeploymentMappingStore,
+    mapping_store: RuntimeDeploymentMappingReader,
 ) -> AuthorizedMappingLoader:
     """Compose a read-only binding resolver + mapping store into an authorized loader.
 

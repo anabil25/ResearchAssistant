@@ -199,7 +199,7 @@ def _client(
     store = InMemoryRuntimeDeploymentMappingStore()
     resolver = InMemoryClientDeploymentBindingIndex()
     if mapping is not None:
-        store.put(mapping)
+        store.commit_revision(mapping, expected_head_sequence=None)
     # The authenticated runtime client is server-bound to exactly this
     # deployment's current revision (or "dep-1"/a placeholder revision when there
     # is no mapping, to exercise the bound-client-but-no-mapping path). A REVOKED

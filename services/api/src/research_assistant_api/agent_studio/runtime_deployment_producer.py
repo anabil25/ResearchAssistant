@@ -46,7 +46,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     RuntimeBindingStatus,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
-from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingControlPlane
 
 #: Bounded CAS retry budget for a repoint racing a concurrent control-plane
 #: write. Each retry RE-READS the current pointer (never a blind retry).
@@ -97,7 +97,7 @@ class RuntimeDeploymentProducer:
 
     def __init__(
         self,
-        mapping_store: RuntimeDeploymentMappingStore,
+        mapping_store: RuntimeDeploymentMappingControlPlane,
         binding_writer: ClientDeploymentBindingWriter,
         binding_resolver: ClientDeploymentBindingResolver,
         audit: RuntimeBindingAuditRecorder,
@@ -108,34 +108,45 @@ class RuntimeDeploymentProducer:
         self._audit = audit
 
     def grant(self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime) -> RuntimeDeploymentMapping:
-        """Publish ``mapping`` as live authority: write the revision, then bind.
+        """Publish ``mapping`` as the current revision, then repoint the bindings.
 
-        Pre-checks strict-successor repointing per (client, deployment) to reject
-        an obvious rollback/gap before any write, then writes the mapping revision
-        FIRST (the store atomically adjudicates the sequence), then CAS-repoints
-        each allowed client's binding to this revision (the authoritative
-        strict-successor check runs INSIDE the conditional write, retrying on a
-        concurrent modification by RE-READING), and appends a grant/repoint audit
-        event per client.
+        Succession is decided by the per-deployment HEAD (the single source of
+        ``next``), NOT by the per-client bindings. The head read tells us whether
+        this is a BOOTSTRAP (no head -> mapping must be sequence 1) or a SUPERSEDE
+        (mapping must be head.current_sequence + 1). ``commit_revision`` writes the
+        revision item and the head as ONE atomic unit (create-only on bootstrap,
+        If-Match on supersede), so ``next`` can never skip or collide. Only then
+        are the client bindings CAS-repointed to this revision; those may lag
+        (monotonic advance, not strict successor) and are reconcilable.
         """
         now = _require_aware_utc_now(now)
-        # Best-effort early rollback/gap rejection before writing an orphan
-        # revision; the CAS repoint below is the authoritative check.
-        for binding in mapping.allowed_client_app_role_bindings:
-            resolution = self._binding_resolver.resolve_binding(binding.client_app_id, mapping.deployment_id)
-            if (
-                resolution is not None
-                and resolution.revision_id != mapping.revision_id
-                and mapping.revision_sequence != resolution.revision_sequence + 1
-            ):
+        head = self._mapping_store.get_head(mapping.deployment_id)
+        if head is None:
+            if mapping.revision_sequence != 1:
                 raise RollbackRepointError(
-                    "grant is not the strict successor of the current binding "
-                    f"(current sequence {resolution.revision_sequence}, requested {mapping.revision_sequence})."
+                    f"bootstrap grant for '{mapping.deployment_id}' must be sequence 1, "
+                    f"got {mapping.revision_sequence}."
                 )
-        persisted = self._mapping_store.put(mapping)
+            self._mapping_store.commit_revision(mapping, expected_head_sequence=None)
+        else:
+            if mapping.revision_sequence == head.current_sequence:
+                # A re-grant of the CURRENT sequence is only legal if it is the
+                # identical revision (idempotent replay); the same sequence with
+                # different content is a rollback/forgery.
+                if mapping.revision_id != head.current_revision_id:
+                    raise RollbackRepointError(
+                        f"grant for '{mapping.deployment_id}' at current sequence {head.current_sequence} "
+                        "carries different content than the head revision."
+                    )
+            elif mapping.revision_sequence != head.current_sequence + 1:
+                raise RollbackRepointError(
+                    f"supersede grant for '{mapping.deployment_id}' must be the strict successor of head "
+                    f"{head.current_sequence}, got {mapping.revision_sequence}."
+                )
+            self._mapping_store.commit_revision(mapping, expected_head_sequence=head.current_sequence)
         for binding in mapping.allowed_client_app_role_bindings:
             self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.ACTIVE, actor_id=actor_id, now=now)
-        return persisted
+        return mapping
 
     def _cas_repoint(
         self,

@@ -25,7 +25,7 @@ from research_assistant_api.agent_studio.approval_context import ApprovalContext
 from research_assistant_api.agent_studio.runtime_authz import RuntimeAuthPolicy, uniform_denial
 from research_assistant_api.agent_studio.runtime_client_binding import ClientDeploymentBindingResolver
 from research_assistant_api.agent_studio.runtime_control_router import build_runtime_control_app
-from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.runtime_mapping_store import RuntimeDeploymentMappingReader
 from research_assistant_api.config import Settings
 
 
@@ -64,7 +64,7 @@ def build_fail_closed_runtime_control_app() -> FastAPI:
 def build_runtime_control_mount(
     *,
     settings: Settings,
-    mapping_store: RuntimeDeploymentMappingStore | None,
+    mapping_store: RuntimeDeploymentMappingReader | None,
     client_binding_resolver: ClientDeploymentBindingResolver | None,
     auth_policy: RuntimeAuthPolicy | None,
     context_resolver: ApprovalContextResolver | None,

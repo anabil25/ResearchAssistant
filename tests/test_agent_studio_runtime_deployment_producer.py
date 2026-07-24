@@ -26,7 +26,6 @@ from research_assistant_api.agent_studio.runtime_deployment_producer import (
 )
 from research_assistant_api.agent_studio.runtime_mapping_store import (
     InMemoryRuntimeDeploymentMappingStore,
-    RuntimeMappingConflictError,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 
@@ -146,24 +145,25 @@ def test_grant_rejects_rollback_to_older_revision() -> None:
 
 def test_grant_rejects_same_sequence_different_content() -> None:
     producer, _store, _index, _audit = _producer()
-    producer.grant(_mapping(revision_sequence=2), actor_id=ACTOR, now=NOW)
+    producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
+    producer.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
     with pytest.raises(RollbackRepointError):
         producer.grant(_mapping(revision_sequence=2, backend_version="9.9.9"), actor_id=ACTOR, now=NOW)
+
+
+def test_first_grant_must_be_sequence_one() -> None:
+    # Bootstrap is decided by the ABSENCE of a head, so a first grant at any
+    # sequence other than 1 is refused (no head to derive a successor from).
+    producer, store, _index, _audit = _producer()
+    with pytest.raises(RollbackRepointError, match="must be sequence 1"):
+        producer.grant(_mapping(revision_sequence=2), actor_id=ACTOR, now=NOW)
+    assert store.get_head("dep-1") is None
 
 
 def test_grant_rejects_naive_now() -> None:
     producer, _store, _index, _audit = _producer()
     with pytest.raises(ValueError, match="now must be timezone-aware"):
         producer.grant(_mapping(), actor_id=ACTOR, now=datetime(2026, 1, 2, 12, 0, 0))
-
-
-def test_divergent_content_at_same_sequence_is_conflict() -> None:
-    # Real mechanism: two control-plane grants construct DIFFERENT content at the
-    # same sequence; the store adjudicates and the second is a hard conflict.
-    producer, _store, _index, _audit = _producer()
-    producer.grant(_mapping(revision_sequence=1, backend_version="1.2.3"), actor_id=ACTOR, now=NOW)
-    with pytest.raises(RuntimeMappingConflictError):
-        _store.put(_mapping(revision_sequence=1, backend_version="9.9.9"))
 
 
 # --- REVOKE (binding-status tombstone, no new mapping revision) -------------
