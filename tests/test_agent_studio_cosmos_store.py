@@ -13,7 +13,7 @@ from typing import TYPE_CHECKING, Any, cast
 import pytest
 import research_assistant_api.agent_studio.cosmos_store as cosmos_store
 from azure.core import MatchConditions
-from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosHttpResponseError, CosmosResourceNotFoundError
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
     AgentManifest,
@@ -445,6 +445,7 @@ class FakeContainer:
         self.documents: dict[tuple[str, str], dict[str, Any]] = {}
         self.version = 0
         self.fail_replace_status: int | None = None
+        self.fail_batch_status: int | None = None
         self.query_calls = 0
         self.query_log: list[dict[str, Any]] = []
         self.read_log: list[tuple[str, str]] = []
@@ -543,6 +544,85 @@ class FakeContainer:
             stored["_etag"] = str(self.version)
             self.documents[key] = stored
             return deepcopy(stored)
+
+    def execute_item_batch(
+        self,
+        batch_operations: list[tuple[str, tuple[Any, ...]] | tuple[str, tuple[Any, ...], dict[str, Any]]],
+        partition_key: str,
+    ) -> list[dict[str, Any]]:
+        """Simulate Cosmos's atomic transactional batch: every operation is
+        validated against the *current* state before any mutation is
+        applied, so a batch either applies in full or leaves every document
+        exactly as it was -- there is no path that partially applies some
+        operations and not others, matching real Cosmos batch semantics."""
+        if self.fail_batch_status is not None:
+            raise CosmosBatchOperationError(  # type: ignore[no-untyped-call]
+                error_index=0,
+                headers={},
+                status_code=self.fail_batch_status,
+                message="simulated batch failure",
+                operation_responses=[],
+            )
+        with self._lock:
+            for index, operation in enumerate(batch_operations):
+                op_type = operation[0]
+                args = operation[1]
+                kwargs = operation[2] if len(operation) > 2 else {}
+                if op_type == "replace":
+                    item_id, body = args
+                    key = (partition_key, item_id)
+                    if key not in self.documents:
+                        raise CosmosBatchOperationError(  # type: ignore[no-untyped-call]
+                            error_index=index,
+                            headers={},
+                            status_code=404,
+                            message="missing document for replace",
+                            operation_responses=[],
+                        )
+                    expected_etag = kwargs.get("if_match_etag")
+                    if expected_etag is not None and self.documents[key]["_etag"] != expected_etag:
+                        raise CosmosBatchOperationError(  # type: ignore[no-untyped-call]
+                            error_index=index,
+                            headers={},
+                            status_code=412,
+                            message="etag mismatch: document was modified concurrently",
+                            operation_responses=[],
+                        )
+                elif op_type == "create":
+                    (body,) = args
+                    key = (partition_key, body["id"])
+                    if key in self.documents:
+                        raise CosmosBatchOperationError(  # type: ignore[no-untyped-call]
+                            error_index=index,
+                            headers={},
+                            status_code=409,
+                            message="conflict: document already exists",
+                            operation_responses=[],
+                        )
+                elif op_type == "upsert":
+                    pass
+                else:
+                    raise NotImplementedError(f"FakeContainer.execute_item_batch does not simulate '{op_type}'.")
+            # All operations validated against pre-batch state -- now apply
+            # every one of them, atomically from the caller's perspective.
+            results: list[dict[str, Any]] = []
+            for operation in batch_operations:
+                op_type = operation[0]
+                args = operation[1]
+                if op_type == "replace":
+                    item_id, body = args
+                    key = (partition_key, item_id)
+                elif op_type in ("create", "upsert"):
+                    (body,) = args
+                    key = (partition_key, body["id"])
+                else:  # pragma: no cover - unreachable, validated above
+                    continue
+                self.version += 1
+                stored = deepcopy(body)
+                stored["_etag"] = str(self.version)
+                self.documents[key] = stored
+                results.append(deepcopy(stored))
+            return results
 
     def delete_item(self, *, item: str, partition_key: str) -> None:
         key = (partition_key, item)
@@ -2102,18 +2182,30 @@ def test_transition_idempotency_record_handles_missing_key_and_concurrency_confl
     assert updated.version == "2"
 
 
-def test_complete_idempotency_writes_separate_result_document_and_load_result_round_trips(
+def test_complete_idempotency_writes_record_and_result_via_single_atomic_batch(
     fake_client_factory: FakeCosmosClientFactory,
 ) -> None:
-    """``complete_idempotency`` writes two distinct Cosmos documents -- the
-    transitioned record (ETag-guarded ``replace_item``) and a separate
-    ``idempotency_result`` document (plain ``upsert_item``, keyed by
-    ``result_hash``, never the key digest) -- and both are independently
-    readable afterward."""
+    """``complete_idempotency`` durably writes two distinct Cosmos documents
+    -- the transitioned record and a separate ``idempotency_result``
+    document (keyed by ``result_hash``, never the key digest) -- via a
+    *single* Cosmos transactional batch (``execute_item_batch``) rather than
+    two independent calls, so the two writes can never be observed as
+    partially applied. Both documents are independently readable
+    afterward."""
     key = _idempotency_key(caller_key="complete-result")
     store = _new_store(fake_client_factory)
     claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
     assert claim.claim_token is not None
+
+    container = _metadata_container(fake_client_factory)
+    original_execute_item_batch = container.execute_item_batch
+    batch_calls: list[list[Any]] = []
+
+    def _spy_execute_item_batch(batch_operations: list[Any], partition_key: str) -> list[dict[str, Any]]:
+        batch_calls.append(deepcopy(batch_operations))
+        return original_execute_item_batch(batch_operations, partition_key=partition_key)
+
+    container.execute_item_batch = _spy_execute_item_batch  # type: ignore[method-assign]
 
     completed = store.complete_idempotency(
         SCOPE,
@@ -2125,7 +2217,12 @@ def test_complete_idempotency_writes_separate_result_document_and_load_result_ro
     )
     assert completed.result_ref == "idempotency-result::" + "f" * 64
 
-    container = _metadata_container(fake_client_factory)
+    # Exactly one atomic batch call, containing both the record replace and
+    # the result upsert -- never two independent write calls.
+    assert len(batch_calls) == 1
+    op_types = [operation[0] for operation in batch_calls[0]]
+    assert op_types == ["replace", "upsert"]
+
     result_documents = [
         document
         for document in container.documents.values()
@@ -2153,6 +2250,176 @@ def test_complete_idempotency_writes_separate_result_document_and_load_result_ro
             result={"status": "different"},
             result_hash="0" * 64,
         )
+
+
+def test_complete_idempotency_raises_not_found_for_never_claimed_key(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """``complete_idempotency`` must never touch the atomic batch call at
+    all for a key that was never claimed -- there is no record document to
+    read, so it must fail with ``IdempotencyNotFoundError`` before any
+    Cosmos write is attempted."""
+    key = _idempotency_key(caller_key="complete-never-claimed")
+    store = _new_store(fake_client_factory)
+    with pytest.raises(IdempotencyNotFoundError):
+        store.complete_idempotency(
+            SCOPE,
+            key,
+            claim_token="token",
+            expected_version="1",
+            result={"status": "ok"},
+            result_hash="a" * 64,
+        )
+
+
+def test_complete_idempotency_batch_conflict_translates_to_concurrency_error(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A 412 (etag mismatch) failure from the atomic batch call must
+    translate to ``IdempotencyConcurrencyError``, exactly like the
+    equivalent ``replace_item`` 412 branch for every other transition."""
+    key = _idempotency_key(caller_key="complete-batch-conflict")
+    store = _new_store(fake_client_factory)
+    claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    container = _metadata_container(fake_client_factory)
+    container.fail_batch_status = 412
+    with pytest.raises(IdempotencyConcurrencyError, match="modified concurrently"):
+        store.complete_idempotency(
+            SCOPE,
+            key,
+            claim_token=claim.claim_token,
+            expected_version="1",
+            result={"status": "ok"},
+            result_hash="a" * 64,
+        )
+    container.fail_batch_status = None
+
+    # The successful path still works once the injected failure clears.
+    completed = store.complete_idempotency(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version="1",
+        result={"status": "ok"},
+        result_hash="a" * 64,
+    )
+    assert completed.state is IdempotencyState.COMPLETED
+
+
+def test_complete_idempotency_batch_failure_leaves_no_partial_write(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """A failed batch call must never leave a partially-applied state:
+    neither the record transition nor the result document write may be
+    observed, closing exactly the hazard a two-separate-writes
+    implementation would have (a durably ``COMPLETED`` record whose
+    ``result_ref`` points at nothing)."""
+    key = _idempotency_key(caller_key="complete-batch-no-partial")
+    store = _new_store(fake_client_factory)
+    claim = store.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    container = _metadata_container(fake_client_factory)
+    container.fail_batch_status = 500
+    with pytest.raises(CosmosBatchOperationError):
+        store.complete_idempotency(
+            SCOPE,
+            key,
+            claim_token=claim.claim_token,
+            expected_version="1",
+            result={"status": "ok"},
+            result_hash="b" * 64,
+        )
+    container.fail_batch_status = None
+
+    # Observed from a completely fresh instance (no shared in-process
+    # cache): the record must still be exactly its pre-complete CLAIMED
+    # state, and no result document may exist anywhere in the container.
+    fresh_reader = _new_store(fake_client_factory)
+    record = fresh_reader.get_idempotency_record(SCOPE, key)
+    assert record is not None
+    assert record.state is IdempotencyState.CLAIMED
+    assert record.version == "1"
+    assert record.result_ref is None
+    result_documents = [
+        document for document in container.documents.values() if document["documentType"] == "idempotency_result"
+    ]
+    assert result_documents == []
+
+    # The successful path still works once the injected failure clears.
+    completed = store.complete_idempotency(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version="1",
+        result={"status": "ok"},
+        result_hash="b" * 64,
+    )
+    assert completed.state is IdempotencyState.COMPLETED
+
+
+def test_complete_idempotency_concurrent_completions_yield_exactly_one_winner(
+    fake_client_factory: FakeCosmosClientFactory,
+) -> None:
+    """Two concurrent ``complete_idempotency`` calls against the same
+    claimed key (both starting from version "1") must resolve to exactly
+    one durable winner; every other concurrent attempt must fail with
+    ``IdempotencyConcurrencyError``, never silently overwrite the winner's
+    result."""
+    key = _idempotency_key(caller_key="complete-race")
+    claimer = _new_store(fake_client_factory)
+    claim = claimer.claim_idempotency(SCOPE, key, actor_id=USER_ID, release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+
+    thread_count = 8
+    successes: list[Any] = []
+    failures: list[BaseException] = []
+    lock = threading.Lock()
+    barrier = threading.Barrier(thread_count)
+
+    def _attempt(worker_index: int) -> None:
+        store = _new_store(fake_client_factory)
+        barrier.wait()
+        try:
+            completed = store.complete_idempotency(
+                SCOPE,
+                key,
+                claim_token=claim.claim_token,
+                expected_version="1",
+                result={"status": "ok", "worker": worker_index},
+                result_hash=f"{worker_index:064d}",
+            )
+        except IdempotencyConcurrencyError as exc:
+            with lock:
+                failures.append(exc)
+            return
+        with lock:
+            successes.append(completed)
+
+    threads = [threading.Thread(target=_attempt, args=(index,)) for index in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert len(successes) == 1
+    assert len(failures) == thread_count - 1
+
+    final_store = _new_store(fake_client_factory)
+    final_record = final_store.get_idempotency_record(SCOPE, key)
+    assert final_record is not None
+    assert final_record == successes[0]
+    assert final_record.result_ref is not None
+    assert final_store.load_idempotency_result(SCOPE, final_record.result_ref) == {
+        "status": "ok",
+        "worker": next(
+            worker
+            for worker in range(thread_count)
+            if final_record.result_ref == "idempotency-result::" + f"{worker:064d}"
+        ),
+    }
 
 
 def test_fail_idempotency_marks_reconciliation_required_and_persists(

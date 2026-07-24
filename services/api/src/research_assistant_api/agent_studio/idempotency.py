@@ -17,13 +17,19 @@ at commit ``cef9975`` on their branch purely for shape/semantics alignment):
 async operations. Two deliberate deviations, both justified by this being an
 independently-designed adapter rather than a copy:
 
-* ``load_result`` here takes an explicit ``scope: ScopeContext`` parameter
-  (their reference Protocol has none) -- a real gap in taking an opaque
-  ``result_ref`` string alone as sufficient addressing. Every point read here
-  is always partitioned by the *caller's own authorized* ``scope.scope_key``,
-  never by anything decoded from ``result_ref`` itself, so cross-tenant
-  enumeration is structurally impossible even if a caller somehow guesses
-  another scope's ``result_ref``.
+* ``load_result`` here takes an explicit ``scope: ScopeContext`` *and* the
+  full ``IdempotencyKey`` plus the caller's asserted ``release_id`` -- never
+  a bare ``result_ref`` string, which on its own carries no binding to any
+  specific key or release. Every read is always partitioned by the
+  *caller's own authorized* ``scope.scope_key`` and re-derives ``result_ref``
+  from the durable record found by ``key`` -- never from a caller-supplied
+  ``result_ref`` -- so cross-tenant enumeration is structurally impossible
+  even if a caller somehow guesses another scope's ``result_ref``. It then
+  independently re-verifies release provenance (``record.release_id`` must
+  equal the caller's asserted ``release_id``) and result integrity (the
+  stored payload's independently recomputed digest must still equal
+  ``record.result_hash``) before ever returning the payload, rather than
+  trusting a ``COMPLETED`` state alone.
 * ``complete`` here takes the raw ``result`` payload, never a caller-supplied
   ``result_hash`` -- this port independently recomputes the canonical digest
   of ``result`` itself (via ``_hash_result``) before ever calling the store,
@@ -51,6 +57,7 @@ from research_assistant_api.agent_studio.models import (
     IdempotencyClaim,
     IdempotencyKey,
     IdempotencyRecord,
+    IdempotencyState,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStore
@@ -67,6 +74,24 @@ class IdempotencyResultMismatchError(IdempotencyError):
     record -- this can only happen if the caller's own bookkeeping is
     inconsistent, since the port computes the digest itself rather than
     trusting one asserted over the wire."""
+
+
+class IdempotencyReleaseMismatchError(IdempotencyError):
+    """Raised by ``load_result`` when the caller's asserted ``release_id``
+    does not match the release that actually completed this idempotency
+    key. A stale or incorrect binding replaying a *different* release's
+    result must be rejected outright, never silently served -- the
+    completed result is only ever a valid replay for the exact release
+    that produced it."""
+
+
+class IdempotencyResultIntegrityError(IdempotencyError):
+    """Raised by ``load_result`` when a durably ``COMPLETED`` record's
+    result cannot be trusted: either its result document is missing
+    entirely, or the payload actually stored no longer hashes to the
+    record's durable ``result_hash`` (tampered or corrupted). Both are
+    genuine data-integrity violations -- never silently served, and never
+    conflated with an ordinary "not found"/``None`` result."""
 
 
 def _hash_result(result: dict[str, Any]) -> str:
@@ -135,7 +160,9 @@ class IdempotencyPort(Protocol):
         now: datetime | None = None,
     ) -> IdempotencyRecord: ...
 
-    async def load_result(self, scope: ScopeContext, result_ref: str) -> dict[str, Any] | None: ...
+    async def load_result(
+        self, scope: ScopeContext, key: IdempotencyKey, *, release_id: str
+    ) -> dict[str, Any] | None: ...
 
 
 class StoreBackedIdempotencyPort:
@@ -243,13 +270,56 @@ class StoreBackedIdempotencyPort:
             now=now,
         )
 
-    async def load_result(self, scope: ScopeContext, result_ref: str) -> dict[str, Any] | None:
-        return self._store.load_idempotency_result(scope, result_ref)
+    async def load_result(
+        self, scope: ScopeContext, key: IdempotencyKey, *, release_id: str
+    ) -> dict[str, Any] | None:
+        """Replay a previously completed result, verifying full provenance
+        before ever returning it to the caller.
+
+        Always looks the record up by ``key`` (never trusts a caller-
+        supplied ``result_ref`` as an addressing key) and re-derives
+        ``result_ref`` from that record itself. Returns ``None`` only for
+        the ordinary "not found"/"not yet completed" cases; a record found
+        but whose provenance fails re-verification raises rather than
+        silently returning ``None`` or the untrusted payload, since those
+        are integrity violations, not absence.
+        """
+
+        record = self._store.get_idempotency_record(scope, key)
+        if record is None or record.state is not IdempotencyState.COMPLETED:
+            return None
+        if record.release_id != release_id:
+            raise IdempotencyReleaseMismatchError(
+                f"Idempotency key digest '{key.digest}' was completed under release "
+                f"'{record.release_id}', not the caller-asserted release '{release_id}'."
+            )
+        if record.result_ref is None or record.result_hash is None:
+            # Structurally unreachable per IdempotencyRecord's own
+            # model_validator (COMPLETED requires both), but fail closed
+            # rather than assume the invariant instead of asserting it.
+            raise IdempotencyResultIntegrityError(
+                f"Idempotency key digest '{key.digest}' is COMPLETED but is missing its "
+                "result_ref/result_hash identity."
+            )
+        result = self._store.load_idempotency_result(scope, record.result_ref)
+        if result is None:
+            raise IdempotencyResultIntegrityError(
+                f"Idempotency key digest '{key.digest}' is durably COMPLETED but its result document "
+                f"'{record.result_ref}' could not be read back."
+            )
+        if _hash_result(result) != record.result_hash:
+            raise IdempotencyResultIntegrityError(
+                f"Idempotency key digest '{key.digest}': the stored result payload's digest no longer "
+                "matches the record's durable result_hash (tampered or corrupted result document)."
+            )
+        return result
 
 
 __all__ = [
     "IdempotencyError",
     "IdempotencyPort",
+    "IdempotencyReleaseMismatchError",
+    "IdempotencyResultIntegrityError",
     "IdempotencyResultMismatchError",
     "StoreBackedIdempotencyPort",
 ]

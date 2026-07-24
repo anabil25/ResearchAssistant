@@ -84,7 +84,7 @@ from research_assistant_api.agent_studio.release_service import (
     ReleaseService,
     ReleaseServiceError,
 )
-from research_assistant_api.agent_studio.router import claim_idempotency_route
+from research_assistant_api.agent_studio.router import HOSTED_RUNTIME_SERVICE_ROLE, claim_idempotency_route
 from research_assistant_api.agent_studio.router import router as agent_studio_router
 from research_assistant_api.agent_studio.schemas import ClaimIdempotencyRequest
 from research_assistant_api.agent_studio.scope import PLATFORM_PROJECT_ID, ScopeContext
@@ -111,10 +111,12 @@ def _principal(
     user_id: str,
     groups: tuple[str, ...] = (),
     groups_overage: bool = False,
+    roles: tuple[str, ...] = (),
 ) -> str:
     claims = [
         {"typ": "tid", "val": tenant_id},
         *({"typ": "groups", "val": group} for group in groups),
+        *({"typ": "roles", "val": role} for role in roles),
     ]
     if groups_overage:
         claims.append({"typ": "hasgroups", "val": "true"})
@@ -132,6 +134,7 @@ def _headers(
     user_id: str,
     groups: tuple[str, ...] = (),
     groups_overage: bool = False,
+    roles: tuple[str, ...] = (),
 ) -> dict[str, str]:
     return {
         "x-ms-client-principal": _principal(
@@ -139,6 +142,7 @@ def _headers(
             user_id=user_id,
             groups=groups,
             groups_overage=groups_overage,
+            roles=roles,
         )
     }
 
@@ -150,12 +154,14 @@ def _project_headers(
     project_ids: tuple[str, ...],
     extra_groups: tuple[str, ...] = (),
     groups_overage: bool = False,
+    roles: tuple[str, ...] = (),
 ) -> dict[str, str]:
     return _headers(
         tenant_id=tenant_id,
         user_id=user_id,
         groups=(*extra_groups, *(project_group_name(project_id) for project_id in project_ids)),
         groups_overage=groups_overage,
+        roles=roles,
     )
 
 
@@ -190,6 +196,38 @@ OTHER_TENANT_HEADERS = _project_headers(
     user_id="other-user",
     project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
     extra_groups=("research-admins",),
+)
+
+#: An identity carrying the runtime-internal service role
+#: (``HOSTED_RUNTIME_SERVICE_ROLE``) required by the durable idempotency
+#: control-plane routes, in addition to normal project membership (a
+#: hosted-agent runtime still resolves an authorized project scope exactly
+#: like any other caller; the role only proves it is a service caller, not
+#: a substitute for project membership).
+SERVICE_HEADERS = _project_headers(
+    tenant_id="demo",
+    user_id="hosted-runtime-service",
+    project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
+    roles=(HOSTED_RUNTIME_SERVICE_ROLE,),
+)
+#: Same service role, but under a different authenticated tenant --
+#: exercises that the role alone does not bypass tenant-partition
+#: isolation, only project-membership gating.
+OTHER_TENANT_SERVICE_HEADERS = _project_headers(
+    tenant_id="other-tenant",
+    user_id="other-tenant-hosted-runtime-service",
+    project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
+    roles=(HOSTED_RUNTIME_SERVICE_ROLE,),
+)
+#: A caller with real project membership and a role claim, but not the
+#: exact expected role string -- a forged/wrong-role identity that must
+#: still be rejected, proving the gate checks the exact role value rather
+#: than "any role claim present".
+WRONG_ROLE_SERVICE_HEADERS = _project_headers(
+    tenant_id="demo",
+    user_id="wrong-role-service",
+    project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
+    roles=("SomeOther.Role",),
 )
 
 
@@ -3292,6 +3330,15 @@ def test_get_release_attestation_route_returns_503_when_port_unavailable(
 
 
 # --- durable idempotency routes --------------------------------------------
+#
+# These routes are runtime-internal control plane, not part of the
+# researcher/project-user-facing API: every route requires an identity
+# carrying the exact ``HOSTED_RUNTIME_SERVICE_ROLE`` application-role claim
+# (see ``SERVICE_HEADERS``/``router._require_hosted_runtime_service``) and is
+# excluded from the public OpenAPI surface (``include_in_schema=False``). A
+# normal project member -- even with valid membership and well-formed IDs --
+# must be rejected with 403 before ever reaching the idempotency store; this
+# is asserted directly below rather than assumed.
 
 
 def _idempotency_body(
@@ -3322,20 +3369,20 @@ def test_idempotency_full_http_lifecycle_claim_progress_complete_and_load(
     claim_response = client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(release_id="release-1", lease_seconds=300),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert claim_response.status_code == 200, claim_response.text
     claim = claim_response.json()
     assert claim["disposition"] == "acquired"
     assert claim["claim_token"] is not None
-    assert claim["record"]["actor_id"] == "user-1"
+    assert claim["record"]["actor_id"] == "hosted-runtime-service"
 
     progress_response = client.post(
         "/api/agent-studio/idempotency/mark-in-progress",
         json=_idempotency_body(
             claim_token=claim["claim_token"], expected_version=claim["record"]["version"], irreversible=True
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert progress_response.status_code == 200, progress_response.text
     in_progress = progress_response.json()
@@ -3349,18 +3396,17 @@ def test_idempotency_full_http_lifecycle_claim_progress_complete_and_load(
             expected_version=in_progress["version"],
             result={"status": "ok", "value": 42},
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert complete_response.status_code == 200, complete_response.text
     completed = complete_response.json()
     assert completed["state"] == "completed"
-    result_ref = completed["result_ref"]
-    assert result_ref is not None
+    assert completed["result_ref"] is not None
 
-    load_response = client.get(
-        f"/api/agent-studio/idempotency/results/{result_ref}",
-        params=_params(),
-        headers=USER_HEADERS,
+    load_response = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-1"),
+        headers=SERVICE_HEADERS,
     )
     assert load_response.status_code == 200, load_response.text
     assert load_response.json() == {"status": "ok", "value": 42}
@@ -3370,11 +3416,11 @@ def test_idempotency_second_claim_against_same_key_reports_in_progress_without_n
     client: TestClient,
 ) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-dup")
-    first = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS)
+    first = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS)
     assert first.status_code == 200, first.text
     assert first.json()["disposition"] == "acquired"
 
-    second = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS)
+    second = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS)
     assert second.status_code == 200, second.text
     second_body = second.json()
     assert second_body["disposition"] == "in_progress"
@@ -3385,7 +3431,7 @@ def test_idempotency_claim_route_rejects_out_of_bounds_lease_seconds(client: Tes
     response = client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(release_id="release-1", lease_seconds=0),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 422
 
@@ -3394,7 +3440,7 @@ def test_idempotency_mark_in_progress_route_returns_404_for_never_claimed_key(cl
     response = client.post(
         "/api/agent-studio/idempotency/mark-in-progress",
         json=_idempotency_body(caller_key="never-claimed", claim_token="x" * 32, expected_version="1"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 404
 
@@ -3403,14 +3449,14 @@ def test_idempotency_mark_in_progress_route_returns_409_for_wrong_token_or_versi
     client: TestClient,
 ) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-conflict")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
 
     wrong_token = client.post(
         "/api/agent-studio/idempotency/mark-in-progress",
         json=_idempotency_body(
             caller_key="caller-conflict", claim_token="x" * 32, expected_version=claim["record"]["version"]
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert wrong_token.status_code == 409
 
@@ -3419,14 +3465,14 @@ def test_idempotency_mark_in_progress_route_returns_409_for_wrong_token_or_versi
         json=_idempotency_body(
             caller_key="caller-conflict", claim_token=claim["claim_token"], expected_version="99"
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert wrong_version.status_code == 409
 
 
 def test_idempotency_complete_route_returns_409_when_result_mismatch(client: TestClient) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-mismatch")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
 
     response = client.post(
         "/api/agent-studio/idempotency/complete",
@@ -3437,7 +3483,7 @@ def test_idempotency_complete_route_returns_409_when_result_mismatch(client: Tes
             result={"status": "ok"},
             expected_result_hash="0" * 64,
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 409
 
@@ -3450,12 +3496,12 @@ def test_idempotency_complete_route_returns_409_for_unclaimed_and_stale_transiti
         json=_idempotency_body(
             caller_key="never-claimed-complete", claim_token="x" * 32, expected_version="1", result={}
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert unclaimed.status_code == 404
 
     body = _idempotency_body(release_id="release-1", caller_key="caller-stale-complete")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
     first_complete = client.post(
         "/api/agent-studio/idempotency/complete",
         json=_idempotency_body(
@@ -3464,7 +3510,7 @@ def test_idempotency_complete_route_returns_409_for_unclaimed_and_stale_transiti
             expected_version=claim["record"]["version"],
             result={"status": "ok"},
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert first_complete.status_code == 200, first_complete.text
 
@@ -3476,14 +3522,14 @@ def test_idempotency_complete_route_returns_409_for_unclaimed_and_stale_transiti
             expected_version=claim["record"]["version"],
             result={"status": "ok"},
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert stale_retry.status_code == 409
 
 
 def test_idempotency_fail_route_marks_reconciliation_required(client: TestClient) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-fail")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
 
     response = client.post(
         "/api/agent-studio/idempotency/fail",
@@ -3493,7 +3539,7 @@ def test_idempotency_fail_route_marks_reconciliation_required(client: TestClient
             expected_version=claim["record"]["version"],
             failure_code="downstream-timeout",
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 200, response.text
     failed = response.json()
@@ -3508,14 +3554,14 @@ def test_idempotency_fail_route_returns_404_for_never_claimed_key(client: TestCl
         json=_idempotency_body(
             caller_key="never-claimed-fail", claim_token="x" * 32, expected_version="1", failure_code="boom"
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 404
 
 
 def test_idempotency_fail_route_returns_409_for_wrong_token_or_version(client: TestClient) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-fail-conflict")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
 
     response = client.post(
         "/api/agent-studio/idempotency/fail",
@@ -3525,7 +3571,7 @@ def test_idempotency_fail_route_returns_409_for_wrong_token_or_version(client: T
             expected_version="stale-version",
             failure_code="boom",
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 409
 
@@ -3553,26 +3599,84 @@ async def test_idempotency_claim_route_wraps_port_value_error_as_422(client: Tes
         release_id="release-1",
         lease_seconds=0.0,
     )
-    request = cast(Request, _FakeRequest(cast(FastAPI, client.app), USER_HEADERS))
+    request = cast(Request, _FakeRequest(cast(FastAPI, client.app), SERVICE_HEADERS))
     with pytest.raises(HTTPException) as exc_info:
         await claim_idempotency_route(request, payload)
     assert exc_info.value.status_code == 422
 
 
-def test_idempotency_load_result_route_returns_404_for_unknown_ref(client: TestClient) -> None:
-    response = client.get(
-        "/api/agent-studio/idempotency/results/idempotency-result::unknown",
-        params=_params(),
-        headers=USER_HEADERS,
+def test_idempotency_load_result_route_returns_404_for_unknown_key(client: TestClient) -> None:
+    response = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-1", caller_key="never-claimed-load"),
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 404
+
+
+def test_idempotency_load_result_route_returns_409_for_release_mismatch(client: TestClient) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-release-mismatch")
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
+    complete = client.post(
+        "/api/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-release-mismatch",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+        ),
+        headers=SERVICE_HEADERS,
+    )
+    assert complete.status_code == 200, complete.text
+
+    # The record was completed under release-1; asserting a different
+    # release_id is a provenance violation, not an ordinary "not found".
+    mismatched = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-2", caller_key="caller-release-mismatch"),
+        headers=SERVICE_HEADERS,
+    )
+    assert mismatched.status_code == 409
+
+
+def test_idempotency_load_result_route_returns_500_for_tampered_result(
+    client: TestClient, store: AgentStudioStore
+) -> None:
+    body = _idempotency_body(release_id="release-1", caller_key="caller-tampered")
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
+    complete = client.post(
+        "/api/agent-studio/idempotency/complete",
+        json=_idempotency_body(
+            caller_key="caller-tampered",
+            claim_token=claim["claim_token"],
+            expected_version=claim["record"]["version"],
+            result={"status": "ok"},
+        ),
+        headers=SERVICE_HEADERS,
+    ).json()
+    result_ref = complete["result_ref"]
+
+    # Directly corrupt the durably stored result payload underneath the
+    # record -- simulating storage-layer tampering/corruption independent
+    # of anything the port itself wrote. The record's ``result_hash`` no
+    # longer matches, so this must surface as a genuine integrity
+    # violation (500), never be silently served.
+    scope = _scope()
+    store._idempotency_results[(scope.scope_key, result_ref)] = {"status": "tampered"}
+
+    response = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-1", caller_key="caller-tampered"),
+        headers=SERVICE_HEADERS,
+    )
+    assert response.status_code == 500
 
 
 def test_idempotency_routes_never_leak_across_project_or_tenant_scope(
     client: TestClient,
 ) -> None:
     body = _idempotency_body(release_id="release-1", caller_key="caller-scope")
-    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=USER_HEADERS).json()
+    claim = client.post("/api/agent-studio/idempotency/claim", json=body, headers=SERVICE_HEADERS).json()
     complete = client.post(
         "/api/agent-studio/idempotency/complete",
         json=_idempotency_body(
@@ -3581,47 +3685,100 @@ def test_idempotency_routes_never_leak_across_project_or_tenant_scope(
             expected_version=claim["record"]["version"],
             result={"status": "ok"},
         ),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     ).json()
-    result_ref = complete["result_ref"]
+    assert complete["result_ref"] is not None
 
     # A different project the caller *is* a member of, under the same
     # tenant, must see neither the claim state nor the completed result --
-    # the exact same key fields and result_ref string resolve to a
-    # completely different, empty durable partition.
+    # the exact same key fields resolve to a completely different, empty
+    # durable partition.
     cross_project_claim = client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(OTHER_PROJECT_ID, release_id="release-1", caller_key="caller-scope"),
-        headers=MULTI_PROJECT_USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert cross_project_claim.status_code == 200, cross_project_claim.text
     assert cross_project_claim.json()["disposition"] == "acquired"
 
-    cross_project_load = client.get(
-        f"/api/agent-studio/idempotency/results/{result_ref}",
-        params=_params(OTHER_PROJECT_ID),
-        headers=MULTI_PROJECT_USER_HEADERS,
+    cross_project_load = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(OTHER_PROJECT_ID, release_id="release-1", caller_key="caller-scope"),
+        headers=SERVICE_HEADERS,
     )
     assert cross_project_load.status_code == 404
 
     # A caller who is not a member of the target project at all is denied
     # before ever reaching the idempotency store.
+    non_member_headers = _project_headers(
+        tenant_id="demo",
+        user_id="non-member-service",
+        project_ids=(DEFAULT_PROJECT_ID,),
+        roles=(HOSTED_RUNTIME_SERVICE_ROLE,),
+    )
     non_member_response = client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(OTHER_PROJECT_ID, release_id="release-1", caller_key="caller-scope-2"),
-        headers=USER_HEADERS,
+        headers=non_member_headers,
     )
     assert non_member_response.status_code == 403
 
     # Cross-tenant (same project group name, different authenticated
     # tenant): the scope resolves but the underlying tenant partition is
     # different, so the result must not be found.
-    cross_tenant_load = client.get(
-        f"/api/agent-studio/idempotency/results/{result_ref}",
-        params=_params(),
-        headers=OTHER_TENANT_HEADERS,
+    cross_tenant_load = client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-1", caller_key="caller-scope"),
+        headers=OTHER_TENANT_SERVICE_HEADERS,
     )
     assert cross_tenant_load.status_code == 404
+
+
+def test_idempotency_routes_reject_ordinary_project_member_with_403(client: TestClient) -> None:
+    """A normal, real project member -- with valid membership and
+    well-formed request IDs -- must be denied on every idempotency route,
+    since these are runtime-internal control plane, not a
+    researcher/project-user-facing surface."""
+
+    requests = (
+        ("/api/agent-studio/idempotency/claim", _idempotency_body(release_id="release-1")),
+        (
+            "/api/agent-studio/idempotency/mark-in-progress",
+            _idempotency_body(claim_token="x" * 32, expected_version="1"),
+        ),
+        (
+            "/api/agent-studio/idempotency/complete",
+            _idempotency_body(claim_token="x" * 32, expected_version="1", result={}),
+        ),
+        (
+            "/api/agent-studio/idempotency/fail",
+            _idempotency_body(claim_token="x" * 32, expected_version="1", failure_code="boom"),
+        ),
+        ("/api/agent-studio/idempotency/load-result", _idempotency_body(release_id="release-1")),
+    )
+    for path, body in requests:
+        response = client.post(path, json=body, headers=USER_HEADERS)
+        assert response.status_code == 403, f"{path}: {response.text}"
+
+
+def test_idempotency_routes_reject_wrong_role_identity_with_403(client: TestClient) -> None:
+    """A caller with real project membership and *a* role claim, but not the
+    exact expected role string, is still rejected -- the gate checks the
+    precise role value, not merely "some role claim is present"."""
+
+    response = client.post(
+        "/api/agent-studio/idempotency/claim",
+        json=_idempotency_body(release_id="release-1"),
+        headers=WRONG_ROLE_SERVICE_HEADERS,
+    )
+    assert response.status_code == 403
+
+
+def test_idempotency_routes_excluded_from_openapi_schema(client: TestClient) -> None:
+    schema = client.get("/openapi.json", headers=SERVICE_HEADERS).json()
+    paths = schema["paths"]
+    for suffix in ("claim", "mark-in-progress", "complete", "fail", "load-result"):
+        assert f"/api/agent-studio/idempotency/{suffix}" not in paths
 
 
 def test_idempotency_routes_return_503_when_persistence_unavailable(
@@ -3630,14 +3787,14 @@ def test_idempotency_routes_return_503_when_persistence_unavailable(
     claim_response = unavailable_client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(release_id="release-1"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert claim_response.status_code == 503
 
-    load_response = unavailable_client.get(
-        "/api/agent-studio/idempotency/results/idempotency-result::unknown",
-        params=_params(),
-        headers=USER_HEADERS,
+    load_response = unavailable_client.post(
+        "/api/agent-studio/idempotency/load-result",
+        json=_idempotency_body(release_id="release-1"),
+        headers=SERVICE_HEADERS,
     )
     assert load_response.status_code == 503
 
@@ -3648,7 +3805,7 @@ def test_idempotency_routes_return_503_when_idempotency_port_unavailable(
     response = idempotency_unavailable_client.post(
         "/api/agent-studio/idempotency/claim",
         json=_idempotency_body(release_id="release-1"),
-        headers=USER_HEADERS,
+        headers=SERVICE_HEADERS,
     )
     assert response.status_code == 503
 

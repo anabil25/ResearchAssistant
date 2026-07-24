@@ -17,6 +17,17 @@ class IdentityContext:
     tenant_id: str
     groups: tuple[str, ...]
     source: str
+    #: Application-role claims (Entra "roles" claim, e.g. app roles assigned
+    #: to a service principal/managed identity) carried by this identity.
+    #: Distinct from ``groups`` (Entra ID group membership, used for
+    #: per-project human membership) -- ``roles`` is how a *non-human*
+    #: caller (a hosted-agent runtime's own managed identity) proves it is
+    #: acting as that specific application role rather than as a project
+    #: member. See ``research_assistant_api.agent_studio.router
+    #: .HOSTED_RUNTIME_SERVICE_ROLE`` for the one consumer of this today:
+    #: the runtime-internal idempotency control-plane routes require it and
+    #: are unreachable by any human identity, which never carries it.
+    roles: tuple[str, ...] = ()
     #: ``True`` when the identity provider indicated that the ``groups``
     #: claim was truncated ("group overage") -- e.g. Microsoft Entra ID
     #: replaces an over-large ``groups`` claim with a ``_claim_names``/
@@ -89,6 +100,13 @@ def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
                 groups=tuple(claims.get("groups", [])),
                 source="container-apps-auth",
                 groups_overage=_has_group_overage(payload),
+                # Entra App Role assignments (assignable to a service
+                # principal/managed identity, not just human users) flow
+                # through Container Apps/App Service EasyAuth as a "roles"
+                # claim exactly like "groups" does for human group
+                # membership -- reuse the same generic claims decoding
+                # rather than adding a separate JWT/JWKS validation path.
+                roles=tuple(claims.get("roles", [])),
             )
 
     if settings.allow_demo_identity:

@@ -434,3 +434,18 @@ class FailIdempotencyRequest(IdempotencyKeyFields):
     expected_version: str = Field(min_length=1, max_length=32)
     failure_code: str = Field(min_length=1, max_length=128)
 
+
+class LoadIdempotencyResultRequest(IdempotencyKeyFields):
+    """Request body to replay a previously completed idempotency result.
+
+    Deliberately keyed by the full ``IdempotencyKeyFields`` identity plus
+    ``release_id`` -- never by a caller-supplied ``result_ref`` string,
+    which alone carries no binding to any specific key or release and
+    cannot be independently re-verified. ``release_id`` is the caller's
+    provenance assertion: it is checked against the release that actually
+    completed this key, and a mismatch is rejected rather than silently
+    served.
+    """
+
+    release_id: str = Field(min_length=1, max_length=256)
+

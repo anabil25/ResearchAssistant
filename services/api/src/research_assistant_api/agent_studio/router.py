@@ -59,6 +59,8 @@ from research_assistant_api.agent_studio.deployment_service import (
 from research_assistant_api.agent_studio.evaluation_runner import EvaluationRunner, EvaluationRunnerError
 from research_assistant_api.agent_studio.idempotency import (
     IdempotencyPort,
+    IdempotencyReleaseMismatchError,
+    IdempotencyResultIntegrityError,
     IdempotencyResultMismatchError,
 )
 from research_assistant_api.agent_studio.memory_service import (
@@ -154,6 +156,7 @@ from research_assistant_api.agent_studio.schemas import (
     ForkRequest,
     HealthUpdateRequest,
     IdempotencyKeyFields,
+    LoadIdempotencyResultRequest,
     MarkIdempotencyInProgressRequest,
     PromotionRequest,
     RegisterToolRequest,
@@ -179,6 +182,18 @@ from research_assistant_api.identity import (
 )
 
 PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
+
+#: The exact Entra application-role value a caller's ``IdentityContext.roles``
+#: must contain to invoke the runtime-internal idempotency control-plane
+#: routes below (``/idempotency/*``). These routes are never part of the
+#: researcher/project-user-facing API surface -- they exist purely for a
+#: hosted-agent runtime's own (managed-identity or service-principal)
+#: caller to record its own claim/lease/completion bookkeeping. A normal
+#: human project member -- even one with valid, real project membership and
+#: well-formed request IDs -- must never be able to invoke them; only an
+#: identity actually carrying this exact role string can. See
+#: ``_require_hosted_runtime_service``.
+HOSTED_RUNTIME_SERVICE_ROLE = "AgentStudio.RuntimeService"
 
 #: Default ``ProjectMembershipResolver`` used whenever the composed app
 #: hasn't wired an adapter onto ``app.state.agent_studio_membership_resolver``.
@@ -379,6 +394,41 @@ def _audit(
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
     return bool(PLATFORM_OWNER_GROUPS.intersection(identity.groups))
+
+
+def _is_hosted_runtime_service(identity: IdentityContext) -> bool:
+    """``True`` iff this identity carries the exact
+    ``HOSTED_RUNTIME_SERVICE_ROLE`` application-role claim.
+
+    This is an identity-*kind* check, deliberately independent of project
+    membership/``groups``: a human identity that happens to also carry (or
+    forge) an arbitrary role string that is not this exact one is still
+    rejected, and a service identity's project membership is irrelevant --
+    only the exact role claim matters here.
+    """
+
+    return HOSTED_RUNTIME_SERVICE_ROLE in identity.roles
+
+
+def _require_hosted_runtime_service(identity: IdentityContext) -> None:
+    """Gate for the runtime-internal idempotency control-plane routes.
+
+    Raises 403 for any identity -- including an otherwise-valid,
+    project-member human identity with well-formed request IDs -- that does
+    not carry the exact ``HOSTED_RUNTIME_SERVICE_ROLE`` claim. Must run
+    before ``_scope()`` on every idempotency route: this is identity-kind
+    gating, not project-membership gating, so it must reject a disallowed
+    caller before any project-scope resolution is even attempted.
+    """
+
+    if not _is_hosted_runtime_service(identity):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=(
+                "This runtime-internal idempotency control-plane operation requires an identity "
+                f"carrying the '{HOSTED_RUNTIME_SERVICE_ROLE}' application role."
+            ),
+        )
 
 
 def _membership_resolver(request: Request) -> ProjectMembershipResolver:
@@ -2358,11 +2408,16 @@ def _idempotency_key(scope: ScopeContext, payload: IdempotencyKeyFields) -> Idem
     )
 
 
-@router.post("/idempotency/claim", response_model=IdempotencyClaim)
+@router.post("/idempotency/claim", response_model=IdempotencyClaim, include_in_schema=False)
 async def claim_idempotency_route(request: Request, payload: ClaimIdempotencyRequest) -> IdempotencyClaim:
     """Atomically claim (or observe the existing disposition of) a durable
     idempotency key before a runtime handler executes a possibly
     side-effecting operation.
+
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface -- never a
+    researcher/project-user-facing operation, regardless of project
+    membership.
 
     Never raises on an already-claimed/completed key -- the returned
     ``disposition`` (``ACQUIRED``/``IN_PROGRESS``/``COMPLETED``/
@@ -2370,6 +2425,7 @@ async def claim_idempotency_route(request: Request, payload: ClaimIdempotencyReq
     only a malformed ``lease_seconds`` value is rejected as a client error.
     """
     identity = _identity(request)
+    _require_hosted_runtime_service(identity)
     scope = _scope(request, identity, payload.project_id)
     key = _idempotency_key(scope, payload)
     try:
@@ -2384,12 +2440,15 @@ async def claim_idempotency_route(request: Request, payload: ClaimIdempotencyReq
         raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail=str(exc)) from exc
 
 
-@router.post("/idempotency/mark-in-progress", response_model=IdempotencyRecord)
+@router.post("/idempotency/mark-in-progress", response_model=IdempotencyRecord, include_in_schema=False)
 async def mark_idempotency_in_progress_route(
     request: Request, payload: MarkIdempotencyInProgressRequest
 ) -> IdempotencyRecord:
     """Transition a durably ``ACQUIRED`` claim to ``IN_PROGRESS`` immediately
     before the handler performs its (possibly irreversible) side effect.
+
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface.
 
     Requires the exact ``claim_token``/``expected_version`` pair returned by
     ``claim`` -- a stale or wrong pair is rejected as a 409 concurrency
@@ -2397,6 +2456,7 @@ async def mark_idempotency_in_progress_route(
     already have taken over this key.
     """
     identity = _identity(request)
+    _require_hosted_runtime_service(identity)
     scope = _scope(request, identity, payload.project_id)
     key = _idempotency_key(scope, payload)
     try:
@@ -2413,9 +2473,12 @@ async def mark_idempotency_in_progress_route(
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.post("/idempotency/complete", response_model=IdempotencyRecord)
+@router.post("/idempotency/complete", response_model=IdempotencyRecord, include_in_schema=False)
 async def complete_idempotency_route(request: Request, payload: CompleteIdempotencyRequest) -> IdempotencyRecord:
     """Durably record a successful completion and its result.
+
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface.
 
     The durably stored ``result_hash`` is always independently recomputed
     from ``result`` by the port itself; ``expected_result_hash`` (if
@@ -2423,6 +2486,7 @@ async def complete_idempotency_route(request: Request, payload: CompleteIdempote
     trusted as the value to persist.
     """
     identity = _identity(request)
+    _require_hosted_runtime_service(identity)
     scope = _scope(request, identity, payload.project_id)
     key = _idempotency_key(scope, payload)
     try:
@@ -2442,12 +2506,17 @@ async def complete_idempotency_route(request: Request, payload: CompleteIdempote
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.post("/idempotency/fail", response_model=IdempotencyRecord)
+@router.post("/idempotency/fail", response_model=IdempotencyRecord, include_in_schema=False)
 async def fail_idempotency_route(request: Request, payload: FailIdempotencyRequest) -> IdempotencyRecord:
     """Durably record that this attempt failed and requires reconciliation
     (the true side-effect outcome of the attempt is unknown and must never
-    be silently retried as if it were fresh)."""
+    be silently retried as if it were fresh).
+
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface.
+    """
     identity = _identity(request)
+    _require_hosted_runtime_service(identity)
     scope = _scope(request, identity, payload.project_id)
     key = _idempotency_key(scope, payload)
     try:
@@ -2464,21 +2533,36 @@ async def fail_idempotency_route(request: Request, payload: FailIdempotencyReque
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
 
 
-@router.get("/idempotency/results/{result_ref}")
+@router.post("/idempotency/load-result", include_in_schema=False)
 async def load_idempotency_result_route(
-    request: Request, result_ref: str, project_id: str
+    request: Request, payload: LoadIdempotencyResultRequest
 ) -> dict[str, object] | None:
     """Replay a previously completed result.
 
-    Always partitioned by the caller's *own authorized* scope -- never by
-    anything decoded from ``result_ref`` -- so a caller cannot enumerate
-    another tenant/project's results even by guessing a valid ``result_ref``
-    string; an unauthorized/foreign scope simply misses (``None``/404),
-    identical to a genuinely unknown ``result_ref``.
+    Runtime-internal control plane: requires ``HOSTED_RUNTIME_SERVICE_ROLE``
+    and is excluded from the public OpenAPI surface.
+
+    Always partitioned by the caller's *own authorized* scope, and always
+    looked up by the full idempotency key -- never by a caller-supplied
+    ``result_ref`` string, which alone carries no binding to any specific
+    key or release. A caller's asserted ``release_id`` that does not match
+    the release that actually completed this key is rejected as a 409
+    conflict; a completed record whose result document fails independent
+    hash re-verification is rejected as a 500 integrity violation rather
+    than silently served. An unauthorized/foreign scope, or a genuinely
+    unknown/not-yet-completed key, simply misses (404), identical in shape
+    to any other "not found" case.
     """
     identity = _identity(request)
-    scope = _scope(request, identity, project_id)
-    result = await _idempotency_port(request).load_result(scope, result_ref)
+    _require_hosted_runtime_service(identity)
+    scope = _scope(request, identity, payload.project_id)
+    key = _idempotency_key(scope, payload)
+    try:
+        result = await _idempotency_port(request).load_result(scope, key, release_id=payload.release_id)
+    except IdempotencyReleaseMismatchError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IdempotencyResultIntegrityError as exc:
+        raise HTTPException(status_code=status.HTTP_500_INTERNAL_SERVER_ERROR, detail=str(exc)) from exc
     if result is None:
-        raise _not_found(f"Idempotency result '{result_ref}' was not found.")
+        raise _not_found(f"Idempotency result for key digest '{key.digest}' was not found.")
     return result

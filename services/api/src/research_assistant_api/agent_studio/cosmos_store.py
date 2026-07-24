@@ -38,7 +38,7 @@ from typing import Any
 from azure.core import MatchConditions
 from azure.core.credentials import TokenCredential
 from azure.cosmos import CosmosClient
-from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
+from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosHttpResponseError, CosmosResourceNotFoundError
 from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 
 from research_assistant_api.agent_studio.models import (
@@ -944,22 +944,67 @@ class CosmosAgentStudioStore(AgentStudioStore):
         result_hash: str,
         now: datetime | None = None,
     ) -> IdempotencyRecord:
+        """Durably record completion via a single atomic Cosmos transactional
+        batch covering both the record replace and the result document
+        write.
+
+        Unlike a read-then-``replace_item``-then-separate-``upsert_item``
+        sequence (which leaves a window where a crash between the two calls
+        durably strands a ``COMPLETED`` record whose ``result_ref`` points
+        at nothing), ``execute_item_batch`` applies every operation in the
+        batch as a single all-or-nothing unit scoped to one partition key
+        (both documents already share ``scope.scope_key``): either both the
+        updated record *and* the result document are durably written, or
+        neither is -- "COMPLETED without a readable result" is structurally
+        impossible, not just conventionally avoided.
+        """
         self._require_idempotency_key_scope(scope, key)
         current_time = now if now is not None else utc_now()
         result_ref = self._idempotency_result_id(result_hash)
-        updated = self._transition_idempotency_record(
-            scope,
-            key,
-            claim_token=claim_token,
-            expected_version=expected_version,
-            build_updates=lambda current: {
+        document_id = self._idempotency_id(key)
+        document = self._read(scope.scope_key, document_id)
+        if document is None:
+            raise IdempotencyNotFoundError(f"Idempotency key digest '{key.digest}' has not been claimed.")
+        current = IdempotencyRecord.model_validate(document["payload"])
+        if current.version != expected_version or current.claim_token_hash != hash_idempotency_token(claim_token):
+            raise IdempotencyConcurrencyError(
+                f"Idempotency key digest '{key.digest}' was modified concurrently, or claim_token/"
+                "expected_version no longer matches the current claim. Re-fetch and retry."
+            )
+        updated = current.model_copy(
+            update={
                 "state": IdempotencyState.COMPLETED,
                 "completed_at": current_time,
                 "result_hash": result_hash,
                 "result_ref": result_ref,
-            },
+                "version": str(int(current.version) + 1),
+            }
         )
-        self._upsert(scope.scope_key, result_ref, "idempotency_result", result)
+        record_body = {
+            "id": document_id,
+            "documentType": "idempotency_record",
+            "scope_key": scope.scope_key,
+            "payload": updated.model_dump(mode="json"),
+        }
+        result_body = {
+            "id": result_ref,
+            "documentType": "idempotency_result",
+            "scope_key": scope.scope_key,
+            "payload": result,
+        }
+        batch_operations: list[tuple[str, tuple[Any, ...], dict[str, Any]]] = [
+            ("replace", (document_id, record_body), {"if_match_etag": document.get("_etag")}),
+            ("upsert", (result_body,), {}),
+        ]
+        try:
+            self._container.execute_item_batch(batch_operations, partition_key=scope.scope_key)
+        except CosmosBatchOperationError as exc:
+            if exc.status_code != 412:
+                raise
+            raise IdempotencyConcurrencyError(
+                f"Idempotency key digest '{key.digest}' was modified concurrently; re-fetch and retry."
+            ) from exc
+        self._idempotency_records[(scope.scope_key, key.digest)] = updated
         self._idempotency_results[(scope.scope_key, result_ref)] = result
         return updated
 

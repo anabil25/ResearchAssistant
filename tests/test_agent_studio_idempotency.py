@@ -17,6 +17,8 @@ from datetime import UTC, datetime, timedelta
 import pytest
 from pydantic import ValidationError
 from research_assistant_api.agent_studio.idempotency import (
+    IdempotencyReleaseMismatchError,
+    IdempotencyResultIntegrityError,
     IdempotencyResultMismatchError,
     StoreBackedIdempotencyPort,
     _hash_result,
@@ -531,9 +533,9 @@ async def test_port_full_lifecycle_claim_progress_complete_load() -> None:
     assert completed.state is IdempotencyState.COMPLETED
     assert completed.result_ref is not None
 
-    loaded = await port.load_result(SCOPE, completed.result_ref)
+    loaded = await port.load_result(SCOPE, key, release_id="release-1")
     assert loaded == {"status": "ok"}
-    assert await port.load_result(SCOPE, "unknown-ref") is None
+    assert await port.load_result(SCOPE, _key(caller_key="unknown-caller"), release_id="release-1") is None
 
 
 @pytest.mark.asyncio
@@ -566,6 +568,126 @@ async def test_port_complete_recomputes_digest_and_rejects_mismatched_expectatio
         expected_result_hash=correct_hash,
     )
     assert completed.result_hash == correct_hash
+
+
+@pytest.mark.asyncio
+async def test_port_load_result_returns_none_for_unclaimed_or_incomplete_key() -> None:
+    store = AgentStudioStore()
+    port = StoreBackedIdempotencyPort(store)
+
+    # Never claimed at all.
+    assert await port.load_result(SCOPE, _key(), release_id="release-1") is None
+
+    # Claimed but not yet completed.
+    other_key = _key(caller_key="caller-2")
+    await port.claim(SCOPE, other_key, actor_id="user-1", release_id="release-1", lease_seconds=300)
+    assert await port.load_result(SCOPE, other_key, release_id="release-1") is None
+
+
+@pytest.mark.asyncio
+async def test_port_load_result_rejects_release_mismatch() -> None:
+    store = AgentStudioStore()
+    port = StoreBackedIdempotencyPort(store)
+    key = _key()
+    claim = await port.claim(SCOPE, key, actor_id="user-1", release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+    await port.complete(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        result={"status": "ok"},
+    )
+
+    # The key durably completed under "release-1" -- asserting a different
+    # release must be rejected outright, never silently served, since that
+    # would replay a result as if it belonged to a release it never did.
+    with pytest.raises(IdempotencyReleaseMismatchError):
+        await port.load_result(SCOPE, key, release_id="release-2")
+
+    # The correct release_id still replays successfully.
+    assert await port.load_result(SCOPE, key, release_id="release-1") == {"status": "ok"}
+
+
+@pytest.mark.asyncio
+async def test_port_load_result_rejects_missing_result_document() -> None:
+    store = AgentStudioStore()
+    port = StoreBackedIdempotencyPort(store)
+    key = _key()
+    claim = await port.claim(SCOPE, key, actor_id="user-1", release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+    completed = await port.complete(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        result={"status": "ok"},
+    )
+    assert completed.result_ref is not None
+
+    # Simulate a durably COMPLETED record whose result document is gone
+    # (or was never actually written) -- an integrity violation, not an
+    # ordinary "not found" that should quietly return None.
+    del store._idempotency_results[(SCOPE.scope_key, completed.result_ref)]  # type: ignore[attr-defined]
+
+    with pytest.raises(IdempotencyResultIntegrityError):
+        await port.load_result(SCOPE, key, release_id="release-1")
+
+
+@pytest.mark.asyncio
+async def test_port_load_result_rejects_record_missing_result_identity() -> None:
+    store = AgentStudioStore()
+    port = StoreBackedIdempotencyPort(store)
+    key = _key()
+    claim = await port.claim(SCOPE, key, actor_id="user-1", release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+    completed = await port.complete(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        result={"status": "ok"},
+    )
+    assert completed.result_ref is not None
+
+    # This state is structurally unreachable through the port's own API --
+    # IdempotencyRecord's model_validator forbids a COMPLETED record without
+    # both result_ref and result_hash. Simulate it directly against the
+    # in-memory store (bypassing validation via model_copy, exactly as a
+    # corrupted/partially-migrated durable record would look) to prove the
+    # port fails closed instead of assuming the invariant always holds.
+    dedup_key = (SCOPE.scope_key, key.digest)
+    corrupted = store._idempotency_records[dedup_key].model_copy(  # type: ignore[attr-defined]
+        update={"result_ref": None, "result_hash": None}
+    )
+    store._idempotency_records[dedup_key] = corrupted  # type: ignore[attr-defined]
+
+    with pytest.raises(IdempotencyResultIntegrityError):
+        await port.load_result(SCOPE, key, release_id="release-1")
+
+
+@pytest.mark.asyncio
+async def test_port_load_result_rejects_tampered_result_hash() -> None:
+    store = AgentStudioStore()
+    port = StoreBackedIdempotencyPort(store)
+    key = _key()
+    claim = await port.claim(SCOPE, key, actor_id="user-1", release_id="release-1", lease_seconds=300)
+    assert claim.claim_token is not None
+    completed = await port.complete(
+        SCOPE,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        result={"status": "ok"},
+    )
+    assert completed.result_ref is not None
+
+    # Simulate a corrupted/tampered result document: the payload stored no
+    # longer matches the durable result_hash the record was completed with.
+    store._idempotency_results[(SCOPE.scope_key, completed.result_ref)] = {"status": "tampered"}  # type: ignore[attr-defined]
+
+    with pytest.raises(IdempotencyResultIntegrityError):
+        await port.load_result(SCOPE, key, release_id="release-1")
 
 
 @pytest.mark.asyncio
