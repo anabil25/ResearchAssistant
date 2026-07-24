@@ -24,7 +24,7 @@ from research_assistant_api.agent_studio.models import (
     StudioApprovalRecord,
 )
 from research_assistant_api.agent_studio.runtime_authz import RuntimeAuthPolicy
-from research_assistant_api.agent_studio.runtime_client_binding import InMemoryClientDeploymentBindingResolver
+from research_assistant_api.agent_studio.runtime_client_binding import InMemoryClientDeploymentBindingIndex
 from research_assistant_api.agent_studio.runtime_control_router import build_runtime_control_app
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     AllowedClientAppRoleBinding,
@@ -191,13 +191,13 @@ def _client(
     context_resolver: StoreBackedApprovalContextResolver | None = None,
 ) -> TestClient:
     store = InMemoryRuntimeDeploymentMappingStore()
-    resolver = InMemoryClientDeploymentBindingResolver()
+    resolver = InMemoryClientDeploymentBindingIndex()
     if mapping is not None:
         store.put(mapping)
     # The authenticated runtime client is server-bound to exactly this
     # deployment (or "dep-1" when there is no mapping, to exercise the
     # bound-client-but-no-mapping path).
-    resolver.bind(CLIENT_APP_ID, mapping.deployment_id if mapping is not None else "dep-1")
+    resolver.grant(CLIENT_APP_ID, mapping.deployment_id if mapping is not None else "dep-1")
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
     app = build_runtime_control_app(
         mapping_store=store,

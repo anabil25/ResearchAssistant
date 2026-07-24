@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -45,6 +46,7 @@ def _mapping(*, deployment_id: str = "dep-1", backend_version: str = "1.2.3") ->
         allowed_client_app_role_bindings=(
             AllowedClientAppRoleBinding(client_app_id="client-app-1", app_role="research-assistant.runtime"),
         ),
+        created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
         created_by="release-service",
     )
 

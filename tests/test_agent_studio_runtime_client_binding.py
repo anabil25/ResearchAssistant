@@ -3,7 +3,7 @@ from __future__ import annotations
 from research_assistant_api.agent_studio.models import DeploymentEnvironment
 from research_assistant_api.agent_studio.runtime_client_binding import (
     AuthorizedMappingLoader,
-    InMemoryClientDeploymentBindingResolver,
+    InMemoryClientDeploymentBindingIndex,
     build_authorized_mapping_loader,
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import (
@@ -47,38 +47,67 @@ def _mapping(*, deployment_id: str = "dep-1") -> RuntimeDeploymentMapping:
     )
 
 
-def test_resolver_returns_none_for_unbound_client() -> None:
-    resolver = InMemoryClientDeploymentBindingResolver()
-    assert resolver.authorized_deployment_id("nobody") is None
+# --- exact-membership resolver ---------------------------------------------
 
 
-def test_resolver_binds_and_resolves() -> None:
-    resolver = InMemoryClientDeploymentBindingResolver()
-    resolver.bind(CLIENT, "dep-1")
-    assert resolver.authorized_deployment_id(CLIENT) == "dep-1"
+def test_unbound_client_is_not_bound() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    assert index.is_bound("nobody", "dep-1") is False
 
 
-def test_resolver_revoke_makes_old_reference_fail() -> None:
-    resolver = InMemoryClientDeploymentBindingResolver()
-    resolver.bind(CLIENT, "dep-1")
-    resolver.revoke(CLIENT)
-    assert resolver.authorized_deployment_id(CLIENT) is None
+def test_grant_makes_exact_pair_bound() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1")
+    assert index.is_bound(CLIENT, "dep-1") is True
+    # Exact membership: a different deployment for the same client is NOT bound.
+    assert index.is_bound(CLIENT, "dep-2") is False
 
 
-def test_resolver_rebind_supersedes_old_deployment() -> None:
-    resolver = InMemoryClientDeploymentBindingResolver()
-    resolver.bind(CLIENT, "dep-1")
-    resolver.bind(CLIENT, "dep-2")
-    assert resolver.authorized_deployment_id(CLIENT) == "dep-2"
+def test_client_may_hold_multiple_bindings() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1")
+    index.grant(CLIENT, "dep-2")
+    assert index.is_bound(CLIENT, "dep-1") is True
+    assert index.is_bound(CLIENT, "dep-2") is True
+    assert index.is_bound(CLIENT, "dep-3") is False
 
 
-def _loader() -> tuple[AuthorizedMappingLoader, RuntimeDeploymentMapping]:
-    resolver = InMemoryClientDeploymentBindingResolver()
+def test_revoke_removes_only_that_pair() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1")
+    index.grant(CLIENT, "dep-2")
+    index.revoke(CLIENT, "dep-1")
+    assert index.is_bound(CLIENT, "dep-1") is False
+    assert index.is_bound(CLIENT, "dep-2") is True
+
+
+def test_revoke_last_binding_drops_the_client() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.grant(CLIENT, "dep-1")
+    index.revoke(CLIENT, "dep-1")
+    assert index.is_bound(CLIENT, "dep-1") is False
+
+
+def test_revoke_unknown_client_is_noop() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.revoke("nobody", "dep-1")  # must not raise
+    assert index.is_bound("nobody", "dep-1") is False
+
+
+# --- authorized loader -----------------------------------------------------
+
+
+def _loader(
+    *, bound: bool = True, mapping_present: bool = True
+) -> tuple[AuthorizedMappingLoader, RuntimeDeploymentMapping]:
+    index = InMemoryClientDeploymentBindingIndex()
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping()
-    store.put(mapping)
-    resolver.bind(CLIENT, "dep-1")
-    return build_authorized_mapping_loader(resolver, store), mapping
+    if mapping_present:
+        store.put(mapping)
+    if bound:
+        index.grant(CLIENT, "dep-1")
+    return build_authorized_mapping_loader(index, store), mapping
 
 
 def test_loader_returns_mapping_for_bound_client_and_deployment() -> None:
@@ -87,18 +116,16 @@ def test_loader_returns_mapping_for_bound_client_and_deployment() -> None:
 
 
 def test_loader_returns_none_when_client_unbound() -> None:
-    load, _mapping = _loader()
-    assert load("stranger", "dep-1") is None
+    load, _mapping = _loader(bound=False)
+    assert load(CLIENT, "dep-1") is None
 
 
-def test_loader_returns_none_when_deployment_not_the_bound_one() -> None:
+def test_loader_returns_none_for_bound_client_but_wrong_deployment() -> None:
     load, _mapping = _loader()
     assert load(CLIENT, "dep-elsewhere") is None
 
 
-def test_loader_returns_none_when_mapping_absent_even_if_bound() -> None:
-    resolver = InMemoryClientDeploymentBindingResolver()
-    store = InMemoryRuntimeDeploymentMappingStore()
-    resolver.bind(CLIENT, "dep-1")  # bound, but store has no such mapping
-    load = build_authorized_mapping_loader(resolver, store)
+def test_loader_returns_none_when_bound_but_mapping_absent() -> None:
+    # Binding-without-mapping is a denial, never repairable (fail-closed).
+    load, _mapping = _loader(mapping_present=False)
     assert load(CLIENT, "dep-1") is None
