@@ -1731,6 +1731,31 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **An invariant established early enough becomes a detector, and that beats
+  foresight — which nobody has.** The provider adapter's no-trim fix was not
+  anticipated. The author reached for `.strip()` as the obvious way to write a
+  validity check, and *the moment they typed it* the question "am I deciding or
+  transforming?" became unavoidable — because that module had already spent the day
+  insisting provider-owned pins are returned **byte-for-byte**. The property was
+  load-bearing in enough places that violating it felt wrong from inside.
+  **This is a design-ordering argument, not a discipline one:** put the invariant in
+  early and later changes must reckon with it, because the cost of breaking it is
+  paid while typing rather than at review. A property asserted once in a test is
+  checked after the fact; a property the surrounding code depends on everywhere is
+  checked continuously, by whoever is writing the next line.
+  **Corollary: the second instance of a fabrication is much easier to catch than
+  the first** — the first establishes what the code refuses to do, and every later
+  one is measured against it.
+- **Where measurement is cheap, re-measure instead of arguing about the record —
+  and say so plainly, because it is an economic call and not a principled one.**
+  A disputed claim here was settled by a re-run costing ~15 machine-minutes, against
+  an exchange about which message had said what. **The asymmetry decided it, not
+  virtue.** That matters because the practice does *not* generalise: where
+  measurement is expensive, "just measure it" becomes a way of deferring forever,
+  and the honest move is the **labelled gap** — record what is unverified, name why,
+  and let the reader weigh it. This document does that in three places, and each is
+  more useful than a confident claim would have been. **Know which regime you are
+  in before invoking the rule.**
 - **Identical field names across two "independent" implementations are a
   fingerprint of a duplicated brief, not of copying — and the coordinator should
   suspect their own dispatch record first.** Two sessions produced
