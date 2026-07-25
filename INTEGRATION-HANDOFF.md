@@ -403,6 +403,57 @@ path**. Harness tests asserting that wiring therefore fail:
 means choosing which approval control governs a dataset send, and a wrong choice
 removes a guard while every remaining test still passes.
 
+#### The 18 `test_dataset_approval_boundary.py` failures have a *different* cause — diagnosed and verified
+
+An earlier revision of this document attributed them to "the approval the test
+established is not being seen by the time consume runs." **That was wrong**, and
+the correct cause was supplied by the dataset owner as a falsifiable prediction,
+then verified here against `main`:
+
+```
+services/api/src/research_assistant_api/dataset_execution.py:14
+    if inputs.get("analysis_approved") is not True:
+        raise ValueError("Explicit dataset analysis approval is required.")
+```
+
+**There is a third gate, in the service layer, keyed off a client-supplied
+boolean.** It is not in `app.py`, so it was never part of the nine-hunk conflict
+and survived untouched. Sequence in `run_capability`: the durable gate
+`_validate_dataset_analysis` (L1663) **runs first and passes**, then `research.run`
+(L1674) reaches `validate_dataset_execution`, which raises `ValueError` →
+`except ValueError` → **HTTP 422**. That is why the observed failure carries
+foreign text, no denial reason, and no `X-Dataset-Approval-Denial`: the dataset
+owner's control has **13 denial reasons mapping to 409 or 403 and none to 422**,
+so a 422 is categorically not theirs.
+
+**The tree is self-contradictory as merged.** `tests/test_v2_workbench.py:573`
+(`test_client_supplied_analysis_approved_flag_grants_no_authority`) documents the
+field as *"inert"*, and `studios.py:397` states a client-supplied
+`analysis_approved` boolean *"is never treated as authoritative"* — while
+`dataset_execution.py:14` makes that same boolean **required**. It is not inert;
+it is a necessary condition.
+
+**Severity, stated precisely — the obvious fix is wrong, but not for the reason
+first given.** Adding `analysis_approved: true` to the 18 tests does **not**
+immediately reopen the HIGH bypass `673985b` closed, because the durable gate runs
+*first* and still has to pass; this third gate can only deny, never grant. **The
+real hazard is latent:** it entrenches a client-keyed gate that *looks* like the
+dataset approval control, so whoever later removes the durable gate as "redundant"
+reopens the bypass instantly — and the contradicting test would still be green.
+
+**The reconciliation question is therefore not "how do we make 18 tests pass."
+It is: should this gate consult the durable server-resolved record, or be deleted
+as superseded?** It must not be satisfied from the test payload.
+
+**Independent secondary finding, true either way:** an authorization denial that
+surfaces as a bare `ValueError` → 422 is **indistinguishable at the route boundary
+from a malformed CSV or a bad objective**. It carries no denial reason and no
+header, so it is invisible to the deploy-day monitoring built for exactly these
+events. **An authorization failure must not be reported as a schema complaint** —
+the same "different operational facts must stay separable" principle ruled on
+three times elsewhere in this document, here appearing in the *merged* tree rather
+than in either branch.
+
 ### A subtler class: definitions silently dropped by auto-merge
 
 Where git resolved a file by taking one side wholesale, definitions the other
