@@ -9,12 +9,15 @@ from scripts.check_suppression_contract import (
     _javascript_comments,
     census,
     compare_inventory,
+    coverage_source_evidence,
     mypy_excluded_files,
     mypy_module_name,
     mypy_paths,
     mypy_roots,
     parse_javascript_comment,
     parse_python_comment,
+    posture_partition,
+    source_entry_files,
     validate_inventory,
 )
 
@@ -125,6 +128,86 @@ def test_validate_inventory_rejects_coverage_gate_and_domain_drift(tmp_path: Pat
     assert "unclassified coverage exclusion: src/package/module.py:1:unexpected" in errors
 
 
+def test_posture_partition_requires_packaging_and_coverage_to_agree() -> None:
+    paths = [
+        "agents/shared/capabilities.py",
+        "scripts/postprovision.py",
+        "tests/test_capabilities.py",
+    ]
+    packaging = {
+        "agents/shared/capabilities.py": ["hosted-agent-project:coordinator:agents"],
+        "scripts/postprovision.py": ["azure-hook:postprovision:windows"],
+    }
+    coverage = coverage_source_evidence(paths, ["agents/shared"])
+
+    production, unknown = posture_partition(paths, packaging, coverage)
+
+    assert production == {
+        "agents/shared/capabilities.py": [
+            "coverage-source:agents/shared",
+            "hosted-agent-project:coordinator:agents",
+        ]
+    }
+    assert unknown == [
+        {
+            "path": "scripts/postprovision.py",
+            "packagingEvidence": ["azure-hook:postprovision:windows"],
+            "coverageEvidence": [],
+        }
+    ]
+
+
+def test_posture_partition_rejects_coverage_without_packaging() -> None:
+    path = "agents/shared/capabilities.py"
+    coverage = coverage_source_evidence([path], ["agents/shared"])
+
+    production, unknown = posture_partition([path], {}, coverage)
+
+    assert production == {}
+    assert unknown == [
+        {
+            "path": path,
+            "packagingEvidence": [],
+            "coverageEvidence": ["coverage-source:agents/shared"],
+        }
+    ]
+
+
+def test_source_entry_files_supports_module_files_and_packages() -> None:
+    tracked = [
+        "scripts/postprovision.py",
+        "scripts/deploy/__init__.py",
+        "scripts/deploy/__main__.py",
+        "scripts/deploy/helpers.py",
+    ]
+
+    assert source_entry_files(tracked, "scripts.postprovision") == [
+        "scripts/postprovision.py"
+    ]
+    assert source_entry_files(tracked, "scripts.deploy") == [
+        "scripts/deploy/__init__.py",
+        "scripts/deploy/__main__.py",
+        "scripts/deploy/helpers.py",
+    ]
+
+
+def test_validate_inventory_rejects_unknown_production_posture(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["postureUnknownFiles"] = [
+        {
+            "path": "agents/shared/capabilities.py",
+            "packagingEvidence": ["hosted-agent-project:coordinator:agents"],
+            "coverageEvidence": [],
+        }
+    ]
+
+    assert (
+        "production posture is unknown because packaging and coverage disagree: "
+        "agents/shared/capabilities.py "
+        "(packaging=['hosted-agent-project:coordinator:agents'], coverage=[])"
+    ) in validate_inventory(tmp_path, inventory, [])
+
+
 def test_validate_inventory_rejects_mypy_domain_drift(tmp_path: Path) -> None:
     inventory = _minimal_inventory()
     inventory["mypyConfig"]["files"] = ["tests"]
@@ -160,7 +243,11 @@ def test_mypy_domain_derives_roots_paths_and_modules_from_packaging() -> None:
         "scripts/check.py",
         "tests/test_check.py",
     ]
-    source_roots = ["packages/core/src/example", "agents/shared"]
+    source_roots = [
+        "packages/core/src/example",
+        "agents/shared",
+        "scripts.postprovision",
+    ]
 
     assert mypy_roots(tracked, source_roots) == ["agents", "packages", "scripts", "tests"]
     assert mypy_paths(source_roots) == ["agents", "packages/core/src"]
@@ -312,7 +399,10 @@ def _minimal_inventory() -> dict[str, Any]:
         "mypyExcludedDomainFiles": [],
         "mypyModuleNames": ["package.module"],
         "reportedMypyModules": ["package.module"],
+        "packagingFiles": [],
+        "coverageProductionFiles": [],
         "productionFiles": [],
+        "postureUnknownFiles": [],
         "sourceSuppressions": [],
         "coverageStructuralExclusions": [],
         "coverageExcludedLines": [],

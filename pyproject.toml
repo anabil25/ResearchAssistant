@@ -53,6 +53,8 @@ source = [
     "agents/literature_online",
     "agents/matching",
     "agents/matching_online",
+    "scripts.configure_agent_rbac",
+    "scripts.postprovision",
 ]
 
 [tool.coverage.report]

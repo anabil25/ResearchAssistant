@@ -294,14 +294,54 @@ def production_evidence(root: Path, paths: list[str]) -> dict[str, list[str]]:
             if not wrapper.exists():
                 continue
             for match in hook_module.finditer(wrapper.read_text(encoding="utf-8")):
-                module_path = match.group("module").replace(".", "/") + ".py"
-                if module_path in tracked:
+                module = match.group("module")
+                module_files = source_entry_files(paths, module)
+                if module_files:
                     _add_evidence(
                         evidence,
-                        [module_path],
+                        module_files,
                         f"azure-hook:{hook_name}:{platform}:{run_path}",
                     )
     return {path: sorted(labels) for path, labels in sorted(evidence.items())}
+
+
+def coverage_source_evidence(
+    paths: list[str],
+    source_entries: Iterable[str],
+) -> dict[str, list[str]]:
+    evidence: dict[str, set[str]] = defaultdict(set)
+    for source_entry in source_entries:
+        _add_evidence(
+            evidence,
+            source_entry_files(paths, source_entry),
+            f"coverage-source:{source_entry}",
+        )
+    return {path: sorted(labels) for path, labels in sorted(evidence.items())}
+
+
+def posture_partition(
+    paths: list[str],
+    packaging: Mapping[str, list[str]],
+    coverage: Mapping[str, list[str]],
+) -> tuple[dict[str, list[str]], list[dict[str, Any]]]:
+    production: dict[str, list[str]] = {}
+    unknown: list[dict[str, Any]] = []
+    for path in sorted(
+        path for path in paths if PurePosixPath(path).suffix in PYTHON_SUFFIXES
+    ):
+        packaging_labels = packaging.get(path, [])
+        coverage_labels = coverage.get(path, [])
+        if bool(packaging_labels) != bool(coverage_labels):
+            unknown.append(
+                {
+                    "path": path,
+                    "packagingEvidence": packaging_labels,
+                    "coverageEvidence": coverage_labels,
+                }
+            )
+        elif packaging_labels:
+            production[path] = sorted([*packaging_labels, *coverage_labels])
+    return production, unknown
 
 
 def discover_source_roots(root: Path, paths: list[str]) -> list[str]:
@@ -333,6 +373,17 @@ def discover_source_roots(root: Path, paths: list[str]) -> list[str]:
             if len(relative.parts) > 1:
                 top_level.add((PurePosixPath(project) / relative.parts[0]).as_posix())
         roots.update(top_level)
+    hook_module = re.compile(r"(?:^|\s)-m\s+(?P<module>scripts\.[A-Za-z0-9_.]+)")
+    for platforms in (azure.get("hooks") or {}).values():
+        for hook in (platforms or {}).values():
+            run_path = str(hook.get("run", "")).removeprefix("./")
+            wrapper = root / run_path
+            if not wrapper.exists():
+                continue
+            for match in hook_module.finditer(wrapper.read_text(encoding="utf-8")):
+                module = match.group("module")
+                if source_entry_files(paths, module):
+                    roots.add(module)
     return sorted(roots)
 
 
@@ -347,13 +398,28 @@ def module_name(source_root: str, path: str) -> str:
     return ".".join(parts)
 
 
+def source_entry_files(paths: list[str], source_entry: str) -> list[str]:
+    normalized = source_entry.replace("\\", "/").rstrip("/")
+    under_root = _tracked_python_under(paths, normalized)
+    if under_root:
+        return under_root
+    module_path = normalized.replace(".", "/")
+    module_file = module_path + ".py"
+    if module_file in paths:
+        return [module_file]
+    return _tracked_python_under(paths, module_path)
+
+
 def module_inventory(paths: list[str], source_roots: list[str]) -> tuple[list[str], list[str]]:
     files: list[str] = []
     modules: list[str] = []
     for source_root in source_roots:
-        for path in _tracked_python_under(paths, source_root):
+        module_file = source_root.replace(".", "/") + ".py"
+        for path in source_entry_files(paths, source_root):
             files.append(path)
-            modules.append(module_name(source_root, path))
+            modules.append(
+                source_root if path == module_file else module_name(source_root, path)
+            )
     return sorted(set(files)), sorted(set(modules))
 
 
@@ -402,7 +468,12 @@ def mypy_configuration(root: Path) -> dict[str, Any]:
 
 
 def mypy_roots(paths: list[str], source_roots: list[str]) -> list[str]:
-    roots = {PurePosixPath(source_root).parts[0] for source_root in source_roots}
+    roots = {
+        source_root.split(".", 1)[0]
+        if "/" not in source_root
+        else PurePosixPath(source_root).parts[0]
+        for source_root in source_roots
+    }
     for tooling_root in ("scripts", "tests"):
         if _tracked_python_under(paths, tooling_root):
             roots.add(tooling_root)
@@ -412,6 +483,8 @@ def mypy_roots(paths: list[str], source_roots: list[str]) -> list[str]:
 def mypy_paths(source_roots: list[str]) -> list[str]:
     paths: set[str] = set()
     for source_root in source_roots:
+        if "/" not in source_root:
+            continue
         parts = PurePosixPath(source_root).parts
         if "src" in parts:
             src_index = parts.index("src")
@@ -568,11 +641,18 @@ def _suppression_identity(record: dict[str, Any]) -> tuple[str, str, str, str, s
 def suppression_records(
     suppressions: list[Suppression],
     production: dict[str, list[str]],
+    unknown: set[str],
     previous: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
     counter: Counter[tuple[str, str, str, str, str]] = Counter()
     for entry in suppressions:
-        posture = "production" if entry.path in production else "test"
+        posture = (
+            "unknown"
+            if entry.path in unknown
+            else "production"
+            if entry.path in production
+            else "test"
+        )
         counter[(entry.path, entry.kind, entry.scope, entry.reason, posture)] += 1
 
     previous_metadata = {}
@@ -617,8 +697,17 @@ def build_inventory(
 ) -> tuple[dict[str, Any], list[str]]:
     paths = tracked_files(root)
     suppressions = scan_suppressions(root, paths)
-    production = production_evidence(root, paths)
     config = coverage_configuration(root)
+    packaging = production_evidence(root, paths)
+    coverage_production = coverage_source_evidence(
+        paths,
+        config["run"]["source"] or [],
+    )
+    production, posture_unknown = posture_partition(
+        paths,
+        packaging,
+        coverage_production,
+    )
     discovered_roots = discover_source_roots(root, paths)
     source_files, modules = module_inventory(paths, discovered_roots)
     discovered_mypy_roots = mypy_roots(paths, discovered_roots)
@@ -636,7 +725,12 @@ def build_inventory(
         for path in coverage_report["files"]
     )
 
-    source_suppressions = suppression_records(suppressions, production, previous)
+    source_suppressions = suppression_records(
+        suppressions,
+        production,
+        {record["path"] for record in posture_unknown},
+        previous,
+    )
     inventory = {
         "schemaVersion": SCHEMA_VERSION,
         "coverageConfig": config,
@@ -654,9 +748,17 @@ def build_inventory(
         "mypyModuleNames": mypy_modules,
         "reportedMypyModules": reported_mypy_modules(mypy_report),
         "reportedCoverageFiles": reported_files,
+        "packagingFiles": [
+            {"path": path, "evidence": labels} for path, labels in packaging.items()
+        ],
+        "coverageProductionFiles": [
+            {"path": path, "evidence": labels}
+            for path, labels in coverage_production.items()
+        ],
         "productionFiles": [
             {"path": path, "evidence": labels} for path, labels in production.items()
         ],
+        "postureUnknownFiles": posture_unknown,
         "sourceSuppressions": source_suppressions,
         "coverageStructuralExclusions": [
             {
@@ -689,6 +791,13 @@ def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]
         errors.append("configured coverage source roots differ from packaging-derived roots")
     if inventory["sourceFiles"] != inventory["reportedCoverageFiles"]:
         errors.append("coverage JSON file set differs from the packaging-derived source file set")
+    for record in inventory["postureUnknownFiles"]:
+        errors.append(
+            "production posture is unknown because packaging and coverage disagree: "
+            f"{record['path']} "
+            f"(packaging={record['packagingEvidence']}, "
+            f"coverage={record['coverageEvidence']})"
+        )
     errors.extend(f"unclassified coverage exclusion: {item}" for item in unknown)
 
     mypy = inventory["mypyConfig"]

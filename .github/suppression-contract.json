@@ -31,7 +31,9 @@
         "agents/literature",
         "agents/literature_online",
         "agents/matching",
-        "agents/matching_online"
+        "agents/matching_online",
+        "scripts.configure_agent_rbac",
+        "scripts.postprovision"
       ]
     },
     "xml": {
@@ -488,6 +490,356 @@
       "source": "def download_blob(self, **kwargs: Any) -> BlobDownload: ..."
     }
   ],
+  "coverageProductionFiles": [
+    {
+      "evidence": [
+        "coverage-source:agents/coordinator"
+      ],
+      "path": "agents/coordinator/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/dataset"
+      ],
+      "path": "agents/dataset/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/grant"
+      ],
+      "path": "agents/grant/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/grant_online"
+      ],
+      "path": "agents/grant_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/institution"
+      ],
+      "path": "agents/institution/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/literature"
+      ],
+      "path": "agents/literature/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/literature_online"
+      ],
+      "path": "agents/literature_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/matching"
+      ],
+      "path": "agents/matching/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/matching_online"
+      ],
+      "path": "agents/matching_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared"
+      ],
+      "path": "agents/shared/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared"
+      ],
+      "path": "agents/shared/credentials.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared"
+      ],
+      "path": "agents/shared/profiles.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared"
+      ],
+      "path": "agents/shared/runtime.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared"
+      ],
+      "path": "agents/shared/tools.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_connectors/src/research_assistant_connectors"
+      ],
+      "path": "packages/research_connectors/src/research_assistant_connectors/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_connectors/src/research_assistant_connectors"
+      ],
+      "path": "packages/research_connectors/src/research_assistant_connectors/registry.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/chunking.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/compute.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/connector_gateway.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/dataset.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/fixtures.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/models.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/repositories.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/security.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/service.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/studio_models.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/v3_contracts.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:packages/research_core/src/research_assistant_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/workflows.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:scripts.configure_agent_rbac"
+      ],
+      "path": "scripts/configure_agent_rbac.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:scripts.postprovision"
+      ],
+      "path": "scripts/postprovision.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/__main__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/app.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/blob_sources.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/config.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/connector_gateway.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/cosmos_workspace.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/foundry.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/identity.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/orchestration.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/public_research.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/schemas.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/search_repository.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/studios.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/telemetry.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/workflow_compiler.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/api/src/research_assistant_api"
+      ],
+      "path": "services/api/src/research_assistant_api/workspace.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/app.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/auth.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/__main__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/config.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/ingestion.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/runtime.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/telemetry.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:services/worker/src/research_assistant_worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/workflows.py"
+    }
+  ],
   "coverageStructuralExclusions": [
     {
       "kind": "coverage-default-ellipsis-stub",
@@ -596,6 +948,8 @@
     "agents/shared",
     "packages/research_connectors/src/research_assistant_connectors",
     "packages/research_core/src/research_assistant_core",
+    "scripts.configure_agent_rbac",
+    "scripts.postprovision",
     "services/api/src/research_assistant_api",
     "services/connector_adapter/src/research_assistant_connector_adapter",
     "services/worker/src/research_assistant_worker"
@@ -652,6 +1006,8 @@
     "research_assistant_worker.runtime",
     "research_assistant_worker.telemetry",
     "research_assistant_worker.workflows",
+    "scripts.configure_agent_rbac",
+    "scripts.postprovision",
     "shared",
     "shared.credentials",
     "shared.profiles",
@@ -768,6 +1124,7 @@
     "tests/test_copilot_connector_agent.py",
     "tests/test_cosmos_workspace.py",
     "tests/test_dataset.py",
+    "tests/test_deployment_hooks.py",
     "tests/test_foundry_gateway.py",
     "tests/test_identity.py",
     "tests/test_ingestion.py",
@@ -871,6 +1228,7 @@
     "tests.test_copilot_connector_agent",
     "tests.test_cosmos_workspace",
     "tests.test_dataset",
+    "tests.test_deployment_hooks",
     "tests.test_foundry_gateway",
     "tests.test_identity",
     "tests.test_ingestion",
@@ -889,7 +1247,7 @@
     "tests.test_v3_ui_foundation",
     "tests.test_worker"
   ],
-  "productionFiles": [
+  "packagingFiles": [
     {
       "evidence": [
         "hosted-agent-project:dataset-agent:agents",
@@ -1421,6 +1779,597 @@
       "path": "services/worker/src/research_assistant_worker/workflows.py"
     }
   ],
+  "postureUnknownFiles": [],
+  "productionFiles": [
+    {
+      "evidence": [
+        "coverage-source:agents/coordinator",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/coordinator/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/dataset",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/dataset/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/grant",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/grant/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/grant_online",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/grant_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/institution",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/institution/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/literature",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/literature/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/literature_online",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/literature_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/matching",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/matching/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/matching_online",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/matching_online/main.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/shared/__init__.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/shared/credentials.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/shared/profiles.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/shared/runtime.py"
+    },
+    {
+      "evidence": [
+        "coverage-source:agents/shared",
+        "hosted-agent-project:dataset-agent:agents",
+        "hosted-agent-project:grant-agent:agents",
+        "hosted-agent-project:grant-online-agent:agents",
+        "hosted-agent-project:institution-agent:agents",
+        "hosted-agent-project:literature-agent:agents",
+        "hosted-agent-project:literature-online-agent:agents",
+        "hosted-agent-project:matching-agent:agents",
+        "hosted-agent-project:matching-online-agent:agents",
+        "hosted-agent-project:research-coordinator:agents"
+      ],
+      "path": "agents/shared/tools.py"
+    },
+    {
+      "evidence": [
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "coverage-source:packages/research_connectors/src/research_assistant_connectors",
+        "python-distribution:packages/research_connectors"
+      ],
+      "path": "packages/research_connectors/src/research_assistant_connectors/__init__.py"
+    },
+    {
+      "evidence": [
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "coverage-source:packages/research_connectors/src/research_assistant_connectors",
+        "python-distribution:packages/research_connectors"
+      ],
+      "path": "packages/research_connectors/src/research_assistant_connectors/registry.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/__init__.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/chunking.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/compute.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/connector_gateway.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/dataset.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/fixtures.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/models.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/repositories.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/security.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/service.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/studio_models.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/v3_contracts.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:packages/research_core/src/research_assistant_core",
+        "python-distribution:packages/research_core"
+      ],
+      "path": "packages/research_core/src/research_assistant_core/workflows.py"
+    },
+    {
+      "evidence": [
+        "azure-hook:postdeploy:posix:scripts/postdeploy.sh",
+        "azure-hook:postdeploy:windows:scripts/postdeploy.ps1",
+        "coverage-source:scripts.configure_agent_rbac"
+      ],
+      "path": "scripts/configure_agent_rbac.py"
+    },
+    {
+      "evidence": [
+        "azure-hook:postprovision:posix:scripts/postprovision.sh",
+        "azure-hook:postprovision:windows:scripts/postprovision.ps1",
+        "coverage-source:scripts.postprovision"
+      ],
+      "path": "scripts/postprovision.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/__init__.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/__main__.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/app.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/blob_sources.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/config.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/connector_gateway.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/cosmos_workspace.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/foundry.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/identity.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/orchestration.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/public_research.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/schemas.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/search_repository.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/studios.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/telemetry.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/workflow_compiler.py"
+    },
+    {
+      "evidence": [
+        "container-image:api:services\\api\\Dockerfile",
+        "coverage-source:services/api/src/research_assistant_api",
+        "python-distribution:services/api"
+      ],
+      "path": "services/api/src/research_assistant_api/workspace.py"
+    },
+    {
+      "evidence": [
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter",
+        "python-distribution:services/connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/__init__.py"
+    },
+    {
+      "evidence": [
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter",
+        "python-distribution:services/connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/app.py"
+    },
+    {
+      "evidence": [
+        "container-image:connector-adapter:services\\connector_adapter\\Dockerfile",
+        "coverage-source:services/connector_adapter/src/research_assistant_connector_adapter",
+        "python-distribution:services/connector_adapter"
+      ],
+      "path": "services/connector_adapter/src/research_assistant_connector_adapter/auth.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/__init__.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/__main__.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/config.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/ingestion.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/runtime.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/telemetry.py"
+    },
+    {
+      "evidence": [
+        "container-image:worker:services\\worker\\Dockerfile",
+        "coverage-source:services/worker/src/research_assistant_worker",
+        "python-distribution:services/worker"
+      ],
+      "path": "services/worker/src/research_assistant_worker/workflows.py"
+    }
+  ],
   "reportedCoverageFiles": [
     "agents/coordinator/main.py",
     "agents/dataset/main.py",
@@ -1451,6 +2400,8 @@
     "packages/research_core/src/research_assistant_core/studio_models.py",
     "packages/research_core/src/research_assistant_core/v3_contracts.py",
     "packages/research_core/src/research_assistant_core/workflows.py",
+    "scripts/configure_agent_rbac.py",
+    "scripts/postprovision.py",
     "services/api/src/research_assistant_api/__init__.py",
     "services/api/src/research_assistant_api/__main__.py",
     "services/api/src/research_assistant_api/app.py",
@@ -1564,6 +2515,7 @@
     "tests.test_copilot_connector_agent",
     "tests.test_cosmos_workspace",
     "tests.test_dataset",
+    "tests.test_deployment_hooks",
     "tests.test_foundry_gateway",
     "tests.test_identity",
     "tests.test_ingestion",
@@ -1613,6 +2565,8 @@
     "packages/research_core/src/research_assistant_core/studio_models.py",
     "packages/research_core/src/research_assistant_core/v3_contracts.py",
     "packages/research_core/src/research_assistant_core/workflows.py",
+    "scripts/configure_agent_rbac.py",
+    "scripts/postprovision.py",
     "services/api/src/research_assistant_api/__init__.py",
     "services/api/src/research_assistant_api/__main__.py",
     "services/api/src/research_assistant_api/app.py",
@@ -1784,6 +2738,28 @@
       "reason": "",
       "role": "standard",
       "scope": "no-untyped-call"
+    },
+    {
+      "count": 5,
+      "kind": "type-ignore",
+      "path": "tests/test_deployment_hooks.py",
+      "posture": "test",
+      "protectedControl": null,
+      "protectedTest": null,
+      "reason": "",
+      "role": "standard",
+      "scope": "arg-type"
+    },
+    {
+      "count": 3,
+      "kind": "type-ignore",
+      "path": "tests/test_deployment_hooks.py",
+      "posture": "test",
+      "protectedControl": null,
+      "protectedTest": null,
+      "reason": "",
+      "role": "standard",
+      "scope": "attr-defined"
     },
     {
       "count": 1,
