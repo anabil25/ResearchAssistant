@@ -619,11 +619,20 @@ Two consequences worth acting on together:
    spike will see none, while `fingerprint_mismatch` — a far more alarming and
    less specific signal — spikes instead. The enumeration helper below is still
    the right triage tool; the *reason code* to expect is the surprise.
-2. **For the fix**, ordering attribution before fingerprint is the change, and a
-   test seeded with a matching digest **cannot detect it** — matching by
-   construction opens the fingerprint gate and lets attribution fire, so the test
-   passes either way. Seed a v1/v2-era digest so it stays red until the ordering
-   actually changes.
+2. **For the fix, do *not* reorder the gates — the test claim is what changes.**
+   A test seeded with a matching digest **cannot detect the real legacy path**:
+   matching by construction opens the fingerprint gate and lets attribution fire,
+   so `test_unattributable_requester_is_observable_on_the_wire` currently proves a
+   state that production legacy records do not take. Seeding a v1/v2-era digest
+   makes that test **go red**, because a real legacy record denies with
+   `fingerprint_mismatch`.
+   **Keep fingerprint-first.** It is content-bound and unguessable, so checking it
+   first denies an unknown-CSV probe without first confirming that an approval id
+   exists and who owns it. The repair is to change the claim:
+   assert that a real legacy record **fails closed** with
+   `fingerprint_mismatch` during the overlap window, and move the
+   `UNATTRIBUTABLE_REQUESTER` reachability assertion to **decide time**, where it
+   is genuinely reachable for a requester with no resolvable principal id.
 3. **The affected population is strictly larger than the attribution population,
    and the helper in `main` enumerates the smaller one.**
    `_DATASET_FINGERPRINT_VERSION = 3` (L233) is part of the fingerprint
@@ -1006,12 +1015,18 @@ and open**, not "resolved because it was approved," and the HIGH CSV-egress bypa
 that `673985b` closed **is** genuinely closed (verified by exhaustive egress
 enumeration) — that one does not depend on the later delta.
 
-- **Ordering + fixture, one work item.** `workspace.py` checks `plan_fingerprint`
-  before `_verify_consuming_principal`, so `UNATTRIBUTABLE_REQUESTER` can never
-  fire for the legacy population it exists for. **A test masks it** —
-  `test_unattributable_requester_is_observable_on_the_wire` builds a v3 fingerprint
-  then pops the requester, a state that cannot occur in production. Fix the
-  ordering **and** seed the test with a v2-era digest.
+- **Ordering is already correct; the test claim is wrong.**
+  `workspace.py` checks `plan_fingerprint` before `_verify_consuming_principal`,
+  and that is the right fail-closed order. **What is wrong is the test's claim** —
+  `test_unattributable_requester_is_observable_on_the_wire` builds a v3
+  fingerprint then pops the requester, a state that cannot occur for a real
+  legacy record, so it demonstrates defensive-depth reachability rather than the
+  deploy-day path. Seeding a v1/v2-era digest makes the current assertion fail,
+  because the real legacy path denies with `fingerprint_mismatch`.
+  **Do not reorder the gates.** Keep fingerprint-first, assert that real legacy
+  records fail closed with `fingerprint_mismatch` during the overlap window, and
+  move the attribution reachability assertion to decide time where it is actually
+  reachable.
   **Operational consequence:** the deploy-day spike surfaces as
   `fingerprint_mismatch`, which is **indistinguishable from a plan-swap attempt** —
   so the signal that should say "expected migration" says "possible attack."
