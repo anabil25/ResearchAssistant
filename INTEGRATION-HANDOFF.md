@@ -286,6 +286,28 @@ Python silently keeps only the last definition — a silent test drop.
 
 ## 4. What is broken, and why
 
+**Before touching this: the constraint that governs the fix.** The dataset owner
+stated the seam, verified against the shipped code, and it is the thing most
+likely to be violated by a well-meaning reconciliation:
+
+> **A grant may only be minted by an atomic single-use consumption. Anything that
+> can hand `_agent_message` a grant without one re-opens the HIGH bypass that
+> `673985b` closed.**
+
+The three surfaces and their required positions:
+
+| function | property | position |
+|---|---|---|
+| `_validate_dataset_analysis` | **non-mutating** | must stay *before* `research.run`/`service.run` |
+| `_consume_dataset_analysis` | **sole authority**; mints the grant | must stay *immediately before* `gateway.invoke` |
+| `_require_dataset_send_grant` | structural backstop | inside `_agent_message` |
+
+**A regression net for exactly this defect shape is preserved at `486cec7`** on
+`anabil25-fix-dataset-approval-boundary` (post-integration, un-integrated, adds no
+files `main` lacks): 7 tests parametrised over both execution modes. With the
+whole-call-move defect simulated it turns **12 red, 7 of them those cases**. Take
+it before starting, not after.
+
 Mechanically complete — zero conflict markers, zero syntax errors,
 `pyproject.toml` parses — but semantically incomplete.
 
@@ -828,6 +850,17 @@ different file.** Grep across the suite for the *property*, not the idiom.
   forces the correction.
 - **LOW** — a failing outcome-write inside the `except` handlers masks the original
   error; a *successful* send can be reported as 500.
+  **Confirmed against the shipped code, and the correct fix is not the obvious
+  one.** In **both** routes' `except` ladders, `_record_dataset_send_outcome(...)`
+  runs **before** the `raise`, so if the audit append throws — a Cosmos error, say
+  — it propagates and **displaces the in-flight exception**: the caller sees the
+  audit error rather than the 502/503 that actually occurred, **and the
+  send-outcome entry is lost anyway.** Both halves fail together.
+  **A bare `try/except: pass` is the wrong remedy** — suppressing the audit failure
+  recreates the lossy-audit defect this very entry exists to prevent. The write
+  must be guarded so it cannot displace the in-flight exception **while its own
+  failure still surfaces by some other route**. That is a deliberate design
+  decision, not a suppression.
 
 ### Provider (APPROVED ×3) — **the carried item is CLOSED and merged**
 
