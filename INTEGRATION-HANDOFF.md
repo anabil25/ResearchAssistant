@@ -864,11 +864,23 @@ Nothing else outstanding on this workstream.
   **Verify per file before converting** — no `setTimeout`/`setInterval`/
   `requestAnimationFrame` and no debounce in the component under test — rather
   than assuming the state lineage's result generalises.
-- **The fix was applied to the suite that was not at risk.** `studio-components`
-  carries a `15000` override on its heaviest test (ratio 0.34). `research-workbench`
-  has **no override**, sits at **0.735**, retains all 22 unconverted sites, and is
+- **The fix was applied to the suite that was not at risk** — *measured at
+  `202a957`; see the superseded note at the top of this section, `main` has since
+  converted all 22 sites.* `studio-components` carries a `15000` override on its
+  heaviest test (ratio 0.34). `research-workbench`
+  has **no override**, sits at **0.735**, retained all 22 unconverted sites at that
+  tip, and is
   the historical failing site. `research-markdown.integration` is at **0.523** and is
   in neither the fix nor the report.
+  **The denominators here were themselves wrong once and are worth trusting only
+  as corrected:** an initial pass reported *zero* per-test overrides, which put
+  `studio-components` at 5131/5000 = **1.026** and made it look like the suite at
+  the edge. Ground truth is **five** overrides — `15000` at
+  `studio-components.test.tsx:3814` plus `10000` ×2 there and ×2 in
+  `workspace-views.test.tsx` — verified independently in `main`. Correct ratio
+  0.342, and the real edge is `research-workbench` at 0.735 with a genuine default
+  budget. **Within one suite the longest test is not the closest-to-budget test
+  when budgets differ.**
 - **70 viewport triples are reported but deliberately not gated, and the refusal is
   correct.** A blanket `viewports: ALL_VIEWPORTS` on all 77 interactions had been
   *positively asserting* that all 298 states were proven at desktop, tablet and
@@ -949,6 +961,18 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **A parser can fail *silently and confidently* — check its configuration before
+  trusting its negatives.** A search for per-test Jest timeout overrides returned
+  **zero**, twice, by two different methods. The regex missed the multi-line
+  `},⏎ 15000,⏎)` form; the TypeScript AST rescan then **parsed `.tsx` files with
+  `ScriptKind.TS` instead of `ScriptKind.TSX`**, so JSX like
+  `<Component running={false} />` was read as binary expressions, scrambling the
+  `it()` argument shape. **The AST did not error — it produced a wrong parse and
+  answered from it.** Ground truth was five overrides, and the false negative
+  inflated a ratio from 0.342 to 1.026, misidentifying which suite sat at the
+  edge. Escalating from regex to AST felt like rigour and reproduced the same
+  answer for a different reason, which is worse than one wrong method: **two
+  independent tools agreeing is only evidence when they fail independently.**
 - **Measure in the execution form that ships, or the number describes a scenario
   that never occurs.** The same test measured **2869 ms in isolation (ratio 0.57)
   and 5099 ms under full-suite contention (ratio 1.02, hard timeout)**. Isolation
