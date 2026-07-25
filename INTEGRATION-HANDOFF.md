@@ -312,6 +312,30 @@ Defects the reviews found. **Not** merge damage; they survive into this branch.
   non-DENY mode. Adding the fix leaves the suite green, so nothing would catch the
   defect *or* its reintroduction.
 
+  **Fix specification, agreed before the freeze:**
+  - **Do not add `principal_id` to `IdempotencyKey`.** Principal is a *verify*
+    fact, not an *identity* fact; keying on it would partition the idempotency
+    space and turn a bypass into a duplicate-execution bug.
+  - **Enforce actor and release provenance unconditionally across every
+    disposition.** `IN_PROGRESS` and `RECONCILIATION_REQUIRED` currently raise
+    deterministically and return no data, but that is a fact about today, not a
+    boundary — per-disposition reasoning recreates the class the next time a
+    disposition is added.
+  - **Test cross-principal and cross-release separately, with distinct failure
+    reasons**, so a future regression names which half broke.
+  - **Reproduce acceptance *before* fixing.** A fix landed without the
+    reproduction step carries no evidence that the test detects anything.
+  - **Deny authority, not service.** Same principal + same release replays
+    normally; a different principal is denied with a deterministic named error;
+    **same principal + successor release must be decided and tested explicitly**,
+    because blanket denial converts a privilege-escalation fix into a
+    deployment-time outage visible only during upgrades.
+  - **Note the asymmetry before starting:** `_replay_completed` never receives the
+    invocation context, so the release check is ~5 lines with both values in hand
+    while the principal check needs a signature change. That fork is *why* the
+    omission exists — the correctly-guarded path bundles both checks in a function
+    that does have the context.
+
 ### Dataset (APPROVED, 2 LOW)
 
 - **Ordering + fixture, one work item.** `workspace.py` checks `plan_fingerprint`
