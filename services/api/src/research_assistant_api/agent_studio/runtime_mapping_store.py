@@ -85,22 +85,32 @@ class RuntimeDeploymentHead(BaseModel):
 
 
 class RuntimeDeploymentMappingReader(Protocol):
-    """RUNTIME port: exact point reads only -- no head, no latest, no enumeration.
+    """RUNTIME port: the single exact point read, and NOTHING else.
 
-    STRUCTURAL ISOLATION (do not "improve" this into an inheritance relationship):
-    this port and ``RuntimeDeploymentMappingControlPlane`` are SEPARATE Protocols
-    with NO inheritance between them, precisely so the runtime port cannot be
-    widened into the control-plane one. A runtime dependency typed as this port
-    therefore has NO ``get_head``/``list_revisions``/write surface reachable at
-    all -- "no head read on the runtime authorization path" is true by
-    construction, not by vigilance. (The head-lead invariant is asserted ONLY in
-    the control plane, where a repoint already reads head; asserting it on the
-    runtime path would force a forbidden head read back onto the exact path that
-    must prove ZERO mapping reads for an unbound caller.) NOTE: this type split
-    prevents ACCIDENTS; it is NOT the security boundary. The security boundary is
-    the Azure identity/RBAC split -- the runtime app-role gets read-only data-plane
-    access while head/binding writes require a control-plane identity (see the IaC
-    RBAC that lands with the durable adapters).
+    STANDING REVIEW RULE -- adding ANY method to this Protocol is a
+    SECURITY-RELEVANT change and requires explicit justification. Reachability from
+    the runtime authorization path is decided ENTIRELY by what this Protocol
+    DECLARES: a runtime reference typed as this port can reach exactly the methods
+    named here, regardless of which concrete object is behind it. Every method
+    added widens that reachability silently, without touching any adapter. Keep it
+    minimal -- ideally just ``get``.
+
+    HONEST THREE-PART CLAIM (do not overstate any single layer):
+    * TYPES give "head/enumeration/writes are UNREACHABLE THROUGH THIS REFERENCE"
+      -- because this Protocol declares none of them. This is the property that
+      does the real work on the runtime path, and it holds no matter what object
+      is passed.
+    * The COMPOSITION ROOT gives "the runtime plane is never handed a write-capable
+      object" -- a separate property (the runtime module must not construct the
+      control-plane adapter; see the module-boundary test). Python Protocols are
+      STRUCTURAL, so a control-plane adapter that happened to expose ``get`` would
+      satisfy this port with no declared relationship -- which is why the
+      control-plane adapter is made structurally INCOMPATIBLE (it does not expose
+      ``get`` at all; it holds a reader instead), so a mis-wire is a mypy error.
+    * RBAC gives "denied even if reached" -- the runtime app-role has read-only
+      data-plane access; head/binding writes require a control-plane identity.
+    NEITHER types NOR the composition root can give "cannot be the wrong object" on
+    their own; only RBAC makes a wrong object harmless. All three are owed.
     """
 
     def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
@@ -109,18 +119,21 @@ class RuntimeDeploymentMappingReader(Protocol):
 
 
 class RuntimeDeploymentMappingControlPlane(Protocol):
-    """CONTROL-PLANE port: exact point reads + head + revision enumeration + writes.
+    """CONTROL-PLANE port: head + revision enumeration + succession writes.
 
-    A SEPARATE Protocol from ``RuntimeDeploymentMappingReader`` with NO inheritance
-    relationship (see that port's note). It re-declares ``get`` independently
-    rather than inheriting it, so neither port is a sub/supertype of the other and
-    the runtime port can never be widened into this one. The concrete adapters
-    structurally satisfy BOTH ports, but the runtime composition constructs and
-    injects only a reader-typed dependency.
+    Structurally INCOMPATIBLE with ``RuntimeDeploymentMappingReader`` by
+    COMPOSITION, not by inheritance or method-renaming: it does NOT expose ``get``
+    itself -- revision reads go through the ``reader`` it HOLDS
+    (``self.reader.get(...)``). Its own method surface is head/enumerate/write, so a
+    control-plane adapter cannot satisfy the (structural) runtime Protocol at all,
+    and passing one where a runtime reader is expected is a mypy error rather than
+    a silent success. This closes the "wrong object on the runtime path" gap that
+    separate-Protocols-with-no-inheritance alone leaves open.
     """
 
-    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
-        """Fresh exact point read of the ``(deployment_id, revision_sequence)`` revision (or ``None``)."""
+    @property
+    def reader(self) -> RuntimeDeploymentMappingReader:
+        """The runtime reader this control plane composes over the same storage."""
         ...
 
     def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
@@ -147,15 +160,32 @@ class RuntimeDeploymentMappingControlPlane(Protocol):
         ...
 
 
+class InMemoryRuntimeDeploymentMappingReader:
+    """In-memory RUNTIME reader: exposes ONLY ``get`` over a shared revisions dict."""
+
+    def __init__(self, revisions: dict[str, RuntimeDeploymentMapping]) -> None:
+        self._revisions = revisions
+
+    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
+        return self._revisions.get(_revision_item_id(deployment_id, revision_sequence))
+
+
 class InMemoryRuntimeDeploymentMappingStore:
-    """In-memory adapter implementing both ports (tests/local only)."""
+    """In-memory CONTROL-PLANE adapter (tests/local only).
+
+    Holds a runtime reader over the SAME ``_revisions`` dict (composition), and
+    exposes head/enumerate/write only -- deliberately NO ``get`` of its own, so it
+    cannot be mis-passed where a runtime reader is expected.
+    """
 
     def __init__(self) -> None:
         self._revisions: dict[str, RuntimeDeploymentMapping] = {}
         self._heads: dict[str, RuntimeDeploymentHead] = {}
+        self._reader = InMemoryRuntimeDeploymentMappingReader(self._revisions)
 
-    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
-        return self._revisions.get(_revision_item_id(deployment_id, revision_sequence))
+    @property
+    def reader(self) -> RuntimeDeploymentMappingReader:
+        return self._reader
 
     def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
         return self._heads.get(deployment_id)
@@ -216,16 +246,38 @@ RUNTIME_MAPPING_HEAD_DOCUMENT_TYPE = "runtimeDeploymentMappingHeadV1"
 RUNTIME_MAPPING_PARTITION_KEY_PATH = "/deployment_id"
 
 
+class CosmosRuntimeDeploymentMappingReader:
+    """Durable RUNTIME reader: a fresh exact point read, and nothing else."""
+
+    def __init__(self, container: ContainerProxy) -> None:
+        self._container = container
+
+    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
+        try:
+            document = dict(
+                self._container.read_item(
+                    item=_revision_item_id(deployment_id, revision_sequence), partition_key=deployment_id
+                )
+            )
+        except CosmosResourceNotFoundError:
+            return None
+        return RuntimeDeploymentMapping.model_validate(document["payload"])
+
+
 class CosmosRuntimeDeploymentMappingStore:
-    """Durable adapter implementing both ports over a ``/deployment_id`` container.
+    """Durable CONTROL-PLANE adapter over a ``/deployment_id`` container.
+
+    Holds a ``CosmosRuntimeDeploymentMappingReader`` over the SAME container
+    (composition) and exposes head/enumerate/write only -- deliberately NO ``get``
+    of its own, so it cannot satisfy the runtime reader Protocol and a mis-wire is
+    a mypy error. Revision reads it needs internally go through ``self.reader``.
 
     ``commit_revision`` is a single-partition TRANSACTIONAL BATCH: bootstrap is
     ``[create revision, create head]`` (both create-only, so a concurrent
     double-bootstrap is store-adjudicated -- one batch 409s); supersede is
     ``[create revision N+1, replace head If-Match]`` (atomic, so ``next`` can
-    never skip or collide). ``get`` is a fresh exact point read; ``get_head`` is a
-    point read of the head item; ``list_revisions`` is the only query and lives on
-    the control-plane port only.
+    never skip or collide). ``get_head`` is a point read of the head item;
+    ``list_revisions`` is the only query and lives on the control-plane port only.
 
     SDK-CONTRACT-VERIFIED ASSUMPTION (do not overstate): the all-or-nothing
     atomicity of the batch rests on ``ContainerProxy.execute_item_batch`` being
@@ -243,17 +295,11 @@ class CosmosRuntimeDeploymentMappingStore:
 
     def __init__(self, container: ContainerProxy) -> None:
         self._container = container
+        self._reader = CosmosRuntimeDeploymentMappingReader(container)
 
-    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
-        try:
-            document = dict(
-                self._container.read_item(
-                    item=_revision_item_id(deployment_id, revision_sequence), partition_key=deployment_id
-                )
-            )
-        except CosmosResourceNotFoundError:
-            return None
-        return RuntimeDeploymentMapping.model_validate(document["payload"])
+    @property
+    def reader(self) -> RuntimeDeploymentMappingReader:
+        return self._reader
 
     def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
         try:
@@ -302,7 +348,7 @@ class CosmosRuntimeDeploymentMappingStore:
         }
 
     def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
-        existing_rev = self.get(mapping.deployment_id, mapping.revision_sequence)
+        existing_rev = self._reader.get(mapping.deployment_id, mapping.revision_sequence)
         head = self.get_head(mapping.deployment_id)
         if (
             existing_rev is not None
@@ -342,7 +388,7 @@ class CosmosRuntimeDeploymentMappingStore:
             if exc.status_code in (409, 412):
                 # A revision collision with matching content is idempotent; any
                 # other precondition failure means the head moved -> fail closed.
-                existing_rev = self.get(mapping.deployment_id, mapping.revision_sequence)
+                existing_rev = self._reader.get(mapping.deployment_id, mapping.revision_sequence)
                 if existing_rev is not None and existing_rev.mapping_digest != mapping.mapping_digest:
                     raise RuntimeMappingConflictError(
                         f"A runtime deployment mapping revision at sequence {mapping.revision_sequence} already "

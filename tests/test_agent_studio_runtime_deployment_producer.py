@@ -35,6 +35,7 @@ from research_assistant_api.agent_studio.runtime_deployment_producer import (
 from research_assistant_api.agent_studio.runtime_mapping_store import (
     InMemoryRuntimeDeploymentMappingStore,
     RuntimeDeploymentHead,
+    RuntimeDeploymentMappingReader,
     RuntimeHeadPreconditionError,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -106,7 +107,7 @@ def test_grant_writes_mapping_then_binds_and_audits_intent_and_applied() -> None
     producer, store, index, audit = _producer()
     mapping = _mapping()
     assert producer.grant(mapping, actor_id=ACTOR, now=NOW) is mapping
-    assert store.get("dep-1", 1) is mapping
+    assert store.reader.get("dep-1", 1) is mapping
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.status is RuntimeBindingStatus.ACTIVE
@@ -126,7 +127,7 @@ def test_grant_is_idempotent_for_identical_inputs() -> None:
     resolution = index.resolve_binding(CLIENT, "dep-1")
     assert resolution is not None
     assert resolution.revision_sequence == 1
-    assert store.get("dep-1", 1) is not None
+    assert store.reader.get("dep-1", 1) is not None
 
 
 def test_grant_advances_and_repoints() -> None:
@@ -193,8 +194,8 @@ def test_revoke_flips_binding_to_revoked_tombstone_in_place() -> None:
     assert resolution.status is RuntimeBindingStatus.REVOKED
     assert resolution.revision_sequence == 1  # same sequence, tombstoned in place
     # No new/retiring mapping revision was written.
-    assert store.get("dep-1", 2) is None
-    assert store.get("dep-1", 1) is active
+    assert store.reader.get("dep-1", 2) is None
+    assert store.reader.get("dep-1", 1) is active
     applied = _events(audit, AuditEventKind.RUNTIME_BINDING_REVOKED, "applied")
     assert len(applied) == 1
 
@@ -214,7 +215,7 @@ def test_supersede_grant_over_revoked_client_is_terminal() -> None:
     assert resolution is not None
     assert resolution.status is RuntimeBindingStatus.REVOKED
     assert resolution.revision_sequence == 1  # counter preserved for a later explicit re-grant
-    assert store.get("dep-1", 2) is not None  # revision committed mapping-first; binding never repointed
+    assert store.reader.get("dep-1", 2) is not None  # revision committed mapping-first; binding never repointed
 
 
 class _RevokeThenDelegateWriter:
@@ -296,7 +297,7 @@ def test_retire_revision_refuses_a_referenced_revision() -> None:
     producer.grant(active, actor_id=ACTOR, now=NOW)
     with pytest.raises(RevisionStillReferencedError):
         producer.retire_revision("dep-1", 1, active.revision_id, (CLIENT,))
-    assert store.get("dep-1", 1) is active  # not deleted
+    assert store.reader.get("dep-1", 1) is active  # not deleted
 
 
 def test_retire_revision_deletes_an_unreferenced_revision() -> None:
@@ -306,8 +307,8 @@ def test_retire_revision_deletes_an_unreferenced_revision() -> None:
     producer.grant(_mapping(revision_sequence=2, backend_version="2.0.0"), actor_id=ACTOR, now=NOW)
     # v1 is superseded (binding now points at seq 2), so it may be retired.
     producer.retire_revision("dep-1", 1, v1.revision_id, (CLIENT,))
-    assert store.get("dep-1", 1) is None
-    assert store.get("dep-1", 2) is not None
+    assert store.reader.get("dep-1", 1) is None
+    assert store.reader.get("dep-1", 2) is not None
 
 
 # --- CAS concurrency paths (intent-first, retry, non-convergence) ----------
@@ -440,8 +441,9 @@ class _ContendedControlPlane:
         self._inner = inner
         self._fail = fail_times
 
-    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
-        return self._inner.get(deployment_id, revision_sequence)
+    @property
+    def reader(self) -> RuntimeDeploymentMappingReader:
+        return self._inner.reader
 
     def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
         return self._inner.get_head(deployment_id)

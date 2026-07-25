@@ -69,23 +69,49 @@ def test_head_model_is_frozen_and_extra_forbid() -> None:
         RuntimeDeploymentHead(deployment_id="dep-1", current_sequence=0, current_revision_id="rev-1")
 
 
-def test_runtime_and_control_ports_have_no_inheritance_relationship() -> None:
-    # Structural isolation (precision 1): the runtime reader port must NOT be
-    # widenable into the control-plane port. Separate Protocols, no inheritance
-    # either way, and the runtime port exposes ONLY `get` -- no head, no
-    # enumeration, no write accessor -- so "no head read reachable from the
-    # runtime authorization path" is true by construction.
+def test_control_plane_adapter_is_structurally_incompatible_with_the_reader_port() -> None:
+    # Precision (option 1): Python Protocols are STRUCTURAL, so separate Protocols
+    # with no inheritance are necessary but NOT sufficient -- an object exposing
+    # every reader method would satisfy the reader port silently. The control-plane
+    # adapter is therefore made structurally INCOMPATIBLE BY COMPOSITION: it does
+    # NOT expose `get` itself (reads go through `.reader`), so it cannot satisfy the
+    # runtime reader Protocol and a mis-wire is a mypy error, not a silent success.
     from research_assistant_api.agent_studio.runtime_mapping_store import (
+        CosmosRuntimeDeploymentMappingStore,
         RuntimeDeploymentMappingControlPlane,
         RuntimeDeploymentMappingReader,
     )
 
+    # No inheritance either way.
     assert RuntimeDeploymentMappingReader not in RuntimeDeploymentMappingControlPlane.__mro__
     assert RuntimeDeploymentMappingControlPlane not in RuntimeDeploymentMappingReader.__mro__
+    # The runtime reader port declares ONLY `get` (keep it minimal; adding a method
+    # is a security-relevant change).
     reader_methods = {name for name in vars(RuntimeDeploymentMappingReader) if not name.startswith("_")}
     assert reader_methods == {"get"}
-    for forbidden in ("get_head", "list_revisions", "commit_revision", "delete"):
-        assert forbidden not in vars(RuntimeDeploymentMappingReader)
+    # The control-plane adapters expose NO `get` of their own (composition), so they
+    # cannot be passed where a runtime reader is expected.
+    assert not hasattr(InMemoryRuntimeDeploymentMappingStore, "get")
+    assert not hasattr(CosmosRuntimeDeploymentMappingStore, "get")
+    # ...but they DO expose a `.reader` and the write/head/enumerate surface.
+    for control_plane in (InMemoryRuntimeDeploymentMappingStore, CosmosRuntimeDeploymentMappingStore):
+        assert hasattr(control_plane, "reader")
+        for method in ("get_head", "list_revisions", "commit_revision", "delete"):
+            assert hasattr(control_plane, method)
+
+
+def test_runtime_composition_module_does_not_import_the_control_plane_adapter() -> None:
+    # Precision (option 2): a COMPOSITION-ROOT property type checking cannot see --
+    # the runtime composition module must never import the control-plane adapter, so
+    # it cannot construct a write-capable object and hand it to the runtime plane
+    # (the factory-reuse case). Grep-checkable now, lint-enforceable later.
+    import inspect
+
+    from research_assistant_api.agent_studio import runtime_control_mount
+
+    source = inspect.getsource(runtime_control_mount)
+    assert "CosmosRuntimeDeploymentMappingStore" not in source
+    assert "InMemoryRuntimeDeploymentMappingStore" not in source
 
 
 # --- InMemory: reads -------------------------------------------------------
@@ -93,7 +119,7 @@ def test_runtime_and_control_ports_have_no_inheritance_relationship() -> None:
 
 def test_get_returns_none_for_unknown_sequence() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    assert store.get("missing", 1) is None
+    assert store.reader.get("missing", 1) is None
 
 
 def test_get_head_is_none_before_bootstrap() -> None:
@@ -105,7 +131,7 @@ def test_bootstrap_then_get_round_trips_and_sets_head() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping(deployment_id="dep-xyz")
     store.commit_revision(mapping, expected_head_sequence=None)
-    assert store.get("dep-xyz", 1) is mapping
+    assert store.reader.get("dep-xyz", 1) is mapping
     head = store.get_head("dep-xyz")
     assert head is not None
     assert head.current_sequence == 1
@@ -115,7 +141,7 @@ def test_bootstrap_then_get_round_trips_and_sets_head() -> None:
 def test_get_with_wrong_sequence_is_none() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     store.commit_revision(_mapping(deployment_id="dep-1", revision_sequence=1), expected_head_sequence=None)
-    assert store.get("dep-1", 2) is None
+    assert store.reader.get("dep-1", 2) is None
 
 
 # --- InMemory: commit_revision idempotency + conflict ----------------------
@@ -128,7 +154,7 @@ def test_bootstrap_replay_is_idempotent() -> None:
     second = _mapping(deployment_id="dep-1", revision_sequence=1)
     assert first.mapping_digest == second.mapping_digest
     store.commit_revision(second, expected_head_sequence=None)  # replay: no-op
-    assert store.get("dep-1", 1) is first
+    assert store.reader.get("dep-1", 1) is first
     assert store.list_revisions("dep-1") == (1,)
 
 
@@ -168,8 +194,8 @@ def test_supersede_advances_head_and_coexists() -> None:
     b = _mapping(revision_sequence=2, backend_version="9.9.9")
     store.commit_revision(a, expected_head_sequence=None)
     store.commit_revision(b, expected_head_sequence=1)
-    assert store.get("dep-1", 1) is a
-    assert store.get("dep-1", 2) is b
+    assert store.reader.get("dep-1", 1) is a
+    assert store.reader.get("dep-1", 2) is b
     head = store.get_head("dep-1")
     assert head is not None and head.current_sequence == 2
 
@@ -190,8 +216,8 @@ def test_distinct_deployment_ids_are_isolated() -> None:
     b = _mapping(deployment_id="dep-b")
     store.commit_revision(a, expected_head_sequence=None)
     store.commit_revision(b, expected_head_sequence=None)
-    assert store.get("dep-a", 1) is a
-    assert store.get("dep-b", 1) is b
+    assert store.reader.get("dep-a", 1) is a
+    assert store.reader.get("dep-b", 1) is b
 
 
 # --- InMemory: list_revisions + delete -------------------------------------
@@ -216,8 +242,8 @@ def test_delete_removes_exact_revision() -> None:
         _mapping(deployment_id="dep-1", revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1
     )
     store.delete("dep-1", 1)
-    assert store.get("dep-1", 1) is None
-    assert store.get("dep-1", 2) is not None
+    assert store.reader.get("dep-1", 1) is None
+    assert store.reader.get("dep-1", 2) is not None
 
 
 def test_delete_missing_is_a_noop() -> None:
@@ -292,7 +318,7 @@ class _FakeContainer:
 
 def test_cosmos_get_returns_none_when_absent() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
-    assert store.get("missing", 1) is None
+    assert store.reader.get("missing", 1) is None
 
 
 def test_cosmos_get_head_is_none_before_bootstrap() -> None:
@@ -305,7 +331,7 @@ def test_cosmos_bootstrap_then_get_and_head() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     mapping = _mapping(deployment_id="dep-1")
     store.commit_revision(mapping, expected_head_sequence=None)
-    loaded = store.get("dep-1", 1)
+    loaded = store.reader.get("dep-1", 1)
     assert loaded is not None
     assert loaded.mapping_digest == mapping.mapping_digest
     head = store.get_head("dep-1")
@@ -327,8 +353,8 @@ def test_cosmos_supersede_via_batch_advances_head() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     store.commit_revision(_mapping(revision_sequence=1, backend_version="1.2.3"), expected_head_sequence=None)
     store.commit_revision(_mapping(revision_sequence=2, backend_version="9.9.9"), expected_head_sequence=1)
-    assert store.get("dep-1", 1) is not None
-    assert store.get("dep-1", 2) is not None
+    assert store.reader.get("dep-1", 1) is not None
+    assert store.reader.get("dep-1", 2) is not None
     head = store.get_head("dep-1")
     assert head is not None and head.current_sequence == 2
     assert store.list_revisions("dep-1") == (1, 2)
@@ -423,7 +449,7 @@ def test_cosmos_delete_removes_exact_revision() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     store.commit_revision(_mapping(revision_sequence=1), expected_head_sequence=None)
     store.delete("dep-1", 1)
-    assert store.get("dep-1", 1) is None
+    assert store.reader.get("dep-1", 1) is None
 
 
 def test_cosmos_delete_missing_is_a_noop() -> None:

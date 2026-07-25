@@ -289,7 +289,7 @@ class RuntimeDeploymentProducer:
         new_client = self._sole_client(mapping)
         if head is None:
             return
-        current = self._mapping_store.get(mapping.deployment_id, head.current_sequence)
+        current = self._mapping_store.reader.get(mapping.deployment_id, head.current_sequence)
         if current is None:
             return  # head points at a missing revision; grant's own checks handle it
         current_client = self._sole_client(current)
@@ -425,7 +425,7 @@ class RuntimeDeploymentProducer:
             raise RuntimeDeploymentProducerError(
                 f"cannot reinstate '{deployment_id}': no head (deployment was never granted)."
             )
-        current = self._mapping_store.get(deployment_id, head.current_sequence)
+        current = self._mapping_store.reader.get(deployment_id, head.current_sequence)
         if current is None:
             raise RuntimeDeploymentProducerError(
                 f"cannot reinstate '{deployment_id}': head points at missing revision {head.current_sequence}."

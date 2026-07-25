@@ -30,7 +30,10 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
     RuntimeDestinationHashPolicy,
     RuntimeOperationRef,
 )
-from research_assistant_api.agent_studio.runtime_mapping_store import InMemoryRuntimeDeploymentMappingStore
+from research_assistant_api.agent_studio.runtime_mapping_store import (
+    InMemoryRuntimeDeploymentMappingStore,
+    RuntimeDeploymentMappingReader,
+)
 
 CLIENT = "client-app-1"
 ACTIVE = RuntimeBindingStatus.ACTIVE
@@ -259,67 +262,70 @@ def test_reinstate_precondition_on_stale_expected() -> None:
 # --- authorized loader -----------------------------------------------------
 
 
-class _CountingStore(InMemoryRuntimeDeploymentMappingStore):
-    def __init__(self) -> None:
-        super().__init__()
+class _CountingReader:
+    """Wraps a runtime reader and counts ``get`` calls (to prove ZERO mapping reads)."""
+
+    def __init__(self, inner: RuntimeDeploymentMappingReader) -> None:
+        self._inner = inner
         self.get_calls = 0
 
     def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
         self.get_calls += 1
-        return super().get(deployment_id, revision_sequence)
+        return self._inner.get(deployment_id, revision_sequence)
 
 
 def _loader(
     *, bound: bool = True, mapping_present: bool = True, pin: str | None = None
-) -> tuple[AuthorizedMappingLoader, RuntimeDeploymentMapping, _CountingStore]:
+) -> tuple[AuthorizedMappingLoader, RuntimeDeploymentMapping, _CountingReader]:
     index = InMemoryClientDeploymentBindingIndex()
-    store = _CountingStore()
+    store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping()
     if mapping_present:
         store.commit_revision(mapping, expected_head_sequence=None)
+    reader = _CountingReader(store.reader)
     if bound:
         index.repoint(CLIENT, "dep-1", 1, pin or mapping.revision_id, ACTIVE, expected_current_sequence=None)
-    return build_authorized_mapping_loader(index, store), mapping, store
+    return build_authorized_mapping_loader(index, reader), mapping, reader
 
 
 def test_loader_returns_mapping_for_bound_client() -> None:
-    load, mapping, _store = _loader()
+    load, mapping, _reader = _loader()
     assert load(CLIENT, "dep-1") is mapping
 
 
 def test_loader_unbound_reads_zero_mappings() -> None:
-    load, _mapping, store = _loader(bound=False)
+    load, _mapping, reader = _loader(bound=False)
     assert load(CLIENT, "dep-1") is None
-    assert store.get_calls == 0
+    assert reader.get_calls == 0
 
 
 def test_loader_wrong_deployment_reads_zero_mappings() -> None:
-    load, _mapping, store = _loader()
+    load, _mapping, reader = _loader()
     assert load(CLIENT, "dep-elsewhere") is None
-    assert store.get_calls == 0
+    assert reader.get_calls == 0
 
 
 def test_loader_denies_when_revision_absent() -> None:
-    load, _mapping, _store = _loader(mapping_present=False)
+    load, _mapping, _reader = _loader(mapping_present=False)
     assert load(CLIENT, "dep-1") is None
 
 
 def test_loader_denies_on_digest_pin_mismatch() -> None:
-    load, _mapping, _store = _loader(pin="a-different-pinned-digest")
+    load, _mapping, _reader = _loader(pin="a-different-pinned-digest")
     assert load(CLIENT, "dep-1") is None
 
 
 def test_loader_denies_revoked_tombstone_without_reading_mapping() -> None:
     index = InMemoryClientDeploymentBindingIndex()
-    store = _CountingStore()
+    store = InMemoryRuntimeDeploymentMappingStore()
     mapping = _mapping()
     store.commit_revision(mapping, expected_head_sequence=None)
     index.repoint(CLIENT, "dep-1", 1, mapping.revision_id, ACTIVE, expected_current_sequence=None)
     index.repoint(CLIENT, "dep-1", 2, REV2, REVOKED, expected_current_sequence=1)
-    load = build_authorized_mapping_loader(index, store)
-    store.get_calls = 0
+    reader = _CountingReader(store.reader)
+    load = build_authorized_mapping_loader(index, reader)
     assert load(CLIENT, "dep-1") is None
-    assert store.get_calls == 0
+    assert reader.get_calls == 0
 
 
 class _RevokedResolver:
@@ -330,12 +336,13 @@ class _RevokedResolver:
 
 
 def test_loader_denies_soft_revoked_via_resolver() -> None:
-    store = _CountingStore()
+    store = InMemoryRuntimeDeploymentMappingStore()
     store.commit_revision(_mapping(), expected_head_sequence=None)
+    reader = _CountingReader(store.reader)
     resolver: ClientDeploymentBindingResolver = _RevokedResolver()
-    load = build_authorized_mapping_loader(resolver, store)
+    load = build_authorized_mapping_loader(resolver, reader)
     assert load(CLIENT, "dep-1") is None
-    assert store.get_calls == 0
+    assert reader.get_calls == 0
 
 
 # --- durable Cosmos binding adapter (CAS) ----------------------------------

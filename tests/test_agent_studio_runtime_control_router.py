@@ -214,7 +214,7 @@ def _client(
     )
     settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
     app = build_runtime_control_app(
-        mapping_store=store,
+        mapping_store=store.reader,
         client_binding_resolver=resolver,
         auth_policy=_policy(),
         settings=settings,

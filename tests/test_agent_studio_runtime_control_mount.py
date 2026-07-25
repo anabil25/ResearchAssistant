@@ -32,7 +32,7 @@ def _enforceable_settings() -> Settings:
 
 def _all_deps() -> dict[str, object]:
     return {
-        "mapping_store": InMemoryRuntimeDeploymentMappingStore(),
+        "mapping_store": InMemoryRuntimeDeploymentMappingStore().reader,
         "client_binding_resolver": InMemoryClientDeploymentBindingIndex(),
         "auth_policy": _policy(),
         "context_resolver": _resolver(),
