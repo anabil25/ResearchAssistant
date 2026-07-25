@@ -10,6 +10,17 @@ from .errors import ConfigurationError
 from .invocation import RetryingResponsesInvoker
 from .settings import HarnessSettings
 from .workflows import CoordinatorRouter
+import json
+import logging
+import os
+import time
+from typing import Annotated, Any
+from agent_framework import tool
+from azure.ai.projects import AIProjectClient
+from openai import APIStatusError
+from pydantic import Field
+from shared.credentials import get_credential
+from shared.profiles import AgentProfile
 
 
 def delegated_agent_name(capability: str, sensitivity: str) -> str | None:
@@ -50,3 +61,74 @@ def tools_for_profile(
             timeout=settings.default_timeout_seconds if settings is not None else 120,
         )
     return []
+
+
+def _agent_names() -> dict[str, str]:
+    return {
+        "literature": os.getenv("RESEARCH_LITERATURE_AGENT_NAME", "literature-agent"),
+        "grant": os.getenv("RESEARCH_GRANT_AGENT_NAME", "grant-agent"),
+        "matching": os.getenv("RESEARCH_MATCHING_AGENT_NAME", "matching-agent"),
+        "dataset": os.getenv("RESEARCH_DATASET_AGENT_NAME", "dataset-agent"),
+        "institutional_qa": os.getenv("RESEARCH_INSTITUTION_AGENT_NAME", "institution-agent"),
+    }
+
+
+def _online_agent_names() -> dict[str, str]:
+    return {
+        "literature": os.getenv(
+            "RESEARCH_LITERATURE_ONLINE_AGENT_NAME",
+            "literature-online-agent",
+        ),
+        "grant": os.getenv(
+            "RESEARCH_GRANT_ONLINE_AGENT_NAME",
+            "grant-online-agent",
+        ),
+        "matching": os.getenv(
+            "RESEARCH_MATCHING_ONLINE_AGENT_NAME",
+            "matching-online-agent",
+        ),
+    }
+
+
+def build_delegate_tool() -> Any:
+    @tool(approval_mode="never_require")
+    def delegate_to_specialist(
+        capability: Annotated[
+            str,
+            Field(description=("One of literature, grant, matching, dataset, institutional_qa")),
+        ],
+        request: Annotated[
+            str,
+            Field(description="Complete user request and any verified context"),
+        ],
+        sensitivity: Annotated[
+            str,
+            Field(description="One of public, internal, confidential, restricted"),
+        ] = "internal",
+    ) -> str:
+        """Delegate a bounded read-only request to the matching Hosted Agent."""
+        agent_name = delegated_agent_name(capability, sensitivity)
+        if agent_name is None:
+            return json.dumps(
+                {
+                    "error": "unsupported_capability",
+                    "allowed": sorted(_agent_names()),
+                }
+            )
+        if sensitivity not in {"public", "internal", "confidential", "restricted"}:
+            return json.dumps(
+                {
+                    "error": "invalid_sensitivity",
+                    "allowed": ["public", "internal", "confidential", "restricted"],
+                }
+            )
+        endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+        project = AIProjectClient(
+            endpoint=endpoint,
+            credential=get_credential(),
+            allow_preview=True,
+        )
+        client = project.get_openai_client(agent_name=agent_name)
+        return _invoke_specialist(client, request, agent_name)
+
+    return delegate_to_specialist

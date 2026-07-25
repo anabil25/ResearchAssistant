@@ -81,10 +81,13 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 warn_unused_ignores = true
-mypy_path = ["agents"]
 exclude = ["infra/", "apps/"]
 explicit_package_bases = true
 files = ["packages", "services", "agents", "scripts", "tests"]
+# Single mypy_path: the gates branch's packaging-derived roots, which already
+# include "agents". A second `mypy_path = ["agents"]` arrived on another branch
+# and was folded in here at integration -- two keys in one table is a TOML parse
+# error, and keeping both would let the domains drift.
 mypy_path = [
     "packages/research_core/src",
     "packages/research_connectors/src",

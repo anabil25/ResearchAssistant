@@ -15,6 +15,12 @@ from .release import ReleaseAttestor
 from .settings import HarnessSettings
 from .state import ConversationStore, LongTermMemoryStore
 from .telemetry import GovernanceAuditSink
+import os
+from agent_framework.foundry import FoundryChatClient
+from dotenv import load_dotenv
+from shared.credentials import get_credential
+from shared.profiles import AgentProfile, get_profile
+from shared.tools import tools_for_profile
 
 
 def build_agent(
@@ -85,3 +91,13 @@ def run_profile(
 
 def describe_profile(profile_id: str) -> AgentManifest:
     return get_manifest(profile_id)
+
+
+def _build_foundry_client() -> FoundryChatClient:
+    endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
+    model = os.environ["AZURE_AI_MODEL_DEPLOYMENT_NAME"]
+    return FoundryChatClient(
+        project_endpoint=endpoint,
+        model=model,
+        credential=get_credential(),
+    )

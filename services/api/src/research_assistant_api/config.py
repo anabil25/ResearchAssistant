@@ -330,7 +330,8 @@ class Settings(BaseSettings):
             "production",
         }
 
-    @field_validator("allowed_origins", mode="before")    @classmethod
+    @field_validator("allowed_origins", mode="before")
+    @classmethod
     def parse_origins(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]

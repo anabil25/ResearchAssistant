@@ -70,6 +70,8 @@ from research_assistant_api.agent_studio.models import (
 from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
+from collections.abc import Mapping
+from typing import Any, Protocol
 
 #: Default discovery timeout budget when a caller does not specify one.
 DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 10.0
@@ -1543,3 +1545,24 @@ def build_capability_discovery_source(settings: Settings) -> CapabilityDiscovery
         max_concurrency=settings.agent_studio_capability_provider_max_concurrency,
         deadline_seconds=settings.agent_studio_capability_provider_deadline_seconds,
     )
+
+
+def _tag_provider_digest(value: Any) -> str | None:
+    """Namespaces a provider-reported RFC-8785 digest, or rejects a malformed one.
+
+    ``None`` is a legitimate input (an optional/absent digest); anything else
+    must be a well-formed lowercase 64-character SHA-256 hex string, since a
+    malformed digest string is a protocol violation, not a value to silently
+    pass through.
+    """
+
+    if value is None:
+        return None
+    if (
+        not isinstance(value, str)
+        or len(value) != 64
+        or value != value.lower()
+        or any(char not in _HEX_DIGITS for char in value)
+    ):
+        raise CapabilityProviderProtocolError(f"expected a lowercase SHA-256 hex digest, got {value!r}")
+    return f"{_PROVIDER_DIGEST_PREFIX}{value}"

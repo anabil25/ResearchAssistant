@@ -1,3 +1,4 @@
+from __future__ import annotations
 """Tests for ``research_assistant_api.identity``'s group-overage detection.
 
 Covers ``_has_group_overage``'s two signal paths -- the Entra ID
@@ -8,7 +9,6 @@ defensive guard) -- since these feed the fail-closed group-overage flag that
 truncated ``groups`` claim as authoritative for a membership denial.
 """
 
-from __future__ import annotations
 
 from research_assistant_api.identity import _has_group_overage
 
@@ -39,7 +39,6 @@ def test_has_group_overage_skips_non_dict_claim_entries() -> None:
 def test_has_group_overage_false_when_no_signal_present() -> None:
     payload = {"claims": [{"typ": "groups", "val": "researchers"}]}
     assert _has_group_overage(payload) is False
-from __future__ import annotations
 
 import base64
 import json
