@@ -554,7 +554,7 @@ The capability is in `main`, under a different name and in a better form:
 |---|---|
 | `workspace.py:1207` | `dataset_approvals_blocked_by_requester_attribution()` |
 | `cosmos_workspace.py:514` | Cosmos override |
-| tests | `test_enumeration_narrows_to_the_genuinely_affected_set`, `test_enumeration_helper_is_scoped_to_one_project_and_under_reports`, `test_legacy_documents_omit_the_key_so_null_comparison_finds_nothing` — all three present |
+| tests | `test_enumeration_narrows_to_the_genuinely_affected_set` (L1971), `test_enumeration_helper_is_scoped_to_one_project_and_under_reports` (L1118), `test_legacy_documents_omit_the_key_so_null_comparison_finds_nothing` (L1068), `test_fingerprint_bump_invalidates_more_than_the_legacy_population` (L2035) — **all four present** |
 
 It is **narrowed** to `APPROVED` and not-yet-expired (its docstring puts the case
 plainly: *"the difference between reporting '1,200 legacy approvals' and '7
@@ -1863,6 +1863,32 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **Grep the invariant, not the symbol name — a name search cannot observe the
+  condition it was asked about.** The question was *"does `main` have the
+  enumeration capability?"*; the grep tested *"does `main` contain this
+  identifier?"* Those come apart the instant a rebuild renames, which is exactly
+  what happened: `dataset_approvals_without_requester_principal` returned **0 hits**
+  while `dataset_approvals_blocked_by_requester_attribution` — the same capability,
+  renamed — sat in `workspace.py:1207` with four passing tests. **The document
+  briefly recorded a false gap and instructed a hand-port**, which would have
+  produced a *second* enumeration helper beside a working one: two APIs for one
+  question, on the migration tool whose whole purpose is producing **one**
+  trustworthy number. **The failure mode of a duplicated counter is two different
+  counts, which is worse than no counter.**
+
+  **This is the same defect as `= null` versus `NOT IS_DEFINED`, with the sign
+  flipped** — a probe that cannot see the thing it is asked about. That one gave
+  false *reassurance*; this one gave a false *alarm*. Apply the standard test —
+  *what would have to be different for this check to fail?* — and a name grep fails
+  **whenever the name changes, independent of whether the behaviour is present.**
+
+  **The reliable form is to search for the behavioural invariant**, which cannot be
+  renamed away: here `NOT IS_DEFINED` (`workspace.py:1227`, `1230`;
+  `test_cosmos_workspace.py:1069`) locates the capability regardless of what the
+  function is called. **Compare trees, not messages or parents — and compare
+  capability, not symbol name.** A rebuild changes the tree *and* renames; git-level
+  checks caught the first, and the symbol table was the one place a name was still
+  trusted as a proxy.
 - **Ask what a fix cost in visibility, not just what it fixed.** Remediation
   removes the conditions that made a problem observable, and nothing in a normal
   review surfaces that — the diff shows what was added, never what stopped being
