@@ -1078,6 +1078,21 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Match the check's scope to the proposition's scope — a file-level answer to a
+  field-level question is wrong in *either* direction.** Asked whether idempotency
+  lookup identity is release-independent, `grep release agents/shared/idempotency.py`
+  returns **4 hits** and reads as *release-dependent*. It isn't:
+  `IdempotencyKey` has **7 fields — `tenant_id`, `project_id`, `binding_digest`,
+  `operation_id`, `destination`, `caller_key`, `argument_hash` — and none is
+  release-related**. The hits live in `IdempotencyApprovalProvenance` and in
+  function signatures, i.e. **two different models in the same file**, which is
+  exactly the distinction the claim turns on.
+  **Note the direction, because it is the opposite of every other entry here.**
+  The other loose checks in this document produced **false negatives** — clean
+  when they shouldn't have been. This one produces a **false positive**: it would
+  have *contradicted a true claim* and manufactured a finding. **A check too coarse
+  for its proposition is not biased toward safety; it is biased toward noise in
+  whichever direction the coarseness happens to fall.**
 - **Satisfying the letter of a fix can still break the thing the fix protects.**
   A defective audit ordering resolved ties by list position, so the stated
   requirement was *"do not rely on sort stability."* An `id` tiebreaker satisfies
