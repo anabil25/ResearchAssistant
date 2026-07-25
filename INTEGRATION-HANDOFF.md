@@ -472,14 +472,27 @@ Two consequences worth acting on together:
    construction opens the fingerprint gate and lets attribution fire, so the test
    passes either way. Seed a v1/v2-era digest so it stays red until the ordering
    actually changes.
+3. **The affected population is strictly larger than the attribution population,
+   and the helper in `main` enumerates the smaller one.**
+   `_DATASET_FINGERPRINT_VERSION = 3` (L233) is part of the fingerprint
+   **material** itself (L277), so **every approval whose fingerprint was stored
+   under version 2 denies with `fingerprint_mismatch`** — not merely those missing
+   `requesterPrincipalId`. An opaque hash makes a v2 record indistinguishable from
+   a v3 record by inspection, so the surface cannot be narrowed by looking at the
+   records. **`dataset_approvals_blocked_by_requester_attribution()` therefore
+   under-counts by *category*, not only cross-partition** (which its docstring does
+   warn about). Announce the version bump as a breaking change in its own right,
+   with its own enumeration, and treat `fingerprint_mismatch` as a **third**
+   monitoring signal distinct from the two attribution reasons.
 
-**On the repeated rebuilds of this work:** at least three commits exist on parent
-`673985b` with the same message — `1affe85` (merged), `e0b5367` and `f574ab3`
-(neither merged, and both *smaller* than `main`: −450 and −265 lines
-respectively). **Compare trees, not messages or parents** — all three are
-indistinguishable by both. Anything wanted from the unmerged pair must be checked
-symbol-by-symbol against `main` first, because each is a *different build* of the
-same work rather than a successor to it.
+**On the repeated rebuilds of this work:** **twelve** commits exist on parent
+`673985b`, of which exactly one — `1affe85` — is merged. The others (`e0b5367`,
+`f574ab3`, `aa44fd2`, …) are alternative builds, and every one measured so far is
+*smaller* than `main` (−450 and −265 lines respectively). **They are
+indistinguishable by message and by parent; only the trees differ.** Anything
+wanted from the unmerged set must be checked symbol-by-symbol against `main`
+first — searching for a *name* is not enough, as the operator-tool entry above
+records. **Compare trees.**
 
 ### Runtime trust (never independently reviewed — 107 commits)
 
