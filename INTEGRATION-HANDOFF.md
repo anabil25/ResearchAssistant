@@ -1393,9 +1393,10 @@ the third.** Ship the normalization with the rule, not after it.
   taken on, and its *reasoning* still holds — the nine `main.py` entry points at
   6 statements each are still there, and **eight of the nine still miss all six**
   (`agents/coordinator/main.py` is now covered), giving **48 statements / 16
-  branches**. What changed is the other **229 statements / 96 branches**, which
-  come from code merged from branches the gates work never saw. Overall: 17,448
-  statements, 3,950 branches, **98.18%**.
+  branches**. What changed is the other **229 statements / 96 branches — an upper
+  bound, not a measurement** (see the caveat immediately below). Overall: 17,448
+  statements, 3,950 branches, **98.18% — also an upper-bound artifact of the same
+  failing suite, not a clean figure.**
   **Read the 229 with its caveat:** 71 tests are failing in `main`, so an unknown
   share of it is failing-test artifact rather than genuinely untested code. The
   48/16 entry-point figure is the trustworthy part; re-measure the remainder once
