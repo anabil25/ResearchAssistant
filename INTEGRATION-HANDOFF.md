@@ -457,6 +457,30 @@ From the review program that produced §5.
   measured result is a claim like any other. The table in that test's docstring
   was re-derived independently and matched line for line — which is the step worth
   taking precisely because the statement looked correct.
+- **Before writing a test for a finding, ask: is the property *enforced* today, or
+  merely *true* today?** The answer decides the instrument, and getting it wrong
+  produces a test that pins an accident.
+
+  | | property | instrument |
+  |---|---|---|
+  | **Enforced but unguarded** | the mechanism exists and works; the risk is silent removal | **add the assertion** |
+  | **Unenforced but currently true** | nothing implements it; it holds by circumstance | **change the structure** |
+
+  Of the findings in §5, **N1** and **N2** are the first kind — the call and the
+  sort are both present, and each survives mutation only because nothing asserts
+  it. **F1**, the **replay provenance** gap and the **unescaped warning text** are
+  the second: an assertion there would pass today, pass after someone adds the
+  consumer that makes it dangerous, and pass right up until the failure. Escaping
+  at the boundary makes the property impossible to violate, including for a sink
+  nobody has written yet; a test only detects the sink that exists.
+
+  **An owner handed five findings framed as "add a test" would write five tests,
+  and three of them would encode the current accident as the invariant.**
+
+  **The assertional column has the same trap one level down:** N2's test must use
+  an **NFC-reordering path**, because `git ls-tree` emits raw-byte order and paths
+  are NFC-normalised before sorting — so on ASCII the sort is a *no-op* and any
+  ASCII fixture would be an assertion that cannot fail.
 - **A stale verdict fails in the direction nobody audits.** A *wrong* verdict gets
   challenged on its content; a verdict that quietly stops describing the code
   keeps being cited, because the thing that changed is not in the document.
