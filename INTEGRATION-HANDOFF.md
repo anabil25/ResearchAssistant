@@ -1021,7 +1021,31 @@ it needs one companion clause or it fires on correct code immediately:
 **A guard that cries wolf once gets a suppression the second time and is deleted
 the third.** Ship the normalization with the rule, not after it.
 
-- Growth requires `--suppression-addition-reason`, written into the artifact.
+- **Growth requires `--suppression-addition-reason` — but only on the
+  `--write-baseline` path, and CI does not use it. Measured.** The guard is gated
+  at `check_suppression_contract.py:1052` (`if args.write_baseline:`), while
+  `ci.yml` invokes the checker **bare**:
+  `run: uv run python scripts/check_suppression_contract.py`. **So the growth
+  guard never executes in CI** — only the exact-set verify does, and a baseline
+  edited by hand and committed reaches CI as `HEAD`, which the verify compares
+  against source rather than against its own history.
+  **Worse, the review record is not protected by verify.** `validate_inventory`
+  iterates `record["additionReviews"]` (L916) and validates the *shape of entries
+  present* — dict, non-empty reason, int count — but never requires an entry to
+  **exist**. Measured by stripping every entry and re-running:
+  `errors 0 → 0, new errors caused by stripping: 0`. **The entire human-review
+  record can be deleted by hand and the gate stays green.** A second datum from
+  the same run: there are currently **zero** `additionReviews` entries, so the
+  mechanism is inert as well as unverified.
+  **This makes `baselineReviewPolicy`'s own claim — *"No semantic laundering"* —
+  an assertion the tool does not check.** Note the irony recorded elsewhere in
+  this document: that policy string *is* pinned by exact comparison, so the
+  sentence cannot be softened, but the property it names is unenforced. **A
+  protected claim about an unprotected property.**
+  Remedy is one of: verify `additionReviews` in the **verify** path, or restore the
+  parent-commit comparison **with `HEAD^`** — the argument matters, because in CI
+  `HEAD` *is* the PR commit including any hand-edited baseline, so a `HEAD`
+  comparison would catch only uncommitted edits, which never occur in CI.
   **Shrink is still unguarded** — correctly deferred until `role: load-bearing`
   entries exist.
 - **Re-measured at `main`: the coverage gate fails by 277 statements / 112
