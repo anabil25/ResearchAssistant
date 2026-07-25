@@ -6,7 +6,12 @@ on:
       - packages/research_connectors/**
       - services/connector_adapter/**
       - packages/contracts/connector-adapter-openapi.json
+      - packages/contracts/provider-adapter-openapi.json
+      - packages/contracts/provider-adapter-openapi.v7.json
+      - packages/contracts/provider-canonical-json-v1-vectors.json
+      - scripts/export_contracts.py
       - tests/test_connector*.py
+      - tests/test_provider*.py
 
 permissions:
   contents: read
@@ -26,15 +31,21 @@ jobs:
           enable-cache: true
       - run: uv sync --all-packages --frozen
       - name: Connector tests
-        run: uv run pytest tests/test_connectors.py tests/test_connector_adapter.py tests/test_connector_gateway.py tests/test_public_research.py -q
+        run: |
+          uv run pytest tests/test_connectors.py tests/test_connector_adapter.py tests/test_connector_gateway.py tests/test_public_research.py tests/test_provider*.py -q
+          uv run pytest tests/test_provider_contracts.py tests/test_provider_adapters.py tests/test_provider_coverage_edges.py tests/test_provider_api.py tests/test_provider_runtime.py \
+            --cov=research_assistant_connectors.providers \
+            --cov=research_assistant_connector_adapter.provider_api \
+            --cov=research_assistant_connector_adapter.provider_runtime \
+            --cov-branch --cov-report=term-missing --cov-fail-under=100 -q
       - name: Static quality
         run: |
-          uv run ruff check packages/research_connectors services/connector_adapter tests/test_connector*.py tests/test_public_research.py
-          uv run mypy packages/research_connectors/src services/connector_adapter/src tests/test_connector_adapter.py tests/test_connector_gateway.py tests/test_public_research.py
+          uv run ruff check packages/research_connectors services/connector_adapter tests/test_connector*.py tests/test_provider*.py tests/test_public_research.py
+          uv run mypy packages/research_connectors/src services/connector_adapter/src tests/test_connector_adapter.py tests/test_connector_gateway.py tests/test_provider*.py tests/test_public_research.py
       - name: Dependency audit
         run: uv run pip-audit --skip-editable
       - name: Contract drift
         run: |
-          cp packages/contracts/connector-adapter-openapi.json /tmp/connector-openapi.json
+          uv run python -c "import hashlib, pathlib; b = pathlib.Path('packages/contracts/provider-adapter-openapi.json').read_bytes().replace(b'\r\n', b'\n').replace(b'\n', b'\r\n'); assert hashlib.sha256(b).hexdigest() == '354716da381fbb0d71ee58fbfccbc737066debaf238403964f28112898cdb24c'"
           uv run python scripts/export_contracts.py
-          diff --strip-trailing-cr /tmp/connector-openapi.json packages/contracts/connector-adapter-openapi.json
+          git diff --exit-code -- packages/contracts/connector-adapter-openapi.json packages/contracts/provider-adapter-openapi.v7.json

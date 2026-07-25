@@ -6,6 +6,7 @@ requires-python = ">=3.12"
 dependencies = [
     "defusedxml==0.7.1",
     "httpx>=0.28,<1",
+    "rfc8785==0.1.4",
 ]
 
 [build-system]

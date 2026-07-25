@@ -9,6 +9,8 @@ param foundryProjectEndpoint string
 param openAIEndpoint string
 param apiIdentityResourceId string
 param apiIdentityClientId string
+param apiIdentityPrincipalId string
+param foundryProjectPrincipalId string
 param workerIdentityResourceId string
 param workerIdentityClientId string
 param acrResourceId string
@@ -35,6 +37,9 @@ param workspaceTenantId string
 param workspaceProjectId string
 param connectorGatewayUrl string
 param connectorGatewayTokenScope string
+@minValue(65536)
+@maxValue(333398872)
+param connectorAdapterMaxRequestBodyBytes int = 5657944
 param warmReplicaCount int = 1
 
 @description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
@@ -127,7 +132,10 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
     'azd-service-name': 'connector-adapter'
   })
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned,UserAssigned'
+    userAssignedIdentities: {
+      '${apiIdentityResourceId}': {}
+    }
   }
   properties: {
     environmentId: environment.id
@@ -157,12 +165,40 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
               value: appInsightsConnectionString
             }
             {
+              name: 'AZURE_CLIENT_ID'
+              value: apiIdentityClientId
+            }
+            {
               name: 'RESEARCH_WORKSPACE_TENANT_ID'
               value: workspaceTenantId
             }
             {
+              name: 'RESEARCH_WORKSPACE_PROJECT_ID'
+              value: workspaceProjectId
+            }
+            {
+              name: 'RESEARCH_PROVIDER_CALLER_PRINCIPAL_IDS'
+              value: '${apiIdentityPrincipalId},${foundryProjectPrincipalId}'
+            }
+            {
+              name: 'FOUNDRY_PROJECT_ENDPOINT'
+              value: foundryProjectEndpoint
+            }
+            {
+              name: 'AZURE_SEARCH_ENDPOINT'
+              value: searchEndpoint
+            }
+            {
+              name: 'AZURE_STORAGE_BLOB_ENDPOINT'
+              value: storageBlobEndpoint
+            }
+            {
               name: 'OTEL_SERVICE_NAME'
               value: 'research-assistant-connector-adapter'
+            }
+            {
+              name: 'CONNECTOR_ADAPTER_MAX_REQUEST_BODY_BYTES'
+              value: string(connectorAdapterMaxRequestBodyBytes)
             }
           ]
           probes: [
