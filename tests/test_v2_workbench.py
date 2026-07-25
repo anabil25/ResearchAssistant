@@ -22,6 +22,9 @@ from research_assistant_core.connector_gateway import (
 from research_assistant_core.models import Capability, ResearchRequest
 from research_assistant_core.service import ResearchService
 from research_assistant_core.studio_models import EvidenceState, StudioRunRequest
+from research_assistant_api.app import app
+from research_assistant_core.models import Capability
+from research_assistant_core.studio_models import EvidenceState
 
 
 @pytest.fixture
@@ -1345,3 +1348,36 @@ def test_dataset_approval_decision_route_404s_when_record_vanishes_between_check
     )
 
     assert response.status_code == 404
+
+
+def test_hosted_dataset_rejects_before_agent_invocation(
+    client: TestClient,
+) -> None:
+    original_settings = app.state.settings
+    original_hosted = app.state.hosted
+    invocations: list[str] = []
+
+    class FailIfInvoked:
+        def invoke(self, message: str, **_kwargs: object) -> None:
+            invocations.append(message)
+
+    app.state.settings = Settings(execution_mode="hosted")
+    app.state.hosted = FailIfInvoked()
+    try:
+        response = client.post(
+            "/api/studios/dataset/run",
+            json={
+                "objective": "Analyze the supplied dataset.",
+                "inputs": {
+                    "filename": "inline.csv",
+                    "csv_text": "group,score\ncontrol,10\n",
+                    "data_classification": "public_or_synthetic",
+                },
+            },
+        )
+    finally:
+        app.state.settings = original_settings
+        app.state.hosted = original_hosted
+
+    assert response.status_code == 422
+    assert invocations == []

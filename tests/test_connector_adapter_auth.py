@@ -10,6 +10,7 @@ from research_assistant_connector_adapter.auth import (
     GatewayTokenValidator,
     build_gateway_validator,
 )
+from jwt import PyJWKClient
 
 
 class FakeJwks(PyJWKClient):
@@ -123,3 +124,21 @@ def test_gateway_validator_configuration_requires_trusted_callers(
         "api-principal, foundry-principal",
     )
     assert build_gateway_validator() is not None
+
+
+def test_gateway_validator_configuration_is_fail_closed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RESEARCH_APIM_PRINCIPAL_ID", raising=False)
+    monkeypatch.delenv("RESEARCH_WORKSPACE_TENANT_ID", raising=False)
+    assert build_gateway_validator() is None
+
+    monkeypatch.setenv("RESEARCH_APIM_PRINCIPAL_ID", "apim-principal")
+    with pytest.raises(RuntimeError, match="Both RESEARCH_APIM_PRINCIPAL_ID"):
+        build_gateway_validator()
+
+    monkeypatch.setenv("RESEARCH_WORKSPACE_TENANT_ID", "tenant-1")
+    validator = build_gateway_validator()
+    assert validator is not None
+    assert validator._principal_id == "apim-principal"
+    assert validator._tenant_id == "tenant-1"

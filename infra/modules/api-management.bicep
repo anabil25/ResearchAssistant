@@ -138,7 +138,7 @@ resource connectorApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
     description: 'Narrow, allowlisted public research metadata operations.'
     displayName: 'Research connector adapter'
     format: 'openapi+json'
-    path: 'research-connectors/v1'
+    path: 'research-connectors'
     protocols: [
       'https'
     ]
@@ -252,6 +252,6 @@ resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
 
 output serviceName string = apiManagement.name
 output gatewayUrl string = apiManagement.properties.gatewayUrl
-output connectorApiUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors/v1'
+output connectorApiUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors'
 output connectorMcpUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors-mcp/mcp'
 output principalId string = apiManagement.identity.principalId

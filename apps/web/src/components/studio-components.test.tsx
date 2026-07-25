@@ -839,14 +839,43 @@ describe("GrantStudio", () => {
     expect(
       within(dialog).getByText(/records a draft request only/i),
     ).toBeInTheDocument();
+    expect(
+      within(dialog).getByText(/not a Copilot SDK container/i),
+    ).toBeInTheDocument();
     await user.type(within(dialog).getByLabelText("Connector name"), "NSF Awards");
     await user.type(
       within(dialog).getByLabelText("Base URL"),
       "https://api.nsf.gov",
     );
     await user.type(
+      within(dialog).getByLabelText("Authoritative API documentation"),
+      "https://api.nsf.gov/docs",
+    );
+    await user.type(
+      within(dialog).getByLabelText("Terms, license, and robots policy"),
+      "https://api.nsf.gov/terms",
+    );
+    await user.type(
+      within(dialog).getByLabelText("Allowed hosts and path prefixes"),
+      "api.nsf.gov/v1/",
+    );
+    await user.selectOptions(
+      within(dialog).getByLabelText("Authentication"),
+      "None",
+    );
+    await user.type(
+      within(dialog).getByLabelText("Sample query and normalized fields"),
+      "award search -> id,title,url",
+    );
+    await user.type(
       within(dialog).getByLabelText("Justification"),
       "Needed for federal award discovery.",
+    );
+    await user.click(
+      within(dialog).getByLabelText(/confirmed this use is permitted/i),
+    );
+    await user.click(
+      within(dialog).getByLabelText(/generated code requires tests/i),
     );
     await user.click(
       within(dialog).getByRole("button", { name: "Save draft request" }),
@@ -1938,6 +1967,8 @@ describe("DatasetStudio", () => {
     const inputs = onRun.mock.calls[0][2].inputs;
     expect(inputs.filename).toBe("sample.csv");
     expect(inputs.csv_text).toContain("a,b");
+    expect(inputs.analysis_approved).toBe(true);
+    expect(inputs.data_classification).toBe("public_or_synthetic");
   });
 
   it("rejects an oversized file client-side without pretending to profile it", async () => {
@@ -1958,13 +1989,13 @@ describe("DatasetStudio", () => {
     );
 
     const oversizedFile = new File(
-      [new Array(6_000_001).fill("a").join("")],
+      [new Array(100_001).fill("a").join("")],
       "huge.csv",
       { type: "text/csv" },
     );
     await user.upload(input, oversizedFile);
     expect(
-      screen.getByText(/files must be 5 mb or smaller/i),
+      screen.getByText(/limited to 100 kb/i),
     ).toBeInTheDocument();
     expect(
       screen.getByRole("button", {

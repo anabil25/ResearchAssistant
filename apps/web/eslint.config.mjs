@@ -13,6 +13,7 @@ const eslintConfig = defineConfig([
     // gate runs (see scripts/gate-invocation-paths.mjs). Same rationale as
     // `.next/**`: generated build output, and there can be many copies of it.
     ".next-gate/**",
+    "coverage/**",
     "out/**",
     "build/**",
     "coverage/**",

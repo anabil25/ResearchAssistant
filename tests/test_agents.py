@@ -496,3 +496,92 @@ def test_each_hosted_agent_has_a_smoke_evaluation_dataset() -> None:
         rows = [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]
         assert len(rows) >= 3
         assert all(row.get("query") and row.get("expected_behavior") for row in rows)
+
+
+def test_specialist_invocation_exhausts_transient_and_empty_retries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class NotReadyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            raise APIStatusError(
+                "session not ready",
+                response=httpx.Response(
+                    424,
+                    request=httpx.Request(
+                        "POST",
+                        "https://foundry.example.test/responses",
+                    ),
+                ),
+                body={"error": {"code": "session_not_ready"}},
+            )
+
+    monkeypatch.setattr("shared.tools.time.sleep", lambda _delay: None)
+    with pytest.raises(APIStatusError):
+        _invoke_specialist(
+            SimpleNamespace(responses=NotReadyResponses()),
+            "Analyze.",
+            "dataset-agent",
+        )
+
+    class EmptyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(output_text=" ")
+
+    with pytest.raises(RuntimeError, match="returned no output"):
+        _invoke_specialist(
+            SimpleNamespace(responses=EmptyResponses()),
+            "Analyze.",
+            "dataset-agent",
+        )
+
+
+def test_delegate_tool_rejects_invalid_routes_and_invokes_valid_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tool = build_delegate_tool()
+    unsupported = json.loads(
+        tool.func(
+            capability="unsupported",
+            request="Analyze.",
+            sensitivity="public",
+        )
+    )
+    assert unsupported["error"] == "unsupported_capability"
+
+    invalid = json.loads(
+        tool.func(
+            capability="literature",
+            request="Analyze.",
+            sensitivity="invalid",
+        )
+    )
+    assert invalid["error"] == "invalid_sensitivity"
+
+    class Responses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(output_text="Verified delegation")
+
+    class Project:
+        def __init__(self, **kwargs: Any) -> None:
+            assert kwargs["endpoint"] == "https://foundry.example.test"
+            assert kwargs["allow_preview"] is True
+
+        def get_openai_client(self, *, agent_name: str) -> SimpleNamespace:
+            assert agent_name == "literature-online-agent"
+            return SimpleNamespace(responses=Responses())
+
+    monkeypatch.setenv(
+        "FOUNDRY_PROJECT_ENDPOINT",
+        "https://foundry.example.test",
+    )
+    monkeypatch.setattr("shared.tools.get_credential", lambda: object())
+    monkeypatch.setattr("shared.tools.AIProjectClient", Project)
+
+    assert (
+        tool.func(
+            capability="literature",
+            request="Analyze.",
+            sensitivity="public",
+        )
+        == "Verified delegation"
+    )

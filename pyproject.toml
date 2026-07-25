@@ -81,6 +81,7 @@ select = ["E", "F", "I", "B", "UP", "SIM", "RUF"]
 python_version = "3.12"
 strict = true
 warn_unused_ignores = true
+mypy_path = ["agents"]
 exclude = ["infra/", "apps/"]
 explicit_package_bases = true
 files = ["packages", "services", "agents", "scripts", "tests"]

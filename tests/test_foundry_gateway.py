@@ -25,6 +25,34 @@ class FakeCredential(TokenCredential):
         return AccessToken("fake", 4_102_444_800)
 
 
+def test_gateway_selects_managed_identity_or_default_credential(
+    monkeypatch: Any,
+) -> None:
+    managed = FakeCredential()
+    default = FakeCredential()
+    monkeypatch.setattr(
+        foundry,
+        "ManagedIdentityCredential",
+        lambda *, client_id: managed if client_id == "client-id" else None,
+    )
+    monkeypatch.setattr(foundry, "DefaultAzureCredential", lambda: default)
+
+    assert (
+        foundry.HostedAgentGateway(
+            Settings(managed_identity_client_id="client-id")
+        )._credential
+        is managed
+    )
+    assert foundry.HostedAgentGateway(Settings())._credential is default
+
+
+def test_gateway_requires_a_foundry_endpoint() -> None:
+    gateway = foundry.HostedAgentGateway(Settings(), credential=FakeCredential())
+
+    with pytest.raises(HostedAgentConfigurationError, match="FOUNDRY_PROJECT_ENDPOINT"):
+        gateway.invoke("Analyze", agent_name="dataset-agent")
+
+
 def test_gateway_forwards_request_tool_preference(
     monkeypatch: Any,
 ) -> None:
@@ -364,6 +392,81 @@ def test_gateway_rejects_empty_success_shaped_agent_response(
 
     assert attempts == 3
     assert sleeps == [2, 5]
+
+
+def test_gateway_wraps_non_transient_api_errors(
+    monkeypatch: Any,
+) -> None:
+    class Responses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            raise APIStatusError(
+                "forbidden",
+                response=httpx.Response(
+                    403,
+                    request=httpx.Request(
+                        "POST",
+                        "https://foundry.example.test/responses",
+                    ),
+                ),
+                body={"error": {"code": "forbidden"}},
+            )
+
+    class Project:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def get_openai_client(self, *, agent_name: str) -> SimpleNamespace:
+            assert agent_name == "dataset-agent"
+            return SimpleNamespace(responses=Responses())
+
+    monkeypatch.setattr(foundry, "AIProjectClient", Project)
+    gateway = foundry.HostedAgentGateway(
+        Settings(foundry_project_endpoint="https://foundry.example.test"),
+        credential=FakeCredential(),
+    )
+
+    with pytest.raises(HostedAgentInvocationError, match="status 403"):
+        gateway.invoke("Analyze", agent_name="dataset-agent")
+
+
+def test_gateway_stops_after_bounded_session_not_ready_retries(
+    monkeypatch: Any,
+) -> None:
+    attempts = 0
+
+    class Responses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            nonlocal attempts
+            attempts += 1
+            raise APIStatusError(
+                "not ready",
+                response=httpx.Response(
+                    424,
+                    request=httpx.Request(
+                        "POST",
+                        "https://foundry.example.test/responses",
+                    ),
+                ),
+                body={"error": {"code": "session_not_ready"}},
+            )
+
+    class Project:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def get_openai_client(self, *, agent_name: str) -> SimpleNamespace:
+            return SimpleNamespace(responses=Responses())
+
+    monkeypatch.setattr(foundry, "AIProjectClient", Project)
+    monkeypatch.setattr("research_assistant_api.foundry.time.sleep", lambda _delay: None)
+    gateway = foundry.HostedAgentGateway(
+        Settings(foundry_project_endpoint="https://foundry.example.test"),
+        credential=FakeCredential(),
+    )
+
+    with pytest.raises(HostedAgentNotReadyError, match="bounded retries"):
+        gateway.invoke("Analyze", agent_name="dataset-agent")
+    assert attempts == 4
 
 
 def test_gateway_recovers_from_transient_empty_agent_output(

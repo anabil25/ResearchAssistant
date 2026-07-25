@@ -80,6 +80,10 @@ from research_assistant_api.connector_gateway import (
     build_connector_gateway,
 )
 from research_assistant_api.cosmos_workspace import build_workspace_store
+from research_assistant_api.dataset_execution import (
+    build_dataset_agent_message,
+    validate_dataset_execution,
+)
 from research_assistant_api.foundry import (
     HostedAgentConfigurationError,
     HostedAgentGateway,
@@ -1600,6 +1604,13 @@ async def run_studio(
     # Fail-fast BEFORE research.run parses/profiles the CSV locally. Spends
     # nothing; the authoritative transition happens just before the send.
     _validate_dataset_analysis(capability, payload, store, identity)
+    if capability == Capability.DATASET:
+        # Request-shape validation only. This is deliberately *after* the
+        # authorization check above and must never be mistaken for one.
+        try:
+            validate_dataset_execution(payload)
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     research = cast(ResearchService, request.app.state.research)
     try:

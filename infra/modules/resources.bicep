@@ -351,7 +351,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     infrastructureSubnetId: appPrivateNetwork!.outputs.containerAppsSubnetId
     workspaceTenantId: subscription().tenantId
     workspaceProjectId: foundryAccount::project.name
-    connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors/v1'
+    connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors'
     connectorGatewayTokenScope: '${environment().resourceManager}.default'
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId

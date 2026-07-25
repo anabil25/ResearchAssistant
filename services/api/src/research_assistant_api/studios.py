@@ -43,6 +43,8 @@ from research_assistant_core.studio_models import (
 )
 from research_assistant_core.workflows import workflow_for
 
+from research_assistant_api.dataset_execution import validate_dataset_execution
+
 _SOURCE_TOKEN = re.compile(
     r"(?:source(?:_id)?|citation(?:_id)?)\s*[:=]\s*[`\"']?([a-z0-9][a-z0-9_-]{2,})",
     re.IGNORECASE,
@@ -384,7 +386,10 @@ class StudioService:
         # against a durable, server-resolved ``DatasetApprovalRequest``
         # before this method (or any hosted invocation) ever runs; a
         # client-supplied ``analysis_approved`` boolean is never treated as
-        # authoritative here.
+        # authoritative here. ``validate_dataset_execution`` below is a
+        # request-shape guard, not an authorization check, and must never be
+        # relied on as one.
+        validate_dataset_execution(request)
         profile = generic.metadata["profile"]
         estimated_bytes = int(request.inputs.get("estimated_bytes", 0))
         requires_scale_out = estimated_bytes > 5_000_000
