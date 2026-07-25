@@ -1170,6 +1170,33 @@ Nothing else outstanding on this workstream.
   a per-checkout namespace or ephemeral port — *not* a longer timeout or retry, which
   converts a deterministic collision into a slow flake.
 
+  **And the obvious isolation fix does not work — verified in-tree, so nobody
+  spends a cycle discovering it.** The natural move is to isolate the lock
+  directory with `mkdtempSync`, as `port-lock.test.ts` already does. It cannot
+  work for `port-lock-handshake.test.ts`, because `globalSetup` calls
+  `defaultPortLockDeps()` **with no argument** at `port-lock-handshake.ts:49` and
+  exposes no injection point:
+
+  ```ts
+  // port-lock-handshake.ts:49
+  const deps = defaultPortLockDeps();
+
+  // port-lock.ts
+  export function defaultPortLockDeps(
+    lockDir: string = join(tmpdir(), "research-assistant-playwright-port-locks"),
+  ): PortLockDeps
+  ```
+
+  **The test cannot isolate itself without ceasing to exercise the real path** —
+  isolation and fidelity are in direct conflict here, which is why the cheap fix
+  is not merely suboptimal but wrong. Since `defaultPortLockDeps` *already* accepts
+  `lockDir`, the minimal real fix is an env-var override (e.g.
+  `PLAYWRIGHT_PORT_LOCK_DIR`) read by `globalSetup` and `playwright.config.ts`,
+  defaulting to today's shared path — after which a per-shard namespace is one
+  variable. **Scope: `port-lock-handshake.test.ts` only** (hardcoded 40101–40106 on
+  the shared dir); `port-lock.test.ts` already uses per-run `mkdtempSync` and is
+  safe.
+
 ### Coverage / suppression gates
 
 **If you implement the packaging + coverage cross-check, normalize first.** The
