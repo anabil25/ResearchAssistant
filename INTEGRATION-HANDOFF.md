@@ -664,6 +664,12 @@ different file.** Grep across the suite for the *property*, not the idiom.
   `validate_worktree_matches_commit` is blind to the same files. Editing
   `agents/evaluators/relevance/relevance.yaml` in the worktree passes the identity
   check *and* the worktree-divergence gate, and still ships.
+  **A test pinning the two copies equal does not close this.** Such a test
+  constrains **drift between the copies**, not **the copies being jointly wrong** —
+  so it buys *consistency* while *completeness* stays open. `GAP B = 0` is what
+  proves the residue is a pure blind spot rather than a filter wrong in both
+  directions: nothing identity-eligible is unshipped, only the reverse. **Derive
+  the set from one definition; do not synchronise two.**
   **Both competing lines land on exactly the same 49-file inclusion set**, so F1
   is untouched by the walk-versus-snapshot choice and **cannot decide between
   them** — it is a *coverage* question, not a *mechanism* one. Recording the wrong
@@ -1138,6 +1144,17 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Crossed messages manufacture plausible causal stories — prefer "these arrived
+  out of order" over "someone acted."** Three attributions in this program were
+  made by inference from *timing* rather than from the record, and all three were
+  wrong in the same direction: they credited an actor where the truth was two
+  things simply crossing. In one case the flattering-to-the-other-party version —
+  *"a reviewer overrode my instruction"* — was inverted; the artifact had been
+  produced **before** the instruction, and what actually happened was that **an
+  author reversed a decision after reading evidence already in flight.** In a
+  high-latency multi-party loop the causal story is the least reliable part of any
+  reconstruction, and it is the part nobody checks because it is not a claim about
+  code. **Attribute from the record or not at all.**
 - **"Two parties agreed" is not evidence until you check whether they could have
   inherited the agreement.** This document contains two convergence cases that
   look identical and conclude oppositely, so the discriminator matters more than
