@@ -170,7 +170,7 @@ def test_committed_source_ignores_worktree_and_non_source_files(tmp_path: Path) 
     )
 
 
-def test_predeploy_rejects_package_eligible_worktree_drift(tmp_path: Path) -> None:
+def test_predeploy_rejects_identity_eligible_worktree_drift(tmp_path: Path) -> None:
     repo = _initialize_repo(tmp_path)
     source = _write_agent(repo, b"VALUE = 1\n")
     _commit(repo, "baseline")
@@ -191,6 +191,43 @@ def test_predeploy_rejects_package_eligible_worktree_drift(tmp_path: Path) -> No
     with pytest.raises(SourceIdentityBuildError, match="differs"):
         validate_worktree_matches_commit(repo)
     ignored.unlink()
+
+
+def test_main_invokes_the_drift_check_so_drifted_bytes_cannot_ship(
+    tmp_path: Path,
+) -> None:
+    """N1: assert the WIRING, not just the function.
+
+    ``validate_worktree_matches_commit`` is well covered above, but every one of
+    those cases calls it directly. Deleting the call from ``main()`` leaves the
+    whole suite green while producing this chain: predeploy exits 0, a manifest is
+    written, the runtime accepts it, and drifted bytes ship under a committed
+    source identity -- silent at every layer expected to catch it, with the
+    documentation still asserting the control.
+
+    This is the assertion on the sole enforcement point, so it drifts a real
+    identity-eligible file and requires ``main()`` itself to fail.
+    """
+
+    repo = _initialize_repo(tmp_path)
+    source = _write_agent(repo, b"VALUE = 1\n")
+    _commit(repo, "baseline")
+    output = repo / ".release" / "source-tree.json"
+
+    # Clean worktree: main() succeeds and writes the manifest.
+    assert main(["--repo-root", str(repo), "--output", str(output)]) == 0
+    assert output.exists()
+    output.unlink()
+
+    # Drifted identity-eligible byte: main() must refuse, and write nothing.
+    # It propagates rather than returning a code -- an uncaught raise is what
+    # gives `python -m scripts.build_agent_source_tree` its non-zero exit, so the
+    # raise IS the predeploy failure. Deleting the call from main() makes this
+    # pass silently, which is the whole point of the assertion.
+    source.write_bytes(b"VALUE = 2\n")
+    with pytest.raises(SourceIdentityBuildError, match="differs"):
+        main(["--repo-root", str(repo), "--output", str(output)])
+    assert not output.exists()
 
 
 def test_committed_source_digest_is_checkout_newline_independent(tmp_path: Path) -> None:

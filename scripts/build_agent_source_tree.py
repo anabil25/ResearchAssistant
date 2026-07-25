@@ -207,7 +207,8 @@ def validate_worktree_matches_commit(
     worktree = worktree_source_entries(repo_root, source_root=source_root)
     if canonical_source_entries(worktree) != canonical_source_entries(committed):
         raise SourceIdentityBuildError(
-            "Package-eligible agent source differs from committed content"
+            "Identity-eligible agent source (.py + requirements.txt) differs from "
+            "committed content"
         )
 
 

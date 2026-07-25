@@ -164,7 +164,8 @@ is a synthetic SHA-256 over `(path, blob_id)` pairs.
 **One concrete, cheap improvement worth porting from `c90b9ce`: name the paths.**
 Its gate reports `untracked source would be uploaded: agents/scratch_probe.py` and
 lists every offending file. The incumbent's equivalent raises
-`"Package-eligible agent source differs from committed content"` and names
+`"Identity-eligible agent source (.py + requirements.txt) differs from committed
+content"` and names
 nothing, so an engineer who trips it at deploy time has to go find the divergence
 by hand. Same detection, strictly worse diagnostics.
 
