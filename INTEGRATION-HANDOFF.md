@@ -581,6 +581,18 @@ residual is real, was disclosed rather than discovered, and closing it fully nee
 language support that does not exist here. **Treat the source-based ten as
 tripwires, not proofs.**
 
+**Preserved but deliberately un-integrated: `c90b941` on
+`anabil25-fix-runtime-trust-clean`.** That session stood down with a verified
+improvement uncommitted in its worktree, which would have died with it. It is now
+committed on the branch — **additive, one commit past `main`, adding no files
+`main` lacks** — purely so the work is findable. It upgrades several absence
+controls from source/AST tripwires (evadable by rename) to structural checks that
+are not: `__protocol_attrs__` and `BindingResolution` fields asserted as **exact
+sets**, the CAS `etag` parameter stripped of its default so an unconditional write
+is **unrepresentable**, and the `warn_unused_ignores` guard described in §7.
+**Verified before committing: 19 passed.** Take it when the absence suite is next
+touched — it is the upgrade path for the ten proxies noted above.
+
 **That file is not the complete index, though — check before concluding a
 property is unguarded.** At least one absence invariant lives elsewhere: the
 bidirectional no-inheritance guard between the runtime and control-plane ports is
