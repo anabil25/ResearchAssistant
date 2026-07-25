@@ -2,10 +2,13 @@ from __future__ import annotations
 
 from copy import deepcopy
 from datetime import UTC, datetime
+from threading import Barrier, Thread
 from typing import Any
 
+import pytest
 import research_assistant_api.cosmos_workspace as cosmos_workspace
 from azure.core.credentials import AccessToken, TokenCredential
+from azure.core.exceptions import ServiceRequestError
 from azure.cosmos.exceptions import CosmosHttpResponseError
 from research_assistant_api.identity import IdentityContext
 from research_assistant_api.workspace import (
@@ -13,6 +16,8 @@ from research_assistant_api.workspace import (
     ApprovalState,
     ConnectorUpdate,
     DatasetApprovalDecisionRequest,
+    DatasetApprovalDenialReason,
+    DatasetApprovalError,
     LibraryIngestRecord,
 )
 from research_assistant_core.models import Capability, RunStatus
@@ -277,6 +282,7 @@ def test_dataset_approval_request_is_persisted_and_visible_across_replicas(
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
 
     assert created.state.value == "pending"
@@ -304,6 +310,7 @@ def test_dataset_approval_request_is_persisted_and_visible_across_replicas(
         created.id,
         plan_fingerprint="fp-abc",
         invocation_id="inv-1",
+        consumed_by_principal_id="requester-1",
     )
     assert consumed.state.value == "consumed"
     assert consumed.consumed_invocation_id == "inv-1"
@@ -362,6 +369,7 @@ def test_decide_dataset_approval_request_conflict_with_same_decision_is_idempote
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     container = fake_client.database.containers["runs"]
     original_replace_item = container.replace_item
@@ -417,6 +425,7 @@ def test_decide_dataset_approval_request_conflict_with_different_decision_fails_
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     container = fake_client.database.containers["runs"]
 
@@ -466,6 +475,7 @@ def test_consume_dataset_approval_request_missing_raises_value_error(
             "dsapproval-does-not-exist",
             plan_fingerprint="fp-abc",
             invocation_id="inv-1",
+            consumed_by_principal_id="requester-1",
         )
         raise AssertionError("expected ValueError")
     except ValueError as exc:
@@ -497,6 +507,7 @@ def test_consume_dataset_approval_request_conflict_never_retries_and_fails_close
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     store.decide_dataset_approval_request(
         created.id,
@@ -510,6 +521,7 @@ def test_consume_dataset_approval_request_conflict_never_retries_and_fails_close
             created.id,
             plan_fingerprint="fp-abc",
             invocation_id="inv-1",
+            consumed_by_principal_id="requester-1",
         )
         raise AssertionError("expected ValueError")
     except ValueError as exc:
@@ -542,6 +554,7 @@ def test_decide_dataset_approval_request_propagates_non_conflict_replace_errors(
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     fake_client.database.containers["runs"].fail_replace_status = 500
 
@@ -576,6 +589,7 @@ def test_consume_dataset_approval_request_propagates_non_conflict_replace_errors
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     store.decide_dataset_approval_request(
         created.id,
@@ -589,6 +603,7 @@ def test_consume_dataset_approval_request_propagates_non_conflict_replace_errors
             created.id,
             plan_fingerprint="fp-abc",
             invocation_id="inv-1",
+            consumed_by_principal_id="requester-1",
         )
         raise AssertionError("expected CosmosHttpResponseError")
     except CosmosHttpResponseError as exc:
@@ -623,6 +638,7 @@ def test_decide_dataset_approval_request_returns_none_if_record_vanishes_after_f
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="requester-1",
     )
     monkeypatch.setattr(
         workspace_module.WorkspaceStore,
@@ -637,3 +653,485 @@ def test_decide_dataset_approval_request_returns_none_if_record_vanishes_after_f
     )
 
     assert result is None
+
+
+def _seed_and_decide(store: cosmos_workspace.CosmosWorkspaceStore) -> str:
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+        requested_by_principal_id="requester-1",
+    )
+    store.decide_dataset_approval_request(
+        created.id,
+        DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed the bounded fixture."),
+        _reviewer_identity(),
+    )
+    return created.id
+
+
+def test_dataset_approval_audit_trail_is_durable_across_replicas(monkeypatch: Any) -> None:
+    """A decision and a consumption each emit an audit/outbox intent written
+    atomically inside the same document, so a fresh replica (cold read) sees the
+    full, still-undelivered trail -- nothing is lost after the state mutation."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+
+    approval_id = _seed_and_decide(store)
+    store.consume_dataset_approval_request(
+        approval_id, plan_fingerprint="fp-abc", invocation_id="inv-1", consumed_by_principal_id="requester-1"
+    )
+
+    replica = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+    trail = replica.dataset_approval_audit()
+    assert sorted(entry.action for entry in trail) == ["consumed", "decided"]
+    pending = replica.pending_dataset_approval_audit()
+    assert len(pending) == 2
+
+    marked = replica.mark_dataset_approval_audit_delivered(pending[0].id)
+    assert marked is not None
+    assert len(replica.pending_dataset_approval_audit()) == 1
+
+
+def test_consume_reconciles_unknown_transport_outcome_that_actually_landed(monkeypatch: Any) -> None:
+    """Ambiguous transport failure where the write *did* durably land: reconcile
+    against the store and honor the single invocation rather than failing a
+    genuinely-consumed approval."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+    approval_id = _seed_and_decide(store)
+
+    container = fake_client.database.containers["runs"]
+    original_replace = container.replace_item
+
+    def _apply_then_lose_response(**kwargs: Any) -> dict[str, Any]:
+        original_replace(**kwargs)  # the write lands durably
+        container.replace_item = original_replace  # type: ignore[method-assign]
+        raise ServiceRequestError(message="connection reset before the response was read")
+
+    monkeypatch.setattr(container, "replace_item", _apply_then_lose_response)
+
+    record = store.consume_dataset_approval_request(
+        approval_id, plan_fingerprint="fp-abc", invocation_id="inv-1", consumed_by_principal_id="requester-1"
+    )
+    assert record.state.value == "consumed"
+    assert record.consumed_invocation_id == "inv-1"
+
+
+def test_consume_reconciles_unknown_transport_outcome_that_did_not_land(monkeypatch: Any) -> None:
+    """Ambiguous transport failure where the write did *not* land: fail closed
+    (the approval remains APPROVED) and never blindly retry."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+    approval_id = _seed_and_decide(store)
+
+    container = fake_client.database.containers["runs"]
+    original_replace = container.replace_item
+
+    def _lose_response_without_writing(**kwargs: Any) -> dict[str, Any]:
+        container.replace_item = original_replace  # type: ignore[method-assign]
+        raise ServiceRequestError(message="connection reset before the write was applied")
+
+    monkeypatch.setattr(container, "replace_item", _lose_response_without_writing)
+
+    with pytest.raises(DatasetApprovalError) as excinfo:
+        store.consume_dataset_approval_request(
+            approval_id, plan_fingerprint="fp-abc", invocation_id="inv-1",
+            consumed_by_principal_id="requester-1")
+    assert excinfo.value.reason == DatasetApprovalDenialReason.CONCURRENT_CONFLICT
+    reread = store.dataset_approval_request(approval_id)
+    assert reread is not None
+    assert reread.state.value == "approved"
+
+
+def test_dataset_approval_is_isolated_per_project(monkeypatch: Any) -> None:
+    """Cross-project/tenant IDOR guard: an approval created in one project is
+    invisible and unconsumable from another project's store (partition-scoped
+    ``_query``)."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    project_a = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential(), tenant_id="demo", project_id="project-a"
+    )
+    project_b = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential(), tenant_id="demo", project_id="project-b"
+    )
+    created = project_a.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+        requested_by_principal_id="requester-1",
+    )
+
+    assert project_b.dataset_approval_request(created.id) is None
+    with pytest.raises(DatasetApprovalError) as excinfo:
+        project_b.consume_dataset_approval_request(created.id, plan_fingerprint="fp-abc", invocation_id="inv-b")
+    assert excinfo.value.reason == DatasetApprovalDenialReason.NOT_FOUND
+    assert project_a.dataset_approval_request(created.id) is not None
+
+
+def _identity_with(user_id: str) -> IdentityContext:
+    return IdentityContext(
+        user_id=user_id,
+        display_name=user_id.title(),
+        tenant_id="demo",
+        groups=("research-reviewers",),
+        source="container-apps-auth",
+    )
+
+
+def test_requester_principal_is_persisted_independent_of_shared_cache(monkeypatch: Any) -> None:
+    """Regression for the SOD-bypass race: the requester principal must be
+    written from the local create-time value, so even if a concurrent reload
+    clears the shared cache it is still durably persisted and separation-of-duties
+    stays enforceable on every replica."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+
+    created = store.create_dataset_approval_request(
+        plan_fingerprint="fp-abc",
+        filename="inline.csv",
+        objective="Profile the supplied dataset.",
+        requested_by="Researcher One",
+        ttl_minutes=60,
+        requested_by_principal_id="dual-1",
+    )
+    # Simulate a racing reload having wiped the in-memory requester cache.
+    store._dataset_requester_principals.clear()
+    raw_document = fake_client.database.containers["runs"].documents[created.id]
+    assert raw_document["requesterPrincipalId"] == "dual-1"
+
+    replica = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+    with pytest.raises(DatasetApprovalError) as excinfo:
+        replica.decide_dataset_approval_request(
+            created.id,
+            DatasetApprovalDecisionRequest(decision="approved", rationale="Self approval."),
+            _identity_with("dual-1"),
+        )
+    assert excinfo.value.reason == DatasetApprovalDenialReason.SEPARATION_OF_DUTIES
+
+
+def test_concurrent_governance_never_loses_audit_or_requester_principal(monkeypatch: Any) -> None:
+    """Barrier-controlled concurrency: while workers create/decide/consume
+    distinct approvals, a reader repeatedly reloads (which rebuilds the shared
+    caches). Because every dataset operation holds the store lock across its
+    whole query-mutate-persist cycle, no reload can interleave and drop a
+    just-appended audit intent or a requester principal."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+
+    worker_count = 6
+    barrier = Barrier(worker_count + 1)
+    errors: list[Exception] = []
+
+    def worker(index: int) -> None:
+        try:
+            barrier.wait()
+            created = store.create_dataset_approval_request(
+                plan_fingerprint=f"fp-{index}",
+                filename="inline.csv",
+                objective="Profile the supplied dataset.",
+                requested_by=f"Researcher {index}",
+                ttl_minutes=60,
+                requested_by_principal_id=f"req-{index}",
+            )
+            store.decide_dataset_approval_request(
+                created.id,
+                DatasetApprovalDecisionRequest(decision="approved", rationale="Reviewed."),
+                _reviewer_identity(),
+            )
+            store.consume_dataset_approval_request(
+                created.id, plan_fingerprint=f"fp-{index}", invocation_id=f"inv-{index}",
+                consumed_by_principal_id=f"req-{index}"
+            )
+        except Exception as exc:
+            errors.append(exc)
+
+    def reader() -> None:
+        barrier.wait()
+        for _ in range(60):
+            store.dataset_approval_requests()
+            store.dataset_approval_audit()
+
+    threads = [Thread(target=worker, args=(index,)) for index in range(worker_count)]
+    threads.append(Thread(target=reader))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+
+    assert errors == []
+    audit_by_request: dict[str, list[str]] = {}
+    for entry in store.dataset_approval_audit():
+        audit_by_request.setdefault(entry.request_id, []).append(entry.action)
+    assert len(audit_by_request) == worker_count
+    for actions in audit_by_request.values():
+        assert sorted(actions) == ["consumed", "decided"]
+
+    replica = cosmos_workspace.CosmosWorkspaceStore("https://cosmos.example.test", "research", FakeCredential())
+    persisted = {
+        document.get("requesterPrincipalId")
+        for document in fake_client.database.containers["runs"].documents.values()
+        if document["documentType"] == "dataset_approval"
+    }
+    assert persisted == {f"req-{index}" for index in range(worker_count)}
+    assert len(replica.dataset_approval_requests()) == worker_count
+
+
+def test_consume_rereads_authoritative_state_not_a_validate_time_snapshot(monkeypatch: Any) -> None:
+    """INTENT: 're-verify at consume' is satisfiable in letter by re-running the
+    checks against a record SNAPSHOT captured at validate time, which re-opens
+    the exact TOCTOU window the split was meant to close.
+
+    Drives it directly: validate succeeds, then the AUTHORITATIVE store is
+    mutated out of band (another replica consumes), and the consume attempt must
+    observe that new state and deny.
+    """
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    approval_id = _seed_and_decide(store)
+
+    # Validation passes against current durable state.
+    validated = store.validate_dataset_approval_request(
+        approval_id, plan_fingerprint="fp-abc", consumed_by_principal_id="requester-1"
+    )
+    assert validated.state.value == "approved"
+
+    # A DIFFERENT replica consumes it out of band. The first store never sees
+    # this through any in-process path -- only by re-reading Cosmos.
+    other_replica = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    other_replica.consume_dataset_approval_request(
+        approval_id,
+        plan_fingerprint="fp-abc",
+        invocation_id="other-replica",
+        consumed_by_principal_id="requester-1",
+    )
+
+    # The original store's stale validation must grant nothing.
+    with pytest.raises(DatasetApprovalError) as exc:
+        store.consume_dataset_approval_request(
+            approval_id,
+            plan_fingerprint="fp-abc",
+            invocation_id="stale",
+            consumed_by_principal_id="requester-1",
+        )
+    assert exc.value.reason == DatasetApprovalDenialReason.ALREADY_CONSUMED
+    reread = store.dataset_approval_request(approval_id)
+    assert reread is not None
+    assert reread.consumed_invocation_id == "other-replica"
+
+
+def test_consume_queries_cosmos_on_every_attempt(monkeypatch: Any) -> None:
+    """Structural companion to the above: the consume path must actually hit the
+    container, not serve from whatever the validate call left cached."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    approval_id = _seed_and_decide(store)
+
+    container = fake_client.database.containers["runs"]
+    original_query = container.query_items
+    queries: list[str] = []
+
+    def counting_query(**kwargs: Any) -> Any:
+        values = {item["name"]: item["value"] for item in kwargs["parameters"]}
+        queries.append(str(values.get("@documentType")))
+        return original_query(**kwargs)
+
+    monkeypatch.setattr(container, "query_items", counting_query)
+
+    store.validate_dataset_approval_request(
+        approval_id, plan_fingerprint="fp-abc", consumed_by_principal_id="requester-1"
+    )
+    after_validate = queries.count("dataset_approval")
+    store.consume_dataset_approval_request(
+        approval_id,
+        plan_fingerprint="fp-abc",
+        invocation_id="inv-1",
+        consumed_by_principal_id="requester-1",
+    )
+    after_consume = queries.count("dataset_approval")
+
+    assert after_validate >= 1, "validate did not read durable state"
+    assert after_consume > after_validate, "consume served from a snapshot instead of re-reading Cosmos"
+
+
+def test_legacy_cosmos_document_without_requester_is_denied_at_consume(monkeypatch: Any) -> None:
+    """The population Finding 3 is actually ABOUT: records already APPROVED
+    before requesterPrincipalId existed. They will never pass through `decide`
+    again -- their only remaining transition is CONSUME -- so gating decide
+    alone would protect none of them.
+
+    Exercises the real load path: _reload_dataset_state builds
+    _dataset_requester_principals only from documents where requesterPrincipalId
+    is not None, so a legacy document lands with NO entry and no signal that
+    anything is absent. Something must explicitly refuse it.
+    """
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    approval_id = _seed_and_decide(store)
+
+    # Strip the field to make the stored document indistinguishable from one
+    # written before requesterPrincipalId existed.
+    container = fake_client.database.containers["runs"]
+    document = container.documents[approval_id]
+    document.pop("requesterPrincipalId", None)
+    assert "requesterPrincipalId" not in container.documents[approval_id]
+
+    # A cold replica loads it: APPROVED, unconsumed, requester unknowable.
+    replica = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    loaded = replica.dataset_approval_request(approval_id)
+    assert loaded is not None
+    assert loaded.state.value == "approved"
+    assert replica.dataset_requester_principal(approval_id) is None
+
+    # CONSUME must deny -- this is the transition that matters for this population.
+    with pytest.raises(DatasetApprovalError) as consume_exc:
+        replica.consume_dataset_approval_request(
+            approval_id,
+            plan_fingerprint="fp-abc",
+            invocation_id="legacy-consume",
+            consumed_by_principal_id="requester-1",
+        )
+    assert consume_exc.value.reason == DatasetApprovalDenialReason.UNATTRIBUTABLE_REQUESTER
+
+    # The early validation denies for the same reason, and neither spends it.
+    with pytest.raises(DatasetApprovalError) as validate_exc:
+        replica.validate_dataset_approval_request(
+            approval_id, plan_fingerprint="fp-abc", consumed_by_principal_id="requester-1"
+        )
+    assert validate_exc.value.reason == DatasetApprovalDenialReason.UNATTRIBUTABLE_REQUESTER
+
+    still = replica.dataset_approval_request(approval_id)
+    assert still is not None
+    assert still.state.value == "approved", "a denied legacy record must not be spent"
+
+
+def test_absence_denies_regardless_of_the_consuming_principal(monkeypatch: Any) -> None:
+    """Absence must be a denial IN ITS OWN RIGHT, raised before the equality
+    comparison -- not a comparison that merely happens not to match. Proven by
+    varying the consuming principal, including values chosen to collide with a
+    plausible sentinel: every one denies with the SAME absence reason, never
+    PRINCIPAL_MISMATCH and never success."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    approval_id = _seed_and_decide(store)
+    fake_client.database.containers["runs"].documents[approval_id].pop("requesterPrincipalId", None)
+    replica = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+
+    for principal in ("requester-1", "someone-else", "<unknown>", "<unknown-requester>", "None", ""):
+        with pytest.raises(DatasetApprovalError) as exc:
+            replica.validate_dataset_approval_request(
+                approval_id, plan_fingerprint="fp-abc", consumed_by_principal_id=principal
+            )
+        assert exc.value.reason == DatasetApprovalDenialReason.UNATTRIBUTABLE_REQUESTER, principal
+
+
+def test_legacy_documents_omit_the_key_so_null_comparison_finds_nothing(monkeypatch: Any) -> None:
+    """The enumeration query must use NOT IS_DEFINED, never
+    `c.requesterPrincipalId = null`.
+
+    _dataset_approval_document sets requesterPrincipalId ONLY when a principal is
+    present, so legacy documents OMIT THE KEY rather than storing null. An
+    equality-to-null predicate therefore matches nothing and reports a clean
+    zero-affected population -- false reassurance that no migration is needed,
+    which is worse than no query at all. This pins the shape of the stored
+    document so that reassurance can never be manufactured by accident.
+    """
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    store = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    approval_id = _seed_and_decide(store)
+    container = fake_client.database.containers["runs"]
+    container.documents[approval_id].pop("requesterPrincipalId", None)
+    document = container.documents[approval_id]
+
+    # The key is ABSENT, not present-and-null. This is precisely why the
+    # `= null` form cannot observe the condition it is asked about.
+    assert "requesterPrincipalId" not in document
+    assert document.get("requesterPrincipalId") is None  # only because it is missing
+
+    null_equality_matches = [
+        item
+        for item in container.documents.values()
+        if item.get("documentType") == "dataset_approval"
+        and "requesterPrincipalId" in item
+        and item["requesterPrincipalId"] is None
+    ]
+    not_is_defined_matches = [
+        item
+        for item in container.documents.values()
+        if item.get("documentType") == "dataset_approval"
+        and "requesterPrincipalId" not in item
+    ]
+    assert null_equality_matches == [], "the `= null` predicate would report zero affected"
+    assert [item["id"] for item in not_is_defined_matches] == [approval_id]
+
+    # And the in-process helper observes the real condition on a cold replica.
+    replica = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential()
+    )
+    affected = replica.dataset_approvals_blocked_by_requester_attribution()
+    assert [record.id for record in affected] == [approval_id]
+
+
+def test_enumeration_helper_is_scoped_to_one_project_and_under_reports(monkeypatch: Any) -> None:
+    """SCOPE WARNING made executable: _query pins @tenantId/@projectId, so the
+    in-process helper reports THIS project only. An operator who runs it instead
+    of the cross-partition query will under-report the fleet."""
+    fake_client = FakeCosmosClient()
+    monkeypatch.setattr(cosmos_workspace, "CosmosClient", lambda _endpoint, credential: fake_client)
+    project_a = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential(),
+        tenant_id="demo", project_id="project-a",
+    )
+    project_b = cosmos_workspace.CosmosWorkspaceStore(
+        "https://cosmos.example.test", "research", FakeCredential(),
+        tenant_id="demo", project_id="project-b",
+    )
+    id_a = _seed_and_decide(project_a)
+    id_b = _seed_and_decide(project_b)
+    container = fake_client.database.containers["runs"]
+    for approval_id in (id_a, id_b):
+        container.documents[approval_id].pop("requesterPrincipalId", None)
+
+    # Each store sees only its own partition: 1, not the fleet-wide 2.
+    assert [r.id for r in project_a.dataset_approvals_blocked_by_requester_attribution()] == [id_a]
+    assert [r.id for r in project_b.dataset_approvals_blocked_by_requester_attribution()] == [id_b]
+
+    fleet_wide = [
+        item["id"]
+        for item in container.documents.values()
+        if item.get("documentType") == "dataset_approval"
+        and "requesterPrincipalId" not in item
+    ]
+    assert sorted(fleet_wide) == sorted([id_a, id_b])
+    assert len(fleet_wide) > len(project_a.dataset_approvals_blocked_by_requester_attribution())
