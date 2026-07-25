@@ -290,7 +290,20 @@ Defects the reviews found. **Not** merge damage; they survive into this branch.
   forged values with a recomputed self-digest are accepted.
 - **Wording** — `source_identity.py` and `ARCHITECTURE.md` claim an *"independently
   regenerable correctness control"*. Regenerable is true; *control* is not —
-  nothing re-derives from git at runtime. Auditable, not checked.
+  nothing re-derives from git at runtime. Auditable, not checked. **Proven, not
+  argued:**
+
+  ```
+  [STRONG]            edited manifest -> REJECTED by its self-digest
+  [REPRODUCIBLE-ONLY] source file tampered AFTER build, manifest untouched
+                      -> manifest still loads clean, digest=aecf01230bd324b3
+  ```
+
+  Tamper the *source* and leave the manifest alone and it loads without complaint.
+  So the honest description is **reproducible identity, not attested identity** —
+  and note an attacker who replaces the package replaces the manifest too and
+  recomputes an unkeyed digest, which is why this is a self-description property
+  rather than an attestation.
 - **HIGH — cross-release/cross-principal replay.** Reproduced: a COMPLETED record
   replays under a successor release with no provenance check and no approval
   consumption. Latent only because every shipped descriptor defaults to
