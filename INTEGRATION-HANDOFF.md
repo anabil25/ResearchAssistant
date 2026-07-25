@@ -939,6 +939,22 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Under structural typing, "separate types" is not a boundary — you must remove
+  the method.** Python `Protocol`s match structurally, so two ports with *no
+  inheritance relationship* still both accept any concrete class that happens to
+  satisfy both. A store exposing `get` alongside its write surface therefore
+  satisfied a read-only port and a control-plane port simultaneously, and a
+  mis-wire type-checked cleanly. The fix is **composition, not renaming**: the
+  control-plane adapter stops exposing `get` at all and *holds* a reader over the
+  same storage (`self.reader.get`), so passing it where a reader is expected is a
+  mypy error rather than a silent success. Verified in `main` —
+  `InMemory`/`Cosmos…Store` expose `reader` + head/enumerate/write and **no
+  `get`**; only the `…Reader` classes have it.
+  **And the honest claim has three parts, none of which substitutes for another:**
+  types give *"unreachable through this reference"*; the composition root gives
+  *"never handed a write-capable object"*; RBAC gives *"denied even if reached."*
+  Neither types nor composition give *"cannot be the wrong object"* — **only RBAC
+  makes a wrong object harmless.**
 - **Range-scoped review cannot see a defect in the baseline.** The `.py` +
   `requirements.txt` inclusion filter behind F1 survived a full day of adversarial
   review on **two** branches — including neutralization on one — because **it was
