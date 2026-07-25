@@ -491,6 +491,32 @@ import errors far from the merge and nothing in the diff records it. The check:
 for each module, compare `ast` top-level names in the working tree against the
 same path on each merged branch.
 
+**Audited for the mirror failure — restoring a *renamed* symbol would create a
+duplicate. None did.** Every restored name has exactly **one** definition; no
+second implementation was introduced beside a working one. But the same audit
+found something worth recording: **five restored symbols are defined and never
+referenced** —
+
+```
+_online_agent_names          1 ref (definition only)
+_tag_provider_digest         1 ref (definition only)
+_authorize_dataset_analysis  1 ref (definition only)
+_agent_prompt                1 ref (definition only)
+_dataset_approval_context    1 ref (definition only)
+```
+
+**For the three in `app.py` this is measurable corroboration of the §4 root cause,
+not a new defect.** `_dataset_approval_context` and `_authorize_dataset_analysis`
+are the *harness* side of the unreconciled approval merge — §4 states the harness
+resolver "exists in the tree but is not wired into the request path," and a
+reference count of exactly one is what that claim looks like when measured. The
+assertion and the measurement agree.
+
+**They were kept rather than deleted deliberately**: removing them would discard
+the harness work the reconciliation needs, and the reconciliation is an owner
+decision. **But nothing calls them today** — treat them as inert until wired, not
+as live controls.
+
 ### Remaining fix categories
 
 1. **Approval-system reconciliation** (`app.py`, ~9 hunks) — owners required.
