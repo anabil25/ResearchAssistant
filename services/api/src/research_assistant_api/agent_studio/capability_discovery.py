@@ -43,9 +43,12 @@ for the test-only fixture that still exercises a populated catalog.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Mapping
+import json
+import re
+from collections import Counter
+from collections.abc import Iterable, Mapping
 from datetime import datetime
-from typing import Any, Protocol
+from typing import Any, Protocol, TypeGuard
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
@@ -62,11 +65,25 @@ from research_assistant_api.agent_studio.models import (
     OperationLifecycle,
     OperationMaturity,
 )
+from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
 
 #: Default discovery timeout budget when a caller does not specify one.
 DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 10.0
+
+#: Adapter-owned defence-in-depth defaults, mirrored by the settings-owned
+#: ``agent_studio_capability_provider_*`` bounds in ``research_assistant_api.config``.
+#: They exist so a ``HttpCapabilityDiscoverySource`` constructed directly (e.g. in a
+#: test) is still bounded even when no ``Settings`` object supplies overrides. None of
+#: these is ever derived from the wire, the requesting principal, or a model.
+DEFAULT_MAX_RESPONSE_BYTES = 8_000_000
+DEFAULT_MAX_PROVIDERS = 250
+DEFAULT_MAX_DESCRIPTORS_PER_PROVIDER = 500
+DEFAULT_MAX_INSTANCES_PER_PROVIDER = 2_000
+DEFAULT_MAX_OPERATIONS_PER_DESCRIPTOR = 200
+DEFAULT_MAX_CONCURRENCY = 8
+DEFAULT_DISCOVERY_DEADLINE_SECONDS = 25.0
 
 
 class CapabilityDiscoveryRequest(BaseModel):
@@ -89,6 +106,99 @@ class CapabilityDiscoveryRequest(BaseModel):
     timeout_seconds: float = Field(default=DEFAULT_DISCOVERY_TIMEOUT_SECONDS, gt=0)
 
 
+class RawOperationPins(BaseModel):
+    """Provider-owned operation wire values preserved **verbatim**.
+
+    These are the operation-level pins the integration provider (contract
+    ``b2745459...``) computes and owns. They are recorded exactly as received
+    -- never prefixed, mutated, or coerced to ``None`` -- so a later consumer
+    (audit, drift detection, operator recovery) can compare against the
+    provider's own canonicalization (RFC 8785) without this adapter having to
+    re-derive or vouch for them. They are deliberately kept **separate** from
+    the backend's own operation digests on ``CapabilityOperation`` (which use
+    this package's ``sha256:``-prefixed sorted-JSON scheme and are computed
+    from the wire schema objects), so the two algorithms' outputs are never
+    conflated. ``idempotency`` preserves the exact provider enum
+    (``none``/``caller_key``/``provider_native``); note that ``caller_key`` is
+    *conditional* and must never be collapsed to an unconditional idempotent
+    boolean.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    operation_id: str = Field(min_length=1)
+    operation_version: str = Field(min_length=1)
+    idempotency: str = Field(min_length=1)
+    approval_policy: str = Field(min_length=1)
+    input_schema_digest: str | None = None
+    output_schema_digest: str | None = None
+
+
+class ProviderDescriptorPins(BaseModel):
+    """Provider-owned descriptor wire pins preserved verbatim, tied to a backend id.
+
+    ``descriptor_backend_id`` is the namespaced ``CapabilityDescriptor.id`` this
+    pin-set corresponds to, so a consumer can correlate the raw provider pins
+    to the mapped domain descriptor without re-parsing the wire. ``descriptor_id``
+    keeps the provider's own un-namespaced id, and ``descriptor_digest`` is the
+    provider's RFC-8785 content digest recorded exactly as received.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str = Field(min_length=1)
+    descriptor_backend_id: str = Field(min_length=1)
+    descriptor_id: str = Field(min_length=1)
+    descriptor_version: str = Field(min_length=1)
+    descriptor_digest: str = Field(min_length=1)
+    operations: tuple[RawOperationPins, ...] = ()
+
+
+class ProviderInstancePins(BaseModel):
+    """Provider-owned instance wire pins preserved verbatim, tied to a backend id.
+
+    ``instance_backend_id`` is the namespaced ``CapabilityInstance.id`` this
+    pin-set corresponds to. Every listed field is a provider-computed value
+    (``config_hash``, ``instance_fingerprint``, connection/destination
+    authorization digests, ``provider_resource_id``, the descriptor content
+    digest the instance was discovered against) recorded exactly as received.
+    They are kept separate from the backend's own recomputed
+    ``CapabilityInstance.descriptor_digest``/``instance_fingerprint`` (which
+    ``CapabilityRegistry.register_instance`` always derives itself), never
+    substituted for them.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_id: str = Field(min_length=1)
+    instance_backend_id: str = Field(min_length=1)
+    instance_id: str = Field(min_length=1)
+    provider_resource_id: str = Field(min_length=1)
+    config_hash: str = Field(min_length=1)
+    instance_fingerprint: str = Field(min_length=1)
+    descriptor_digest: str = Field(min_length=1)
+    connection_authorization_digest: str = Field(min_length=1)
+    allowed_destinations_digest: str = Field(min_length=1)
+
+
+class DiscoveryRefreshMetadata(BaseModel):
+    """Metadata a later scoped lazy/periodic/operator recovery loop would need.
+
+    This is intentionally only the *interface* shape: it records which flat-v7
+    contract/canonicalization generation a successful pass was validated
+    against and which provider ids it enumerated, so a future refresh
+    scheduler can decide what to re-discover and under which contract. This
+    module does **not** wire any such scheduler into application startup --
+    populating this metadata never triggers a refresh by itself.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    provider_contract_version: str = Field(min_length=1)
+    canonicalization_version: str = Field(min_length=1)
+    provider_ids: tuple[str, ...] = ()
+
+
 class CapabilityDiscoveryResult:
     """Immutable result of a single discovery pass.
 
@@ -105,7 +215,16 @@ class CapabilityDiscoveryResult:
     ``descriptors``/``instances``).
     """
 
-    __slots__ = ("available", "descriptors", "instances", "unavailable_reason", "warnings")
+    __slots__ = (
+        "available",
+        "descriptor_pins",
+        "descriptors",
+        "instance_pins",
+        "instances",
+        "refresh_metadata",
+        "unavailable_reason",
+        "warnings",
+    )
 
     def __init__(
         self,
@@ -115,6 +234,9 @@ class CapabilityDiscoveryResult:
         warnings: tuple[str, ...] = (),
         available: bool = True,
         unavailable_reason: str | None = None,
+        descriptor_pins: tuple[ProviderDescriptorPins, ...] = (),
+        instance_pins: tuple[ProviderInstancePins, ...] = (),
+        refresh_metadata: DiscoveryRefreshMetadata | None = None,
     ) -> None:
         descriptor_ids = {descriptor.id for descriptor in descriptors}
         if len(descriptor_ids) != len(descriptors):
@@ -133,6 +255,10 @@ class CapabilityDiscoveryResult:
                     "An unavailable discovery result cannot vouch for descriptors/instances; it must "
                     "be empty"
                 )
+            if descriptor_pins or instance_pins or refresh_metadata is not None:
+                raise ValueError(
+                    "An unavailable discovery result cannot carry provider pins or refresh metadata"
+                )
             if not unavailable_reason:
                 raise ValueError("An unavailable discovery result must carry a non-empty unavailable_reason")
         self.descriptors = descriptors
@@ -140,6 +266,9 @@ class CapabilityDiscoveryResult:
         self.warnings = warnings
         self.available = available
         self.unavailable_reason = unavailable_reason
+        self.descriptor_pins = descriptor_pins
+        self.instance_pins = instance_pins
+        self.refresh_metadata = refresh_metadata
 
 
 class CapabilityDiscoverySource(Protocol):
@@ -268,27 +397,32 @@ EXPECTED_PROVIDER_CONTRACT_VERSION = "research-assistant.integration-provider.v7
 #: (``descriptor_digest``/``instance_fingerprint``/``config_hash``/etc.) are
 #: computed with: RFC 8785 JSON Canonicalization Scheme + SHA-256, unprefixed
 #: lowercase hex. This is a **different algorithm** from this backend's own
-#: ``capability_registry._canonical_digest`` (sorted ``json.dumps`` + SHA-256,
-#: ``sha256:``-prefixed) -- the two are not byte-comparable. Provider-reported
-#: digests are recorded verbatim, namespaced with ``_PROVIDER_DIGEST_PREFIX``
-#: for traceability only, and are never substituted for this backend's own
+#: ``sha256:``-prefixed sorted-``json.dumps`` scheme (``schema_ref_resolver.
+#: compute_schema_digest`` / ``capability_registry._canonical_digest``) -- the
+#: two are not byte-comparable. Provider-reported digests are preserved
+#: **verbatim** on the ``Raw*Pins`` models (no prefix, no mutation, no drop)
+#: for traceability, and are never substituted for this backend's own
 #: authoritative digests, which ``CapabilityRegistry.register_instance``
-#: always recomputes itself over the mapped domain objects.
+#: always recomputes itself over the mapped domain objects and which this
+#: adapter computes separately for operation I/O schemas.
 EXPECTED_CANONICALIZATION_VERSION = "research-assistant.canonical-json.v1"
-
-#: Prefix distinguishing a provider-reported (RFC 8785) digest from this
-#: backend's own (sorted-JSON) ``sha256:``-prefixed digests, so the two
-#: algorithms' outputs are never mistaken for one another downstream.
-_PROVIDER_DIGEST_PREFIX = "provider-rfc8785-sha256:"
 
 _HEX_DIGITS = frozenset("0123456789abcdef")
 
-#: Provider ``ApprovalPolicy``/``Idempotency`` wire values (no backend enum
-#: equivalent exists -- these collapse to booleans on ``CapabilityOperation``,
-#: see module docstring/coordination notes on the lossy-but-intentional
-#: mapping).
+#: Provider ``ApprovalPolicy``/``Idempotency`` wire values. ``approval_policy``
+#: collapses to ``requires_approval`` on ``CapabilityOperation`` (with the exact
+#: policy preserved on ``RawOperationPins.approval_policy``); ``idempotency`` is
+#: preserved exactly on ``RawOperationPins.idempotency`` and only
+#: ``provider_native`` maps to an unconditional idempotent boolean (see
+#: ``_map_operation``).
 _APPROVAL_POLICIES = frozenset({"never", "policy_evaluated", "required"})
 _IDEMPOTENCY_MODES = frozenset({"none", "caller_key", "provider_native"})
+
+#: The single ``idempotency`` value that is *unconditionally* safe to retry.
+#: ``caller_key`` is idempotent only when the caller supplies a key, so it is
+#: deliberately **not** collapsed into ``CapabilityOperation.idempotent`` -- the
+#: exact enum is preserved on ``RawOperationPins.idempotency`` instead.
+_UNCONDITIONALLY_IDEMPOTENT = "provider_native"
 
 _HIGH_RISK_OPERATION_CLASSES = frozenset({OperationClass.WRITE_IRREVERSIBLE, OperationClass.PRIVILEGED})
 _MEDIUM_RISK_OPERATION_CLASSES = frozenset({OperationClass.WRITE_REVERSIBLE})
@@ -312,6 +446,16 @@ class CapabilityProviderProtocolError(RuntimeError):
     """
 
 
+class CapabilityResponseTooLargeError(RuntimeError):
+    """A provider HTTP response exceeded the adapter's settings-owned byte cap.
+
+    Raised by ``HttpCapabilityDiscoverySource`` before an over-large body is
+    ever fully buffered or JSON-parsed. On the catalog request it degrades to
+    an explicit ``available=False`` result; on a per-provider request it
+    degrades to a warning that skips only that provider.
+    """
+
+
 def _namespaced_id(provider_id: str, raw_id: str) -> str:
     """Namespaces a provider-local id so cross-provider collisions can't happen.
 
@@ -323,6 +467,18 @@ def _namespaced_id(provider_id: str, raw_id: str) -> str:
     """
 
     return f"{provider_id}:{raw_id}"
+
+
+#: A safe, opaque provider id: a leading alphanumeric followed by up to 127 more
+#: ``[A-Za-z0-9._-]`` characters. Deliberately excludes ``/``, ``?``, ``#``,
+#: ``%``, whitespace, and anything else that could re-target or restructure the
+#: authenticated URL when interpolated into the discovery path; ``..`` is also
+#: rejected so a wire value can never walk the path.
+_PROVIDER_ID_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")
+
+
+def _is_safe_provider_id(provider_id: str) -> bool:
+    return bool(_PROVIDER_ID_RE.fullmatch(provider_id)) and ".." not in provider_id
 
 
 def _map_maturity(value: Any) -> OperationMaturity:
@@ -360,25 +516,174 @@ def _map_health(value: Any) -> HealthStatus:
     return mapped
 
 
-def _tag_provider_digest(value: Any) -> str | None:
-    """Namespaces a provider-reported RFC-8785 digest, or rejects a malformed one.
+def _is_hex_digest(value: Any) -> TypeGuard[str]:
+    return (
+        isinstance(value, str)
+        and len(value) == 64
+        and value == value.lower()
+        and all(char in _HEX_DIGITS for char in value)
+    )
 
-    ``None`` is a legitimate input (an optional/absent digest); anything else
-    must be a well-formed lowercase 64-character SHA-256 hex string, since a
-    malformed digest string is a protocol violation, not a value to silently
-    pass through.
+
+def _verbatim_optional_text(value: Any, *, field: str) -> str | None:
+    """Preserve an optional provider string verbatim, normalising "no information" to ``None``.
+
+    Absent (``None``), empty (``""``) and whitespace-only (``"   "``) are three
+    spellings of the same fact -- the provider stated no value -- so all three
+    normalise to ``None``. They previously produced three *different* outcomes
+    (accepted-as-None, whole-instance rejected, accepted-as-``"   "``), which
+    made an informationless value pin as a distinct one in
+    ``capability_registry.compute_instance_fingerprint`` -- the very fabrication
+    this validator exists to prevent.
+
+    Normalising rather than rejecting is deliberate. A version string is not
+    authority: dropping an entire discovered capability instance because a
+    non-authority field is blank would deny service over a value that grants
+    nothing. Fail closed on authority; normalise on information. A *present and
+    informative* value is still returned byte-for-byte, and a non-string still
+    fails closed, because coercing ``7`` to ``"7"`` would pin a fabricated value.
     """
 
     if value is None:
         return None
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or value != value.lower()
-        or any(char not in _HEX_DIGITS for char in value)
-    ):
-        raise CapabilityProviderProtocolError(f"expected a lowercase SHA-256 hex digest, got {value!r}")
-    return f"{_PROVIDER_DIGEST_PREFIX}{value}"
+    if isinstance(value, str) and not value.strip():
+        return None
+    return _verbatim_required_text(value, field=field)
+
+
+def _verbatim_required_digest(value: Any, *, field: str) -> str:
+    """Preserve a required provider digest **exactly** as received, or fail closed.
+
+    The value is validated as a well-formed lowercase 64-character SHA-256 hex
+    string and returned unchanged -- never prefixed, mutated, or coerced. A
+    missing or malformed value is a protocol violation (fail closed), not a
+    value to silently drop to ``None``.
+    """
+
+    if _is_hex_digest(value):
+        return value
+    raise CapabilityProviderProtocolError(f"{field} must be a lowercase SHA-256 hex digest, got {value!r}")
+
+
+def _verbatim_optional_digest(value: Any, *, field: str) -> str | None:
+    """Preserve an optional provider digest verbatim; ``None`` only when absent.
+
+    Absence (``None``) is legitimate and preserved as ``None``; a *present*
+    value must be a well-formed digest and is returned unchanged (never
+    prefixed or mutated). A present-but-malformed value fails closed.
+    """
+
+    if value is None:
+        return None
+    return _verbatim_required_digest(value, field=field)
+
+
+def _verbatim_required_text(value: Any, *, field: str) -> str:
+    """Preserve a required provider string verbatim, or fail closed.
+
+    Rejects any value carrying no information: a non-string, the empty string,
+    or a string that is entirely whitespace. ``"   "`` is rejected for the same
+    reason ``""`` is -- it names nothing -- and admitting it would let a blank
+    stand in as a distinct identity or title.
+
+    Whitespace is only used to *decide*, never to transform: a value that
+    survives is returned byte-for-byte, so ``" v1 "`` is preserved with its
+    padding intact. These strings become identities and provider-owned pins, so
+    trimming them here would be a silent mutation of pinned content.
+    """
+
+    if not isinstance(value, str) or not value.strip():
+        raise CapabilityProviderProtocolError(f"{field} must be a non-empty string, got {value!r}")
+    return value
+
+
+def _wire_warnings(value: Any, *, source_label: str) -> tuple[str, ...]:
+    """Extract provider-declared warnings from untrusted wire data, never raising.
+
+    ``warnings`` is advisory (non-authoritative) data, so a malformed shape must
+    not decide availability -- but it must not be silently dropped either, and it
+    must never raise. Any shape other than an array of objects is reported *as* a
+    warning describing the malformation, which is the same treatment malformed
+    provider catalog entries get.
+
+    This exists because the naive generator (``warning.get(...) for warning in
+    value``) raises ``AttributeError`` on ``"boom"``, ``[1,2,3]``, ``[None]``,
+    ``{"a":1}`` and ``[[1]]`` -- an exception type no caller in this module
+    catches, which would let an untrusted provider decide whether the module
+    honours its own fail-closed contract.
+    """
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        return (f"{source_label} 'warnings' was not a JSON array ({type(value).__name__}); ignored.",)
+    collected: list[str] = []
+    for position, warning in enumerate(value):
+        if not isinstance(warning, Mapping):
+            collected.append(
+                f"{source_label} warning #{position} was not a JSON object ({type(warning).__name__}); ignored."
+            )
+            continue
+        # THE ONLY DELIBERATE ``str()`` COERCION LEFT IN THIS MODULE, and it is
+        # deliberate rather than missed. This value is human-readable DIAGNOSTIC
+        # TEXT: it is never an identity, never a digest input, and never reaches
+        # a pin or a governance decision -- it is only ever displayed. So a
+        # provider that sends a non-string message should still have it
+        # rendered, not have its whole warning discarded. Every other wire string
+        # in this module goes through ``_verbatim_required_text`` /
+        # ``_verbatim_optional_text`` and fails closed instead.
+        collected.append(
+            str(warning.get("message") or warning.get("reason_code") or "unknown warning")
+        )
+    return tuple(collected)
+
+
+def _str_sequence(value: Any, *, field: str) -> tuple[str, ...]:
+    """A tuple of strings from a wire array, failing closed on a non-array.
+
+    An absent value (``None``) is an empty tuple, but a *present* non-array
+    value -- or an array with a non-string member -- is a protocol violation
+    rather than something to coerce: iterating a bare string would silently
+    explode it into per-character entries, and ``str()``-coercing members would
+    turn ``[123, null]`` into ``("123", "None")``. This matters most for
+    security-relevant fields such as ``side_effect_destinations`` and
+    ``least_privilege_scopes``/``least_privilege_roles``.
+    """
+
+    if value is None:
+        return ()
+    if not isinstance(value, list):
+        raise CapabilityProviderProtocolError(f"{field} must be a JSON array, got {type(value).__name__}")
+    items: list[str] = []
+    for item in value:
+        if not isinstance(item, str):
+            raise CapabilityProviderProtocolError(
+                f"{field} entries must be strings, got {type(item).__name__}"
+            )
+        items.append(item)
+    return tuple(items)
+
+
+def _backend_schema_digest(schema: Any) -> str | None:
+    """This backend's *own* canonical digest of a wire I/O schema object.
+
+    Uses this package's ``sha256:``-prefixed sorted-JSON scheme
+    (``schema_ref_resolver.compute_schema_digest``) over the schema object the
+    provider actually shipped on the wire -- a **separately-named backend
+    canonical digest** that lives alongside (never replaces) the provider's own
+    RFC-8785 ``input_schema_digest``/``output_schema_digest`` preserved verbatim
+    on ``RawOperationPins``. Returns ``None`` when the schema is absent
+    (``None``), but fails closed on a *present* value that is not a JSON object
+    -- an absent schema and a malformed present schema are honestly different.
+    """
+
+    if schema is None:
+        return None
+    if not isinstance(schema, Mapping):
+        raise CapabilityProviderProtocolError(
+            f"wire schema must be a JSON object or absent, got {type(schema).__name__}"
+        )
+    return compute_schema_digest(dict(schema))
 
 
 def _operation_risk(operation_class: OperationClass) -> str:
@@ -389,7 +694,7 @@ def _operation_risk(operation_class: OperationClass) -> str:
     return "low"
 
 
-def _map_operation(payload: Mapping[str, Any]) -> CapabilityOperation:
+def _map_operation(payload: Mapping[str, Any]) -> tuple[CapabilityOperation, RawOperationPins]:
     approval_policy = payload["approval_policy"]
     if approval_policy not in _APPROVAL_POLICIES:
         raise CapabilityProviderProtocolError(f"unrecognized approval_policy value {approval_policy!r}")
@@ -397,35 +702,63 @@ def _map_operation(payload: Mapping[str, Any]) -> CapabilityOperation:
     if idempotency not in _IDEMPOTENCY_MODES:
         raise CapabilityProviderProtocolError(f"unrecognized idempotency value {idempotency!r}")
     operation_class = _map_operation_class(payload["operation_class"])
-    docs = tuple(str(doc) for doc in (payload.get("docs") or ()))
+    docs = _str_sequence(payload.get("docs"), field="docs")
     timeout_raw = payload["timeout_seconds"]
     timeout_seconds = (
         int(timeout_raw) if isinstance(timeout_raw, int | float) and 1 <= timeout_raw <= 3600 else None
     )
     max_retries_raw = payload.get("max_retries", 0)
     max_retries = int(max_retries_raw) if isinstance(max_retries_raw, int | float) and 0 <= max_retries_raw <= 10 else 0
-    return CapabilityOperation(
-        name=str(payload["operation_id"]),
-        version=str(payload["operation_version"]),
+    # Provider RFC-8785 operation schema digests are preserved verbatim on the
+    # pins; the backend's own operation schema digests are computed separately
+    # from the wire schema objects (never the provider's prefixed value).
+    raw_input_digest = _verbatim_optional_digest(payload.get("input_schema_digest"), field="input_schema_digest")
+    raw_output_digest = _verbatim_optional_digest(payload.get("output_schema_digest"), field="output_schema_digest")
+    # Operation identity is governance-relevant, not presentation text:
+    # ``CapabilityDescriptor.operation(name)`` resolves approval/policy lookups by
+    # it, and ``RawOperationPins.operation_id`` is the provider-owned pin used for
+    # drift detection and audit correlation. So it goes through the same
+    # required-string gate as every other identity, never ``str()`` coercion --
+    # which would mint synthetic identities like "None"/"7"/"True" that
+    # ``Field(min_length=1)`` cannot catch.
+    operation_id = _verbatim_required_text(payload.get("operation_id"), field="operation_id")
+    operation_version = _verbatim_required_text(payload.get("operation_version"), field="operation_version")
+    operation = CapabilityOperation(
+        name=operation_id,
+        version=operation_version,
         maturity=_map_maturity(payload["maturity"]),
         lifecycle=_map_lifecycle(payload["lifecycle"]),
         operation_class=operation_class,
         risk=_operation_risk(operation_class),
-        side_effect_destinations=tuple(str(d) for d in (payload.get("side_effect_destinations") or ())),
+        side_effect_destinations=_str_sequence(
+            payload.get("side_effect_destinations"), field="side_effect_destinations"
+        ),
         requires_approval=approval_policy != "never",
         approval_policy_ref=approval_policy if approval_policy != "never" else None,
         reason=None,
         source_url=docs[0] if docs else None,
         source_version=None,
         last_verified_at=None,
-        input_schema_digest=_tag_provider_digest(payload.get("input_schema_digest")),
-        output_schema_digest=_tag_provider_digest(payload.get("output_schema_digest")),
+        input_schema_digest=_backend_schema_digest(payload.get("input_schema")),
+        output_schema_digest=_backend_schema_digest(payload.get("output_schema")),
         timeout_seconds=timeout_seconds,
         max_retries=max_retries,
-        idempotent=idempotency != "none",
-        least_privilege_scopes=tuple(str(s) for s in (payload.get("least_privilege_scopes") or ())),
-        least_privilege_roles=tuple(str(s) for s in (payload.get("least_privilege_roles") or ())),
+        # Only ``provider_native`` is unconditionally idempotent; ``caller_key``
+        # is conditional (idempotent only when the caller supplies a key) and is
+        # therefore never collapsed into an unconditional idempotent boolean.
+        idempotent=idempotency == _UNCONDITIONALLY_IDEMPOTENT,
+        least_privilege_scopes=_str_sequence(payload.get("least_privilege_scopes"), field="least_privilege_scopes"),
+        least_privilege_roles=_str_sequence(payload.get("least_privilege_roles"), field="least_privilege_roles"),
     )
+    pins = RawOperationPins(
+        operation_id=operation_id,
+        operation_version=operation_version,
+        idempotency=idempotency,
+        approval_policy=approval_policy,
+        input_schema_digest=raw_input_digest,
+        output_schema_digest=raw_output_digest,
+    )
+    return operation, pins
 
 
 def _descriptor_risk_tier(operations: tuple[CapabilityOperation, ...]) -> str:
@@ -462,62 +795,194 @@ def _descriptor_description(name: str, family: str, resource_kind: str) -> str:
     return f"{name} ({family}/{resource_kind})"
 
 
-def _map_descriptor(payload: Mapping[str, Any], *, provider_id: str) -> CapabilityDescriptor:
-    name = str(payload["name"])
-    family = str(payload["family"])
-    resource_kind = str(payload["resource_kind"])
+def _map_descriptor(
+    payload: Mapping[str, Any], *, provider_id: str, max_operations: int
+) -> tuple[CapabilityDescriptor, ProviderDescriptorPins]:
+    # EVERY wire string in this module goes through ``_verbatim_required_text``
+    # -- identities and presentation fields alike. No bare ``str()`` coercion
+    # remains, so a future reader never has to guess whether an exception was
+    # deliberate or missed.
+    #
+    # ``name``/``family``/``resource_kind`` are the weakest of these: they feed
+    # the descriptor's title/description, and ``family`` feeds only
+    # ``managed_foundry_native``, which fails safe to ``False``. They are
+    # nonetheless validated rather than coerced, for two reasons. First, all
+    # three are REQUIRED and typed ``string`` in the flat-v7 contract, so
+    # accepting a null or an int was never contract-conformant. Second, coercion
+    # fabricates: a null ``name`` became the title ``"None"`` and the description
+    # ``"None (None/None)"``, which is precisely the "never fabricates a value it
+    # cannot stand behind" property this adapter claims for itself.
+    raw_descriptor_id = _verbatim_required_text(payload.get("descriptor_id"), field="descriptor_id")
+    descriptor_version = _verbatim_required_text(payload.get("descriptor_version"), field="descriptor_version")
+    name = _verbatim_required_text(payload.get("name"), field="name")
+    family = _verbatim_required_text(payload.get("family"), field="family")
+    resource_kind = _verbatim_required_text(payload.get("resource_kind"), field="resource_kind")
     operations_payload = payload.get("operations") or ()
     if not operations_payload:
         raise CapabilityProviderProtocolError("descriptor has no operations")
-    operations = tuple(_map_operation(op) for op in operations_payload)
-    return CapabilityDescriptor(
-        id=_namespaced_id(provider_id, str(payload["descriptor_id"])),
-        version=str(payload["descriptor_version"]),
+    if len(operations_payload) > max_operations:
+        raise CapabilityProviderProtocolError(
+            f"descriptor declares {len(operations_payload)} operations, exceeding the adapter cap "
+            f"of {max_operations}"
+        )
+    mapped = tuple(_map_operation(op) for op in operations_payload)
+    operations = tuple(operation for operation, _ in mapped)
+    operation_names = [operation.name for operation in operations]
+    if len(set(operation_names)) != len(operation_names):
+        # Duplicate operation ids let one operation's approval/security semantics
+        # shadow another's (``CapabilityDescriptor.operation`` returns the first
+        # match); reject the whole descriptor rather than retain the ambiguity.
+        raise CapabilityProviderProtocolError("descriptor declares duplicate operation ids")
+    backend_id = _namespaced_id(provider_id, raw_descriptor_id)
+    descriptor = CapabilityDescriptor(
+        id=backend_id,
+        version=descriptor_version,
         provider=provider_id,
         title=name,
         description=_descriptor_description(name, family, resource_kind),
         operations=operations,
-        auth_requirements=tuple(str(a) for a in (payload.get("auth_modes") or ())),
+        auth_requirements=_str_sequence(payload.get("auth_modes"), field="auth_modes"),
         risk_tier=_descriptor_risk_tier(operations),
         data_boundary="project",
         config_schema={},
         managed_foundry_native=(family == "microsoft_foundry"),
     )
+    pins = ProviderDescriptorPins(
+        provider_id=provider_id,
+        descriptor_backend_id=backend_id,
+        descriptor_id=raw_descriptor_id,
+        descriptor_version=descriptor_version,
+        descriptor_digest=_verbatim_required_digest(payload.get("descriptor_digest"), field="descriptor_digest"),
+        operations=tuple(operation_pins for _, operation_pins in mapped),
+    )
+    return descriptor, pins
 
 
-def _map_instance(payload: Mapping[str, Any], *, provider_id: str, registered_by: str) -> CapabilityInstance:
+def _map_instance(
+    payload: Mapping[str, Any], *, provider_id: str, registered_by: str
+) -> tuple[CapabilityInstance, ProviderInstancePins]:
+    # An instance re-declares the contract generation and its owning provider;
+    # both must agree with the enclosing provider discovery, or the instance is
+    # an inconsistent payload we refuse to trust (fail closed, skip this item).
+    # The provider echo is compared as a *string*, never via ``str()`` coercion:
+    # ``str(None) == "None"``, so coercing would let a null echo satisfy the
+    # cross-check for a provider legitimately named "None".
+    if payload.get("provider_contract_version") != EXPECTED_PROVIDER_CONTRACT_VERSION:
+        raise CapabilityProviderProtocolError(
+            f"instance provider_contract_version {payload.get('provider_contract_version')!r} does not "
+            f"match {EXPECTED_PROVIDER_CONTRACT_VERSION!r}"
+        )
+    echoed_provider_id = payload.get("provider_id")
+    if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
+        raise CapabilityProviderProtocolError(
+            f"instance provider_id {echoed_provider_id!r} does not match its enclosing provider "
+            f"{provider_id!r}"
+        )
     readiness = _map_readiness(payload["readiness"])
     health_status = _map_health(payload["health"])
+    # ``configuration`` is a required object in flat-v7; require it here so this
+    # backend's own configuration digest is always computed and drift cannot go
+    # undetected (the provider's verbatim ``config_hash`` pin is preserved
+    # separately below regardless).
+    configuration = payload.get("configuration")
+    if not isinstance(configuration, Mapping):
+        raise CapabilityProviderProtocolError("instance configuration must be a JSON object")
     unavailable_reason = payload.get("unavailable_reason")
     if readiness != InstanceReadiness.READY and not unavailable_reason:
-        evidence = tuple(str(item) for item in (payload.get("status_evidence") or ()))
+        evidence = _str_sequence(payload.get("status_evidence"), field="status_evidence")
         unavailable_reason = "; ".join(evidence) or f"Provider reported readiness={readiness.value}."
+    last_checked_at = _verbatim_required_text(payload.get("last_checked_at"), field="last_checked_at")
     try:
-        discovered_at = datetime.fromisoformat(str(payload["last_checked_at"]))
+        discovered_at = datetime.fromisoformat(last_checked_at)
     except ValueError as exc:
         raise CapabilityProviderProtocolError("last_checked_at is not a valid ISO-8601 timestamp") from exc
-    return CapabilityInstance(
-        id=_namespaced_id(provider_id, str(payload["instance_id"])),
-        tenant_id=str(payload["tenant_id"]),
-        project_id=str(payload["project_id"]),
-        descriptor_id=_namespaced_id(provider_id, str(payload["descriptor_id"])),
-        descriptor_version=str(payload["descriptor_version"]),
-        # Authoritative digest/fingerprint are always recomputed by
-        # CapabilityRegistry.register_instance over the mapped domain
-        # objects; the provider's own (RFC 8785) values are never trusted as
-        # backend-equivalent, so they are deliberately left unset here.
+    # Identity strings (they become the namespaced instance/descriptor ids, and
+    # the scope this instance claims); require them rather than str()-coercing a
+    # null/int into a bogus identity such as the literal string "None".
+    raw_instance_id = _verbatim_required_text(payload.get("instance_id"), field="instance_id")
+    raw_descriptor_id = _verbatim_required_text(payload.get("descriptor_id"), field="descriptor_id")
+    descriptor_version = _verbatim_required_text(payload.get("descriptor_version"), field="descriptor_version")
+    tenant_id = _verbatim_required_text(payload.get("tenant_id"), field="tenant_id")
+    project_id = _verbatim_required_text(payload.get("project_id"), field="project_id")
+    backend_id = _namespaced_id(provider_id, raw_instance_id)
+    instance = CapabilityInstance(
+        id=backend_id,
+        tenant_id=tenant_id,
+        project_id=project_id,
+        descriptor_id=_namespaced_id(provider_id, raw_descriptor_id),
+        descriptor_version=descriptor_version,
+        # The descriptor digest is always recomputed by
+        # CapabilityRegistry.register_instance over the mapped domain objects;
+        # the provider's own (RFC 8785) value is never trusted as
+        # backend-equivalent here -- it is preserved verbatim on the pins
+        # instead, so this domain object is deliberately left unset.
         descriptor_digest=None,
-        discovered_provider_version=(str(payload["discovered_provider_version"]) or None)
-        if payload.get("discovered_provider_version")
-        else None,
+        discovered_provider_version=_verbatim_optional_text(
+            payload.get("discovered_provider_version"), field="discovered_provider_version"
+        ),
         readiness=readiness,
         health_status=health_status,
-        config_fingerprint=None,
+        # This backend's own canonical digest of the wire configuration, so
+        # CapabilityRegistry.compute_instance_fingerprint is sensitive to real
+        # configuration drift (distinct from the provider's verbatim
+        # ``config_hash`` pin below). instance_fingerprint itself is recomputed
+        # by the registry, so the adapter leaves it unset.
+        config_fingerprint=compute_schema_digest(dict(configuration)),
         instance_fingerprint=None,
         unavailable_reason=unavailable_reason if readiness != InstanceReadiness.READY else None,
         discovered_at=discovered_at,
         registered_by=registered_by,
     )
+    pins = ProviderInstancePins(
+        provider_id=provider_id,
+        instance_backend_id=backend_id,
+        instance_id=raw_instance_id,
+        provider_resource_id=_verbatim_required_text(payload.get("provider_resource_id"), field="provider_resource_id"),
+        config_hash=_verbatim_required_digest(payload.get("config_hash"), field="config_hash"),
+        instance_fingerprint=_verbatim_required_digest(
+            payload.get("instance_fingerprint"), field="instance_fingerprint"
+        ),
+        descriptor_digest=_verbatim_required_digest(payload.get("descriptor_digest"), field="descriptor_digest"),
+        connection_authorization_digest=_verbatim_required_digest(
+            payload.get("connection_authorization_digest"), field="connection_authorization_digest"
+        ),
+        allowed_destinations_digest=_verbatim_required_digest(
+            payload.get("allowed_destinations_digest"), field="allowed_destinations_digest"
+        ),
+    )
+    return instance, pins
+
+
+#: The 5-tuple one ``_discover_one_provider`` call returns: mapped descriptors,
+#: their verbatim provider pins, mapped instances, their verbatim provider pins,
+#: and per-provider warnings -- pins travel 1:1 alongside their domain objects.
+_ProviderDiscoveryOutcome = tuple[
+    tuple[CapabilityDescriptor, ...],
+    tuple[ProviderDescriptorPins, ...],
+    tuple[CapabilityInstance, ...],
+    tuple[ProviderInstancePins, ...],
+    tuple[str, ...],
+]
+
+def _duplicates[HasId: (CapabilityDescriptor, CapabilityInstance)](
+    items: Iterable[HasId],
+) -> list[HasId]:
+    """Every item whose ``id`` occurs more than once *within ``items``*, order-independently.
+
+    Used to fail closed on ambiguous identities: because the result depends only
+    on *which* ids repeat and never on the order they arrived in, any permutation
+    of the wire payload yields the same rejection set.
+
+    Note the scope: callers pass only successfully-mapped items, so an id whose
+    twin failed to map is not seen here as a duplicate and its sole survivor is
+    retained. That is deliberate and remains permutation-invariant, since which
+    twin fails to map depends on content rather than position.
+    """
+
+    counts: Counter[str] = Counter()
+    materialized = list(items)
+    counts.update(item.id for item in materialized)
+    return [item for item in materialized if counts[item.id] > 1]
 
 
 class HttpCapabilityDiscoverySource:
@@ -537,12 +1002,27 @@ class HttpCapabilityDiscoverySource:
     ``description``, and every digest/fingerprint field) is either derived
     deterministically from data actually on the wire, or deliberately left
     unset so ``CapabilityRegistry`` computes it itself — this adapter never
-    fabricates or blindly forwards a value it cannot stand behind.
+    fabricates or blindly forwards a value it cannot stand behind. The
+    provider's own wire pins (``config_hash``/``instance_fingerprint``/
+    connection & destination digests/``provider_resource_id``/schema digests)
+    are preserved **verbatim** on the ``descriptor_pins``/``instance_pins`` of
+    the result, alongside (never in place of) those backend-owned digests.
+
+    Every untrusted provider response is bounded before it can cost unbounded
+    memory, cardinality, fan-out, or wall-clock time: response bytes are capped
+    before JSON parsing, provider/descriptor/instance/operation counts are
+    capped, per-provider fan-out runs under a concurrency semaphore, and the
+    whole pass runs under an overall deadline. Every bound fails closed with a
+    typed honest ``available=False`` result (catalog-level) or a skipped item
+    with a warning (per provider). Redirects are disabled and the endpoint,
+    token audience/scope, and managed-identity client are all settings-owned;
+    the requesting principal is used only for attribution, never to influence
+    auth, destinations, or which endpoint is called.
 
     A single malformed provider/descriptor/instance degrades to a
     ``warnings`` entry (skipping only that item); the whole pass only
     reports ``available=False`` when the provider catalog itself could not
-    be reached, parsed, or version-validated at all.
+    be reached, parsed, version-validated, or size/cardinality-bounded at all.
     """
 
     def __init__(
@@ -552,6 +1032,13 @@ class HttpCapabilityDiscoverySource:
         credential: AsyncTokenCredential | None = None,
         token_scope: str | None = None,
         client: httpx.AsyncClient | None = None,
+        max_response_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+        max_providers: int = DEFAULT_MAX_PROVIDERS,
+        max_descriptors_per_provider: int = DEFAULT_MAX_DESCRIPTORS_PER_PROVIDER,
+        max_instances_per_provider: int = DEFAULT_MAX_INSTANCES_PER_PROVIDER,
+        max_operations_per_descriptor: int = DEFAULT_MAX_OPERATIONS_PER_DESCRIPTOR,
+        max_concurrency: int = DEFAULT_MAX_CONCURRENCY,
+        deadline_seconds: float = DEFAULT_DISCOVERY_DEADLINE_SECONDS,
     ) -> None:
         self._credential = credential
         self._token_scope = token_scope
@@ -561,6 +1048,13 @@ class HttpCapabilityDiscoverySource:
             timeout=httpx.Timeout(20.0, connect=8.0),
             follow_redirects=False,
         )
+        self._max_response_bytes = max_response_bytes
+        self._max_providers = max_providers
+        self._max_descriptors_per_provider = max_descriptors_per_provider
+        self._max_instances_per_provider = max_instances_per_provider
+        self._max_operations_per_descriptor = max_operations_per_descriptor
+        self._max_concurrency = max_concurrency
+        self._deadline_seconds = deadline_seconds
 
     async def _headers(self) -> dict[str, str]:
         if self._credential and self._token_scope:
@@ -568,13 +1062,63 @@ class HttpCapabilityDiscoverySource:
             return {"Authorization": f"Bearer {token.token}"}
         return {}
 
+    async def _get_json(self, path: str, headers: dict[str, str]) -> Any:
+        """GET ``path`` and JSON-parse it, bounding the body before it is parsed.
+
+        The response is streamed and abandoned the moment it exceeds
+        ``max_response_bytes``, so an over-large (or unbounded) provider
+        response can never be fully buffered in memory or handed to the JSON
+        parser. Redirects are refused per-request (belt-and-braces with the
+        owned client's ``follow_redirects=False``) so a wire ``Location`` can
+        never re-target the authenticated request, and only an exact ``200`` is
+        accepted -- any other status (including a 3xx with a JSON body) is
+        raised as ``httpx.HTTPStatusError`` after its bounded body is consumed.
+        """
+
+        chunks: list[bytes] = []
+        total = 0
+        async with self._client.stream("GET", path, headers=headers, follow_redirects=False) as response:
+            async for chunk in response.aiter_bytes():
+                total += len(chunk)
+                if total > self._max_response_bytes:
+                    raise CapabilityResponseTooLargeError(
+                        f"Provider response for {path!r} exceeded the {self._max_response_bytes}-byte cap."
+                    )
+                chunks.append(chunk)
+            if response.status_code != 200:
+                raise httpx.HTTPStatusError(
+                    f"{response.status_code} non-200 response for {path!r}.",
+                    request=response.request,
+                    response=response,
+                )
+        return json.loads(b"".join(chunks))
+
     async def discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
+        """Run one discovery pass bounded by the adapter's overall deadline.
+
+        The deadline is an adapter-owned wall-clock ceiling over the whole pass
+        (catalog plus every per-provider fan-out). Exceeding it yields an honest
+        ``available=False`` result rather than a partial catalog presented as
+        complete. A genuine cancellation of the caller's own task is *not*
+        converted here -- only this adapter's own deadline is.
+        """
+
+        try:
+            async with asyncio.timeout(self._deadline_seconds):
+                return await self._discover(request)
+        except TimeoutError:
+            return CapabilityDiscoveryResult(
+                available=False,
+                unavailable_reason=(
+                    f"Capability discovery exceeded its {self._deadline_seconds}s overall deadline."
+                ),
+            )
+
+    async def _discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
         headers = await self._headers()
         try:
-            catalog_response = await self._client.get("v1/providers", headers=headers)
-            catalog_response.raise_for_status()
-            catalog = catalog_response.json()
-        except (httpx.HTTPError, ValueError) as exc:
+            catalog = await self._get_json("v1/providers", headers)
+        except (httpx.HTTPError, ValueError, CapabilityResponseTooLargeError) as exc:
             return CapabilityDiscoveryResult(
                 available=False,
                 unavailable_reason=f"Capability provider catalog request failed: {exc}",
@@ -601,70 +1145,206 @@ class HttpCapabilityDiscoverySource:
                     f"{catalog.get('canonicalization_version')!r}."
                 ),
             )
-        providers_payload = catalog.get("providers") or []
-        catalog_warnings = tuple(
-            str(warning.get("message") or warning.get("reason_code") or "unknown catalog warning")
-            for warning in (catalog.get("warnings") or [])
+        providers_payload = catalog.get("providers")
+        if not isinstance(providers_payload, list):
+            return CapabilityDiscoveryResult(
+                available=False,
+                unavailable_reason="Capability provider catalog 'providers' was not a JSON array.",
+            )
+        catalog_warnings = _wire_warnings(catalog.get("warnings"), source_label="Capability provider catalog")
+        # Bound cardinality against the raw declared collection, before any
+        # filtering or de-duplication could mask an over-large catalog.
+        if len(providers_payload) > self._max_providers:
+            return CapabilityDiscoveryResult(
+                available=False,
+                unavailable_reason=(
+                    f"Capability provider catalog lists {len(providers_payload)} providers, exceeding "
+                    f"the adapter cap of {self._max_providers}; refusing to present a truncated catalog "
+                    "as complete."
+                ),
+            )
+        entry_warnings: list[str] = []
+        seen_provider_ids: set[str] = set()
+        provider_ids: list[str] = []
+        for position, entry in enumerate(providers_payload):
+            candidate = entry.get("provider_id") if isinstance(entry, dict) else None
+            if not isinstance(candidate, str) or not candidate:
+                # Surface the dropped entry rather than silently narrowing the
+                # catalog, so an available result never hides an incomplete one.
+                entry_warnings.append(
+                    f"Capability provider catalog entry #{position} has no usable string provider_id "
+                    f"({candidate!r}); skipped."
+                )
+                continue
+            if not _is_safe_provider_id(candidate):
+                # Reject unsafe ids at the catalog boundary, not merely before
+                # the request. This keeps them out of ``provider_ids`` entirely,
+                # and therefore out of ``refresh_metadata.provider_ids`` -- which
+                # exists to seed a future refresh scheduler and so must never
+                # carry an unsanitised wire value that a later consumer could
+                # interpolate into a URL. Structural impossibility rather than
+                # downstream re-validation.
+                entry_warnings.append(
+                    f"Capability provider catalog entry #{position} declares provider_id {candidate!r}, "
+                    "which is not a safe opaque identifier; skipped."
+                )
+                continue
+            if candidate in seen_provider_ids:
+                entry_warnings.append(
+                    f"Provider {candidate!r} appears more than once in the catalog; the duplicate was "
+                    "ignored."
+                )
+                continue
+            seen_provider_ids.add(candidate)
+            provider_ids.append(candidate)
+        refresh = DiscoveryRefreshMetadata(
+            provider_contract_version=EXPECTED_PROVIDER_CONTRACT_VERSION,
+            canonicalization_version=EXPECTED_CANONICALIZATION_VERSION,
+            provider_ids=tuple(provider_ids),
         )
-        provider_ids = [str(entry["provider_id"]) for entry in providers_payload if "provider_id" in entry]
         if not provider_ids:
-            return CapabilityDiscoveryResult(available=True, warnings=catalog_warnings)
+            return CapabilityDiscoveryResult(
+                available=True,
+                warnings=catalog_warnings + tuple(entry_warnings),
+                refresh_metadata=refresh,
+            )
+
+        semaphore = asyncio.Semaphore(self._max_concurrency)
+
+        async def _guarded(provider_id: str) -> _ProviderDiscoveryOutcome:
+            async with semaphore:
+                return await self._discover_one_provider(provider_id, headers, request.principal)
 
         outcomes = await asyncio.gather(
-            *(self._discover_one_provider(provider_id, headers, request.principal) for provider_id in provider_ids),
+            *(_guarded(provider_id) for provider_id in provider_ids),
             return_exceptions=True,
         )
 
-        descriptors: list[CapabilityDescriptor] = []
-        instances: list[CapabilityInstance] = []
-        warnings: list[str] = list(catalog_warnings)
-        seen_descriptor_ids: set[str] = set()
-        seen_instance_ids: set[str] = set()
+        warnings: list[str] = list(catalog_warnings) + entry_warnings
+        collected_descriptors: list[tuple[str, CapabilityDescriptor, ProviderDescriptorPins]] = []
+        collected_instances: list[tuple[str, CapabilityInstance, ProviderInstancePins]] = []
 
         for provider_id, outcome in zip(provider_ids, outcomes, strict=True):
             if isinstance(outcome, BaseException):
                 warnings.append(f"Provider {provider_id} discovery failed: {outcome}")
                 continue
-            provider_descriptors, provider_instances, provider_warnings = outcome
+            (
+                provider_descriptors,
+                provider_descriptor_pins,
+                provider_instances,
+                provider_instance_pins,
+                provider_warnings,
+            ) = outcome
             warnings.extend(provider_warnings)
-            for descriptor in provider_descriptors:
-                if descriptor.id in seen_descriptor_ids:
-                    warnings.append(
-                        f"Provider {provider_id} descriptor id {descriptor.id!r} collided with an "
-                        "already-discovered descriptor; skipped."
-                    )
-                    continue
-                seen_descriptor_ids.add(descriptor.id)
-                descriptors.append(descriptor)
-            for instance in provider_instances:
-                if instance.descriptor_id not in seen_descriptor_ids:
-                    warnings.append(
-                        f"Provider {provider_id} instance id {instance.id!r} references descriptor "
-                        f"{instance.descriptor_id!r} which was not discovered/kept; skipped."
-                    )
-                    continue
-                if instance.id in seen_instance_ids:
-                    warnings.append(
-                        f"Provider {provider_id} instance id {instance.id!r} collided with an "
-                        "already-discovered instance; skipped."
-                    )
-                    continue
-                seen_instance_ids.add(instance.id)
-                instances.append(instance)
+            for descriptor, descriptor_pin in zip(
+                provider_descriptors, provider_descriptor_pins, strict=True
+            ):
+                collected_descriptors.append((provider_id, descriptor, descriptor_pin))
+            for instance, instance_pin in zip(provider_instances, provider_instance_pins, strict=True):
+                collected_instances.append((provider_id, instance, instance_pin))
+
+        # Duplicate identity resolution must be deterministic on *content*, never
+        # on arrival position. A keep-first (or keep-last) rule would let the
+        # provider's array ordering decide which descriptor is retained -- and
+        # therefore decide every downstream digest and whether a given instance
+        # correlates and becomes bindable at all. So every occurrence of a
+        # duplicated identity is rejected (fail closed): the outcome is identical
+        # under any permutation of the wire payload.
+        #
+        # PRECISE SCOPE OF THAT GUARANTEE: detection runs over SUCCESSFULLY-MAPPED
+        # items only, so it is "every occurrence *among successfully-mapped
+        # items*". A valid descriptor whose same-id twin failed to map (and was
+        # already skipped with its own warning) is the sole survivor of that id
+        # and IS retained. That does not reintroduce positional dependence --
+        # which twin fails to map is a property of its content, not of its
+        # position -- so the behaviour is correct; only the unqualified phrasing
+        # would have been wrong, and a confidently-wrong statement about a
+        # control is worse than none because it gets trusted.
+        duplicate_descriptor_ids = {
+            descriptor.id
+            for descriptor in _duplicates(descriptor for _, descriptor, _ in collected_descriptors)
+        }
+        duplicate_instance_ids = {
+            instance.id for instance in _duplicates(instance for _, instance, _ in collected_instances)
+        }
+        for descriptor_id in sorted(duplicate_descriptor_ids):
+            warnings.append(
+                f"Descriptor id {descriptor_id!r} was declared more than once among successfully-mapped "
+                "descriptors; every such occurrence was rejected because the correct one cannot be "
+                "determined from content."
+            )
+        for instance_id in sorted(duplicate_instance_ids):
+            warnings.append(
+                f"Instance id {instance_id!r} was declared more than once among successfully-mapped "
+                "instances; every such occurrence was rejected because the correct one cannot be "
+                "determined from content."
+            )
+
+        descriptors: list[CapabilityDescriptor] = []
+        descriptor_pins: list[ProviderDescriptorPins] = []
+        for _, descriptor, descriptor_pin in collected_descriptors:
+            if descriptor.id in duplicate_descriptor_ids:
+                continue
+            descriptors.append(descriptor)
+            descriptor_pins.append(descriptor_pin)
+        kept_descriptor_ids = {descriptor.id for descriptor in descriptors}
+
+        instances: list[CapabilityInstance] = []
+        instance_pins: list[ProviderInstancePins] = []
+        for provider_id, instance, instance_pin in collected_instances:
+            if instance.id in duplicate_instance_ids:
+                continue
+            if instance.descriptor_id not in kept_descriptor_ids:
+                warnings.append(
+                    f"Provider {provider_id} instance id {instance.id!r} references descriptor "
+                    f"{instance.descriptor_id!r} which was not discovered/kept; skipped."
+                )
+                continue
+            instances.append(instance)
+            instance_pins.append(instance_pin)
 
         return CapabilityDiscoveryResult(
             descriptors=tuple(descriptors),
             instances=tuple(instances),
             warnings=tuple(warnings),
             available=True,
+            descriptor_pins=tuple(descriptor_pins),
+            instance_pins=tuple(instance_pins),
+            refresh_metadata=refresh,
         )
 
     async def _discover_one_provider(
         self, provider_id: str, headers: dict[str, str], registered_by: str
-    ) -> tuple[tuple[CapabilityDescriptor, ...], tuple[CapabilityInstance, ...], tuple[str, ...]]:
-        response = await self._client.get(f"v1/providers/{provider_id}/capabilities", headers=headers)
-        response.raise_for_status()
-        payload = response.json()
+    ) -> _ProviderDiscoveryOutcome:
+        # SECURITY BACKSTOP -- deliberately unreachable, deliberately retained.
+        #
+        # BACKSTOPS: the safe-identifier check in ``_discover``, which rejects
+        # unsafe provider ids at the *catalog boundary* so they never enter
+        # ``provider_ids``. While that boundary holds, this branch cannot be
+        # reached through the public ``discover()`` path.
+        #
+        # WHY IT STAYS: ``provider_id`` is interpolated directly into an
+        # authenticated URL on the next line. If the boundary check is ever
+        # relaxed, narrowed, or moved -- or if any future caller invokes this
+        # private method directly, bypassing ``_discover`` entirely -- this is the
+        # only thing standing between wire-controlled input and request-path
+        # construction.
+        #
+        # HOW IT IS PROTECTED: not by coverage. Coverage cannot defend it,
+        # because this guard and its dedicated test
+        # (``test_provider_id_guard_backstops_catalog_boundary_sanitization``)
+        # delete together in a single plausible-looking "remove dead code"
+        # change, leaving coverage at 100% and nothing failing. The protection is
+        # this rationale. Removing the *boundary* sanitization instead makes this
+        # branch reachable again and fails the boundary tests; removing *this
+        # guard* while the boundary stays has no mechanical defence, which is
+        # accepted for genuine defence in depth only because it is named here
+        # rather than assumed.
+        if not _is_safe_provider_id(provider_id):
+            raise CapabilityProviderProtocolError(
+                f"Provider id {provider_id!r} is not a safe opaque identifier; refusing to request it."
+            )
+        payload = await self._get_json(f"v1/providers/{provider_id}/capabilities", headers)
         if not isinstance(payload, dict):
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} capabilities response was not a JSON object."
@@ -679,40 +1359,140 @@ class HttpCapabilityDiscoverySource:
                 f"Provider {provider_id} reported unexpected canonicalization_version "
                 f"{payload.get('canonicalization_version')!r}."
             )
-        if str(payload.get("provider_id")) != provider_id:
+        # Compared as a *string*, never via ``str()`` coercion: ``str(None)`` is
+        # the literal "None", which would let a null echo satisfy this
+        # cross-check for a provider legitimately named "None".
+        echoed_provider_id = payload.get("provider_id")
+        if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} capabilities response provider_id mismatch: "
-                f"{payload.get('provider_id')!r}."
+                f"{echoed_provider_id!r}."
             )
-        warnings: list[str] = [
-            str(warning.get("message") or warning.get("reason_code") or "unknown discovery warning")
-            for warning in (payload.get("warnings") or [])
-        ]
+        descriptors_payload = payload.get("descriptors")
+        if descriptors_payload is None:
+            descriptors_payload = []
+        if not isinstance(descriptors_payload, list):
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} 'descriptors' was not a JSON array "
+                f"({type(descriptors_payload).__name__})."
+            )
+        if len(descriptors_payload) > self._max_descriptors_per_provider:
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} returned {len(descriptors_payload)} descriptors, exceeding the "
+                f"adapter cap of {self._max_descriptors_per_provider}."
+            )
+        instances_payload = payload.get("instances")
+        if instances_payload is None:
+            instances_payload = []
+        if not isinstance(instances_payload, list):
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} 'instances' was not a JSON array "
+                f"({type(instances_payload).__name__})."
+            )
+        if len(instances_payload) > self._max_instances_per_provider:
+            raise CapabilityProviderProtocolError(
+                f"Provider {provider_id} returned {len(instances_payload)} instances, exceeding the "
+                f"adapter cap of {self._max_instances_per_provider}."
+            )
+        warnings: list[str] = list(
+            _wire_warnings(payload.get("warnings"), source_label=f"Provider {provider_id}")
+        )
         descriptors: list[CapabilityDescriptor] = []
-        for descriptor_payload in payload.get("descriptors") or []:
-            try:
-                descriptors.append(_map_descriptor(descriptor_payload, provider_id=provider_id))
-            except (CapabilityProviderProtocolError, ValidationError, KeyError, ValueError, TypeError) as exc:
-                descriptor_id = (
-                    descriptor_payload.get("descriptor_id") if isinstance(descriptor_payload, dict) else None
+        descriptor_pins: list[ProviderDescriptorPins] = []
+        for position, descriptor_payload in enumerate(descriptors_payload):
+            if not isinstance(descriptor_payload, Mapping):
+                warnings.append(
+                    f"Provider {provider_id} descriptor #{position} was not a JSON object "
+                    f"({type(descriptor_payload).__name__}); skipped."
                 )
+                continue
+            try:
+                descriptor, descriptor_pin = _map_descriptor(
+                    descriptor_payload,
+                    provider_id=provider_id,
+                    max_operations=self._max_operations_per_descriptor,
+                )
+            except (
+                CapabilityProviderProtocolError,
+                ValidationError,
+                KeyError,
+                ValueError,
+                TypeError,
+                AttributeError,
+            ) as exc:
+                descriptor_id = descriptor_payload.get("descriptor_id")
                 warnings.append(
                     f"Provider {provider_id} descriptor {descriptor_id!r} could not be translated "
                     f"and was skipped: {exc}"
                 )
+                continue
+            descriptors.append(descriptor)
+            descriptor_pins.append(descriptor_pin)
         instances: list[CapabilityInstance] = []
-        for instance_payload in payload.get("instances") or []:
-            try:
-                instances.append(
-                    _map_instance(instance_payload, provider_id=provider_id, registered_by=registered_by)
+        instance_pins: list[ProviderInstancePins] = []
+        # Correlate each instance back to its descriptor's verbatim pins so a
+        # provider that ships an instance disagreeing with its own descriptor's
+        # pinned version/digest is caught instead of being silently masked when
+        # the registry later stamps the current descriptor digest. Only
+        # unambiguous ids get a correlation entry: a raw id declared more than
+        # once has no single correct pin, so picking either would reintroduce
+        # arrival-order dependence. Those descriptors are rejected wholesale at
+        # aggregation, and their instances fall out via the
+        # "references descriptor which was not discovered/kept" guard.
+        #
+        # Keyed on the *namespaced* id so the lookup uses values both sides have
+        # already validated, rather than re-reading and ``str()``-coercing the
+        # raw wire field a second time.
+        pin_counts: Counter[str] = Counter(pin.descriptor_backend_id for pin in descriptor_pins)
+        descriptor_pin_by_backend_id = {
+            pin.descriptor_backend_id: pin
+            for pin in descriptor_pins
+            if pin_counts[pin.descriptor_backend_id] == 1
+        }
+        for position, instance_payload in enumerate(instances_payload):
+            if not isinstance(instance_payload, Mapping):
+                warnings.append(
+                    f"Provider {provider_id} instance #{position} was not a JSON object "
+                    f"({type(instance_payload).__name__}); skipped."
                 )
-            except (CapabilityProviderProtocolError, ValidationError, KeyError, ValueError, TypeError) as exc:
-                instance_id = instance_payload.get("instance_id") if isinstance(instance_payload, dict) else None
+                continue
+            try:
+                instance, instance_pin = _map_instance(
+                    instance_payload, provider_id=provider_id, registered_by=registered_by
+                )
+            except (
+                CapabilityProviderProtocolError,
+                ValidationError,
+                KeyError,
+                ValueError,
+                TypeError,
+                AttributeError,
+            ) as exc:
+                instance_id = instance_payload.get("instance_id")
                 warnings.append(
                     f"Provider {provider_id} instance {instance_id!r} could not be translated and "
                     f"was skipped: {exc}"
                 )
-        return tuple(descriptors), tuple(instances), tuple(warnings)
+                continue
+            reference = descriptor_pin_by_backend_id.get(instance.descriptor_id)
+            if reference is not None and (
+                instance_pin.descriptor_digest != reference.descriptor_digest
+                or instance.descriptor_version != reference.descriptor_version
+            ):
+                warnings.append(
+                    f"Provider {provider_id} instance {instance_pin.instance_id!r} disagrees with its "
+                    "descriptor's pinned version/digest; skipped."
+                )
+                continue
+            instances.append(instance)
+            instance_pins.append(instance_pin)
+        return (
+            tuple(descriptors),
+            tuple(descriptor_pins),
+            tuple(instances),
+            tuple(instance_pins),
+            tuple(warnings),
+        )
 
     async def close(self) -> None:
         if self._owns_client:
@@ -741,4 +1521,11 @@ def build_capability_discovery_source(settings: Settings) -> CapabilityDiscovery
         settings.agent_studio_capability_provider_url,
         credential=credential,
         token_scope=settings.agent_studio_capability_provider_token_scope,
+        max_response_bytes=settings.agent_studio_capability_provider_max_response_bytes,
+        max_providers=settings.agent_studio_capability_provider_max_providers,
+        max_descriptors_per_provider=settings.agent_studio_capability_provider_max_descriptors_per_provider,
+        max_instances_per_provider=settings.agent_studio_capability_provider_max_instances_per_provider,
+        max_operations_per_descriptor=settings.agent_studio_capability_provider_max_operations_per_descriptor,
+        max_concurrency=settings.agent_studio_capability_provider_max_concurrency,
+        deadline_seconds=settings.agent_studio_capability_provider_deadline_seconds,
     )

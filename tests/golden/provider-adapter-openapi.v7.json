@@ -1,0 +1,2081 @@
+{
+  "components": {
+    "schemas": {
+      "BindabilityDecisionResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "bindable": {
+            "title": "Bindable",
+            "type": "boolean"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "reason_codes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reason Codes",
+            "type": "array"
+          }
+        },
+        "required": [
+          "operation_id",
+          "bindable",
+          "reason_codes"
+        ],
+        "title": "BindabilityDecisionResponse",
+        "type": "object"
+      },
+      "CapabilityBinding": {
+        "$id": "urn:research-assistant:schema:integration-provider:v7:capability-binding",
+        "additionalProperties": false,
+        "examples": [
+          {
+            "allowed_destination_constraints": [],
+            "allowed_destinations_digest": "7777777777777777777777777777777777777777777777777777777777777777",
+            "binding_id": "binding-001",
+            "canonicalization_version": "research-assistant.canonical-json.v1",
+            "configuration_digest": "4444444444444444444444444444444444444444444444444444444444444444",
+            "configuration_id": "configuration-001",
+            "connection_auth_mode": "oauth",
+            "connection_authorization_digest": "5555555555555555555555555555555555555555555555555555555555555555",
+            "connection_id": "connection-001",
+            "descriptor_digest": "0000000000000000000000000000000000000000000000000000000000000000",
+            "descriptor_id": "provider.capability",
+            "descriptor_version": "1.0.0",
+            "discovered_provider_version": "1.0.0",
+            "discovered_resource_version": "2026-07-23",
+            "input_schema_digest": "1111111111111111111111111111111111111111111111111111111111111111",
+            "instance_fingerprint": "3333333333333333333333333333333333333333333333333333333333333333",
+            "instance_id": "provider.instance",
+            "operation_id": "search",
+            "operation_version": "1.0.0",
+            "output_schema_digest": "2222222222222222222222222222222222222222222222222222222222222222",
+            "policy_digest": "6666666666666666666666666666666666666666666666666666666666666666",
+            "policy_id": "agent-studio",
+            "policy_version": "1.0.0",
+            "project_id": "project",
+            "provider_contract_version": "research-assistant.integration-provider.v7",
+            "provider_id": "provider",
+            "tenant_id": "tenant"
+          }
+        ],
+        "properties": {
+          "allowed_destination_constraints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Destination Constraints",
+            "type": "array"
+          },
+          "allowed_destinations_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Allowed Destinations Digest",
+            "type": "string"
+          },
+          "binding_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Binding Id",
+            "type": "string"
+          },
+          "canonicalization_version": {
+            "const": "research-assistant.canonical-json.v1",
+            "title": "Canonicalization Version",
+            "type": "string"
+          },
+          "configuration_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Configuration Digest",
+            "type": "string"
+          },
+          "configuration_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Configuration Id"
+          },
+          "connection_auth_mode": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Auth Mode"
+          },
+          "connection_authorization_digest": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Authorization Digest"
+          },
+          "connection_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Id"
+          },
+          "descriptor_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Descriptor Digest",
+            "type": "string"
+          },
+          "descriptor_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Descriptor Id",
+            "type": "string"
+          },
+          "descriptor_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Descriptor Version",
+            "type": "string"
+          },
+          "discovered_provider_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Discovered Provider Version",
+            "type": "string"
+          },
+          "discovered_resource_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered Resource Version"
+          },
+          "input_schema_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Schema Digest",
+            "type": "string"
+          },
+          "instance_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Instance Fingerprint",
+            "type": "string"
+          },
+          "instance_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "operation_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Operation Version",
+            "type": "string"
+          },
+          "output_schema_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Output Schema Digest",
+            "type": "string"
+          },
+          "policy_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Policy Digest",
+            "type": "string"
+          },
+          "policy_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Policy Id",
+            "type": "string"
+          },
+          "policy_version": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Policy Version",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider_contract_version": {
+            "const": "research-assistant.integration-provider.v7",
+            "title": "Provider Contract Version",
+            "type": "string"
+          },
+          "provider_id": {
+            "maxLength": 128,
+            "minLength": 1,
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "tenant_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Tenant Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "binding_id",
+          "provider_contract_version",
+          "canonicalization_version",
+          "provider_id",
+          "descriptor_id",
+          "descriptor_version",
+          "descriptor_digest",
+          "operation_id",
+          "operation_version",
+          "instance_id",
+          "tenant_id",
+          "project_id",
+          "discovered_provider_version",
+          "discovered_resource_version",
+          "input_schema_digest",
+          "output_schema_digest",
+          "configuration_id",
+          "configuration_digest",
+          "connection_id",
+          "connection_auth_mode",
+          "connection_authorization_digest",
+          "policy_id",
+          "policy_version",
+          "policy_digest",
+          "allowed_destination_constraints",
+          "allowed_destinations_digest",
+          "instance_fingerprint"
+        ],
+        "title": "CapabilityBinding",
+        "type": "object"
+      },
+      "CapabilityDescriptorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "audit": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Audit",
+            "type": "array"
+          },
+          "auth_modes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Auth Modes",
+            "type": "array"
+          },
+          "descriptor_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Descriptor Digest",
+            "type": "string"
+          },
+          "descriptor_id": {
+            "title": "Descriptor Id",
+            "type": "string"
+          },
+          "descriptor_version": {
+            "title": "Descriptor Version",
+            "type": "string"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "metadata": {
+            "additionalProperties": true,
+            "title": "Metadata",
+            "type": "object"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "observability": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Observability",
+            "type": "array"
+          },
+          "operations": {
+            "items": {
+              "$ref": "#/components/schemas/OperationDescriptorResponse"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
+          "provenance": {
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceResponse"
+            },
+            "title": "Provenance",
+            "type": "array"
+          },
+          "resource_kind": {
+            "title": "Resource Kind",
+            "type": "string"
+          }
+        },
+        "required": [
+          "descriptor_id",
+          "descriptor_version",
+          "descriptor_digest",
+          "family",
+          "resource_kind",
+          "name",
+          "auth_modes",
+          "operations",
+          "provenance",
+          "observability",
+          "audit",
+          "metadata"
+        ],
+        "title": "CapabilityDescriptorResponse",
+        "type": "object"
+      },
+      "CapabilityInstanceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "allowed_destination_constraints": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Allowed Destination Constraints",
+            "type": "array"
+          },
+          "allowed_destinations_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Allowed Destinations Digest",
+            "type": "string"
+          },
+          "auth_mode": {
+            "title": "Auth Mode",
+            "type": "string"
+          },
+          "bindability": {
+            "items": {
+              "$ref": "#/components/schemas/BindabilityDecisionResponse"
+            },
+            "title": "Bindability",
+            "type": "array"
+          },
+          "config_hash": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Config Hash",
+            "type": "string"
+          },
+          "config_validated": {
+            "title": "Config Validated",
+            "type": "boolean"
+          },
+          "configuration": {
+            "additionalProperties": true,
+            "title": "Configuration",
+            "type": "object"
+          },
+          "connection_authorization_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Connection Authorization Digest",
+            "type": "string"
+          },
+          "connection_identity_mode": {
+            "title": "Connection Identity Mode",
+            "type": "string"
+          },
+          "connection_ref": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connection Ref"
+          },
+          "connection_roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connection Roles",
+            "type": "array"
+          },
+          "connection_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Connection Scopes",
+            "type": "array"
+          },
+          "connection_version": {
+            "title": "Connection Version",
+            "type": "string"
+          },
+          "descriptor_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Descriptor Digest",
+            "type": "string"
+          },
+          "descriptor_id": {
+            "title": "Descriptor Id",
+            "type": "string"
+          },
+          "descriptor_version": {
+            "title": "Descriptor Version",
+            "type": "string"
+          },
+          "discovered_provider_version": {
+            "title": "Discovered Provider Version",
+            "type": "string"
+          },
+          "discovered_resource_version": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Discovered Resource Version"
+          },
+          "health": {
+            "title": "Health",
+            "type": "string"
+          },
+          "instance_fingerprint": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Instance Fingerprint",
+            "type": "string"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "last_checked_at": {
+            "title": "Last Checked At",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "project_id": {
+            "title": "Project Id",
+            "type": "string"
+          },
+          "provider_contract_version": {
+            "const": "research-assistant.integration-provider.v7",
+            "title": "Provider Contract Version",
+            "type": "string"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "provider_resource_id": {
+            "title": "Provider Resource Id",
+            "type": "string"
+          },
+          "readiness": {
+            "title": "Readiness",
+            "type": "string"
+          },
+          "status_evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Status Evidence",
+            "type": "array"
+          },
+          "tenant_id": {
+            "title": "Tenant Id",
+            "type": "string"
+          },
+          "unavailable_reason": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Unavailable Reason"
+          }
+        },
+        "required": [
+          "provider_contract_version",
+          "provider_id",
+          "instance_id",
+          "descriptor_id",
+          "descriptor_version",
+          "descriptor_digest",
+          "tenant_id",
+          "project_id",
+          "provider_resource_id",
+          "discovered_provider_version",
+          "discovered_resource_version",
+          "name",
+          "readiness",
+          "health",
+          "last_checked_at",
+          "configuration",
+          "config_hash",
+          "connection_ref",
+          "connection_version",
+          "auth_mode",
+          "connection_identity_mode",
+          "connection_scopes",
+          "connection_roles",
+          "connection_authorization_digest",
+          "instance_fingerprint",
+          "bindability",
+          "config_validated",
+          "allowed_destination_constraints",
+          "allowed_destinations_digest",
+          "status_evidence"
+        ],
+        "title": "CapabilityInstanceResponse",
+        "type": "object"
+      },
+      "DiscoveryResultResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "canonicalization_version": {
+            "const": "research-assistant.canonical-json.v1",
+            "title": "Canonicalization Version",
+            "type": "string"
+          },
+          "descriptors": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityDescriptorResponse"
+            },
+            "title": "Descriptors",
+            "type": "array"
+          },
+          "instances": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityInstanceResponse"
+            },
+            "title": "Instances",
+            "type": "array"
+          },
+          "provider_contract_version": {
+            "const": "research-assistant.integration-provider.v7",
+            "title": "Provider Contract Version",
+            "type": "string"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "refreshed_at": {
+            "title": "Refreshed At",
+            "type": "string"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryWarningResponse"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_contract_version",
+          "canonicalization_version",
+          "provider_id",
+          "descriptors",
+          "instances",
+          "warnings",
+          "refreshed_at"
+        ],
+        "title": "DiscoveryResultResponse",
+        "type": "object"
+      },
+      "DiscoveryWarningResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "reason_code": {
+            "title": "Reason Code",
+            "type": "string"
+          }
+        },
+        "required": [
+          "reason_code",
+          "message",
+          "provider_id"
+        ],
+        "title": "DiscoveryWarningResponse",
+        "type": "object"
+      },
+      "HealthResultResponse": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "binding_id": "binding-001",
+            "evidence": [
+              "validated"
+            ],
+            "instance_id": "provider.instance",
+            "provider_id": "provider",
+            "readiness": "ready"
+          }
+        ],
+        "properties": {
+          "binding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "evidence": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "readiness": {
+            "title": "Readiness",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_id",
+          "instance_id",
+          "binding_id",
+          "readiness",
+          "evidence"
+        ],
+        "title": "HealthResultResponse",
+        "type": "object"
+      },
+      "HttpErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "title": "Detail",
+            "type": "string"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "HttpErrorResponse",
+        "type": "object"
+      },
+      "OperationDescriptorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "approval_policy": {
+            "title": "Approval Policy",
+            "type": "string"
+          },
+          "audit_events": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Audit Events",
+            "type": "array"
+          },
+          "docs": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Docs",
+            "type": "array"
+          },
+          "external_side_effect": {
+            "title": "External Side Effect",
+            "type": "boolean"
+          },
+          "idempotency": {
+            "title": "Idempotency",
+            "type": "string"
+          },
+          "input_schema": {
+            "additionalProperties": true,
+            "title": "Input Schema",
+            "type": "object"
+          },
+          "input_schema_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Input Schema Digest",
+            "type": "string"
+          },
+          "least_privilege_roles": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Least Privilege Roles",
+            "type": "array"
+          },
+          "least_privilege_scopes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Least Privilege Scopes",
+            "type": "array"
+          },
+          "lifecycle": {
+            "title": "Lifecycle",
+            "type": "string"
+          },
+          "maturity": {
+            "title": "Maturity",
+            "type": "string"
+          },
+          "max_retries": {
+            "title": "Max Retries",
+            "type": "integer"
+          },
+          "operation_class": {
+            "title": "Operation Class",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "operation_version": {
+            "title": "Operation Version",
+            "type": "string"
+          },
+          "output_schema": {
+            "additionalProperties": true,
+            "title": "Output Schema",
+            "type": "object"
+          },
+          "output_schema_digest": {
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Output Schema Digest",
+            "type": "string"
+          },
+          "side_effect_destinations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Side Effect Destinations",
+            "type": "array"
+          },
+          "timeout_seconds": {
+            "title": "Timeout Seconds",
+            "type": "number"
+          }
+        },
+        "required": [
+          "operation_id",
+          "operation_version",
+          "input_schema_digest",
+          "output_schema_digest",
+          "maturity",
+          "lifecycle",
+          "input_schema",
+          "output_schema",
+          "operation_class",
+          "approval_policy",
+          "external_side_effect",
+          "side_effect_destinations",
+          "timeout_seconds",
+          "max_retries",
+          "idempotency",
+          "least_privilege_scopes",
+          "least_privilege_roles",
+          "docs",
+          "audit_events"
+        ],
+        "title": "OperationDescriptorResponse",
+        "type": "object"
+      },
+      "ProvenanceResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "last_verified_at": {
+            "title": "Last Verified At",
+            "type": "string"
+          },
+          "official_url": {
+            "title": "Official Url",
+            "type": "string"
+          },
+          "retirement_date": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Retirement Date"
+          },
+          "source_version": {
+            "title": "Source Version",
+            "type": "string"
+          }
+        },
+        "required": [
+          "official_url",
+          "source_version",
+          "last_verified_at"
+        ],
+        "title": "ProvenanceResponse",
+        "type": "object"
+      },
+      "ProviderCatalogResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "canonicalization_version": {
+            "const": "research-assistant.canonical-json.v1",
+            "title": "Canonicalization Version",
+            "type": "string"
+          },
+          "provider_contract_version": {
+            "const": "research-assistant.integration-provider.v7",
+            "title": "Provider Contract Version",
+            "type": "string"
+          },
+          "providers": {
+            "items": {
+              "$ref": "#/components/schemas/ProviderDescriptorResponse"
+            },
+            "title": "Providers",
+            "type": "array"
+          },
+          "warnings": {
+            "items": {
+              "$ref": "#/components/schemas/DiscoveryWarningResponse"
+            },
+            "title": "Warnings",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_contract_version",
+          "canonicalization_version",
+          "providers",
+          "warnings"
+        ],
+        "title": "ProviderCatalogResponse",
+        "type": "object"
+      },
+      "ProviderDescriptorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "auth_modes": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Auth Modes",
+            "type": "array"
+          },
+          "capability_descriptors": {
+            "items": {
+              "$ref": "#/components/schemas/CapabilityDescriptorResponse"
+            },
+            "title": "Capability Descriptors",
+            "type": "array"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "family": {
+            "title": "Family",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "provenance": {
+            "items": {
+              "$ref": "#/components/schemas/ProvenanceResponse"
+            },
+            "title": "Provenance",
+            "type": "array"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "provider_id",
+          "family",
+          "name",
+          "description",
+          "auth_modes",
+          "provenance",
+          "capability_descriptors"
+        ],
+        "title": "ProviderDescriptorResponse",
+        "type": "object"
+      },
+      "ProviderErrorDetailResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "action": {
+            "anyOf": [
+              {
+                "const": "rebind_and_review",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Action"
+          },
+          "changed_categories": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Changed Categories"
+          },
+          "code": {
+            "title": "Code",
+            "type": "string"
+          },
+          "instance_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Instance Id"
+          },
+          "message": {
+            "title": "Message",
+            "type": "string"
+          },
+          "new_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "New Fingerprint"
+          },
+          "old_fingerprint": {
+            "anyOf": [
+              {
+                "pattern": "^[0-9a-f]{64}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Old Fingerprint"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "code",
+          "message",
+          "provider_id",
+          "instance_id"
+        ],
+        "title": "ProviderErrorDetailResponse",
+        "type": "object"
+      },
+      "ProviderErrorEnvelopeResponse": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "error": {
+              "code": "validation",
+              "instance_id": "provider.instance",
+              "message": "The provider request is invalid.",
+              "provider_id": "provider"
+            }
+          }
+        ],
+        "properties": {
+          "error": {
+            "$ref": "#/components/schemas/ProviderErrorDetailResponse"
+          }
+        },
+        "required": [
+          "error"
+        ],
+        "title": "ProviderErrorEnvelopeResponse",
+        "type": "object"
+      },
+      "ProviderInvokePayload": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "arguments": {
+              "query": "governed research"
+            },
+            "idempotency_key": "request-001",
+            "instance_id": "provider.instance",
+            "operation_id": "search"
+          }
+        ],
+        "properties": {
+          "arguments": {
+            "additionalProperties": true,
+            "title": "Arguments",
+            "type": "object"
+          },
+          "binding_id": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "idempotency_key": {
+            "anyOf": [
+              {
+                "maxLength": 256,
+                "minLength": 1,
+                "pattern": "^[!-~]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Idempotency Key"
+          },
+          "instance_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Operation Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "instance_id",
+          "operation_id"
+        ],
+        "title": "ProviderInvokePayload",
+        "type": "object"
+      },
+      "ProviderInvokeResultResponse": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "audit_metadata": {
+              "correlation_id": "correlation-001"
+            },
+            "instance_id": "provider.instance",
+            "operation_id": "search",
+            "output": {
+              "items": []
+            },
+            "provider_id": "provider",
+            "status_code": 200
+          }
+        ],
+        "properties": {
+          "audit_metadata": {
+            "additionalProperties": true,
+            "title": "Audit Metadata",
+            "type": "object"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "operation_id": {
+            "title": "Operation Id",
+            "type": "string"
+          },
+          "output": {
+            "additionalProperties": true,
+            "title": "Output",
+            "type": "object"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "status_code": {
+            "title": "Status Code",
+            "type": "integer"
+          }
+        },
+        "required": [
+          "provider_id",
+          "instance_id",
+          "operation_id",
+          "status_code",
+          "output",
+          "audit_metadata"
+        ],
+        "title": "ProviderInvokeResultResponse",
+        "type": "object"
+      },
+      "RequestValidationErrorResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "detail": {
+            "items": {
+              "$ref": "#/components/schemas/RequestValidationIssueResponse"
+            },
+            "title": "Detail",
+            "type": "array"
+          }
+        },
+        "required": [
+          "detail"
+        ],
+        "title": "RequestValidationErrorResponse",
+        "type": "object"
+      },
+      "RequestValidationIssueResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "ctx": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Ctx"
+          },
+          "input": {
+            "anyOf": [
+              {},
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Input"
+          },
+          "loc": {
+            "items": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "integer"
+                }
+              ]
+            },
+            "title": "Loc",
+            "type": "array"
+          },
+          "msg": {
+            "title": "Msg",
+            "type": "string"
+          },
+          "type": {
+            "title": "Type",
+            "type": "string"
+          }
+        },
+        "required": [
+          "type",
+          "loc",
+          "msg"
+        ],
+        "title": "RequestValidationIssueResponse",
+        "type": "object"
+      },
+      "ValidationResultResponse": {
+        "additionalProperties": false,
+        "examples": [
+          {
+            "binding_id": "binding-001",
+            "instance_id": "provider.instance",
+            "provider_id": "provider",
+            "readiness": "ready",
+            "reasons": []
+          }
+        ],
+        "properties": {
+          "binding_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Binding Id"
+          },
+          "instance_id": {
+            "title": "Instance Id",
+            "type": "string"
+          },
+          "provider_id": {
+            "title": "Provider Id",
+            "type": "string"
+          },
+          "readiness": {
+            "title": "Readiness",
+            "type": "string"
+          },
+          "reasons": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Reasons",
+            "type": "array"
+          }
+        },
+        "required": [
+          "provider_id",
+          "instance_id",
+          "binding_id",
+          "readiness",
+          "reasons"
+        ],
+        "title": "ValidationResultResponse",
+        "type": "object"
+      }
+    }
+  },
+  "info": {
+    "description": "Governed discovery, health, validation, and invocation for Agent Studio providers.",
+    "title": "Research Assistant Integration Provider API",
+    "version": "research-assistant.integration-provider.v7"
+  },
+  "openapi": "3.1.0",
+  "paths": {
+    "/v1/providers": {
+      "get": {
+        "operationId": "listIntegrationProviders",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderCatalogResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider authorization failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider policy or consent denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpErrorResponse"
+                }
+              }
+            },
+            "description": "Provider was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Capability binding is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Listintegrationproviders"
+                }
+              }
+            },
+            "description": "Provider or request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider rate limit exceeded"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider upstream failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HttpErrorResponse"
+                    }
+                  ],
+                  "title": "Response 503 Listintegrationproviders"
+                }
+              }
+            },
+            "description": "Provider runtime is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider invocation timed out"
+          }
+        },
+        "summary": "List Providers",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}/capabilities": {
+      "get": {
+        "operationId": "discoverIntegrationCapabilities",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/DiscoveryResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider authorization failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider policy or consent denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpErrorResponse"
+                }
+              }
+            },
+            "description": "Provider was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Capability binding is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Discoverintegrationcapabilities"
+                }
+              }
+            },
+            "description": "Provider or request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider rate limit exceeded"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider upstream failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HttpErrorResponse"
+                    }
+                  ],
+                  "title": "Response 503 Discoverintegrationcapabilities"
+                }
+              }
+            },
+            "description": "Provider runtime is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider invocation timed out"
+          }
+        },
+        "summary": "Discover Capabilities",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}/instances/{instance_id}/health": {
+      "get": {
+        "operationId": "healthIntegrationCapabilityInstance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "instance_id",
+            "required": true,
+            "schema": {
+              "title": "Instance Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HealthResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider authorization failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider policy or consent denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpErrorResponse"
+                }
+              }
+            },
+            "description": "Provider was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Capability binding is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Healthintegrationcapabilityinstance"
+                }
+              }
+            },
+            "description": "Provider or request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider rate limit exceeded"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider upstream failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HttpErrorResponse"
+                    }
+                  ],
+                  "title": "Response 503 Healthintegrationcapabilityinstance"
+                }
+              }
+            },
+            "description": "Provider runtime is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider invocation timed out"
+          }
+        },
+        "summary": "Provider Health",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}/instances/{instance_id}/validation": {
+      "get": {
+        "operationId": "validateIntegrationCapabilityInstance",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "instance_id",
+            "required": true,
+            "schema": {
+              "title": "Instance Id",
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "binding_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Binding Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ValidationResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider authorization failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider policy or consent denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpErrorResponse"
+                }
+              }
+            },
+            "description": "Provider was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Capability binding is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Validateintegrationcapabilityinstance"
+                }
+              }
+            },
+            "description": "Provider or request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider rate limit exceeded"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider upstream failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HttpErrorResponse"
+                    }
+                  ],
+                  "title": "Response 503 Validateintegrationcapabilityinstance"
+                }
+              }
+            },
+            "description": "Provider runtime is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider invocation timed out"
+          }
+        },
+        "summary": "Validate Provider",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    },
+    "/v1/providers/{provider_id}/invoke": {
+      "post": {
+        "operationId": "invokeIntegrationCapability",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "provider_id",
+            "required": true,
+            "schema": {
+              "title": "Provider Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ProviderInvokePayload"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderInvokeResultResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider authorization failed"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider policy or consent denied"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HttpErrorResponse"
+                }
+              }
+            },
+            "description": "Provider was not found"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Capability binding is stale"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/RequestValidationErrorResponse"
+                    }
+                  ],
+                  "title": "Response 422 Invokeintegrationcapability"
+                }
+              }
+            },
+            "description": "Provider or request validation failed"
+          },
+          "429": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider rate limit exceeded"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider upstream failed"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "anyOf": [
+                    {
+                      "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                    },
+                    {
+                      "$ref": "#/components/schemas/HttpErrorResponse"
+                    }
+                  ],
+                  "title": "Response 503 Invokeintegrationcapability"
+                }
+              }
+            },
+            "description": "Provider runtime is unavailable"
+          },
+          "504": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProviderErrorEnvelopeResponse"
+                }
+              }
+            },
+            "description": "Provider invocation timed out"
+          }
+        },
+        "summary": "Invoke Provider",
+        "tags": [
+          "integration providers"
+        ]
+      }
+    }
+  }
+}
