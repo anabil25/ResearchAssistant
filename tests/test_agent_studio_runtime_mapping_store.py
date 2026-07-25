@@ -22,6 +22,7 @@ from research_assistant_api.agent_studio.runtime_mapping_store import (
     InMemoryRuntimeDeploymentMappingStore,
     RuntimeDeploymentHead,
     RuntimeHeadClaimError,
+    RuntimeHeadClaimState,
     RuntimeHeadPreconditionError,
     RuntimeMappingConflictError,
 )
@@ -144,7 +145,10 @@ def test_bootstrap_then_get_round_trips_and_sets_head() -> None:
     assert head.bound_client_app_id == "client-app-1"  # deployment->one-client claim set
 
 
-# --- InMemory: bound-client claim + clear_head_claim -----------------------
+# --- InMemory: bound-client claim + finalize + clear_head_claim ------------
+
+CLAIMING = RuntimeHeadClaimState.CLAIMING
+BOUND = RuntimeHeadClaimState.BOUND
 
 
 def test_commit_refuses_a_different_client_claim() -> None:
@@ -156,12 +160,43 @@ def test_commit_refuses_a_different_client_claim() -> None:
         )
 
 
+def test_commit_starts_claiming_and_finalize_moves_to_bound() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id == "c1" and head.claim_state is CLAIMING
+    store.finalize_head_claim("dep-1", expected_client="c1")
+    head = store.get_head("dep-1")
+    assert head is not None and head.claim_state is BOUND
+    store.finalize_head_claim("dep-1", expected_client="c1")  # idempotent
+
+
+def test_finalize_wrong_state_or_client_is_refused() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    with pytest.raises(RuntimeHeadClaimError):
+        store.finalize_head_claim("missing", expected_client="c1")  # no head
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError):
+        store.finalize_head_claim("dep-1", expected_client="other")  # wrong client
+
+
+def test_same_client_supersede_keeps_bound_no_reclaiming() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    store.finalize_head_claim("dep-1", expected_client="c1")
+    store.commit_revision(
+        _mapping(revision_sequence=2, client_app_id="c1", backend_version="2.0.0"), expected_head_sequence=1
+    )
+    head = store.get_head("dep-1")
+    assert head is not None and head.claim_state is BOUND  # stays BOUND, no re-claim
+
+
 def test_clear_head_claim_then_new_client_may_claim() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
-    store.clear_head_claim("dep-1", expected_client="c1")
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
     head = store.get_head("dep-1")
-    assert head is not None and head.bound_client_app_id is None
+    assert head is not None and head.bound_client_app_id is None and head.claim_state is None
     # A new client can now claim it (migration).
     store.commit_revision(
         _mapping(revision_sequence=2, client_app_id="c2", backend_version="9.9.9"), expected_head_sequence=1
@@ -172,17 +207,19 @@ def test_clear_head_claim_then_new_client_may_claim() -> None:
 
 def test_clear_head_claim_is_idempotent_when_absent_or_already_null() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
-    store.clear_head_claim("missing", expected_client="c1")  # no head -> no-op
+    store.clear_head_claim("missing", expected_client="c1", expected_state=CLAIMING)  # no head -> no-op
     store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
-    store.clear_head_claim("dep-1", expected_client="c1")
-    store.clear_head_claim("dep-1", expected_client="c1")  # already null -> no-op
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)  # already null -> no-op
 
 
-def test_clear_head_claim_wrong_client_is_refused() -> None:
+def test_clear_head_claim_wrong_client_or_state_is_refused() -> None:
     store = InMemoryRuntimeDeploymentMappingStore()
     store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
-    with pytest.raises(RuntimeHeadClaimError, match="held by 'c1'"):
-        store.clear_head_claim("dep-1", expected_client="other")
+    with pytest.raises(RuntimeHeadClaimError):
+        store.clear_head_claim("dep-1", expected_client="other", expected_state=CLAIMING)  # wrong client
+    with pytest.raises(RuntimeHeadClaimError):
+        store.clear_head_claim("dep-1", expected_client="c1", expected_state=BOUND)  # wrong state (is CLAIMING)
 
 
 def test_get_with_wrong_sequence_is_none() -> None:
@@ -401,7 +438,7 @@ def test_cosmos_commit_refuses_a_different_client_claim() -> None:
 def test_cosmos_clear_head_claim_then_new_client_may_claim() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
     store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
-    store.clear_head_claim("dep-1", expected_client="c1")
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
     head = store.get_head("dep-1")
     assert head is not None and head.bound_client_app_id is None
     store.commit_revision(
@@ -411,14 +448,32 @@ def test_cosmos_clear_head_claim_then_new_client_may_claim() -> None:
     assert head is not None and head.bound_client_app_id == "c2"
 
 
+def test_cosmos_finalize_then_clear_bound() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    store.finalize_head_claim("dep-1", expected_client="c1")
+    head = store.get_head("dep-1")
+    assert head is not None and head.claim_state is BOUND
+    store.finalize_head_claim("dep-1", expected_client="c1")  # idempotent
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=BOUND)
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id is None
+
+
+def test_cosmos_finalize_wrong_state_is_refused() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    with pytest.raises(RuntimeHeadClaimError):
+        store.finalize_head_claim("missing", expected_client="c1")
+
+
 def test_cosmos_clear_head_claim_idempotent_and_wrong_client() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
-    store.clear_head_claim("missing", expected_client="c1")  # no head -> no-op
+    store.clear_head_claim("missing", expected_client="c1", expected_state=CLAIMING)  # no head -> no-op
     store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
-    with pytest.raises(RuntimeHeadClaimError, match="held by 'c1'"):
-        store.clear_head_claim("dep-1", expected_client="other")
-    store.clear_head_claim("dep-1", expected_client="c1")
-    store.clear_head_claim("dep-1", expected_client="c1")  # already null -> no-op
+    with pytest.raises(RuntimeHeadClaimError):
+        store.clear_head_claim("dep-1", expected_client="other", expected_state=CLAIMING)
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
+    store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)  # already null -> no-op
 
 
 def test_cosmos_clear_head_claim_concurrent_modification_is_claim_error() -> None:
@@ -430,7 +485,7 @@ def test_cosmos_clear_head_claim_concurrent_modification_is_claim_error() -> Non
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
     with pytest.raises(RuntimeHeadClaimError, match="modified concurrently"):
-        store.clear_head_claim("dep-1", expected_client="c1")
+        store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
 
 
 def test_cosmos_clear_head_claim_reraises_unexpected_error() -> None:
@@ -442,7 +497,7 @@ def test_cosmos_clear_head_claim_reraises_unexpected_error() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
     store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
     with pytest.raises(CosmosHttpResponseError):
-        store.clear_head_claim("dep-1", expected_client="c1")
+        store.clear_head_claim("dep-1", expected_client="c1", expected_state=CLAIMING)
 
 
 def test_cosmos_bootstrap_then_get_and_head() -> None:

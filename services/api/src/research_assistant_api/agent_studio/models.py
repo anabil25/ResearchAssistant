@@ -2407,6 +2407,7 @@ class AuditEventKind(StrEnum):
     RUNTIME_BINDING_REPOINTED = "runtime_binding_repointed"
     RUNTIME_BINDING_REVOKED = "runtime_binding_revoked"
     RUNTIME_BINDING_REINSTATED = "runtime_binding_reinstated"
+    RUNTIME_HEAD_CLAIM_RECLAIMED = "runtime_head_claim_reclaimed"
 
 
 class AuditEvent(BaseModel):

@@ -25,6 +25,7 @@ from research_assistant_api.agent_studio.runtime_deployment_producer import (
     _MAX_SUCCESSION_ATTEMPTS,
     BijectiveCardinalityError,
     BindingLeadsHeadError,
+    GrantReclaimedError,
     RevisionStillReferencedError,
     RollbackRepointError,
     RuntimeDeploymentProducer,
@@ -36,6 +37,8 @@ from research_assistant_api.agent_studio.runtime_mapping_store import (
     InMemoryRuntimeDeploymentMappingStore,
     RuntimeDeploymentHead,
     RuntimeDeploymentMappingReader,
+    RuntimeHeadClaimError,
+    RuntimeHeadClaimState,
     RuntimeHeadPreconditionError,
 )
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -454,8 +457,13 @@ class _ContendedControlPlane:
     def delete(self, deployment_id: str, revision_sequence: int) -> None:
         self._inner.delete(deployment_id, revision_sequence)
 
-    def clear_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
-        self._inner.clear_head_claim(deployment_id, expected_client=expected_client)
+    def clear_head_claim(
+        self, deployment_id: str, *, expected_client: str, expected_state: RuntimeHeadClaimState
+    ) -> None:
+        self._inner.clear_head_claim(deployment_id, expected_client=expected_client, expected_state=expected_state)
+
+    def finalize_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+        self._inner.finalize_head_claim(deployment_id, expected_client=expected_client)
 
     def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
         if self._fail > 0:
@@ -758,7 +766,7 @@ def test_reconcile_clears_a_dangling_grant_claim() -> None:
         producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
     claimed = store.get_head("dep-1")
     assert claimed is not None and claimed.bound_client_app_id == CLIENT  # claimed, binding never landed
-    assert producer.reconcile_dangling_head_claim("dep-1") is True
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is True
     cleared = store.get_head("dep-1")
     assert cleared is not None and cleared.bound_client_app_id is None
 
@@ -773,7 +781,7 @@ def test_reconcile_clears_a_half_finished_revoke() -> None:
     index.repoint(CLIENT, "dep-1", 1, mapping.revision_id, RuntimeBindingStatus.REVOKED, expected_current_sequence=1)
     claimed = store.get_head("dep-1")
     assert claimed is not None and claimed.bound_client_app_id == CLIENT
-    assert producer.reconcile_dangling_head_claim("dep-1") is True
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is True
     cleared = store.get_head("dep-1")
     assert cleared is not None and cleared.bound_client_app_id is None
 
@@ -781,14 +789,123 @@ def test_reconcile_clears_a_half_finished_revoke() -> None:
 def test_reconcile_never_frees_a_legitimately_held_claim() -> None:
     producer, store, _index, _audit = _producer()
     producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
-    assert producer.reconcile_dangling_head_claim("dep-1") is False  # active binding -> do not free
+    # Active binding -> never freed.
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is False
     head = store.get_head("dep-1")
     assert head is not None and head.bound_client_app_id == CLIENT
 
 
 def test_reconcile_is_a_noop_without_head_or_claim() -> None:
     producer, _store, _index, _audit = _producer()
-    assert producer.reconcile_dangling_head_claim("dep-unknown") is False  # no head
+    assert producer.reconcile_dangling_head_claim("dep-unknown", actor_id=ACTOR, now=NOW) is False  # no head
     producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
     producer.revoke(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
-    assert producer.reconcile_dangling_head_claim("dep-1") is False  # claim already cleared
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is False  # claim already cleared
+
+
+# --- two-phase claim: finalize, rollback, reap serialization ---------------
+
+
+def test_grant_finalizes_head_to_bound() -> None:
+    producer, store, _index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    head = store.get_head("dep-1")
+    assert head is not None and head.claim_state is RuntimeHeadClaimState.BOUND
+
+
+class _ControlPlaneWrapper:
+    """Delegating control-plane wrapper; subclasses override one method to inject a fault."""
+
+    def __init__(self, inner: InMemoryRuntimeDeploymentMappingStore) -> None:
+        self._inner = inner
+
+    @property
+    def reader(self) -> RuntimeDeploymentMappingReader:
+        return self._inner.reader
+
+    def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
+        return self._inner.get_head(deployment_id)
+
+    def list_revisions(self, deployment_id: str) -> tuple[int, ...]:
+        return self._inner.list_revisions(deployment_id)
+
+    def delete(self, deployment_id: str, revision_sequence: int) -> None:
+        self._inner.delete(deployment_id, revision_sequence)
+
+    def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
+        self._inner.commit_revision(mapping, expected_head_sequence=expected_head_sequence)
+
+    def clear_head_claim(
+        self, deployment_id: str, *, expected_client: str, expected_state: RuntimeHeadClaimState
+    ) -> None:
+        self._inner.clear_head_claim(deployment_id, expected_client=expected_client, expected_state=expected_state)
+
+    def finalize_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+        self._inner.finalize_head_claim(deployment_id, expected_client=expected_client)
+
+
+def test_grant_reclaimed_rolls_back_its_binding() -> None:
+    # If finalize (the third write) loses the claim, the grant tombstones the
+    # binding it created and fails closed -- never an ACTIVE binding without BOUND.
+    class _FinalizeReaped(_ControlPlaneWrapper):
+        def finalize_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+            raise RuntimeHeadClaimError("claim was reaped before finalize")
+
+    inner = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    producer = RuntimeDeploymentProducer(_FinalizeReaped(inner), index, index, AuditService(InMemoryAuditStore()))
+    with pytest.raises(GrantReclaimedError):
+        producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.status is RuntimeBindingStatus.REVOKED  # rolled back
+
+
+def test_reconcile_returns_false_when_clear_loses_the_cas() -> None:
+    # A concurrently FINALIZING grant changes the claim phase, so the reaper's
+    # state-CAS clear fails and it does NOT reap (defect 1 closed through the reap).
+    class _ClearReaped(_ControlPlaneWrapper):
+        def clear_head_claim(
+            self, deployment_id: str, *, expected_client: str, expected_state: RuntimeHeadClaimState
+        ) -> None:
+            raise RuntimeHeadClaimError("a concurrent finalize moved the claim")
+
+    inner = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    mapping = _mapping(revision_sequence=1, client_app_id=CLIENT)
+    RuntimeDeploymentProducer(inner, index, index, AuditService(InMemoryAuditStore())).grant(
+        mapping, actor_id=ACTOR, now=NOW
+    )
+    index.repoint(CLIENT, "dep-1", 1, mapping.revision_id, RuntimeBindingStatus.REVOKED, expected_current_sequence=1)
+    producer = RuntimeDeploymentProducer(_ClearReaped(inner), index, index, AuditService(InMemoryAuditStore()))
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is False
+
+
+def test_reconcile_raises_when_head_points_at_missing_revision() -> None:
+    producer, store, index, _audit = _producer()
+    mapping = _mapping(revision_sequence=1, client_app_id=CLIENT)
+    producer.grant(mapping, actor_id=ACTOR, now=NOW)
+    index.repoint(CLIENT, "dep-1", 1, mapping.revision_id, RuntimeBindingStatus.REVOKED, expected_current_sequence=1)
+    store.delete("dep-1", 1)  # head still claims, but the revision is gone
+    with pytest.raises(RuntimeDeploymentProducerError, match="missing revision"):
+        producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW)
+
+
+def test_revoke_twice_skips_the_head_clear_the_second_time() -> None:
+    producer, store, _index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    producer.revoke(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)  # clears head
+    producer.revoke(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)  # head already null
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id is None
+
+
+def test_reconcile_records_an_audit_intent_and_applied() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    index = InMemoryClientDeploymentBindingIndex()
+    audit_store = InMemoryAuditStore()
+    producer = RuntimeDeploymentProducer(store, _FlakyWriter(index, 999), index, AuditService(audit_store))
+    with pytest.raises(BindingPreconditionError):
+        producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    assert producer.reconcile_dangling_head_claim("dep-1", actor_id=ACTOR, now=NOW) is True
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_HEAD_CLAIM_RECLAIMED, "intent")) == 1
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_HEAD_CLAIM_RECLAIMED, "applied")) == 1

@@ -49,10 +49,26 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_mapping_store import (
+    RuntimeDeploymentHead,
     RuntimeDeploymentMappingControlPlane,
     RuntimeHeadClaimError,
+    RuntimeHeadClaimState,
     RuntimeHeadPreconditionError,
 )
+
+
+def _is_fresh_claim(head: RuntimeDeploymentHead | None) -> bool:
+    """Whether a grant against ``head`` is a FRESH claim needing a finalize step.
+
+    Fresh = no head, or an unclaimed head, or a head still ``CLAIMING`` (a prior
+    grant that never finalized, now retried). A same-client ``BOUND`` head is a
+    supersede -- already bound, no finalize.
+    """
+    return (
+        head is None
+        or head.bound_client_app_id is None
+        or head.claim_state is RuntimeHeadClaimState.CLAIMING
+    )
 
 #: Bounded CAS retry budget for a repoint racing a concurrent control-plane
 #: write. Each retry RE-READS the current pointer (never a blind retry).
@@ -131,6 +147,16 @@ class BijectiveCardinalityError(RuntimeDeploymentProducerError):
     """
 
 
+class GrantReclaimedError(RuntimeDeploymentProducerError):
+    """Raised when a grant's finalize (CLAIMING -> BOUND) lost the head claim.
+
+    A reconciler reaped the dangling claim, or a competing grant won, while this
+    grant was creating its binding. The grant's binding is ROLLED BACK (tombstoned)
+    before this is raised, so an ACTIVE binding is never left without a BOUND head
+    (the two-active-binding fail-open). The caller may re-drive the grant.
+    """
+
+
 class RuntimeBindingAuditRecorder(Protocol):
     """The subset of ``AuditService`` the producer needs to append binding events."""
 
@@ -183,6 +209,7 @@ class RuntimeDeploymentProducer:
         now = _require_aware_utc_now(now)
         self._sole_client(mapping)  # bijective: exactly one authorized client
         head = self._mapping_store.get_head(mapping.deployment_id)
+        needs_finalize = _is_fresh_claim(head)
         if head is None:
             if mapping.revision_sequence != 1:
                 raise RollbackRepointError(
@@ -206,7 +233,12 @@ class RuntimeDeploymentProducer:
                     f"{head.current_sequence}, got {mapping.revision_sequence}."
                 )
             self._commit_revision(mapping, expected_head_sequence=head.current_sequence)
+        # GRANT = commit (head CLAIMING + revision, atomic) -> binding create ->
+        # finalize head CLAIMING -> BOUND. The THIRD write makes grant completion
+        # visible on the head; a same-client supersede is already BOUND and skips it.
         self._repoint_all_active(mapping, actor_id=actor_id, now=now)
+        if needs_finalize:
+            self._finalize_or_rollback(mapping, actor_id=actor_id, now=now)
         return mapping
 
     def grant_succession(
@@ -246,6 +278,7 @@ class RuntimeDeploymentProducer:
                     f"got '{mapping.deployment_id}' at {mapping.revision_sequence}."
                 )
             self._sole_client(mapping)  # bijective: exactly one authorized client
+            needs_finalize = _is_fresh_claim(head)
             try:
                 self._commit_revision(
                     mapping, expected_head_sequence=None if head is None else head.current_sequence
@@ -255,6 +288,8 @@ class RuntimeDeploymentProducer:
                 # rebuild at the new next, retry -- never a blind or non-atomic retry.
                 continue
             self._repoint_all_active(mapping, actor_id=actor_id, now=now)
+            if needs_finalize:
+                self._finalize_or_rollback(mapping, actor_id=actor_id, now=now)
             return mapping
         raise SuccessionExhaustedError(
             f"succession for '{deployment_id}' did not converge within {_MAX_SUCCESSION_ATTEMPTS} attempts."
@@ -274,6 +309,27 @@ class RuntimeDeploymentProducer:
             self._mapping_store.commit_revision(mapping, expected_head_sequence=expected_head_sequence)
         except RuntimeHeadClaimError as exc:
             raise BijectiveCardinalityError(str(exc)) from exc
+
+    def _finalize_or_rollback(self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime) -> None:
+        """The THIRD grant write: finalize the head CLAIMING -> BOUND, or ROLL BACK.
+
+        If the finalize CAS fails, this grant LOST its claim while creating its
+        binding -- a reconciler reaped the dangling claim, or a competing grant
+        won. We must not leave an ACTIVE binding without a BOUND head (that is the
+        two-active-binding fail-open), so we ROLL BACK by tombstoning the binding we
+        just created, then fail closed with ``GrantReclaimedError``. Finalize vs
+        reap are mutually exclusive: whichever moves the head first wins, and the
+        loser cleans up.
+        """
+        client = self._sole_client(mapping)
+        try:
+            self._mapping_store.finalize_head_claim(mapping.deployment_id, expected_client=client)
+        except RuntimeHeadClaimError as exc:
+            self._cas_repoint(client, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
+            raise GrantReclaimedError(
+                f"grant for '{mapping.deployment_id}' lost its head claim before finalizing "
+                "(reaped or superseded); its binding was rolled back."
+            ) from exc
 
     @staticmethod
     def _sole_client(mapping: RuntimeDeploymentMapping) -> str:
@@ -391,28 +447,86 @@ class RuntimeDeploymentProducer:
         now = _require_aware_utc_now(now)
         client = self._sole_client(mapping)
         self._cas_repoint(client, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
-        self._mapping_store.clear_head_claim(mapping.deployment_id, expected_client=client)
+        head = self._mapping_store.get_head(mapping.deployment_id)
+        if head is not None and head.bound_client_app_id == client and head.claim_state is not None:
+            self._mapping_store.clear_head_claim(
+                mapping.deployment_id, expected_client=client, expected_state=head.claim_state
+            )
 
-    def reconcile_dangling_head_claim(self, deployment_id: str) -> bool:
-        """Clear a DANGLING head claim (crashed grant, or half-finished revoke).
+    def reconcile_dangling_head_claim(self, deployment_id: str, *, actor_id: str, now: datetime) -> bool:
+        """Clear a DANGLING head claim -- an EXPLICIT, AUDITED control-plane action.
 
-        A claim is dangling when the head names a ``bound_client_app_id`` but that
-        client has NO ACTIVE binding to the deployment -- either a GRANT that
-        claimed the head then failed before creating the binding, or a REVOKE that
-        tombstoned the binding then crashed before clearing the head. Clearing it
-        makes the deployment grantable again. It clears ONLY when there is no
-        ACTIVE binding for the claimed client (verified FIRST), so reconciliation
-        can never free a head that is legitimately held. Returns whether it cleared.
+        A claim is dangling when the head names a client (``CLAIMING`` or ``BOUND``)
+        but that client has NO ACTIVE binding: either a GRANT that claimed the head
+        (CLAIMING) then failed before its binding landed, or a REVOKE that
+        tombstoned the binding (BOUND) then crashed before clearing the head. Two
+        guards keep this from reintroducing a fail-open through the REPAIR path:
+
+        * STATUS-AWARE (defect 2): clear only when the binding is ABSENT OR NOT
+          ACTIVE -- never when it is ACTIVE (a tombstone is still a row, so a mere
+          existence check would DEADLOCK a half-finished revoke forever).
+        * STATE-CAS (defect 1): clear with a CAS on the exact claim PHASE observed.
+          A concurrently FINALIZING grant (CLAIMING -> BOUND) changes the phase, so
+          the reap CAS fails and we do NOT reap an in-flight grant; if the reap wins
+          instead, the grant's finalize fails and IT rolls back. Exactly one wins.
+
+        Reaping an authority claim is the same category as revocation, so it is
+        EXPLICIT and AUDITED (its own intent/applied record). Returns whether it
+        cleared.
         """
+        now = _require_aware_utc_now(now)
         head = self._mapping_store.get_head(deployment_id)
-        if head is None or head.bound_client_app_id is None:
+        if head is None or head.bound_client_app_id is None or head.claim_state is None:
             return False
         claimed = head.bound_client_app_id
+        state = head.claim_state
         binding = self._binding_resolver.resolve_binding(claimed, deployment_id)
         if binding is not None and binding.status is RuntimeBindingStatus.ACTIVE:
             return False  # legitimately held -- never free an active claim
-        self._mapping_store.clear_head_claim(deployment_id, expected_client=claimed)
+        current = self._mapping_store.reader.get(deployment_id, head.current_sequence)
+        if current is None:
+            raise RuntimeDeploymentProducerError(
+                f"cannot reconcile '{deployment_id}': head points at missing revision {head.current_sequence}."
+            )
+        intent_id = uuid4().hex
+        self._record_head_reclaim(current, claimed, state, intent_id=intent_id, actor_id=actor_id, now=now,
+                                  phase="intent")
+        try:
+            self._mapping_store.clear_head_claim(deployment_id, expected_client=claimed, expected_state=state)
+        except RuntimeHeadClaimError:
+            return False  # a concurrent grant finalized/changed the claim -- do not reap
+        self._record_head_reclaim(current, claimed, state, intent_id=intent_id, actor_id=actor_id, now=now,
+                                  phase="applied")
         return True
+
+    def _record_head_reclaim(
+        self,
+        mapping: RuntimeDeploymentMapping,
+        claimed_client: str,
+        state: RuntimeHeadClaimState,
+        *,
+        intent_id: str,
+        actor_id: str,
+        now: datetime,
+        phase: str,
+    ) -> None:
+        self._audit.record(
+            tenant_id=mapping.tenant_id,
+            project_id=mapping.project_id,
+            kind=AuditEventKind.RUNTIME_HEAD_CLAIM_RECLAIMED,
+            actor_id=actor_id,
+            subject_id=f"{claimed_client}:{mapping.deployment_id}",
+            logical_agent_id=mapping.logical_agent_id,
+            detail={
+                "phase": phase,
+                "intent_id": intent_id,
+                "deployment_id": mapping.deployment_id,
+                "reclaimed_client": claimed_client,
+                "claim_state": state.value,
+                "actor_id": actor_id,
+                "instant": now.isoformat(),
+            },
+        )
 
     def reinstate(
         self, deployment_id: str, client_app_ids: tuple[str, ...], *, actor_id: str, now: datetime
