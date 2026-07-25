@@ -64,11 +64,25 @@ Those three are now merged (`8aedbc0`), with the missing `formatTime` /
 typecheck before that commit.
 
 **Supersession is now established the right way: by file set, at every branch.**
-Twelve branches carry **zero** files `main` lacks, and on the shared files they
-differ over, `main`'s versions are newer and larger (e.g.
+**Re-measured at `7ee1b97`: 15 branches carry unmerged commits; 14 of them add
+zero files `main` lacks.** The sole exception is `fix-release-source-identity`
+with 4 files (`agents/shared/source_manifest.py`, `agents/source_manifest.json`,
+`scripts/build_source_manifest.py`, `tests/test_source_manifest.py`) — excluded by
+adjudication, not oversight, and its author concurred. On the shared files they
+differ over,
+`main`'s versions are newer and larger (e.g.
 `verify-playwright-runtime-coverage.mjs` 310 lines vs 244;
 `run-e2e-coverage-gate.mjs` 242 vs 119) — and
 `policy-gated-external-link.test.tsx` is byte-identical.
+
+> **Measurement note, because the wrong query gives an alarming answer.**
+> `git diff --diff-filter=A main...<branch>` compares **merge-base → branch**, so a
+> file added on *both* sides is still reported as added by the branch. Run that way
+> the branches appear to hold **37** files `main` lacks. Testing actual membership
+> (`git ls-files`) gives **4**. The 33-file gap is entirely files both lines wrote
+> independently. **Ask "is this file in `main`?", not "did this branch add it?"** —
+> and note the error ran in the alarming direction, in the final accounting, after
+> that asymmetry had already been recorded in §7.
 
 Superseded: `canonical-selective-port`, `playwright-state-coverage-truth`,
 `review-canonical-5562b391`, `cover-workflow-states`, `close-web-coverage`,
