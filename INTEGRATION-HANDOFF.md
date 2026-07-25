@@ -484,6 +484,29 @@ Two consequences worth acting on together:
    warn about). Announce the version bump as a breaking change in its own right,
    with its own enumeration, and treat `fingerprint_mismatch` as a **third**
    monitoring signal distinct from the two attribution reasons.
+   **Demonstrated by execution**, which is sharper than the reasoning: a *legacy
+   but attributable* record — v2 digest, `requesterPrincipalId` present — denies
+   `fingerprint_mismatch` and is **absent from the enumeration**, while a v3
+   attributable record consumes cleanly. Enumerate by **fingerprint version OR
+   missing requester**, never by field absence alone.
+
+4. **A reviewer's send-outcome ordering finding is superseded in `main` — do not
+   act on it.** Measured at `f574ab3` (unmerged), `dataset_send_outcome` resolved
+   via `reversed(sorted(…, key=lambda item: item.recorded_at))`, so on a
+   coarse clock (Windows ~15.6 ms) the sort was a no-op and the answer fell to
+   list-insertion order. Their demonstration was the right shape and worth
+   preserving: **the same two logical writes resolved `delivered` when issued
+   sequentially and `failed` when issued concurrently** — deterministic in each
+   configuration, therefore invisible to repeat-run testing, so 10/10 green proved
+   nothing about it. **`main` already carries the fix**:
+   `_dataset_audit_order` returns `(entry.recorded_at, entry.sequence, entry.id)`
+   — the monotonic append sequence they recommended — and its docstring states the
+   property directly: *"Correctness therefore rests on identity and recorded
+   order, not on Python's sort being stable."* Their caution against
+   `(recorded_at, id)` is also honoured: `id` is `uuid4`, so it would order ties by
+   random hex *reproducibly* — a deterministic wrong answer, harder to spot than a
+   flaky one — and it sits **after** `sequence`, as a final tiebreaker only for
+   records predating sequencing.
 
 **On the repeated rebuilds of this work:** **twelve** commits exist on parent
 `673985b`, of which exactly one — `1affe85` — is merged. The others (`e0b5367`,
