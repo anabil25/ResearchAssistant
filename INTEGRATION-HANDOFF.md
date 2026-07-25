@@ -373,6 +373,24 @@ Nothing outstanding on this workstream.
   has **no override**, sits at **0.735**, retains all 22 unconverted sites, and is
   the historical failing site. `research-markdown.integration` is at **0.523** and is
   in neither the fix nor the report.
+- **70 viewport triples are reported but deliberately not gated, and the refusal is
+  correct.** A blanket `viewports: ALL_VIEWPORTS` on all 77 interactions had been
+  *positively asserting* that all 298 states were proven at desktop, tablet and
+  mobile, while tablet and mobile actually proved three each — and the test
+  guarding it asserted that same constant back for every interaction, so **it
+  verified nothing.** Replaced with scoping derived from the app's real media
+  queries (`max-width: 1180px` turns the evidence inspector into a scrimmed
+  overlay; `max-width: 900px` turns the rail into a drawer with a control that
+  does not exist at desktop), giving `requiredViewportStateCount: 368` alongside
+  the unchanged flat `298`.
+
+  **Gating the remaining 70 would manufacture false credit.** The specs covering
+  those shell states *do* exercise the breakpoints — but via explicit
+  `page.setViewportSize(...)` inside the test bodies, under the desktop project.
+  Re-running them under tablet/mobile projects proves nothing, because **the test
+  discards the project's viewport on its first line.** Making them gateable
+  requires those tests to stop hard-coding viewports and take them from the
+  project — a real refactor, correctly not smuggled into a fix commit.
 - **Machine-wide port locks.** `tmpdir()/research-assistant-playwright-port-locks`
   with fixed ports 40105/40106 and no per-checkout namespace; confirmed by finding a
   lock file from another checkout mid-run. **Will break parallel CI shards.** Fix is
