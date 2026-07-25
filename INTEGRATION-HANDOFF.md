@@ -845,6 +845,15 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **A latent defect does not merely delay detection — it misattributes the
+  investigation.** When a defect has no symptom, the eventual investigation lands
+  on the commit that *removes the suppressant* and appears to break things, not
+  on the one that introduced the defect months earlier. Latency is recoverable;
+  misattribution burns the investigation. This is why a detector for the
+  *condition* (e.g. the `check-attr` assertion guarding the golden `-text`
+  exemption) is load-bearing rather than belt-and-braces: with no symptom to
+  watch for, asserting the condition is the only available signal, and deleting
+  it as "duplicative" leaves the property genuinely unguarded.
 - **A completeness check is only as good as the file types it enumerates.** The
   silent-loss scan that recovered six lost definitions parsed every Python
   module's `ast` — and therefore could not see that the merge had deleted every
