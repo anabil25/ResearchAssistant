@@ -106,6 +106,21 @@ def test_mapping_digest_is_versioned_and_stable() -> None:
     assert compute_mapping_digest(_mapping()) == digest
 
 
+def test_r4_digest_feeding_timestamps_are_required_no_default_factory() -> None:
+    # R4 forcing artifact (do not delete): the created_at fields FEED the digest and
+    # are REQUIRED with NO default / default_factory, so a caller cannot omit them
+    # and pick up a silently-varying default that would desync the digest. This is
+    # the positive test that proves the CLASS is gone, not merely this instance --
+    # pinning created_at in a helper hides the symptom (it was the flake that
+    # surfaced R4) without removing the class, so this asserts the model contract.
+    fields = RuntimeDeploymentMapping.model_fields
+    for name in ("revision_created_at", "deployment_created_at"):
+        assert fields[name].is_required(), f"{name} must be required (no default)"
+        assert fields[name].default_factory is None, f"{name} must have no default_factory"
+    # Two same-input constructions therefore produce an IDENTICAL digest.
+    assert _mapping().mapping_digest == _mapping().mapping_digest
+
+
 def test_mapping_digest_changes_when_any_authoritative_field_changes() -> None:
     base = _mapping().mapping_digest
     assert _mapping(deployment_id="dep-2").mapping_digest != base

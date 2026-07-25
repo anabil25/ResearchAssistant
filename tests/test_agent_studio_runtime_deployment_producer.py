@@ -23,6 +23,7 @@ from research_assistant_api.agent_studio.runtime_deployment_mapping import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_producer import (
     _MAX_SUCCESSION_ATTEMPTS,
+    BijectiveCardinalityError,
     BindingLeadsHeadError,
     RevisionStillReferencedError,
     RollbackRepointError,
@@ -677,3 +678,66 @@ def test_reinstate_non_convergence_raises_precondition() -> None:
     assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "intent")) == 1
     assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "applied")) == 0
     assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "failed")) == 1
+
+
+# --- bijective 1:1 cardinality (deployment -> one client) ------------------
+
+OTHER_CLIENT = "other-client-9"
+
+
+def test_grant_refuses_a_second_client_on_an_actively_bound_deployment() -> None:
+    # Deployment->one-client direction: a deployment actively bound to one client
+    # cannot be granted to a DIFFERENT client without an explicit revoke first.
+    producer, _store, _index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    with pytest.raises(BijectiveCardinalityError):
+        producer.grant(_mapping(revision_sequence=2, client_app_id=OTHER_CLIENT), actor_id=ACTOR, now=NOW)
+
+
+def test_grant_allows_new_client_after_the_old_one_is_revoked() -> None:
+    # Migration is an explicit REVOKE-then-GRANT (no dual-client overlap window).
+    producer, _store, index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    producer.revoke(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    producer.grant(_mapping(revision_sequence=2, client_app_id=OTHER_CLIENT), actor_id=ACTOR, now=NOW)
+    assert index.resolve_binding(OTHER_CLIENT, "dep-1") is not None  # new client is active
+    old = index.resolve_binding(CLIENT, "dep-1")
+    assert old is not None and old.status is RuntimeBindingStatus.REVOKED  # old client tombstoned, not active
+
+
+def test_grant_refuses_a_mapping_authorizing_multiple_clients() -> None:
+    producer, _store, _index, _audit = _producer()
+    two_clients = _mapping(revision_sequence=1).model_copy(
+        update={
+            "allowed_client_app_role_bindings": (
+                AllowedClientAppRoleBinding(client_app_id=CLIENT, app_role="research-assistant.runtime"),
+                AllowedClientAppRoleBinding(client_app_id=OTHER_CLIENT, app_role="research-assistant.runtime"),
+            )
+        }
+    )
+    with pytest.raises(BijectiveCardinalityError, match="EXACTLY ONE client"):
+        producer.grant(two_clients, actor_id=ACTOR, now=NOW)
+
+
+def test_same_client_supersede_is_not_a_cardinality_violation() -> None:
+    producer, _store, index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    producer.grant(
+        _mapping(revision_sequence=2, client_app_id=CLIENT, backend_version="2.0.0"), actor_id=ACTOR, now=NOW
+    )
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.revision_sequence == 2
+
+
+def test_cardinality_check_skips_when_head_revision_is_missing() -> None:
+    # Degenerate state: head points at a revision retention removed. The
+    # deployment->one-client check cannot read the current client, so it skips
+    # (grant's own head-sequence checks still run); covers the missing-revision guard.
+    producer, store, index, _audit = _producer()
+    producer.grant(_mapping(revision_sequence=1, client_app_id=CLIENT), actor_id=ACTOR, now=NOW)
+    store.delete("dep-1", 1)  # head still at 1, revision gone
+    producer.grant(
+        _mapping(revision_sequence=2, client_app_id=CLIENT, backend_version="2.0.0"), actor_id=ACTOR, now=NOW
+    )
+    resolution = index.resolve_binding(CLIENT, "dep-1")
+    assert resolution is not None and resolution.revision_sequence == 2

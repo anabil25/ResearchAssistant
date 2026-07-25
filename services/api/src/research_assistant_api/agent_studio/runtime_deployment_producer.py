@@ -49,6 +49,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_mapping_store import (
+    RuntimeDeploymentHead,
     RuntimeDeploymentMappingControlPlane,
     RuntimeHeadPreconditionError,
 )
@@ -113,6 +114,23 @@ class BindingLeadsHeadError(RuntimeDeploymentProducerError):
     """
 
 
+class BijectiveCardinalityError(RuntimeDeploymentProducerError):
+    """Raised when a grant would violate the BIJECTIVE 1:1 client<->deployment rule.
+
+    Cardinality is bijective: each client is bound to exactly one deployment AND
+    each deployment is reachable by exactly one client. This error is the
+    deployment->one-client direction -- a grant whose deployment is already
+    ACTIVELY bound to a DIFFERENT client (a revoked tombstone does NOT count as
+    active). The client->one-deployment direction is enforced at the binding
+    writer (``CrossDeploymentBindingError``). It also fires if a mapping does not
+    authorize EXACTLY ONE client (so SUPERSEDE always repoints exactly one
+    binding). Migrating a deployment to a new client is an explicit
+    REVOKE-then-GRANT (two audited actions with a gap), never a silent overlap
+    where two clients both hold access -- an overlap is indistinguishable from a
+    stale binding nobody cleaned up.
+    """
+
+
 class RuntimeBindingAuditRecorder(Protocol):
     """The subset of ``AuditService`` the producer needs to append binding events."""
 
@@ -164,6 +182,7 @@ class RuntimeDeploymentProducer:
         """
         now = _require_aware_utc_now(now)
         head = self._mapping_store.get_head(mapping.deployment_id)
+        self._enforce_bijective_grant(mapping, head)
         if head is None:
             if mapping.revision_sequence != 1:
                 raise RollbackRepointError(
@@ -226,6 +245,7 @@ class RuntimeDeploymentProducer:
                     f"build_revision must return deployment '{deployment_id}' at sequence {next_sequence}, "
                     f"got '{mapping.deployment_id}' at {mapping.revision_sequence}."
                 )
+            self._enforce_bijective_grant(mapping, head)
             try:
                 self._mapping_store.commit_revision(
                     mapping, expected_head_sequence=None if head is None else head.current_sequence
@@ -239,6 +259,48 @@ class RuntimeDeploymentProducer:
         raise SuccessionExhaustedError(
             f"succession for '{deployment_id}' did not converge within {_MAX_SUCCESSION_ATTEMPTS} attempts."
         )
+
+    @staticmethod
+    def _sole_client(mapping: RuntimeDeploymentMapping) -> str:
+        """The single authorized client of ``mapping`` (bijective 1:1: exactly one)."""
+        bindings = mapping.allowed_client_app_role_bindings
+        if len(bindings) != 1:
+            raise BijectiveCardinalityError(
+                f"mapping for '{mapping.deployment_id}' must authorize EXACTLY ONE client "
+                f"(bijective 1:1), got {len(bindings)}."
+            )
+        return bindings[0].client_app_id
+
+    def _enforce_bijective_grant(
+        self, mapping: RuntimeDeploymentMapping, head: RuntimeDeploymentHead | None
+    ) -> None:
+        """Enforce the deployment->one-client direction of bijective cardinality.
+
+        Also enforces EXACTLY ONE authorized client per mapping (via ``_sole_client``,
+        which is what keeps SUPERSEDE to a single repoint). The client->one-deployment
+        direction is enforced at the binding writer, not here. For a supersede
+        (``head`` present), the deployment's CURRENT client is the sole client of the
+        head revision; if the new grant names a DIFFERENT client while that current
+        client is still ACTIVE, it would create a two-client overlap on one deployment
+        -- refused. A revoked current client does NOT block the new client (that is the
+        explicit REVOKE-then-GRANT migration). Bootstrap has no current client to
+        conflict with.
+        """
+        new_client = self._sole_client(mapping)
+        if head is None:
+            return
+        current = self._mapping_store.get(mapping.deployment_id, head.current_sequence)
+        if current is None:
+            return  # head points at a missing revision; grant's own checks handle it
+        current_client = self._sole_client(current)
+        if current_client == new_client:
+            return
+        existing = self._binding_resolver.resolve_binding(current_client, mapping.deployment_id)
+        if existing is not None and existing.status is RuntimeBindingStatus.ACTIVE:
+            raise BijectiveCardinalityError(
+                f"deployment '{mapping.deployment_id}' is already ACTIVELY bound to client "
+                f"'{current_client}'; revoke it before granting '{new_client}' (no dual-client overlap)."
+            )
 
     def _repoint_all_active(
         self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime

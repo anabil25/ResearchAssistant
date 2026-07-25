@@ -112,11 +112,17 @@ class BindingResolution(BaseModel):
     re-grant target from a tombstone's retained sequence -- an explicit re-grant
     (``reinstate``) points at the CURRENT head, and uses the retained sequence
     only as the CAS precondition (a concurrency mechanism), never as the target.
+
+    It deliberately does NOT contain ``deployment_id``: the asserted deployment is
+    strictly an INPUT the caller already holds, and echoing it back -- even
+    redundantly -- is one refactor away from being read as the authoritative
+    "which deployment applies to you", which is the exact oracle the whole
+    server-owned-binding design closes. The caller passes the deployment it
+    asserted and re-uses its own copy for the subsequent point read.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    deployment_id: str
     revision_id: str
     revision_sequence: int
     status: RuntimeBindingStatus
@@ -375,10 +381,15 @@ class InMemoryClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         binding = self._by_client.get(client_app_id)
-        if binding is not None and binding.deployment_id != deployment_id:
+        if (
+            binding is not None
+            and binding.deployment_id != deployment_id
+            and binding.status is RuntimeBindingStatus.ACTIVE
+        ):
             raise CrossDeploymentBindingError(
-                f"client '{client_app_id}' is already bound to '{binding.deployment_id}'; "
-                f"it cannot be bound to '{deployment_id}' (1:1 cardinality)."
+                f"client '{client_app_id}' is already ACTIVELY bound to '{binding.deployment_id}'; "
+                f"it cannot be bound to '{deployment_id}' (1:1 cardinality). Revoke the existing "
+                "binding first (a revoked tombstone does not block a later grant)."
             )
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
@@ -439,7 +450,6 @@ class InMemoryClientDeploymentBindingIndex:
         if binding is None or binding.deployment_id != asserted_deployment_id:
             return None
         return BindingResolution(
-            deployment_id=binding.deployment_id,
             revision_id=binding.revision_id,
             revision_sequence=binding.revision_sequence,
             status=binding.status,
@@ -457,9 +467,11 @@ def build_authorized_mapping_loader(
     WITHOUT touching the mapping container (constraint 3 -- zero mapping reads).
     A soft-revoked binding (status != ACTIVE) also denies WITHOUT a mapping read.
     Only an ACTIVE binding point-reads the EXACT current revision the binding
-    supplies -- the index supplies WHICH revision, never WHICH deployment. A
-    binding pointing at an absent revision also returns ``None`` (fail-closed
-    reconciliation, constraint 5). No selection, no default, no enumeration.
+    supplies -- the index supplies WHICH revision, never WHICH deployment (the
+    resolution carries no ``deployment_id``; the point read uses the caller's own
+    asserted deployment). A binding pointing at an absent revision also returns
+    ``None`` (fail-closed reconciliation, constraint 5). No selection, no default,
+    no enumeration.
     """
 
     def _load(client_app_id: str, asserted_deployment_id: str) -> RuntimeDeploymentMapping | None:
@@ -468,7 +480,9 @@ def build_authorized_mapping_loader(
             return None
         if resolution.status is not RuntimeBindingStatus.ACTIVE:
             return None
-        mapping = mapping_store.get(resolution.deployment_id, resolution.revision_sequence)
+        # The asserted deployment is the caller's OWN input; the resolution never
+        # echoes a deployment back, so it can never redirect the point read.
+        mapping = mapping_store.get(asserted_deployment_id, resolution.revision_sequence)
         if mapping is None:
             return None
         # A1 digest pin: the binding pins the target digest, so a store revision
@@ -536,10 +550,15 @@ class CosmosClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         document = self._read(client_app_id)
-        if document is not None and document.get("deployment_id") != deployment_id:
+        if (
+            document is not None
+            and document.get("deployment_id") != deployment_id
+            and str(document.get("status")) == RuntimeBindingStatus.ACTIVE.value
+        ):
             raise CrossDeploymentBindingError(
-                f"client '{client_app_id}' is already bound to '{document.get('deployment_id')}'; "
-                f"it cannot be bound to '{deployment_id}' (1:1 cardinality)."
+                f"client '{client_app_id}' is already ACTIVELY bound to '{document.get('deployment_id')}'; "
+                f"it cannot be bound to '{deployment_id}' (1:1 cardinality). Revoke the existing "
+                "binding first (a revoked tombstone does not block a later grant)."
             )
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
@@ -648,7 +667,6 @@ class CosmosClientDeploymentBindingIndex:
         if document is None or document.get("deployment_id") != asserted_deployment_id:
             return None
         return BindingResolution(
-            deployment_id=str(document["deployment_id"]),
             revision_id=str(document["current_revision_id"]),
             revision_sequence=int(str(document["current_revision_sequence"])),
             status=RuntimeBindingStatus(str(document["status"])),
