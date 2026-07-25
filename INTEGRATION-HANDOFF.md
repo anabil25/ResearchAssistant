@@ -547,7 +547,44 @@ value is returned byte-for-byte, so `" v1 "` keeps its padding, because these
 strings become provider-owned pins and trimming would silently mutate pinned
 content.
 
-Nothing outstanding on this workstream.
+**One item IS outstanding, found after approval and verified in `main`: aggregate
+warning volume is unbounded.** Every individual axis in
+`capability_discovery.py` is bounded — `DEFAULT_MAX_RESPONSE_BYTES = 8_000_000`,
+`DEFAULT_MAX_PROVIDERS = 250`, `DEFAULT_MAX_DESCRIPTORS_PER_PROVIDER = 500`,
+`DEFAULT_MAX_INSTANCES_PER_PROVIDER = 2_000`,
+`DEFAULT_MAX_OPERATIONS_PER_DESCRIPTOR = 200`, `DEFAULT_MAX_CONCURRENCY = 8`
+(L84–L89). **No bound covers their product.**
+
+Two structural reasons, both read from the code:
+
+1. **`max_response_bytes` bounds each response in isolation.** It is enforced per
+   call at L1087, inside the fetch, so it cannot see the accumulation.
+2. **Retention is simultaneous, not streamed.** `asyncio.gather(...,
+   return_exceptions=True)` (L1234–1236) holds every provider outcome at once;
+   the `asyncio.Semaphore(self._max_concurrency)` at L1228 bounds in-flight
+   *requests*, not retained *results*. So the ceiling is **concurrent peak
+   memory**, not a sum over time.
+
+Measured by the owner and consistent with the constants: aggregate scales exactly
+linearly in providers — `providers × per-response payload`, exact — giving a
+theoretical ceiling of **250 × 8 MB ≈ 2 GB** of retained warning text.
+
+**The sharpest form of it:** this module *already applies* the fix pattern.
+`principal` and `correlation_id` carry explicit `max_length=200` (L108–L109). The
+one string field with no length bound is `_wire_warnings` (L604) — **the field
+that accumulates.**
+
+**Note the convergence:** `_wire_warnings` now carries *two* structural findings —
+no length bound here, and no escaping at the boundary (the log-injection item).
+Both are on the diagnostic channel, which is the surface nobody models as attack
+surface. That is the second time that category has produced a finding in this
+program.
+
+This is an **enumerated-axes failure**: each bound is real and correct, and the
+gap is that no one asked what the product of two bounded axes could reach.
+Remediation is a per-warning `max_length` plus an aggregate cap, not a new axis.
+
+Nothing else outstanding on this workstream.
 
 ### State / web
 
