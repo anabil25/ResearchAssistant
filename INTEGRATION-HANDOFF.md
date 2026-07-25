@@ -539,10 +539,17 @@ different file.** Grep across the suite for the *property*, not the idiom.
 - **HIGH — cross-release/cross-principal replay.** Reproduced: a COMPLETED record
   replays under a successor release with no provenance check and no approval
   consumption. Latent only because every shipped descriptor defaults to
-  `CompletedReplayMode.DENY`. **The highest-value mitigation is not the fix** — it
-  is an invariant test that no non-test capability sets `completed_replay` to a
-  non-DENY mode. Adding the fix leaves the suite green, so nothing would catch the
-  defect *or* its reintroduction.
+  `CompletedReplayMode.DENY`. **Latency re-verified at `main`, so the priority
+  rests on measurement rather than assertion:** there are **zero**
+  `completed_replay=` assignments anywhere in `agents/` or `services/`;
+  `capabilities.py:124` takes the default `IdempotencyPolicy()` whose
+  `completed_replay` is `DENY` (`idempotency.py:53`); and the only non-DENY values
+  in the repo are two test fixtures (`test_agent_harness.py:1873`, `:5786`). So
+  the vulnerable path is unreachable in shipped configuration, and **one
+  non-DENY descriptor makes it live.** **The highest-value mitigation is not the
+  fix** — it is an invariant test that no non-test capability sets
+  `completed_replay` to a non-DENY mode. Adding the fix leaves the suite green, so
+  nothing would catch the defect *or* its reintroduction.
 
   **Fix specification, agreed before the freeze:**
   - **Do not add `principal_id` to `IdempotencyKey`.** Principal is a *verify*
