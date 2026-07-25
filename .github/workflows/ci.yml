@@ -29,7 +29,7 @@ jobs:
       - name: Lint and type-check Python
         run: |
           uv run ruff check packages services agents scripts tests
-          uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
+          uv run mypy --linecount-report coverage/python/mypy-domain
 
       - name: Enforce 100% Python line and branch coverage
         id: python_coverage
@@ -37,6 +37,11 @@ jobs:
         run: |
           mkdir -p coverage/python
           uv run pytest -q --cov --cov-report=term-missing --cov-report=html:coverage/python/html --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
+
+      - name: Enforce exact suppression and coverage domain
+        id: suppression_contract
+        continue-on-error: true
+        run: uv run python scripts/check_suppression_contract.py
 
       - name: Upload Python coverage
         if: always()
@@ -121,9 +126,11 @@ jobs:
         if: always()
         env:
           PYTHON_COVERAGE: ${{ steps.python_coverage.outcome }}
+          SUPPRESSION_CONTRACT: ${{ steps.suppression_contract.outcome }}
           JEST_COVERAGE: ${{ steps.jest_coverage.outcome }}
           E2E_GATE: ${{ steps.e2e_gate.outcome }}
         run: |
           test "$PYTHON_COVERAGE" = "success"
+          test "$SUPPRESSION_CONTRACT" = "success"
           test "$JEST_COVERAGE" = "success"
           test "$E2E_GATE" = "success"

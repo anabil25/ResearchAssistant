@@ -1,0 +1,580 @@
+from __future__ import annotations
+
+import json
+import sys
+from pathlib import Path
+from typing import Any
+
+import pytest
+
+import scripts.check_suppression_contract as suppression_contract
+from scripts.check_suppression_contract import (
+    BASELINE_DRIFT_MESSAGE,
+    BASELINE_REVIEW_POLICY,
+    Suppression,
+    _javascript_comments,
+    apply_suppression_addition_review,
+    census,
+    compare_inventory,
+    coverage_source_evidence,
+    mypy_excluded_files,
+    mypy_module_name,
+    mypy_paths,
+    mypy_roots,
+    parse_javascript_comment,
+    parse_python_comment,
+    posture_partition,
+    source_entry_files,
+    suppression_records,
+    validate_inventory,
+)
+
+
+def test_python_suppressions_distinguish_scope_and_reason() -> None:
+    scoped = parse_python_comment("sample.py", "# type:" " ignore[arg-type] - invalid double")
+    bare = parse_python_comment("sample.py", "# type:" " ignore")
+    noqa = parse_python_comment("sample.py", "# noqa: E402 - bootstrap import order")
+    pragma = parse_python_comment(
+        "sample.py",
+        "# pragma:" " no cover - protocol guarantees an attempt",
+    )
+
+    assert scoped == [Suppression("sample.py", "type-ignore", "arg-type", "invalid double")]
+    assert bare == [Suppression("sample.py", "type-ignore", "", "")]
+    assert noqa == [Suppression("sample.py", "noqa", "E402", "bootstrap import order")]
+    assert pragma == [
+        Suppression(
+            "sample.py",
+            "coverage-pragma",
+            "",
+            "protocol guarantees an attempt",
+        )
+    ]
+
+
+def test_javascript_scanner_ignores_strings_and_reads_template_expressions() -> None:
+    marker = "eslint-" + "disable-next-line"
+    source = (
+        f'const text = "// {marker} no-console";\n'
+        f"const value = `${{ /* {marker} no-alert -- guarded */ alert('x') }}`;\n"
+    )
+
+    comments = list(_javascript_comments(source))
+    entries = [
+        entry
+        for comment in comments
+        for entry in parse_javascript_comment("sample.ts", comment)
+    ]
+
+    assert entries == [
+        Suppression("sample.ts", "eslint-disable", "no-alert", "guarded")
+    ]
+
+
+def test_compare_inventory_is_exact_in_both_directions() -> None:
+    expected = {"sourceSuppressions": [{"path": "a.py"}]}
+
+    assert compare_inventory(expected, expected) == []
+    assert compare_inventory(expected, {"sourceSuppressions": []})
+    assert compare_inventory(expected, {"sourceSuppressions": [{"path": "b.py"}]})
+    assert "matching source removal" in BASELINE_DRIFT_MESSAGE
+    assert "No semantic laundering" in BASELINE_DRIFT_MESSAGE
+
+
+def test_write_baseline_refuses_legal_growth_without_review_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    existing = _suppression_record(path="existing.py")
+    added = _suppression_record(path="added.py")
+    baseline = {"sourceSuppressions": [existing]}
+    inventory = {
+        "sourceSuppressions": [
+            {**existing, "additionReviews": []},
+            {**added, "additionReviews": []},
+        ]
+    }
+    baseline_path = tmp_path / "baseline.json"
+    report_path = tmp_path / "report.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    original_bytes = baseline_path.read_bytes()
+    monkeypatch.setattr(suppression_contract, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        suppression_contract,
+        "build_inventory",
+        lambda *_args, **_kwargs: (inventory, []),
+    )
+    monkeypatch.setattr(
+        suppression_contract,
+        "validate_inventory",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(suppression_contract, "census", lambda _inventory: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_suppression_contract.py",
+            "--baseline",
+            str(baseline_path),
+            "--coverage-json",
+            str(tmp_path / "coverage.json"),
+            "--mypy-report",
+            str(tmp_path / "linecount.txt"),
+            "--report",
+            str(report_path),
+            "--write-baseline",
+        ],
+    )
+
+    assert suppression_contract.main() == 1
+    assert baseline_path.read_bytes() == original_bytes
+
+
+def test_write_baseline_records_reason_beside_legal_addition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    existing = _suppression_record(path="existing.py")
+    added = _suppression_record(path="added.py", count=2)
+    baseline = {"sourceSuppressions": [existing]}
+    inventory = {
+        "sourceSuppressions": [
+            {**existing, "additionReviews": []},
+            {**added, "additionReviews": []},
+        ]
+    }
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(suppression_contract, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        suppression_contract,
+        "build_inventory",
+        lambda *_args, **_kwargs: (inventory, []),
+    )
+    monkeypatch.setattr(
+        suppression_contract,
+        "validate_inventory",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(suppression_contract, "census", lambda _inventory: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_suppression_contract.py",
+            "--baseline",
+            str(baseline_path),
+            "--coverage-json",
+            str(tmp_path / "coverage.json"),
+            "--mypy-report",
+            str(tmp_path / "linecount.txt"),
+            "--report",
+            str(tmp_path / "report.json"),
+            "--write-baseline",
+            "--suppression-addition-reason",
+            "SDK boundary requires a scoped compatibility suppression",
+        ],
+    )
+
+    assert suppression_contract.main() == 0
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    added_record = next(
+        record for record in written["sourceSuppressions"] if record["path"] == "added.py"
+    )
+    assert added_record["additionReviews"] == [
+        {
+            "count": 2,
+            "reason": "SDK boundary requires a scoped compatibility suppression",
+        }
+    ]
+
+
+def test_growth_guard_ignores_derived_posture_changes() -> None:
+    previous_record = _suppression_record(path="agent.py", posture="test")
+    previous_record["additionReviews"] = [
+        {"reason": "Existing reviewed SDK boundary", "count": 1}
+    ]
+    current_record = suppression_records(
+        [Suppression("agent.py", "type-ignore", "arg-type", "")],
+        {"agent.py": ["hosted-agent-project:coordinator:agents"]},
+        set(),
+        {"sourceSuppressions": [previous_record]},
+    )[0]
+    inventory = {"sourceSuppressions": [current_record]}
+
+    assert (
+        apply_suppression_addition_review(
+            {"sourceSuppressions": [previous_record]},
+            inventory,
+            None,
+        )
+        == []
+    )
+    assert inventory["sourceSuppressions"][0]["additionReviews"] == [
+        {"reason": "Existing reviewed SDK boundary", "count": 1}
+    ]
+    assert current_record["posture"] == "production"
+
+
+def test_validate_inventory_rejects_bare_and_javascript_suppressions(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["sourceSuppressions"] = [
+        _suppression_record(kind="type-ignore", scope=""),
+        _suppression_record(path="web.ts", kind="ts-expect-error", scope=""),
+    ]
+
+    errors = validate_inventory(tmp_path, inventory, [])
+
+    assert "bare type-ignore is forbidden; scope or reason required: sample.py" in errors
+    assert "ts-expect-error suppressions are pinned to zero: web.ts" in errors
+
+
+def test_validate_inventory_requires_pragma_reason(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["sourceSuppressions"] = [
+        _suppression_record(kind="coverage-pragma", scope="", reason="")
+    ]
+
+    assert "coverage pragma requires a stated reason: sample.py" in validate_inventory(
+        tmp_path,
+        inventory,
+        [],
+    )
+
+
+def test_validate_inventory_accepts_reasoned_unscoped_type_and_noqa(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["sourceSuppressions"] = [
+        _suppression_record(kind="type-ignore", scope="", reason="untyped SDK boundary"),
+        _suppression_record(
+            path="bootstrap.py",
+            kind="noqa",
+            scope="",
+            reason="import must follow environment setup",
+        ),
+    ]
+
+    assert validate_inventory(tmp_path, inventory, []) == []
+
+
+def test_validate_inventory_rejects_coverage_gate_and_domain_drift(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["coverageConfig"]["run"]["branch"] = False
+    inventory["coverageConfig"]["run"]["source"] = []
+    inventory["coverageConfig"]["report"]["fail_under"] = 99
+    inventory["reportedCoverageFiles"] = []
+
+    errors = validate_inventory(tmp_path, inventory, ["src/package/module.py:1:unexpected"])
+
+    assert "coverage branch measurement must remain enabled" in errors
+    assert "coverage fail_under must remain exactly 100" in errors
+    assert "configured coverage source roots differ from packaging-derived roots" in errors
+    assert "coverage JSON file set differs from the packaging-derived source file set" in errors
+    assert "unclassified coverage exclusion: src/package/module.py:1:unexpected" in errors
+
+
+def test_posture_partition_requires_packaging_and_coverage_to_agree() -> None:
+    paths = [
+        "agents/shared/capabilities.py",
+        "scripts/postprovision.py",
+        "tests/test_capabilities.py",
+    ]
+    packaging = {
+        "agents/shared/capabilities.py": ["hosted-agent-project:coordinator:agents"],
+        "scripts/postprovision.py": ["azure-hook:postprovision:windows"],
+    }
+    coverage = coverage_source_evidence(paths, ["agents/shared"])
+
+    production, unknown = posture_partition(paths, packaging, coverage)
+
+    assert production == {
+        "agents/shared/capabilities.py": [
+            "coverage-source:agents/shared",
+            "hosted-agent-project:coordinator:agents",
+        ]
+    }
+    assert unknown == [
+        {
+            "path": "scripts/postprovision.py",
+            "packagingEvidence": ["azure-hook:postprovision:windows"],
+            "coverageEvidence": [],
+        }
+    ]
+
+
+def test_posture_partition_rejects_coverage_without_packaging() -> None:
+    path = "agents/shared/capabilities.py"
+    coverage = coverage_source_evidence([path], ["agents/shared"])
+
+    production, unknown = posture_partition([path], {}, coverage)
+
+    assert production == {}
+    assert unknown == [
+        {
+            "path": path,
+            "packagingEvidence": [],
+            "coverageEvidence": ["coverage-source:agents/shared"],
+        }
+    ]
+
+
+def test_source_entry_files_supports_module_files_and_packages() -> None:
+    tracked = [
+        "scripts/postprovision.py",
+        "scripts/deploy/__init__.py",
+        "scripts/deploy/__main__.py",
+        "scripts/deploy/helpers.py",
+    ]
+
+    assert source_entry_files(tracked, "scripts.postprovision") == [
+        "scripts/postprovision.py"
+    ]
+    assert source_entry_files(tracked, "scripts.deploy") == [
+        "scripts/deploy/__init__.py",
+        "scripts/deploy/__main__.py",
+        "scripts/deploy/helpers.py",
+    ]
+
+
+def test_validate_inventory_rejects_unknown_production_posture(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["postureUnknownFiles"] = [
+        {
+            "path": "agents/shared/capabilities.py",
+            "packagingEvidence": ["hosted-agent-project:coordinator:agents"],
+            "coverageEvidence": [],
+        }
+    ]
+
+    assert (
+        "production posture is unknown because packaging and coverage disagree: "
+        "agents/shared/capabilities.py "
+        "(packaging=['hosted-agent-project:coordinator:agents'], coverage=[])"
+    ) in validate_inventory(tmp_path, inventory, [])
+
+
+def test_validate_inventory_rejects_mypy_domain_drift(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["mypyConfig"]["files"] = ["tests"]
+    inventory["mypyConfig"]["mypy_path"] = []
+    inventory["reportedMypyModules"] = []
+
+    errors = validate_inventory(tmp_path, inventory, [])
+
+    assert "configured mypy roots differ from the packaging-derived domain" in errors
+    assert "configured mypy search paths differ from packaging-derived import roots" in errors
+    assert "mypy report module set differs from the packaging-derived Python domain" in errors
+
+
+def test_validate_inventory_rejects_excludes_inside_mypy_domain(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    inventory["mypyConfig"]["exclude"] = ["src/"]
+    inventory["mypyExcludedDomainFiles"] = mypy_excluded_files(
+        inventory["mypyFiles"],
+        inventory["mypyConfig"]["exclude"],
+    )
+
+    assert (
+        "mypy exclude removes files from the packaging-derived domain: "
+        "src/package/module.py"
+    ) in validate_inventory(tmp_path, inventory, [])
+
+
+def test_mypy_domain_derives_roots_paths_and_modules_from_packaging() -> None:
+    tracked = [
+        "packages/core/src/example/__init__.py",
+        "packages/core/src/example/service.py",
+        "agents/shared/runtime.py",
+        "scripts/check.py",
+        "tests/test_check.py",
+    ]
+    source_roots = [
+        "packages/core/src/example",
+        "agents/shared",
+        "scripts.postprovision",
+    ]
+
+    assert mypy_roots(tracked, source_roots) == ["agents", "packages", "scripts", "tests"]
+    assert mypy_paths(source_roots) == ["agents", "packages/core/src"]
+    assert mypy_module_name(
+        "packages/core/src/example/service.py",
+        mypy_paths(source_roots),
+    ) == "example.service"
+    assert mypy_module_name("agents/shared/runtime.py", mypy_paths(source_roots)) == "shared.runtime"
+
+
+def test_validate_inventory_requires_load_bearing_links(tmp_path: Path) -> None:
+    inventory = _minimal_inventory()
+    record = _suppression_record()
+    record["role"] = "load-bearing"
+    inventory["sourceSuppressions"] = [record]
+
+    errors = validate_inventory(tmp_path, inventory, [])
+
+    assert "load-bearing suppression lacks protectedTest: sample.py" in errors
+    assert "load-bearing suppression lacks protectedControl: sample.py" in errors
+
+
+def test_validate_inventory_accepts_resolved_load_bearing_links(tmp_path: Path) -> None:
+    test_file = tmp_path / "tests" / "test_store.py"
+    source_file = tmp_path / "src" / "store.py"
+    test_file.parent.mkdir()
+    source_file.parent.mkdir()
+    test_file.write_text("def test_conflict(): pass\n", encoding="utf-8")
+    source_file.write_text("def recover_conflict(): pass\n", encoding="utf-8")
+    inventory = _minimal_inventory()
+    record = _suppression_record()
+    record.update(
+        {
+            "role": "load-bearing",
+            "protectedTest": {
+                "path": "tests/test_store.py",
+                "anchor": "test_conflict",
+                "description": "Constructs a collaborator defect.",
+            },
+            "protectedControl": {
+                "path": "src/store.py",
+                "anchor": "recover_conflict",
+                "description": "Exercises conflict recovery.",
+            },
+        }
+    )
+    inventory["sourceSuppressions"] = [record]
+
+    assert validate_inventory(tmp_path, inventory, []) == []
+
+
+def test_census_separates_posture_scope_and_structural_lines() -> None:
+    inventory = _minimal_inventory()
+    inventory["sourceSuppressions"] = [
+        _suppression_record(posture="production", count=2),
+        _suppression_record(path="test_sample.py", kind="noqa", scope="F401"),
+    ]
+    inventory["coverageExcludedLines"] = [
+        {
+            "path": "protocol.py",
+            "kind": "tool-default",
+            "source": "...",
+            "reason": "",
+            "count": 4,
+        }
+    ]
+    inventory["coverageStructuralExclusions"] = [
+        {
+            "path": "protocol.py",
+            "kind": "coverage-default-ellipsis-stub",
+            "symbol": "Protocol.run",
+            "reason": "coverage.py default",
+        }
+    ]
+
+    summary = census(inventory)
+
+    assert summary["sourceSuppressions"] == 3
+    assert summary["byPosture"] == {"production": 2, "test": 1}
+    assert summary["bare"] == 0
+    assert summary["scoped"] == 3
+    assert summary["reasonMissing"] == 3
+    assert summary["coverageExcludedLines"] == 4
+    assert summary["coverageStructuralRoots"] == 1
+
+
+def test_committed_suppression_contract_has_expected_zero_categories() -> None:
+    root = Path(__file__).resolve().parents[1]
+    baseline = json.loads(
+        (root / ".github" / "suppression-contract.json").read_text(encoding="utf-8")
+    )
+    kinds = {record["kind"] for record in baseline["sourceSuppressions"]}
+
+    assert baseline["schemaVersion"] == "research-assistant.suppression-contract.v1"
+    assert baseline["baselineReviewPolicy"] == BASELINE_REVIEW_POLICY
+    assert not kinds.intersection(
+        {
+            "coverage-pragma",
+            "eslint-disable",
+            "ts-ignore",
+            "ts-expect-error",
+            "istanbul-ignore",
+            "c8-ignore",
+        }
+    )
+    assert all(
+        record["scope"]
+        for record in baseline["sourceSuppressions"]
+        if record["kind"] in {"type-ignore", "noqa"}
+    )
+    assert all(record["role"] == "standard" for record in baseline["sourceSuppressions"])
+    assert "missingReasonPolicy" not in baseline
+
+
+def _minimal_inventory() -> dict[str, Any]:
+    return {
+        "baselineReviewPolicy": BASELINE_REVIEW_POLICY,
+        "coverageConfig": {
+            "run": {
+                "branch": True,
+                "relative_files": True,
+                "source": ["src/package"],
+                "omit": [],
+            },
+            "report": {
+                "fail_under": 100,
+                "precision": 2,
+                "show_missing": True,
+                "skip_empty": True,
+                "exclude_lines": [],
+                "exclude_also": [],
+            },
+            "json": {"output": "coverage.json", "pretty_print": True},
+            "xml": {"output": "coverage.xml"},
+        },
+        "mypyConfig": {
+            "strict": True,
+            "warn_unused_ignores": True,
+            "explicit_package_bases": True,
+            "files": ["src"],
+            "mypy_path": ["src"],
+            "exclude": [],
+        },
+        "discoveredSourceRoots": ["src/package"],
+        "discoveredMypyRoots": ["src"],
+        "discoveredMypyPaths": ["src"],
+        "sourceFiles": ["src/package/module.py"],
+        "reportedCoverageFiles": ["src/package/module.py"],
+        "moduleNames": ["package.module"],
+        "mypyFiles": ["src/package/module.py"],
+        "mypyExcludedDomainFiles": [],
+        "mypyModuleNames": ["package.module"],
+        "reportedMypyModules": ["package.module"],
+        "packagingFiles": [],
+        "coverageProductionFiles": [],
+        "productionFiles": [],
+        "postureUnknownFiles": [],
+        "sourceSuppressions": [],
+        "coverageStructuralExclusions": [],
+        "coverageExcludedLines": [],
+    }
+
+
+def _suppression_record(
+    *,
+    path: str = "sample.py",
+    kind: str = "type-ignore",
+    scope: str = "arg-type",
+    reason: str = "",
+    posture: str = "test",
+    count: int = 1,
+) -> dict[str, object]:
+    return {
+        "path": path,
+        "kind": kind,
+        "scope": scope,
+        "reason": reason,
+        "posture": posture,
+        "role": "standard",
+        "protectedTest": None,
+        "protectedControl": None,
+        "additionReviews": [],
+        "count": count,
+    }

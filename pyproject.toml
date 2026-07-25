@@ -53,6 +53,8 @@ source = [
     "agents/literature_online",
     "agents/matching",
     "agents/matching_online",
+    "scripts.configure_agent_rbac",
+    "scripts.postprovision",
 ]
 
 [tool.coverage.report]
@@ -80,3 +82,13 @@ python_version = "3.12"
 strict = true
 warn_unused_ignores = true
 exclude = ["infra/", "apps/"]
+explicit_package_bases = true
+files = ["packages", "services", "agents", "scripts", "tests"]
+mypy_path = [
+    "packages/research_core/src",
+    "packages/research_connectors/src",
+    "services/api/src",
+    "services/connector_adapter/src",
+    "services/worker/src",
+    "agents",
+]
