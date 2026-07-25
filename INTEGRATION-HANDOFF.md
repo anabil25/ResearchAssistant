@@ -1129,6 +1129,18 @@ the third.** Ship the normalization with the rule, not after it.
   **Decision unchanged: test the entry points, do not exclude them** — a
   six-statement entry point no test imports is exactly where a wiring defect
   hides, and harness N1 is that exact defect.
+  **But specify them as *entry-point behaviour* tests, not import tests.** An
+  import-plus-factory-wiring smoke test would take those nine files from 54
+  uncovered statements to 0, turn the gate green, **and not catch N1** — because
+  N1 is not "the module fails to import," it is **a deleted call on a line a smoke
+  test happily executes.** Measured: with the call removed the suite was
+  100/100 green, predeploy exited 0, the manifest was written and the runtime
+  accepted drifted bytes. For each `main.py`, assert what the entry point must
+  *install or invoke*, then **neutralize it — delete the call and require red.**
+  **If deleting a call from `main()` leaves the new test green, the test bought
+  coverage and no protection**, and excluding the file would have been the more
+  honest option. The exclusion decision and the test-quality decision are
+  separable, and only the first was ever in question.
 
 ---
 
@@ -1144,6 +1156,24 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **A test written to close a coverage gap must fail under mutation of the thing
+  it now covers — otherwise the gate was satisfied rather than the risk.** This is
+  the sharp edge of *neutralization over coverage*: closing a gap **to reach a
+  threshold** selects for the cheapest test that executes the lines, and the
+  cheapest test is almost always an import or a construction. Measured on this
+  repo: nine `main.py` entry points at 54 uncovered statements would go to **0**
+  under an import-plus-wiring smoke test, turning the gate green while leaving N1
+  — a **deleted call on a line the smoke test executes** — entirely undetected.
+  **Coverage-driven tests are the population most likely to be decorative,
+  precisely because a number, not a risk, motivated them.**
+- **Reading does not produce random error — it produces error biased toward the
+  story you already hold.** Every read-based figure corrected in this program was
+  wrong in the **alarming** direction: 22 shipped-but-unhashed files instead of
+  12; an inflated suppression census; a merge assumed uniformly damaging that
+  turned out to be one gate broken and another healed. None landed on the
+  reassuring side. **That asymmetry is the argument for measuring even when the
+  reading seems obviously right — especially then**, because a reading that
+  confirms the current story is the one least likely to be checked.
 - **Crossed messages manufacture plausible causal stories — prefer "these arrived
   out of order" over "someone acted."** Three attributions in this program were
   made by inference from *timing* rather than from the record, and all three were
