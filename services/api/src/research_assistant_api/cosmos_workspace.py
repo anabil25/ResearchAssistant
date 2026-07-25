@@ -25,6 +25,7 @@ from research_assistant_api.workspace import (
     DatasetApprovalError,
     DatasetApprovalRequest,
     DatasetApprovalState,
+    DatasetSendOutcome,
     LibraryIngestRecord,
     LibraryIngestResponse,
     LibraryItem,
@@ -242,6 +243,12 @@ class CosmosWorkspaceStore(WorkspaceStore):
             for document in documents
             for entry in document.get("auditTrail", [])
         ]
+        # Continue the monotonic counter past everything already persisted, so a
+        # replica that appends after a cold load cannot reuse a sequence and
+        # invert causal order within a trail.
+        self._dataset_audit_sequence = max(
+            (entry.sequence for entry in self._dataset_audit), default=0
+        )
 
     def summary(self) -> WorkspaceSummary:
         self.library()
@@ -345,6 +352,24 @@ class CosmosWorkspaceStore(WorkspaceStore):
                 ) from exc
             return record
 
+    def validate_dataset_approval_request(
+        self,
+        request_id: str,
+        *,
+        plan_fingerprint: str,
+        consumed_by_principal_id: str | None = None,
+    ) -> DatasetApprovalRequest:
+        """Fresh-read, non-mutating fail-fast. Writes nothing, so a losing race
+        here costs only a rejected request, never a spent approval."""
+        with self._lock:
+            documents = self._query(self._runs_container, "dataset_approval")
+            self._reload_dataset_state(documents)
+            return super().validate_dataset_approval_request(
+                request_id,
+                plan_fingerprint=plan_fingerprint,
+                consumed_by_principal_id=consumed_by_principal_id,
+            )
+
     def consume_dataset_approval_request(
         self,
         request_id: str,
@@ -425,6 +450,86 @@ class CosmosWorkspaceStore(WorkspaceStore):
                 "Dataset approval consumption outcome was unknown and did not durably "
                 "record this invocation; refusing to grant an unverified invocation.",
             ) from exc
+
+    def record_dataset_send_outcome(
+        self,
+        request_id: str,
+        *,
+        invocation_id: str,
+        plan_fingerprint: str,
+        delivered: bool,
+        actor_principal_id: str,
+    ) -> DatasetApprovalAuditEntry:
+        """Durably append the send-outcome entry to the approval document.
+
+        Uses a bounded ETag-CAS retry rather than a blind write or a silent
+        drop: by this point the approval is already CONSUMED, so contention on
+        this document is effectively nil, and surfacing an exhausted retry is
+        preferable to losing the entry that distinguishes
+        attempted-and-delivered from attempted-and-failed.
+        """
+        attempts = 3
+        for attempt in range(attempts):
+            with self._lock:
+                documents = self._query(self._runs_container, "dataset_approval")
+                document = next((item for item in documents if item["id"] == request_id), None)
+                self._reload_dataset_state(documents)
+                entry = super().record_dataset_send_outcome(
+                    request_id,
+                    invocation_id=invocation_id,
+                    plan_fingerprint=plan_fingerprint,
+                    delivered=delivered,
+                    actor_principal_id=actor_principal_id,
+                )
+                if document is None:
+                    return entry
+                document["auditTrail"] = self._audit_documents_for(request_id)
+                try:
+                    self._runs_container.replace_item(
+                        item=document["id"],
+                        body=document,
+                        etag=document.get("_etag"),
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+                except CosmosHttpResponseError as exc:
+                    if exc.status_code != 412 or attempt == attempts - 1:
+                        raise
+                    continue
+                return entry
+        raise AssertionError("unreachable: bounded retry always returns or raises")
+
+    def dataset_send_outcome(
+        self,
+        request_id: str,
+        *,
+        invocation_id: str | None = None,
+    ) -> DatasetSendOutcome:
+        """Fresh-read, fail-closed. A document that cannot be read back yields
+        ``UNKNOWN`` rather than an optimistic ``DELIVERED``."""
+        with self._lock:
+            documents = self._query(self._runs_container, "dataset_approval")
+            self._reload_dataset_state(documents)
+            return super().dataset_send_outcome(request_id, invocation_id=invocation_id)
+
+    def dataset_approvals_blocked_by_requester_attribution(self) -> list[DatasetApprovalRequest]:
+        """Fresh-read enumeration of the migration surface.
+
+        SCOPE WARNING: bound to THIS (tenant, project) pair by ``_query``, so it
+        under-reports the fleet. See the base implementation for the
+        cross-partition query an operator must run to size the real population.
+        """
+        with self._lock:
+            documents = self._query(self._runs_container, "dataset_approval")
+            self._reload_dataset_state(documents)
+            return super().dataset_approvals_blocked_by_requester_attribution()
+
+    def dataset_approvals_invalidated_by_fingerprint_version(self) -> list[DatasetApprovalRequest]:
+        """Fresh-read enumeration. SCOPE WARNING: single (tenant, project) only;
+        see the base implementation for the cross-partition query."""
+        with self._lock:
+            documents = self._query(self._runs_container, "dataset_approval")
+            self._reload_dataset_state(documents)
+            return super().dataset_approvals_invalidated_by_fingerprint_version()
 
     def dataset_approval_audit(self) -> list[DatasetApprovalAuditEntry]:
         with self._lock:

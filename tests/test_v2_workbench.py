@@ -11,6 +11,7 @@ from pydantic import HttpUrl
 from research_assistant_api.app import _authorize_requested_sources, _raw_requested_sources, app
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import DisabledConnectorGateway
+from research_assistant_api.foundry import HostedAgentReply
 from research_assistant_api.studios import validate_agent_insight
 from research_assistant_api.workspace import WorkspaceStore
 from research_assistant_core.connector_gateway import (
@@ -24,6 +25,47 @@ from research_assistant_core.studio_models import EvidenceState
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     with TestClient(app) as test_client:
+        yield test_client
+
+
+class _StubHostedGateway:
+    """Records invocations and returns a fixed reply, so a hosted-mode studio
+    run completes without contacting Foundry."""
+
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    def invoke(
+        self,
+        message: str,
+        *,
+        agent_name: str | None = None,
+        allow_tools: bool = True,
+    ) -> HostedAgentReply:
+        self.calls.append(message)
+        return HostedAgentReply(
+            agent_name=agent_name or "dataset-agent",
+            content="Bounded analysis complete.",
+            response_id="resp-stub-1",
+        )
+
+
+@pytest.fixture
+def hosted_client() -> Iterator[TestClient]:
+    """Hosted-mode client for the dataset approval-boundary tests.
+
+    A dataset approval is consumed only on the path that actually sends to the
+    hosted agent (consuming earlier would burn a reviewer-decided approval when
+    nothing is sent). These tests assert the fail-closed denials that guard that
+    send, so they must exercise hosted mode -- in mock mode there is no send and
+    therefore nothing to authorize.
+    """
+    with TestClient(app) as test_client:
+        app.state.hosted = _StubHostedGateway()
+        app.state.settings = Settings(
+            execution_mode="hosted",
+            foundry_project_endpoint="https://foundry.example.test",
+        )
         yield test_client
 
 
@@ -579,15 +621,15 @@ def test_dataset_approval_request_cannot_be_replayed_for_a_different_csv(
     assert "does not match" in response.json()["detail"].lower()
 
 
-def test_dataset_approval_request_is_single_use(client: TestClient) -> None:
+def test_dataset_approval_request_is_single_use(hosted_client: TestClient) -> None:
     objective = "Profile the supplied two-row dataset."
     filename = "inline.csv"
     csv_text = "group,score\ncontrol,10\nintervention,12\n"
-    approval_request = client.post(
+    approval_request = hosted_client.post(
         "/api/studios/dataset/approval-requests",
         json={"filename": filename, "objective": objective, "csv_text": csv_text},
     ).json()
-    client.post(
+    hosted_client.post(
         f"/api/studios/dataset/approval-requests/{approval_request['id']}/decision",
         json={"decision": "approved", "rationale": "Reviewed the bounded fixture."},
     )
@@ -600,8 +642,8 @@ def test_dataset_approval_request_is_single_use(client: TestClient) -> None:
         },
     }
 
-    first = client.post("/api/studios/dataset/run", json=run_payload)
-    second = client.post("/api/studios/dataset/run", json=run_payload)
+    first = hosted_client.post("/api/studios/dataset/run", json=run_payload)
+    second = hosted_client.post("/api/studios/dataset/run", json=run_payload)
 
     assert first.status_code == 200
     assert second.status_code == 409
@@ -1079,6 +1121,7 @@ def test_decide_dataset_approval_request_rejects_a_second_decision() -> None:
         objective="Profile the supplied dataset.",
         requested_by="Researcher One",
         ttl_minutes=60,
+        requested_by_principal_id="researcher-1",
     )
     store.decide_dataset_approval_request(
         created.id,
