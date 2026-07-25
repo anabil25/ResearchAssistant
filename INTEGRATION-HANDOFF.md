@@ -509,13 +509,14 @@ Two consequences worth acting on together:
    records predating sequencing.
 
 **On the repeated rebuilds of this work:** **twelve** commits exist on parent
-`673985b`, of which exactly one — `1affe85` — is merged. The others (`e0b5367`,
-`f574ab3`, `aa44fd2`, …) are alternative builds, and every one measured so far is
-*smaller* than `main` (−450 and −265 lines respectively). **They are
-indistinguishable by message and by parent; only the trees differ.** Anything
-wanted from the unmerged set must be checked symbol-by-symbol against `main`
-first — searching for a *name* is not enough, as the operator-tool entry above
-records. **Compare trees.**
+`673985b` — `1affe85` (merged), plus `aa44fd2`, `f574ab3`, `e0b5367`, `10d3e39`,
+`cfb9366`, `c5fad2e`, `daf1f60`, `5238023`, `cf9064b`, `19f1625`, `9ca6432` — and
+they resolve to **twelve distinct trees**, no two alike. Exactly one is merged.
+Every unmerged build measured so far is *smaller* than `main` (−450 and −265 lines).
+**They are indistinguishable by message and by parent; only the trees differ.**
+Anything wanted from the unmerged set must be checked symbol-by-symbol against
+`main` first — searching for a *name* is not enough, as the operator-tool entry
+above records. **Compare trees.**
 
 ### Runtime trust (never independently reviewed — 107 commits)
 
@@ -997,6 +998,17 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **A probe surviving a tree change is not the same as its *result* surviving.**
+  Classifying a check as "position-independent" means it can be **re-run
+  unchanged** against a moved tip — it does *not* mean the earlier answer still
+  holds. Whether the result transfers depends on whether the behaviour changed,
+  which is a separate question from whether the probe still applies. Where source
+  is byte-identical the two coincide (subtree-hash equality is the strongest cheap
+  proof: `services` and `packages` hashing equal across two commits covers every
+  file, including ones nobody thought to name). Where source moved, a
+  position-independent probe must still be **re-executed**. **The classification
+  saves re-derivation, never re-execution** — treating it as saving both is how a
+  stale result gets carried forward under the appearance of method.
 - **A parser can fail *silently and confidently* — check its configuration before
   trusting its negatives.** A search for per-test Jest timeout overrides returned
   **zero**, twice, by two different methods. The regex missed the multi-line
