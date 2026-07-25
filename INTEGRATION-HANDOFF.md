@@ -385,15 +385,37 @@ were measured at `main`, not inferred.
   as an unclassified exclusion. These are almost certainly all structural and want
   a classifier rule, not per-line suppressions.
 
-### Dataset approval — one operator tool exists but was never merged
+### Dataset approval — the operator tool IS in `main` (I recorded otherwise; corrected)
 
-**`WorkspaceStore.dataset_approvals_without_requester_principal()` is missing from
-`main`, and `main` needs it.** Merged `main` *does* enforce the
-`UNATTRIBUTABLE_REQUESTER` denial (4 references), so the first deploy after this
-change produces a denial spike for every approval persisted before
-`requesterPrincipalId` existed. **`main` currently has no in-process way to
-enumerate that population**, which is the difference between a counted migration
-event and something that reads as an incident.
+**An earlier revision of this section claimed
+`WorkspaceStore.dataset_approvals_without_requester_principal()` was missing from
+`main` and gave coordinates to lift it from an unmerged commit. That was wrong.**
+The capability is in `main`, under a different name and in a better form:
+
+| | |
+|---|---|
+| `workspace.py:1207` | `dataset_approvals_blocked_by_requester_attribution()` |
+| `cosmos_workspace.py:514` | Cosmos override |
+| tests | `test_enumeration_narrows_to_the_genuinely_affected_set`, `test_enumeration_helper_is_scoped_to_one_project_and_under_reports`, `test_legacy_documents_omit_the_key_so_null_comparison_finds_nothing` — all three present |
+
+It is **narrowed** to `APPROVED` and not-yet-expired (its docstring puts the case
+plainly: *"the difference between reporting '1,200 legacy approvals' and '7
+approved and unexpired' — the former causes a panic, the latter supports a
+decision"*), and it carries an explicit **SCOPE WARNING** that the instance is
+pinned to one `(tenant, project)` pair and will **under-report fleet-wide**, with
+the cross-partition query given inline. It also pins the null-shape trap: legacy
+documents **omit** the key rather than storing `null`, so `= null` finds nothing
+and `NOT IS_DEFINED` is the correct predicate — asserted against a real stored
+document rather than argued.
+
+**How I got it wrong, since the failure is more instructive than the entry:** I
+searched for the *old name*, found zero matches, and concluded the *capability*
+was absent. It had been renamed so the name matched what it returns. **That is
+exactly the §7 practice — a negative search result is only as good as the
+vocabulary you searched for — which I had written down and then violated.** Search
+for the property, not the identifier.
+
+**What survives, and it is the part that matters operationally:**
 
 **Correction, measured at `main` — the spike will not say what you expect, and
 this changes what an operator should search for.** On the consume path the
@@ -419,34 +441,13 @@ Two consequences worth acting on together:
    passes either way. Seed a v1/v2-era digest so it stays red until the ordering
    actually changes.
 
-It exists, complete and tested, at **`e0b5367`** (not on any branch tip; parent
-`673985b`, which *is* in `main`):
-
-| what | where in `e0b5367` |
-|---|---|
-| base implementation | `services/api/src/research_assistant_api/workspace.py:1152` |
-| Cosmos override (delegates to `super()`) | `.../cosmos_workspace.py:508` |
-| test | `tests/test_dataset_approval_boundary.py:1995` |
-
-It is read-only, additive, touches no request path, and its docstring carries the
-equivalent raw Cosmos `COUNT`/`LIST` queries for operators querying the container
-before deploying.
-
-**Why it was not cherry-picked:** `e0b5367` is **−450/+50 against what `main`
-already has** — `main` took a later, larger build of the same work (`1affe85`,
-merged). Lifting the whole commit would *remove* content from `main`. Taking just
-this method means hand-surgery against a test file that is 241 lines divergent, on
-a frozen branch, for a tool that cannot be used until the 71 failures are fixed.
-**Port it as a three-file lift when that work starts.**
-
-**Also worth recording, because it inverts the obvious assumption:** of the three
-rulings that session reported as newly implemented at `e0b5367`, **two were
-already in `main`** — the `_dataset_sod_exempt` consume-chain separation and the
-wire-observable two-reason test
-(`test_the_two_consume_denials_are_distinct_and_both_wire_observable`) are both
-present. Only the operator-enumeration piece is genuinely absent. A branch
-reporting "all three implemented" was, against `main`, one-third new and
-two-thirds behind.
+**On the repeated rebuilds of this work:** at least three commits exist on parent
+`673985b` with the same message — `1affe85` (merged), `e0b5367` and `f574ab3`
+(neither merged, and both *smaller* than `main`: −450 and −265 lines
+respectively). **Compare trees, not messages or parents** — all three are
+indistinguishable by both. Anything wanted from the unmerged pair must be checked
+symbol-by-symbol against `main` first, because each is a *different build* of the
+same work rather than a successor to it.
 
 ### Runtime trust (never independently reviewed — 107 commits)
 
