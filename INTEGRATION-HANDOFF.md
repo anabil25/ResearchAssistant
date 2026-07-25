@@ -446,6 +446,16 @@ unreviewed surface is considerably better instrumented than the heading suggests
 and a reviewer should start by reading that file to learn which invariants are
 already pinned.
 
+**That file is not the complete index, though — check before concluding a
+property is unguarded.** At least one absence invariant lives elsewhere: the
+bidirectional no-inheritance guard between the runtime and control-plane ports is
+in `tests/test_agent_studio_runtime_mapping_store.py:92-93`
+(`Reader not in ControlPlane.__mro__` and the converse), not in the absence suite.
+I nearly filed that property as unguarded after searching the absence file for
+`issubclass`/`__bases__` and finding nothing — **a negative search result is only
+as good as the vocabulary you searched for, and the guard used `__mro__` in a
+different file.** Grep across the suite for the *property*, not the idiom.
+
 - **The attestation key is HMAC, so the verifier necessarily holds the signing
   key.** No identity split can separate the roles; an earlier ruling saying
   otherwise was withdrawn. **The primitive must change** — a Key Vault key with
