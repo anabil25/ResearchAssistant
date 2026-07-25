@@ -815,6 +815,26 @@ Nothing else outstanding on this workstream.
 
 ### State / web
 
+- **A post-fix flake measurement at `202a957` is superseded — do not read it as
+  describing `main`.** A reviewer measured the tip at `202a957` and reported that
+  the `delay: null` fix had been applied to `studio-components` but **not** to
+  `research-workbench`, which then hard-timed-out (1 run in 10,
+  `research-workbench.test.tsx:1287`, "Exceeded timeout of 5000 ms"). Their
+  conclusion — *the flake was not fixed, it moved* — was **correct for that
+  tree**. Measured:
+
+  | `research-workbench.test.tsx` | bare `userEvent.setup()` |
+  |---|---|
+  | at `202a957` | **22** |
+  | at `main` | **0** |
+
+  `c6370e5` ("remove the remaining bare `userEvent.setup()` delay") landed after
+  their measurement and **is merged**. Their recommendation — extend the fix to
+  `research-workbench` — is already implemented.
+  One loose end they raised does *not* apply: `research-markdown.integration.test.tsx`
+  contains **zero** `userEvent` references, so whatever drives its ratio, it is
+  not the setup delay.
+
 - **The `userEvent.setup()` conversion is now complete for the state lineage** —
   `c6370e5` landed after the first integration pass and is merged. **50 bare calls
   remain in `main`, and they belong to the agent-studio workstream, which never
