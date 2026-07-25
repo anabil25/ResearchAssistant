@@ -76,6 +76,17 @@ the code rather than reading its description.
    `azure.yaml` exposes only `postdeploy`. A direct `azd deploy` can therefore
    ship changed worktree code alongside an old, internally-valid manifest — a
    trustworthy-looking identity that describes something else.
+   **↳ Closed on that branch at `c90b9ce`, verified.** It now registers a
+   `predeploy` hook (`scripts/predeploy.{ps1,sh}`) running
+   `--verify-worktree --check`, so the hook set is
+   `{predeploy, postdeploy, preprovision, postprovision}`. **This objection is no
+   longer a reason to prefer the incumbent** and is recorded as closed so the
+   verdict does not keep being cited after it stopped describing the code.
+   It does **not** disturb objections 1, 2, 3 or 5, which are structural.
+   Note also what it does *not* change: **the incumbent already had both** a
+   `predeploy` hook and a worktree-divergence gate
+   (`validate_worktree_matches_commit`), so the addendum reaches parity with this
+   branch rather than passing it.
 5. **Its checked-in set is not the package set.** Its `.agentignore` does not
    exclude package-eligible non-Python files (`.agent_configs/baseline/metadata.yaml`,
    the root `*.eval.yaml`, `datasets/**.jsonl`, `evaluators/**.{json,yaml}`), so
@@ -96,6 +107,22 @@ without accepting stale or self-referential release evidence.
 ignored and backup files dropped in; producer output byte-identical. That is a
 stronger demonstration than any fixture, because it proves the producer reads git
 objects rather than the worktree.
+
+**One concrete, cheap improvement worth porting from `c90b9ce`: name the paths.**
+Its gate reports `untracked source would be uploaded: agents/scratch_probe.py` and
+lists every offending file. The incumbent's equivalent raises
+`"Package-eligible agent source differs from committed content"` and names
+nothing, so an engineer who trips it at deploy time has to go find the divergence
+by hand. Same detection, strictly worse diagnostics.
+
+**What is *not* worth porting, on measurement:** that branch lists untracked files
+with `git ls-files --others` deliberately **without** `--exclude-standard`, so a
+gitignored `scratch.py` that remote build still uploads is caught. The insight is
+right — **gitignore is not the package filter** — but the incumbent already gets
+it for free: `worktree_source_entries` enumerates with `root.rglob("*")`, a
+*filesystem* walk that cannot see gitignore or the index, and it compares file
+**content** rather than path presence. So untracked, ignored *and* modified
+tracked files all fall out of the same comparison.
 
 ---
 
