@@ -1054,6 +1054,19 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Satisfying the letter of a fix can still break the thing the fix protects.**
+  A defective audit ordering resolved ties by list position, so the stated
+  requirement was *"do not rely on sort stability."* An `id` tiebreaker satisfies
+  that literally — `uuid4` is deterministic — and is **causally wrong**: with a
+  shared timestamp it can order `consumed` before `decided`, which for an audit
+  trail is a worse failure than the one being fixed. The correct key is
+  `(recorded_at, sequence, id)`, where a **persisted monotonic sequence** carries
+  causal order and `id` only makes the order total for records predating
+  sequencing (`cosmos_workspace.py:247-250` continues the counter past the maximum
+  persisted value on cold load, so a replica cannot reuse one and invert a trail).
+  **The test that caught it asked what the order *means*, not whether it was
+  deterministic** — check a fix against its *purpose*, not against the sentence
+  that specified it.
 - **Choose operation order by which crash-intermediate state fails closed.** When
   a logical operation spans two writes, the ordering is not a style question — it
   decides what a crash between them leaves behind. Worked example from the runtime
