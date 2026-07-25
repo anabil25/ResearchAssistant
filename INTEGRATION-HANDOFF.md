@@ -591,7 +591,30 @@ different file.** Grep across the suite for the *property*, not the idiom.
 - **LOW** — a failing outcome-write inside the `except` handlers masks the original
   error; a *successful* send can be reported as 500.
 
-### Provider (APPROVED ×2) — **the carried item is CLOSED and merged**
+### Provider (APPROVED ×3) — **the carried item is CLOSED and merged**
+
+**Third approval is the tag-range review of `f96e904..f36947b`** (9 commits, 0
+merges, linear), pinned from `review/provider-candidate-1` rather than a reported
+SHA. It raised two non-blocking findings, and **one of them is already superseded
+by a commit that is in `main`** — recorded here so the verdict is not read as
+describing the current tree:
+
+- **Superseded — empty-string behaviour on `discovered_provider_version`.** At
+  `f36947b` a present-but-empty `""` failed closed and the whole instance was
+  rejected. **`9eb4950` changed that deliberately** (see below): `""` now
+  normalises to `None`. The reviewer's observation was correct at the tag and is
+  moot at `main`.
+- **Stands — scope of `b45f014`.** A repo-wide `* text=auto eol=lf` landed inside
+  a provider-adapter candidate, and its side effect **blinded one of this
+  branch's own controls**: with LF forced in the working tree, a defeated golden
+  exemption produces no CRLF and no pin movement, so the byte-level checks cannot
+  see it. A compensating test was added at `f36947b` and is correct — but the
+  *need* for it was manufactured by an out-of-scope change. **No live harm**
+  (zero stored-CRLF text files), so this is a process finding.
+  Worth knowing: `.gitattributes` **already documents this itself**, stating that
+  the compensating test "is the ONLY detector" and that the ordering is
+  load-bearing and machine-enforced. The control and its own limitation are
+  recorded in the same place, which is the right pattern.
 
 `9eb4950` landed the fix and is in `main`: `_verbatim_optional_text` **normalises**
 absent / `""` / `"   "` to `None` — three spellings of "the provider stated no
