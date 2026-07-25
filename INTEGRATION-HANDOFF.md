@@ -391,7 +391,7 @@ present. Only the operator-enumeration piece is genuinely absent. A branch
 reporting "all three implemented" was, against `main`, one-third new and
 two-thirds behind.
 
-
+### Runtime trust (never independently reviewed — 107 commits)
 
 - **The attestation key is HMAC, so the verifier necessarily holds the signing
   key.** No identity split can separate the roles; an earlier ruling saying
