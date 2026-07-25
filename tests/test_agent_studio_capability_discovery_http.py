@@ -17,10 +17,15 @@ from research_assistant_api.agent_studio.capability_discovery import (
     CapabilityProviderProtocolError,
     HttpCapabilityDiscoverySource,
     NullCapabilityDiscoverySource,
+    _verbatim_optional_text,
+    _verbatim_required_text,
     build_capability_discovery_source,
     discover_with_timeout,
 )
-from research_assistant_api.agent_studio.capability_registry import CapabilityRegistry
+from research_assistant_api.agent_studio.capability_registry import (
+    CapabilityRegistry,
+    compute_instance_fingerprint,
+)
 from research_assistant_api.agent_studio.models import HealthStatus, InstanceReadiness, OperationClass
 from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
@@ -2047,3 +2052,106 @@ async def test_discover_renders_non_string_warning_message_rather_than_dropping_
 
     assert result.available is True
     assert "12345" in result.warnings
+
+
+# --- reviewer finding: informationless values must not pin as distinct -------
+#
+# Absent / empty / whitespace-only are three spellings of "the provider stated
+# no value". They previously produced THREE different outcomes -- accepted as
+# None, whole-instance rejected, and accepted as '   ' -- so an informationless
+# value could pin as a distinct one in compute_instance_fingerprint. That is the
+# fabrication the validator exists to prevent, appearing inside the validator.
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_optional_text_normalises_every_informationless_spelling_to_none(blank: str) -> None:
+    assert _verbatim_optional_text(blank, field="f") is None
+    assert _verbatim_optional_text(None, field="f") is None
+
+
+@pytest.mark.parametrize("blank", ["", "   ", "\t\n"])
+def test_required_text_rejects_every_informationless_spelling(blank: str) -> None:
+    with pytest.raises(CapabilityProviderProtocolError, match="non-empty string"):
+        _verbatim_required_text(blank, field="f")
+
+
+@pytest.mark.parametrize("validator", [_verbatim_required_text, _verbatim_optional_text])
+def test_validators_never_trim_an_informative_value(validator: Any) -> None:
+    """Whitespace decides acceptance; it never transforms the value.
+
+    These strings become identities and provider-owned pins, so trimming would
+    silently mutate pinned content.
+    """
+
+    assert validator(" v1 ", field="f") == " v1 "
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_discover_keeps_instance_when_provider_version_is_blank(blank: str) -> None:
+    """The instance must NOT be dropped: a version string carries no authority,
+    so denying service over it would be failing closed on non-authority data."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        instance = _instance_payload(discovered_provider_version=blank)
+        return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert len(result.instances) == 1
+    assert result.instances[0].discovered_provider_version is None
+
+
+@pytest.mark.asyncio
+async def test_blank_provider_version_pins_identically_to_absent() -> None:
+    """The point of the fix: informationless spellings must converge on one
+    fingerprint rather than pinning as three distinct values."""
+
+    async def handler_for(value: Any) -> Any:
+        async def handler(request: httpx.Request) -> httpx.Response:
+            if request.url.path == "/v1/providers":
+                return httpx.Response(200, json=_catalog_payload(["foundry"]))
+            instance = _instance_payload(discovered_provider_version=value)
+            return httpx.Response(200, json=_capabilities_payload("foundry", instances=[instance]))
+
+        return handler
+
+    fingerprints = []
+    for value in (None, "", "   "):
+        source, client = _source(await handler_for(value))
+        result = await source.discover(_request())
+        await client.aclose()
+        fingerprints.append(compute_instance_fingerprint(result.descriptors[0], result.instances[0]))
+
+    assert len(set(fingerprints)) == 1
+
+    # ...while a genuinely informative version still pins differently.
+    source, client = _source(await handler_for("2024-05-01"))
+    result = await source.discover(_request())
+    await client.aclose()
+    assert compute_instance_fingerprint(result.descriptors[0], result.instances[0]) not in fingerprints
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["name", "family", "resource_kind"])
+@pytest.mark.parametrize("blank", ["", "   "])
+async def test_discover_rejects_blank_presentation_field(field: str, blank: str) -> None:
+    """Absent is not acceptable for these, so blank is rejected rather than
+    normalised -- a blank title is not a title."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            return httpx.Response(200, json=_catalog_payload(["foundry"]))
+        descriptor = _descriptor_payload(**{field: blank})
+        return httpx.Response(200, json=_capabilities_payload("foundry", descriptors=[descriptor], instances=[]))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.descriptors == ()
+    assert any(f"{field} must be a non-empty string" in warning for warning in result.warnings)

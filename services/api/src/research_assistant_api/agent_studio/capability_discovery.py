@@ -526,17 +526,27 @@ def _is_hex_digest(value: Any) -> TypeGuard[str]:
 
 
 def _verbatim_optional_text(value: Any, *, field: str) -> str | None:
-    """Preserve an optional provider string verbatim; ``None`` only when absent.
+    """Preserve an optional provider string verbatim, normalising "no information" to ``None``.
 
-    Absence is legitimate and preserved as ``None``; a *present* value must be a
-    non-empty string and is returned unchanged. A present-but-non-string value
-    fails closed rather than being ``str()``-coerced, because these values can
-    reach content digests -- ``discovered_provider_version`` is an input to
-    ``capability_registry.compute_instance_fingerprint``, so coercing ``7`` to
-    ``"7"`` would silently pin a fabricated value.
+    Absent (``None``), empty (``""``) and whitespace-only (``"   "``) are three
+    spellings of the same fact -- the provider stated no value -- so all three
+    normalise to ``None``. They previously produced three *different* outcomes
+    (accepted-as-None, whole-instance rejected, accepted-as-``"   "``), which
+    made an informationless value pin as a distinct one in
+    ``capability_registry.compute_instance_fingerprint`` -- the very fabrication
+    this validator exists to prevent.
+
+    Normalising rather than rejecting is deliberate. A version string is not
+    authority: dropping an entire discovered capability instance because a
+    non-authority field is blank would deny service over a value that grants
+    nothing. Fail closed on authority; normalise on information. A *present and
+    informative* value is still returned byte-for-byte, and a non-string still
+    fails closed, because coercing ``7`` to ``"7"`` would pin a fabricated value.
     """
 
     if value is None:
+        return None
+    if isinstance(value, str) and not value.strip():
         return None
     return _verbatim_required_text(value, field=field)
 
@@ -569,9 +579,20 @@ def _verbatim_optional_digest(value: Any, *, field: str) -> str | None:
 
 
 def _verbatim_required_text(value: Any, *, field: str) -> str:
-    """Preserve a required provider identifier string verbatim, or fail closed."""
+    """Preserve a required provider string verbatim, or fail closed.
 
-    if not isinstance(value, str) or not value:
+    Rejects any value carrying no information: a non-string, the empty string,
+    or a string that is entirely whitespace. ``"   "`` is rejected for the same
+    reason ``""`` is -- it names nothing -- and admitting it would let a blank
+    stand in as a distinct identity or title.
+
+    Whitespace is only used to *decide*, never to transform: a value that
+    survives is returned byte-for-byte, so ``" v1 "`` is preserved with its
+    padding intact. These strings become identities and provider-owned pins, so
+    trimming them here would be a silent mutation of pinned content.
+    """
+
+    if not isinstance(value, str) or not value.strip():
         raise CapabilityProviderProtocolError(f"{field} must be a non-empty string, got {value!r}")
     return value
 
