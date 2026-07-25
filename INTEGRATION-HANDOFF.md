@@ -1115,6 +1115,21 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **"Two parties agreed" is not evidence until you check whether they could have
+  inherited the agreement.** This document contains two convergence cases that
+  look identical and conclude oppositely, so the discriminator matters more than
+  either instance:
+
+  | case | relationship | reading |
+  |---|---|---|
+  | two sessions independently computed **22** shipped-but-unhashed files, by *unrelated* tool errors (`check-ignore -X`; a PowerShell array-property count) | **no shared ancestor** | genuine convergence → **the error is natural**, and worth guarding against |
+  | two competing lines share the `.py` + `requirements.txt` inclusion filter | **shared base `b7969d6`** — the filter exists verbatim in `source_bundle_digest()` there | **inheritance, not convergence** → **the policy is unexamined**, and neither line chose it |
+
+  The second looked like independent corroboration and was the opposite: a
+  **shared blind spot reading as independent confirmation**. It survived every
+  review because it was never in a diff. **Check for a common ancestor before
+  treating agreement as corroboration** — otherwise the strongest-looking evidence
+  is produced by the weakest mechanism.
 - **Neutralize in both directions — they answer different questions.** Mutating
   *away* from correct asks **"is this guarded?"**; mutating *toward* correct — a
   reverse neutralization, i.e. applying the fix and seeing what breaks — asks
