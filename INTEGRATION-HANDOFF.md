@@ -394,6 +394,30 @@ change produces a denial spike for every approval persisted before
 enumerate that population**, which is the difference between a counted migration
 event and something that reads as an incident.
 
+**Correction, measured at `main` — the spike will not say what you expect, and
+this changes what an operator should search for.** On the consume path the
+fingerprint gate runs *before* the attribution gate:
+`consume_dataset_approval_request` (L1078) → `_check_dataset_approval_usable`
+(L999), which raises `FINGERPRINT_MISMATCH` at **L1026** and only calls
+`_verify_consuming_principal` at **L1044**, where `UNATTRIBUTABLE_REQUESTER` lives
+(L1134). Since `_DATASET_FINGERPRINT_VERSION = 3` (L233) while the records in
+question predate the version-2 bump that introduced `requested_by_principal_id`,
+**every real legacy record denies with `fingerprint_mismatch` and never reaches
+the attribution check.** So `UNATTRIBUTABLE_REQUESTER` is effectively unreachable
+for exactly the population it was written for.
+
+Two consequences worth acting on together:
+
+1. **Operationally**, an operator watching for an `unattributable_requester`
+   spike will see none, while `fingerprint_mismatch` — a far more alarming and
+   less specific signal — spikes instead. The enumeration helper below is still
+   the right triage tool; the *reason code* to expect is the surprise.
+2. **For the fix**, ordering attribution before fingerprint is the change, and a
+   test seeded with a matching digest **cannot detect it** — matching by
+   construction opens the fingerprint gate and lets attribution fire, so the test
+   passes either way. Seed a v1/v2-era digest so it stays red until the ordering
+   actually changes.
+
 It exists, complete and tested, at **`e0b5367`** (not on any branch tip; parent
 `673985b`, which *is* in `main`):
 
