@@ -1889,6 +1889,31 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **Publish what a check *cannot* see alongside what it confirms — the search for a
+  check needing no caveat does not terminate.** One reviewer's verification method
+  failed one level up **three times in a single day**, and each fix was correct:
+
+  ```
+  git branch --contains   ->  unfalsifiable (matched every SHA on the branch)
+  git rev-parse           ->  fixed that, but bounded by object-store FRESHNESS
+  test-count fingerprint  ->  fixed that, but blind across docs-only commits
+  ```
+
+  **Each repair was sound and each left a residue one level out.** `rev-parse`
+  cured the unfalsifiability of `--contains` without touching the freshness
+  dependency underneath it: `merge-base --is-ancestor` answers *confidently and
+  precisely* about whatever the local object store holds, and reports nothing at all
+  if that store is stale. The reviewer had fetched first each time, but had not
+  reasoned about why it mattered — **treating the object store as ground truth
+  rather than as another input with a freshness property.**
+
+  **The general form: a verification is bounded by the freshness of what it reads,
+  not only by the soundness of what it computes.** That is the same shape as every
+  other defect in this document — *a control that computes correctly over an input
+  that has stopped being true* — and it is why the honest deliverable is a check
+  **plus its stated blind spot**, not a search for the check that finally has none.
+  A caveat published with a result survives; a caveat discovered later arrives after
+  the result has been quoted.
 - **Grep the invariant, not the symbol name — a name search cannot observe the
   condition it was asked about.** The question was *"does `main` have the
   enumeration capability?"*; the grep tested *"does `main` contain this
