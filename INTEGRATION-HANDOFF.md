@@ -1122,20 +1122,50 @@ constants: aggregate scales linearly in **responses**, not providers, because th
 catalog fetch (`_get_json("v1/providers")`, L1124) is a response in its own right
 and its warnings are concatenated with the per-provider ones (L1224, L1239). So
 the relation is **`(1 catalog + N providers) × per-response warning bytes`**,
-giving a ceiling at shipped defaults of **`(1 + 250) × 8 MB ≈ 2.01 GB`** — an
+giving a ceiling at shipped defaults of **`(1 + 250) × 8 MB ≈ 2.01 GB` retained —
+and ~3.2–4.2 GB *peak*, which is the number to size against** (see the measured
+multiplier below) — an
 amplification of **251×**, measured across 1/5/10/25 providers with no inflection.
 A second datum: 150 KB of warning text under a 200 KB cap emitted **324 warnings /
 295,650 bytes**, passed through verbatim.
 
-**Mind the seam in that figure: the *shape* of the bound is measured, the
-*magnitude* is arithmetic.** Linear scaling was measured at small N (up to 25
-providers, and independently at N=6 where 960,000 chars `== 6 × 4 × 40,000`
-exactly). The ~2 GB is **extrapolated to the shipped default of 250, not
-observed there** — at that scale allocator, GC and OOM-killer behaviour could
-dominate long before the arithmetic ceiling is reached. The structural claim
-(nothing bounds the aggregate) is established; the specific number is a
-projection. **Do not cite ~2 GB as a measured figure**, and if the decision turns
-on the magnitude rather than the existence of the gap, measure at N=250 first.
+**The ~2 GB figure was low by ~2×, and the label that was supposed to protect it
+did not.** An earlier revision recorded `≈ 2.01 GB` with an "extrapolated, do not
+cite as measured" caveat in the *following paragraph*. That guards against false
+*precision* but not against a wrong *magnitude* — **a reader who fully accepts the
+caveat still sizes a container limit against 2 GB and still OOMs**, then concludes
+the finding was wrong or the fix ineffective when both were fine and only the
+number was low. The owner measured it rather than let the figure set:
+
+```
+provider-count term — linear across 33x, not the 6 originally measured
+    N     warnings   aggregate chars   chars/provider
+    6           24           480,000           80,000
+  200          800        16,000,000           80,000
+
+per-response term — one response retains essentially the whole byte cap
+   byte cap     retained chars   retained/cap
+    200,000            199,600          99.8%
+  8,000,000          7,999,600         100.0%
+
+composition — peak exceeds retained, because wire bytes and parsed objects coexist
+    N   retained MB   peak traced MB   peak/retained
+    4          16.0             34.2          2.14x
+   10          40.0             86.1          2.15x
+   20          80.0            126.1          1.58x
+```
+
+**That composition also settles the semaphore question by measurement.** If
+concurrency bounded memory, peak would be flat at ~8 × 4 MB ≈ 32 MB for every N.
+It is not — 34 → 86 → 126 MB as N goes 4 → 10 → 20, so **peak tracks total
+retained, not in-flight**, confirming the structural reading at L1228/L1234.
+
+**Still not measured, and deliberately so:** 250 × 8 MB was never run in one
+process — a multi-GB allocation on a shared machine. The top end now rests on two
+independently measured linear terms plus a measured composition with a measured
+overhead multiplier, rather than on N=6. **A much smaller gap, but not zero.**
+The remediation is unchanged and still correct — per-warning `max_length` plus an
+aggregate cap; only the magnitude a reviewer sizes against moves.
 
 **Do not record this as a mislabelled control — the setting is honest, and the
 ingress bound is well implemented.** `config.py:257` reads *"Hard cap on the
@@ -1889,6 +1919,29 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **A labelled gap only stays labelled if the label rides in the same sentence as
+  the figure.** `≈ 2.01 GB` was recorded with an explicit "extrapolated, do not
+  cite as measured" caveat — **in the next paragraph.** The number travelled and
+  the caveat did not, which is the normal fate of a caveat stored beside a value
+  rather than inside it. Worse, the caveat guarded the wrong property: it warned
+  against false **precision** when the actual defect was a wrong **magnitude**.
+  **A reader who fully believed the label still sizes a container against 2 GB and
+  still OOMs** — then concludes the finding was wrong or the remediation
+  ineffective, when only the number was low. Measured peak is **1.6–2.1× retained**,
+  so the figure to size against is ~3–4 GB. **Put the number and its bound in one
+  breath — "~2 GB retained, ~3–4 GB peak, top end extrapolated" — never a clean
+  figure with a disclaimer underneath.**
+- **Verifying the *inputs* to a claim is not verifying the claim, and it feels
+  identical.** Told a memory ceiling was arithmetic over six constants, I read the
+  constants in source and confirmed all six and their product. **The constants were
+  never where the error was** — the unmeasured step sat *past* them, in whether
+  real behaviour tracks the arithmetic, and it did not: parsed objects and wire
+  bytes coexist, so peak runs ~2× the retained figure the arithmetic yields.
+  **The check was sound, current, and aimed one step short of the thing in doubt.**
+  That is the whole program's defect shape moved one turn further out — and the
+  test is: *which step of this claim was I actually uncertain about, and did my
+  check touch that step?* Reading source to confirm a premise both parties already
+  agreed on is the most convincing way to verify nothing.
 - **Publish what a check *cannot* see alongside what it confirms — the search for a
   check needing no caveat does not terminate.** One reviewer's verification method
   failed one level up **three times in a single day**, and each fix was correct:
