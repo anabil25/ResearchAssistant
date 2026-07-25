@@ -123,11 +123,19 @@ the code rather than reading its description.
    ship changed worktree code alongside an old, internally-valid manifest — a
    trustworthy-looking identity that describes something else.
    **↳ Closed on that branch at `c90b9ce`, verified. The branch tip is
-   `e121e41`, not `c90b9ce` — cite the tip.** Three commits sit on `b7969d6`
-   (`76e8812` → `c90b9ce` → `e121e41`), none reachable from `main`; `e121e41`
-   ("Name the source manifest producer in every fail-closed error") carries the
-   bypass-surface work, the offline-harness path, and the docs. **Citing the
-   middle commit makes the third invisible to anyone porting from this branch.**
+   `e121e41`, not `c90b9ce`.** Three commits sit on `b7969d6`
+   (`76e8812` → `c90b9ce` → `e121e41`), none reachable from `main`.
+   **But porting from the two cited commits is safe — an earlier revision of this
+   note overstated the risk.** Verified directly at `76e8812`: all three
+   validators are present in complete form ("source manifest git identity does not
+   match its entries", "source tree digest does not match its entries", "source
+   manifest digest does not match its content"), along with `blob_id` (5
+   occurrences), `source_tree_git_id` (9) and `inclusion_policy_version` (13).
+   **Every mechanism credited to this branch is recoverable from `76e8812` alone.**
+   `e121e41` adds only the developer-experience layer on top — fail-closed errors
+   naming the producer command, an offline-harness path that loads the packaged
+   manifest instead of raising a bare `TypeError`, plus README/ARCHITECTURE docs
+   and tests. Worth having, not required for a port.
    It now registers a
    `predeploy` hook (`scripts/predeploy.{ps1,sh}`) running
    `--verify-worktree --check`, so the hook set is
