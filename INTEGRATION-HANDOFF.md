@@ -519,6 +519,29 @@ Anything wanted from the unmerged set must be checked symbol-by-symbol against
 `main` first — searching for a *name* is not enough, as the operator-tool entry
 above records. **Compare trees.**
 
+**Two enumerated-set weaknesses live in `main`, both measured, and they are the
+same shape as F1's inclusion filter:**
+
+1. **The docstring guard omits the site where the contradiction lives.**
+   `app.py:1585` says `action="consumed"` **"must imply data really left"**, and
+   `tests/test_dataset_approval_boundary.py:953` draws the same false converse —
+   while `workspace.py` correctly says *attempted, never that a send happened*.
+   The guard at `:1588` inspects exactly
+   `(Entry.__doc__, WorkspaceStore.record_dataset_send_outcome.__doc__)` — **two
+   docstrings, neither of them `app.py`'s.** It passes while the contradiction it
+   exists to catch sits in a third site. Adding `_consume_dataset_analysis.__doc__`
+   to that tuple fails in one line and forces the fix.
+2. **The neutralization battery is seven hand-written anchors against 18 raise
+   sites.** A reviewer applied this rule to their own method unprompted:
+   `raise DatasetApprovalError` appears **18** times in `main`
+   (`workspace.py` 11, `cosmos_workspace.py` 4, `app.py` 3), and the battery
+   anchors **7**. It is correct for what it lists and **silent about any
+   fail-closed branch nobody thought to anchor**, so a control added tomorrow is
+   invisible and the report still reads *"7/7 red."* **Derivable form:** enumerate
+   every `raise DatasetApprovalError(...)` from source and require each to have a
+   neutralization that reddens at least one test — converting *"the controls I
+   remembered"* into *"the controls that exist."*
+
 ### Runtime trust (never independently reviewed — 107 commits)
 
 **Read this before judging the section by its heading.** "Never independently
