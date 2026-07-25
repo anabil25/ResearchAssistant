@@ -401,5 +401,27 @@ From the review program that produced §5.
   blocker on lines proven executed.
 - **When a property holds because something is absent, assert the absence** — the
   method set, the module set, the call count, the config default.
+- **Ask what a fix stopped you from being able to see.** A remediation that
+  removes a *symptom* disables every detector watching for that symptom. This is
+  distinct from a hidden defect (an audit hunting for problems finds it) and from
+  absent enforcement (found by asking "what is the domain?"). Here nothing is
+  concealed and nothing is unenforced — the fix genuinely works — but the evidence
+  channel for a *different, still-live* failure mode is destroyed as a side
+  effect. Measured in both directions on this repo:
+
+  ```
+  exemption defeated, eol=lf present  -> mechanism test FIRES, outcome test BLIND
+                                         (transport pin holds, 0 CRLF pairs)
+  exemption intact, CRLF by another route -> outcome test FIRES, mechanism BLIND
+                                         (check-attr still reports 'unset')
+  ```
+
+  So neither test is redundant: **each is the sole detector of a different
+  failure mode**, and deleting either as duplicative removes the only thing that
+  can see one of them.
+- **Verify a claim even when you expect it to be true.** A docstring asserting a
+  measured result is a claim like any other. The table in that test's docstring
+  was re-derived independently and matched line for line — which is the step worth
+  taking precisely because the statement looked correct.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
