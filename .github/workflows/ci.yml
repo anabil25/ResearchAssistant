@@ -29,12 +29,32 @@ jobs:
       - name: Bake committed Hosted Agent source identity
         run: python -m scripts.build_agent_source_tree
 
-      - name: Lint, type-check, test, and audit Python
+      - name: Lint and type-check Python
         run: |
           uv run ruff check packages services agents scripts tests
-          uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
-          uv run pytest -q
-          uv run pip-audit
+          uv run mypy --linecount-report coverage/python/mypy-domain
+
+      - name: Enforce 100% Python line and branch coverage
+        id: python_coverage
+        continue-on-error: true
+        run: |
+          mkdir -p coverage/python
+          uv run pytest -q --cov --cov-report=term-missing --cov-report=html:coverage/python/html --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
+
+      - name: Enforce exact suppression and coverage domain
+        id: suppression_contract
+        continue-on-error: true
+        run: uv run python scripts/check_suppression_contract.py
+
+      - name: Upload Python coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: python-coverage
+          path: coverage/python
+
+      - name: Audit Python dependencies
+        run: uv run pip-audit
 
       - name: Export OpenAPI contract
         run: uv run python scripts/export_contracts.py
@@ -69,3 +89,16 @@ jobs:
 
       - name: Compile Bicep
         run: az bicep build --file infra/main.bicep --stdout > /dev/null
+
+      # Both Python gates run with continue-on-error so a failing coverage gate
+      # cannot mask a failing contract gate; this step is what actually fails the
+      # job. Web coverage is enforced inline by `npm run ci` (test:coverage) and
+      # the browser suite fails its own step directly, so neither needs an id here.
+      - name: Enforce release-gate outcomes
+        if: always()
+        env:
+          PYTHON_COVERAGE: ${{ steps.python_coverage.outcome }}
+          SUPPRESSION_CONTRACT: ${{ steps.suppression_contract.outcome }}
+        run: |
+          test "$PYTHON_COVERAGE" = "success"
+          test "$SUPPRESSION_CONTRACT" = "success"

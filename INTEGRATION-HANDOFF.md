@@ -129,11 +129,54 @@ mistake the shape check for a security control.
 `_READY_STATUSES` and `_READY_TEST_STATUSES` with identical values. Kept the
 former; a comment records why, so the two cannot drift.
 
-**`ci.yml` and `jest.config.ts` — kept the stronger gate.** `main`'s jest config
-set global thresholds to 0 with per-file 100; HEAD covers `src/**/*.{ts,tsx}`
-broadly. `main`'s CI ran a narrow `--cov` list; HEAD has the full gate (mypy
-linecount, 100% coverage, suppression contract, artifact upload, pip-audit) plus
-the harness's source-identity bake step.
+**`ci.yml` — I recorded this wrong, and the correction is the most consequential
+defect found after the merge.** The claim above used to read that HEAD kept "the
+full gate (mypy linecount, 100% coverage, suppression contract, artifact upload,
+pip-audit)." **It did not.** The merge resolved `ci.yml` by taking the other side
+wholesale, and every Python release gate the `coverage-release-gates` branch had
+built was deleted with **no conflict marker**:
+
+| step lost | consequence |
+|---|---|
+| `mypy --linecount-report coverage/python/mypy-domain` | the checker's required artifact was never produced |
+| `pytest --cov … --cov-fail-under=100` | 100% line+branch enforcement gone; `coverage.json` never produced |
+| `check_suppression_contract.py` | **the entire gate became dead code — no workflow invoked it** |
+| `actions/upload-artifact` ×3 | no coverage/report artifacts |
+| `Enforce release-gate outcomes` | the step that actually failed the job on any gate |
+
+What replaced them was a single combined step running `ruff`, a **narrower**
+hand-listed `mypy` domain, bare `pytest -q`, and `pip-audit`. Note the mypy
+narrowing specifically: the checker validates the mypy domain against
+`pyproject`'s `files = [packages, services, agents, scripts, tests]`, so the
+hand-written CLI list was a *different* domain than the contract expects.
+
+**Why my silent-loss scan missed it:** that scan parsed every Python module's
+top-level `ast` names and compared them against each merged branch. It was
+`.py`-only. `.github/workflows/` was outside its universe — and the single most
+important non-Python file in the repo is the one that runs the gates. **A
+completeness check is only as good as the file types it enumerates.**
+
+**Restored** (additively, not by reverting): the four gate steps are back with
+their original `continue-on-error` + aggregate-enforcement pattern, and the newer
+`Bake committed Hosted Agent source identity` step and `npm run ci` consolidation
+are kept. The enforce step now gates only `python_coverage` and
+`suppression_contract`, because web coverage is enforced inline by `npm run ci`
+(→ `test:coverage`) and the browser suite fails its own step directly; giving
+those ids would have required making them `continue-on-error` too, which would
+have *weakened* them.
+
+**The restored gate was run end-to-end locally and it is red — correctly.** It
+reports drift the merge introduced, which is exactly what it exists to do:
+coverage source roots differ from packaging-derived roots; the coverage file set
+differs from the packaging-derived source set; one file has unknown production
+posture; and a list of unclassified coverage exclusions from the merged
+agent-studio code (`if TYPE_CHECKING:`, `...`, `@property`) that the classifier
+does not yet recognise as structural. **Fixing those is open work, not something
+this integration closes** — see §5.
+
+**`jest.config.ts` — kept the stronger gate.** `main`'s jest config set global
+thresholds to 0 with per-file 100; HEAD covers `src/**/*.{ts,tsx}` broadly, and
+jest coverage survived the merge inside `npm run ci`.
 
 **`api.test.ts` — took ours; known coverage risk.** Both sides were complete
 suites with their own mocks (4 vs 5 tests, no overlap); concatenating would
@@ -247,6 +290,40 @@ same path on each merged branch.
 ## 5. Open findings carried from review
 
 Defects the reviews found. **Not** merge damage; they survive into this branch.
+
+### Release gates — found *after* the merge, by running the restored gate
+
+These three are merge damage, unlike everything else in this section, and are
+recorded here because they are open work rather than resolved history. All three
+were measured at `main`, not inferred.
+
+- **The committed suppression contract is stale by 92 files.**
+  `.github/suppression-contract.json` describes **58** production files. That was
+  exactly right for the tree it was generated from (56 tracked `.py` under the
+  declared roots, **0** outside the partition). Recomputed against merged `main`
+  the same code yields **packaging 151 / coverage 150 / production 150 / unknown
+  1**. Regenerate it once the tree settles.
+  **Do not read the committed `postureUnknownFiles: 0` as evidence of anything** —
+  in that snapshot `packagingFiles` and `coverageProductionFiles` are the *same*
+  58-element set, so the symmetric-difference check is empty by construction. It
+  is a self-consistent artifact, which is a much weaker claim than it looks.
+
+- **`scripts/build_agent_source_tree.py` ships as a predeploy hook with zero
+  coverage evidence.** It is the sole `postureUnknown` file when recomputed:
+  `packaging=[azure-hook:predeploy:posix, azure-hook:predeploy:windows]`,
+  `coverage=[]`. This is the *same* hook-gap class the gates work had already
+  closed for `scripts/postprovision.py` and `scripts/configure_agent_rbac.py`
+  (both added to coverage source and closed with behavioural tests, not
+  exempted). The merge introduced a third hook script from a different branch and
+  **their mechanism caught it unaided** — good evidence the partition refinement
+  is sound. Worth noting that this file is the provenance producer §2 endorses as
+  the release trust anchor: it ships, and it is not measured.
+
+- **Unclassified coverage exclusions from merged agent-studio code.** The
+  classifier does not yet recognise `if TYPE_CHECKING:`, bare `...` protocol
+  bodies, or `@property` in the merged modules as structural, so each is reported
+  as an unclassified exclusion. These are almost certainly all structural and want
+  a classifier rule, not per-line suppressions.
 
 ### Runtime trust (never independently reviewed — 107 commits)
 
@@ -481,6 +558,22 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **A completeness check is only as good as the file types it enumerates.** The
+  silent-loss scan that recovered six lost definitions parsed every Python
+  module's `ast` — and therefore could not see that the merge had deleted every
+  release gate from `.github/workflows/ci.yml`. The most damaging loss of the
+  whole integration was in the one file the checker was structurally incapable of
+  reading. Enumerate the *universe* first, then choose the parser per type.
+- **A green gate that nothing invokes is indistinguishable from no gate.** The
+  suppression checker survived the merge intact as a script and was correct the
+  whole time — it detected real drift the moment it was finally run. What was lost
+  was the four lines of CI that called it. Check the *caller*, not just the
+  mechanism.
+- **Distinguish "the control cannot detect it" from "the control was not run."**
+  Reading the stale committed contract suggested 92 files had silently escaped the
+  partition. Running the checker showed the opposite: it recomputes from the tree
+  and flags them correctly. The alarming conclusion was an artifact of trusting a
+  committed snapshot over an execution.
 - **Verify the tip with `git rev-parse` before reading any report.** Every workstream
   reported a stale SHA at least once; one branch was rebuilt ten times.
   `git branch --contains` is a *reachability* test, not a tip test — it passes for
