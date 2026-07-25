@@ -1357,7 +1357,33 @@ the third.** Ship the normalization with the rule, not after it.
   fails. Fix: `git remote rename Main origin`.
 - `uv sync --all-packages --all-extras` is required; a plain `uv sync` leaves
   `fastapi` and the workspace packages uninstalled.
-- **Two stashes exist and are invisible to every check used in this wind-down.**
+- **Six review tags exist and five are reachable from `main`.** They are the only
+  references in this program that still point where they did when their verdicts
+  were written — branch tips moved repeatedly, tags did not.
+
+  ```
+  review/dataset-candidate-1   10d3e39   NOT in main   <- see below
+  review/gates-candidate-1     a781298   in main
+  review/harness-candidate-1   34543f1   in main
+  review/provider-candidate-1  f36947b   in main
+  review/state-baseline-1      075057f   in main
+  review/state-fixed-1         4fe0ce6   in main
+  ```
+
+  **`review/dataset-candidate-1` being unreachable from `main` is not a defect —
+  it is the durable proof of the §5 approval-coverage gap.** It pins the tree that
+  was actually reviewed, so the claim "no approval covers the shipped dataset tree"
+  stays checkable by anyone, indefinitely, with
+  `git rev-parse review/dataset-candidate-1:services` against `main`. **Do not
+  delete these tags.** Without them the verdicts become unfalsifiable prose.
+
+- **The entire integration is local-only.** `Main/main` is at `a62cd0a`; local
+  `main` is **289 commits ahead** and nothing has been pushed at any point. The
+  "one resolved branch" state described throughout this document exists **on one
+  machine**. Publishing it is a deliberate, unmade decision — recorded here because
+  a reader would otherwise reasonably assume the merge is shared.
+
+- **Two stashes existed and were invisible to every check used in this wind-down.**
   Recorded because `git stash` entries appear in neither `git log` nor
   `git status`, are unreachable from any branch, and **survive branch deletion** —
   so a "clean tree, one branch" verification passes with them present. Both were
