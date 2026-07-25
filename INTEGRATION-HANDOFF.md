@@ -1790,6 +1790,25 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **Ask what a fix cost in visibility, not just what it fixed.** Remediation
+  removes the conditions that made a problem observable, and nothing in a normal
+  review surfaces that — the diff shows what was added, never what stopped being
+  detectable. **"What did this fix stop us from being able to see?"** is not a
+  question anyone asks by default, and on this program it was the only route to an
+  entire finding class. The EOL remediation was correct and complete on its own
+  terms; asking the question anyway is what found the cost. **Ask it of every
+  successful fix, especially the clean ones** — a messy fix invites scrutiny, a
+  clean one closes the file.
+- **Probe your own formulation in the direction that would refute it, not the one
+  that would confirm it.** Distinct from neutralizing code in both directions
+  (above): this is about the *claim*. A reviewer here proposed "outcome for
+  detection, mechanism for diagnosis," then ran both directions of the probe and
+  **refuted it in about four minutes** — the same experiment that would have
+  confirmed it killed it, because they ran the half that could say no. **Running
+  only the confirming direction is how a wrong formulation becomes durable:** it
+  accumulates supporting instances, none of which could ever have contradicted it,
+  and the cost of the refuting half is usually one extra assertion. **A formulation
+  that has only been confirmed has not been tested.**
 - **A measurement tool that fails *silently* on a subset will under-report, and
   the subset is never random.** Three instances here, all costing a wrong number
   before being caught:
