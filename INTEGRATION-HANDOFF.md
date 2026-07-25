@@ -1357,6 +1357,32 @@ the third.** Ship the normalization with the rule, not after it.
   fails. Fix: `git remote rename Main origin`.
 - `uv sync --all-packages --all-extras` is required; a plain `uv sync` leaves
   `fastapi` and the workspace packages uninstalled.
+- **Two stashes exist and are invisible to every check used in this wind-down.**
+  Recorded because `git stash` entries appear in neither `git log` nor
+  `git status`, are unreachable from any branch, and **survive branch deletion** —
+  so a "clean tree, one branch" verification passes with them present. Both were
+  found by an outside session, not by any audit here.
+
+  ```
+  stash@{0}  On main   "pre-integration: local AGENTS.md edit"
+             apps/web/AGENTS.md   +3 −1
+             Documents that node_modules/next/dist/docs/ resolves from the file's
+             directory (in a monorepo `next` may be invisible from the repo root),
+             and that the block is re-added by `next dev` via
+             node_modules/next/dist/server/lib/generate-agent-files.js — so
+             dropping it from a diff only recreates the uncommitted change.
+
+  stash@{1}  On anabil25-workflow-page-redesign  "abandoned-workflow-redesign"
+             apps/web/src/app/globals.css                   +965
+             apps/web/src/components/studio-components.tsx  ~730
+             1377 insertions, 318 deletions
+             The workflow-page redesign the user halted after two turns. Never
+             committed, by instruction. Retained, not applied.
+  ```
+
+  **Neither is lost and neither is live.** `stash@{1}` is deliberately abandoned —
+  but *abandoned* and *forgotten* are the same state unless someone writes it down,
+  which is the only reason this entry exists.
 
 ## 7. Practices worth keeping
 
