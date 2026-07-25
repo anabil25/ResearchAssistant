@@ -336,9 +336,25 @@ Nothing outstanding on this workstream.
 
 ### State / web
 
-- **37 bare `userEvent.setup()` calls remain** against a report of complete
-  conversion: **22 in `research-workbench.test.tsx`**, 14 in
-  `workspace-views.test.tsx`, 1 in `error.test.tsx`.
+- **The `userEvent.setup()` conversion is now complete for the state lineage** —
+  `c6370e5` landed after the first integration pass and is merged. **50 bare calls
+  remain in `main`, and they belong to the agent-studio workstream, which never
+  did this conversion at all:**
+
+  ```
+  21  agent-workspace.test.tsx
+  15  agent-registry.test.tsx
+  13  connections-view.test.tsx
+   1  error.test.tsx
+  ```
+
+  `userEvent.setup()` defaults to `delay: 0`, which awaits a real
+  `setTimeout(…, 0)` between **every** dispatched event; a test with ~25
+  interactions accumulates 100+ hops that cost real time under a loaded event
+  loop. Converting to `delay: null` preserves every event and its ordering.
+  **Verify per file before converting** — no `setTimeout`/`setInterval`/
+  `requestAnimationFrame` and no debounce in the component under test — rather
+  than assuming the state lineage's result generalises.
 - **The fix was applied to the suite that was not at risk.** `studio-components`
   carries a `15000` override on its heaviest test (ratio 0.34). `research-workbench`
   has **no override**, sits at **0.735**, retains all 22 unconverted sites, and is
