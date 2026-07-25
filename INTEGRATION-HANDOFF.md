@@ -381,6 +381,27 @@ Nothing outstanding on this workstream.
 
 ### Coverage / suppression gates
 
+**If you implement the packaging + coverage cross-check, normalize first.** The
+rule is *derive the production set from both the packaging manifest and the
+coverage roots, and fail `unknown` where they disagree.* Tested against this tree,
+it needs one companion clause or it fires on correct code immediately:
+
+- **Shape disagreement is noise.** Packaging names **distribution** roots
+  (`services/api`); coverage names **import** roots
+  (`services/api/src/research_assistant_api`). As literal strings the two sets are
+  **disjoint**, so an unnormalized comparison marks *everything* unknown.
+  **Normalize distribution root → `src/<package>` before comparing.**
+- **Scope disagreement is signal — keep it.** Coverage enumerates `agents/`
+  subdirectories individually (ten entries) while `azure.yaml` ships `./agents` as
+  a whole tree, across nine `azure.ai.agent` services. So a **new** `agents/<x>/`
+  is shipped-by-packaging and not-measured-by-coverage until someone adds it —
+  exactly the enumerated-domain shrink the exact-set assertion exists to catch.
+  **Packaging's whole-tree grant is what catches coverage's enumeration going
+  stale**, which is the cross-check earning its keep.
+
+**A guard that cries wolf once gets a suppression the second time and is deleted
+the third.** Ship the normalization with the rule, not after it.
+
 - Growth requires `--suppression-addition-reason`, written into the artifact.
   **Shrink is still unguarded** — correctly deferred until `role: load-bearing`
   entries exist.
@@ -436,5 +457,13 @@ From the review program that produced §5.
   measured result is a claim like any other. The table in that test's docstring
   was re-derived independently and matched line for line — which is the step worth
   taking precisely because the statement looked correct.
+- **A principle stated abstractly is a hypothesis; it becomes a rule only once
+  someone attempts it against a real tree.** And the companion clause is
+  discovered by the **implementer**, not the author — not because the author was
+  careless, but because the author holds the general case and the implementer
+  holds the specific one, **and companion clauses live only in the specific.**
+  Two rules in this document acquired theirs that way: the both-roots cross-check
+  needed path normalization, and a `.gitattributes` recommendation was withdrawn
+  outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
