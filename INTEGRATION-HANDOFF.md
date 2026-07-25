@@ -499,6 +499,16 @@ From the review program that produced §5.
   measured result is a claim like any other. The table in that test's docstring
   was re-derived independently and matched line for line — which is the step worth
   taking precisely because the statement looked correct.
+- **When a control's stated rationale turns out to be false, restate the
+  rationale — do not delete the control.** A revocation tombstone was documented
+  as existing to preserve a succession counter. That reason became untrue once a
+  separate HEAD record owned succession, and the next reader finding the argument
+  false would reasonably have deleted the tombstone. It is still required for two
+  *different* reasons, now stated in code: it preserves the revocation **audit
+  record**, and it keeps "absent" **unambiguous** — without it a revoked client
+  and a never-granted client are indistinguishable. **A control defended by a
+  dead argument is more fragile than one with no comment at all**, because the
+  dead argument invites its removal and supplies the justification.
 - **Before writing a test for a finding, ask: is the property *enforced* today, or
   merely *true* today?** The answer decides the instrument, and getting it wrong
   produces a test that pins an accident.
