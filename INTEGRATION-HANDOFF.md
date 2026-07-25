@@ -1920,6 +1920,27 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **A negative result carries no evidence — give it a known-positive control before
+  believing it.** Positive findings arrive with their own proof: the grep printed a
+  line, the test went red, the query returned a row. **A null returns the same
+  silence whether the thing is absent or the probe was aimed wrong**, so "0 hits"
+  is a statement about the search, not the tree.
+  **The mitigation is one extra query: search for something you are certain exists,
+  confirm the search finds it, and only then trust the null.** Had that been done
+  here, `dataset_approvals_without_requester_principal → 0` would have been checked
+  against a symbol known to be present, the probe would have been shown sound, and
+  the *rename* — not the absence — would have surfaced immediately. Same shape as
+  requiring the legacy-enumeration query to be validated against a
+  **deliberately-seeded** legacy record before its count is believed.
+
+  **And false negatives are the more dangerous direction, which is the opposite of
+  the intuition.** A false *positive* — "this control is unasserted" — gets
+  challenged, because someone defends the code. A false *negative* — filing an
+  existing guard as missing — **is never re-checked, because nobody re-searches for
+  something already reported as not there.** It converts into a work item, and the
+  work item creates the duplicate. **The general form is a tool that answers
+  confidently about something it never examined**, and the negative direction is
+  where that confidence goes unaudited.
 - **A labelled gap only stays labelled if the label rides in the same sentence as
   the figure.** `≈ 2.01 GB` was recorded with an explicit "extrapolated, do not
   cite as measured" caveat — **in the next paragraph.** The number travelled and
