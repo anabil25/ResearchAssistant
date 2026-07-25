@@ -591,6 +591,25 @@ different file.** Grep across the suite for the *property*, not the idiom.
   is untouched by the walk-versus-snapshot choice and **cannot decide between
   them** — it is a *coverage* question, not a *mechanism* one. Recording the wrong
   set precisely does not make it the right set.
+
+  **And they agree because of inheritance, not convergence — measured.** The
+  filter exists verbatim at the shared merge-base
+  `b7969d6:agents/shared/release.py:140`, inside the `source_bundle_digest`
+  function both lines were replacing:
+
+  ```python
+  if path.suffix != ".py" and path.name != "requirements.txt":
+  ```
+
+  `b7969d6` is the merge-base of `34543f19` and `c90b9ce`. **Neither session chose
+  this filter; both carried it across.** That matters for the fix: there is no
+  recorded rationale to adjust, because it was never anyone's considered decision.
+  **Derive the set from the packaging rule (`.agentignore`, which is what actually
+  determines what ships) rather than by amending the inherited filter** — amending
+  a choice nobody made tends to reproduce the same gap in a new shape. `GAP B = 0`
+  is the evidence that packaging is the sound anchor: nothing identity-eligible is
+  unshipped, so aligning identity *to* packaging widens with no known
+  false-positive cost.
 - **F-PROV** — `source_commit`/`source_tree` are recorded and never verified;
   forged values with a recomputed self-digest are accepted.
 - **Wording** — `source_identity.py` and `ARCHITECTURE.md` claim an *"independently
@@ -878,6 +897,23 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Range-scoped review cannot see a defect in the baseline.** The `.py` +
+  `requirements.txt` inclusion filter behind F1 survived a full day of adversarial
+  review on **two** branches — including neutralization on one — because **it was
+  never in a diff.** Every review was scoped to a commit range, and the filter
+  predates the range on both lines. It was found by computing the shipped set
+  against `.agentignore`, i.e. by asking about the **domain** rather than the
+  **delta**. Pair every range review with at least one question that ignores the
+  range.
+- **Mutate the boundary of a guarantee, not just its current instance.** For an
+  exclusion set, widen it; for a cap, raise it; for a filter, add a case. If the
+  suite stays green, the test pins **today's value** rather than the rule.
+- **An overstated finding costs more than a missed one.** The F1 figure was
+  briefly inflated from 12 to 22 by counting files `.agentignore` excludes from
+  packaging. An overstated blocker doesn't merely waste work — **it spends the
+  credibility that makes the real findings actionable.** The fix was cheap and
+  mechanical: replay the ignore file through git's own matcher instead of
+  pattern-matching by eye.
 - **A latent defect does not merely delay detection — it misattributes the
   investigation.** When a defect has no symptom, the eventual investigation lands
   on the commit that *removes the suppressant* and appears to break things, not
