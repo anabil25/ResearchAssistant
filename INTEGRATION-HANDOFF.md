@@ -711,6 +711,27 @@ different file.** Grep across the suite for the *property*, not the idiom.
   `completed_replay` to a non-DENY mode. Adding the fix leaves the suite green, so
   nothing would catch the defect *or* its reintroduction.
 
+  **Do not implement that invariant by scanning source.** A grep- or AST-shaped
+  test passes for exactly the case it can see, and the things that will eventually
+  break it — **a policy loaded from configuration, a capability constructed
+  dynamically, a default overridden at registration** — are invisible to it. That
+  reproduces the very defect class the test exists to prevent: **a control that is
+  vacuously true rather than protective.** Instead **assert on the registered
+  capability set at runtime**: enumerate what the harness actually registers and
+  require `idempotency_policy.completed_replay == DENY` for every non-test
+  capability. That binds the *property* — nothing in production replays — rather
+  than the *syntax* currently expressing it.
+  **Neutralization that proves it is real:** set one production capability to
+  `RETURN_RESULT` and require the test to go red. If it stays green, the invariant
+  is decorative.
+  **Pin the definition alongside the number.** "Zero production opt-in" was
+  verified three ways at once, and the counts differ by reading: **8** non-DENY
+  enum *value uses* (all in `tests/test_agent_harness.py`), **5** occurrences of
+  `completed_replay`, **16** references to `CompletedReplayMode`, **2**
+  assignments — both in tests. **Non-test assignment to a non-DENY value: none.**
+  One figure, three defensible senses; a number that carries a ruling needs its
+  sense stated with it.
+
   **Boundary note, recorded so nobody re-derives it — and *not* a finding.**
   `argument_hash` **does** cover the arguments: both in-tree producers derive it
   from the real request (`workflows.py:237` digests
@@ -1094,6 +1115,15 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Neutralize in both directions — they answer different questions.** Mutating
+  *away* from correct asks **"is this guarded?"**; mutating *toward* correct — a
+  reverse neutralization, i.e. applying the fix and seeing what breaks — asks
+  **"is this defect load-bearing?"** Only the second tells a remediation planner
+  whether the fix will rewrite existing tests, and it **cannot be answered by
+  reading**, because a test that depends on defective behaviour looks exactly like
+  a test that documents correct behaviour. **Green in both directions means the fix
+  lands clean *and* nothing catches its reintroduction** — which is the pair of
+  facts you need before scheduling the work, and neither alone supplies it.
 - **Under-quantified is not false — and it needs a different remedy.** Two durable
   sentences in this repo were *"true along the path the author was reading, and
   silent about the path they weren't"*: **"an independently regenerable
