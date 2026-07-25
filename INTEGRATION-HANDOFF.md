@@ -457,6 +457,13 @@ From the review program that produced §5.
   measured result is a claim like any other. The table in that test's docstring
   was re-derived independently and matched line for line — which is the step worth
   taking precisely because the statement looked correct.
+- **A stale verdict fails in the direction nobody audits.** A *wrong* verdict gets
+  challenged on its content; a verdict that quietly stops describing the code
+  keeps being cited, because the thing that changed is not in the document.
+  **The cheapest guard: when the range moves, re-measure the *findings*, not the
+  whole review.** On this program that cost three neutralization runs and saved a
+  full re-review — and it confirmed N1 and N2 were still live at the new tip
+  rather than inherited from the old one.
 - **A principle stated abstractly is a hypothesis; it becomes a rule only once
   someone attempts it against a real tree.** And the companion clause is
   discovered by the **implementer**, not the author — not because the author was
