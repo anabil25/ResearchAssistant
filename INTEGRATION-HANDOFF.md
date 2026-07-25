@@ -653,7 +653,6 @@ different file.** Grep across the suite for the *property*, not the idiom.
   regenerable correctness control"*. Regenerable is true; *control* is not —
   nothing re-derives from git at runtime. Auditable, not checked. **Proven, not
   argued:**
-
   ```
   [STRONG]            edited manifest -> REJECTED by its self-digest
   [REPRODUCIBLE-ONLY] source file tampered AFTER build, manifest untouched
@@ -665,6 +664,21 @@ different file.** Grep across the suite for the *property*, not the idiom.
   and note an attacker who replaces the package replaces the manifest too and
   recomputes an unkeyed digest, which is why this is a self-description property
   rather than an attestation.
+
+  **Exact replacement wording, agreed and ready to apply** (the claim is still live
+  at `agents/shared/source_identity.py:43`):
+
+  > The build producer derives identity from **named git objects**. The runtime
+  > verifies **only** the schema and the manifest's own internal self-digest.
+  > `source_commit` and `source_tree` are **reproducibility coordinates, not
+  > runtime-attested claims**. A forged or post-build-tampered package requires
+  > separate **signed artifact/deployment attestation** to detect.
+
+  The fields make this concrete: `source_commit` and `source_tree` are declared as
+  `Field(pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$")` (L21–22) — **shape validation,
+  not identity verification.** Any well-formed hex string passes, and there is no
+  `subprocess`, `rev-parse` or `ls-tree` anywhere in the runtime loader. That is
+  the whole of F-PROV in two lines of code.
 - **HIGH — cross-release/cross-principal replay.** Reproduced: a COMPLETED record
   replays under a successor release with no provenance check and no approval
   consumption. Latent only because every shipped descriptor defaults to
