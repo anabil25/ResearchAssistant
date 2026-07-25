@@ -612,14 +612,16 @@ button {
   cursor: pointer;
 }
 
-.primary-button {
+.primary-button,
+button.fui-Button.primary-button {
   color: #f7fbf6;
   background: var(--forest);
   border: 1px solid var(--forest);
   box-shadow: 0 7px 18px rgb(23 58 42 / 17%);
 }
 
-.primary-button:hover:not(:disabled) {
+.primary-button:hover:not(:disabled),
+button.fui-Button.primary-button:hover:not(:disabled) {
   background: var(--forest-2);
 }
 
@@ -643,7 +645,14 @@ button {
 .secondary-button:disabled,
 .danger-button:disabled {
   cursor: wait;
-  opacity: 0.62;
+  opacity: 1;
+}
+
+.primary-button:disabled,
+button.fui-Button.primary-button:disabled {
+  color: #ffffff;
+  background: #41564a;
+  border-color: #41564a;
 }
 
 .full-button {
@@ -3074,6 +3083,8 @@ button {
 }
 
 .canvas-toolbar {
+  position: relative;
+  z-index: 1;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -3117,6 +3128,7 @@ button {
   align-items: center;
   justify-content: center;
   padding: 105px 20px 80px;
+  transform-origin: top center;
 }
 
 .graph-step-wrap {
@@ -5872,7 +5884,10 @@ button {
 }
 
 .screening-decision-controls button[data-decision="maybe"][data-active="true"] {
-  color: #90621c;
+  /* #90621c on --amber-soft measured 4.42:1, just under the WCAG AA 4.5:1
+     minimum for this 12px/650-weight text (too small to qualify for the
+     3:1 large-text exception). #855716 measures 5.18:1. */
+  color: #855716;
   background: var(--amber-soft);
   border-color: #e3cd9e;
 }

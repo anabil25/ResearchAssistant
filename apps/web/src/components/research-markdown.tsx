@@ -57,6 +57,53 @@ export interface ResearchMarkdownProps {
   label?: string;
 }
 
+const researchMarkdownComponents = {
+  a: ({
+    children,
+    href,
+  }: {
+    children?: React.ReactNode;
+    href?: string;
+  }) =>
+    href ? (
+      <a
+        href={href}
+        target="_blank"
+        rel="noopener noreferrer"
+      >
+        {children}
+        <span className="sr-only"> (opens in a new tab)</span>
+      </a>
+    ) : (
+      <span>{children}</span>
+    ),
+  code: ({
+    children,
+    className,
+  }: {
+    children?: React.ReactNode;
+    className?: string;
+  }) => {
+    const source = String(children);
+    const truncated =
+      source.length > MAX_CODE_CHARACTERS
+        ? `${source.slice(0, MAX_CODE_CHARACTERS)}\n[code block truncated]`
+        : source;
+    return <code data-language={codeLanguage(className)}>{truncated}</code>;
+  },
+  pre: ({ children }: { children?: React.ReactNode }) => (
+    <pre tabIndex={0}>{children}</pre>
+  ),
+  table: ({ children }: { children?: React.ReactNode }) => (
+    <div className="research-table-scroll" tabIndex={0}>
+      <table>{children}</table>
+    </div>
+  ),
+  th: ({ children }: { children?: React.ReactNode }) => (
+    <th scope="col">{children}</th>
+  ),
+};
+
 export function ResearchMarkdown({
   content,
   citations = [],
@@ -75,38 +122,7 @@ export function ResearchMarkdown({
         rehypePlugins={[rehypeSanitize]}
         remarkPlugins={[remarkGfm]}
         skipHtml
-        components={{
-          a: ({ children, href }) =>
-            href ? (
-              <a
-                href={href}
-                target="_blank"
-                rel="noopener noreferrer"
-                aria-label={`${String(children)} (opens in a new tab)`}
-              >
-                {children}
-              </a>
-            ) : (
-              <span>{children}</span>
-            ),
-          code: ({ children, className }) => {
-            const source = String(children);
-            const truncated =
-              source.length > MAX_CODE_CHARACTERS
-                ? `${source.slice(0, MAX_CODE_CHARACTERS)}\n[code block truncated]`
-                : source;
-            return (
-              <code data-language={codeLanguage(className)}>{truncated}</code>
-            );
-          },
-          pre: ({ children }) => <pre tabIndex={0}>{children}</pre>,
-          table: ({ children }) => (
-            <div className="research-table-scroll" tabIndex={0}>
-              <table>{children}</table>
-            </div>
-          ),
-          th: ({ children }) => <th scope="col">{children}</th>,
-        }}
+        components={researchMarkdownComponents}
       >
         {content}
       </HardenedMarkdown>
@@ -115,28 +131,31 @@ export function ResearchMarkdown({
         <section className="research-evidence-links" aria-label="Resolved evidence">
           <h3>Resolved evidence</h3>
           <ol>
-            {citations.map((citation) => (
-              <li key={citation.id}>
-                {safeCitationUrl(citation.canonical_url) ? (
-                  <a
-                    href={safeCitationUrl(citation.canonical_url) ?? undefined}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    aria-label={`${citation.title} (opens in a new tab)`}
-                  >
-                    {citation.title}
-                  </a>
-                ) : (
-                  <span>{citation.title}</span>
-                )}
-                <small>
-                  {citation.section}
-                  {citation.page_start ? `, page ${citation.page_start}` : ""}
-                  {" - "}
-                  {citation.source_id}
-                </small>
-              </li>
-            ))}
+            {citations.map((citation) => {
+              const citationUrl = safeCitationUrl(citation.canonical_url);
+              return (
+                <li key={citation.id}>
+                  {citationUrl ? (
+                    <a
+                      href={citationUrl}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      aria-label={`${citation.title} (opens in a new tab)`}
+                    >
+                      {citation.title}
+                    </a>
+                  ) : (
+                    <span>{citation.title}</span>
+                  )}
+                  <small>
+                    {citation.section}
+                    {citation.page_start ? `, page ${citation.page_start}` : ""}
+                    {" - "}
+                    {citation.source_id}
+                  </small>
+                </li>
+              );
+            })}
           </ol>
         </section>
       ) : null}

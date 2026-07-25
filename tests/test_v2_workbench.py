@@ -14,12 +14,14 @@ from research_assistant_api.connector_gateway import DisabledConnectorGateway
 from research_assistant_api.foundry import HostedAgentReply
 from research_assistant_api.studios import validate_agent_insight
 from research_assistant_api.workspace import WorkspaceStore
+from research_assistant_api.studios import StudioService, validate_agent_insight
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
     PublicConnectorSource,
 )
-from research_assistant_core.models import Capability
-from research_assistant_core.studio_models import EvidenceState
+from research_assistant_core.models import Capability, ResearchRequest
+from research_assistant_core.service import ResearchService
+from research_assistant_core.studio_models import EvidenceState, StudioRunRequest
 
 
 @pytest.fixture
@@ -759,6 +761,33 @@ def test_dataset_approval_request_expiry_fails_closed(client: TestClient) -> Non
 
     assert response.status_code == 409
     assert "expired" in response.json()["detail"].lower()
+@pytest.mark.parametrize(
+    ("inputs", "message"),
+    [
+        ({"date_from": "recent"}, "must be integers"),
+        ({"date_from": 2026, "date_to": 2020}, "window is invalid"),
+        ({"sources": "PubMed"}, "must be a list of provider names"),
+    ],
+)
+def test_literature_studio_validates_year_and_source_inputs(
+    inputs: dict[str, object],
+    message: str,
+) -> None:
+    generic = ResearchService().run(
+        Capability.LITERATURE,
+        ResearchRequest(query="Review auditable evidence workflows"),
+    )
+
+    with pytest.raises(ValueError, match=message):
+        StudioService._literature(
+            generic,
+            StudioRunRequest(
+                objective="Review auditable evidence workflows",
+                inputs=inputs,
+            ),
+            owner="Dr. Maya Chen",
+            insight=None,
+        )
 
 
 def test_automation_graph_is_hashed_and_invalid_cycles_are_blocked(
@@ -829,6 +858,71 @@ def test_automation_graph_is_hashed_and_invalid_cycles_are_blocked(
     assert any("cycle" in error.lower() for error in cyclic.json()["validation_errors"])
 
 
+def test_automation_graph_collects_contract_validation_errors(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/studios/orchestration/run",
+        json={
+            "objective": "Reject a malformed activation graph.",
+            "inputs": {
+                "trigger": "Webhook",
+                "steps": [
+                    {
+                        "id": "review",
+                        "label": "Review",
+                        "kind": "approval",
+                        "depends_on": [],
+                        "retry_limit": 0,
+                        "approval_required": True,
+                    },
+                    {
+                        "id": "review",
+                        "label": "Review duplicate",
+                        "kind": "approval",
+                        "depends_on": [],
+                        "retry_limit": 0,
+                        "approval_required": True,
+                    },
+                    {
+                        "id": "ship",
+                        "label": "Ship externally",
+                        "kind": "external_action",
+                        "depends_on": ["ship"],
+                        "retry_limit": 1,
+                        "approval_required": False,
+                    },
+                ],
+            },
+        },
+    )
+
+    assert response.status_code == 200
+    errors = response.json()["validation_errors"]
+    assert response.json()["run"]["status"] == "blocked"
+    assert "Workflow step IDs must be unique" in errors
+    assert "Unsupported workflow trigger: Webhook" in errors
+    assert "V2 automation graphs support one exact activation gate" in errors
+    assert "ship cannot depend on itself" in errors
+    assert "ship external actions require an approval ancestor" in errors
+
+
+def test_automation_graph_requires_at_least_one_step(client: TestClient) -> None:
+    response = client.post(
+        "/api/studios/orchestration/run",
+        json={
+            "objective": "Reject an empty graph.",
+            "inputs": {"steps": []},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["run"]["status"] == "blocked"
+    assert "Workflow graph must contain at least one step" in response.json()[
+        "validation_errors"
+    ]
+
+
 def test_matching_score_is_sum_of_evidence_components(client: TestClient) -> None:
     response = client.post(
         "/api/studios/matching/run",
@@ -849,6 +943,19 @@ def test_matching_score_is_sum_of_evidence_components(client: TestClient) -> Non
         )
         assert item["score"] == expected
         assert all(component["evidence_id"] for component in item["components"])
+
+
+def test_institutional_studio_surfaces_conflict_fixture(client: TestClient) -> None:
+    response = client.post(
+        "/api/studios/institutional_qa/run",
+        json={
+            "objective": "Summarize the institutional policy boundary.",
+            "inputs": {"include_conflict_fixture": True},
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.json()["conflicts"][0]["topic"] == "AI disclosure threshold"
 
 
 def test_approval_decision_records_actor_rationale_and_action(client: TestClient) -> None:

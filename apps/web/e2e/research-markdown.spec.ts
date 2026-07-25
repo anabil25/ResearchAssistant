@@ -1,7 +1,8 @@
 import AxeBuilder from "@axe-core/playwright";
-import { expect, test } from "@playwright/test";
 
-test("renders structured agent Markdown without executable or exfiltration sinks", async ({
+import { expect, test } from "./fixtures";
+
+test("[pw.literature-run] renders structured agent Markdown without executable or exfiltration sinks", async ({
   page,
 }) => {
   const content = [
@@ -9,6 +10,10 @@ test("renders structured agent Markdown without executable or exfiltration sinks
     "",
     "- Evidence is bounded.",
     "- Unsupported links remain blocked.",
+    "",
+    "[Jump to **Findings**](#findings)",
+    "",
+    "[Broken destination]()",
     "",
     "| Measure | Value |",
     "| --- | --- |",
@@ -107,6 +112,21 @@ test("renders structured agent Markdown without executable or exfiltration sinks
   await expect(
     markdown.getByRole("link", { name: /Verified source/ }),
   ).toHaveCount(1);
+  const hashLink = markdown.getByRole("link", {
+    name: "Jump to Findings (opens in a new tab)",
+  });
+  await expect(hashLink).toHaveAttribute("href", "#findings");
+  await expect(hashLink).toHaveAttribute("target", "_blank");
+  await expect(hashLink).toHaveAttribute("rel", "noopener noreferrer");
+  await expect(
+    markdown.getByRole("link", { name: /Broken destination/ }),
+  ).toHaveCount(0);
+  await expect(
+    markdown.locator("a", { hasText: "Broken destination" }),
+  ).toHaveCount(0);
+  await expect(
+    markdown.getByText("Broken destination [blocked]"),
+  ).toBeVisible();
   await expect(markdown.getByText("[code block truncated]")).toBeVisible();
   await expect(markdown.getByText("invented-source")).toBeVisible();
 

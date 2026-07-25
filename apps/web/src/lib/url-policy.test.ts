@@ -1,10 +1,17 @@
 import {
   APPROVED_EXTERNAL_URL_HOSTS,
+  CONNECTOR_TERMS_URL_POLICY,
   describeUrlPolicyRejection,
   evaluateExternalUrlPolicy,
 } from "./url-policy";
 
 describe("evaluateExternalUrlPolicy", () => {
+  it("uses the connector terms allowlist as its explicit default policy", () => {
+    expect(CONNECTOR_TERMS_URL_POLICY.allowedHosts).toBe(
+      APPROVED_EXTERNAL_URL_HOSTS,
+    );
+  });
+
   it("allows every approved connector terms host over https with no port", () => {
     for (const host of APPROVED_EXTERNAL_URL_HOSTS) {
       const decision = evaluateExternalUrlPolicy(`https://${host}/terms`);
@@ -21,6 +28,18 @@ describe("evaluateExternalUrlPolicy", () => {
       "https://www.crossref.org:443/terms/",
     );
     expect(decision.allowed).toBe(true);
+  });
+
+  it("allows the terms host used by the persisted DataCite connector", () => {
+    expect(
+      evaluateExternalUrlPolicy(
+        "https://support.datacite.org/docs/terms-and-conditions",
+      ),
+    ).toEqual({
+      allowed: true,
+      url: "https://support.datacite.org/docs/terms-and-conditions",
+      host: "support.datacite.org",
+    });
   });
 
   it("rejects a missing or empty URL", () => {
@@ -136,6 +155,24 @@ describe("evaluateExternalUrlPolicy", () => {
       url: "https://www.crossref.org/terms/",
       host: "www.crossref.org",
     });
+  });
+
+  it("accepts a deterministic surface-owned allowlist for future connection views", () => {
+    const decision = evaluateExternalUrlPolicy(
+      "https://connections.example.org/terms",
+      { allowedHosts: new Set(["connections.example.org"]) },
+    );
+
+    expect(decision).toEqual({
+      allowed: true,
+      url: "https://connections.example.org/terms",
+      host: "connections.example.org",
+    });
+    expect(
+      evaluateExternalUrlPolicy("https://www.crossref.org/terms", {
+        allowedHosts: new Set(["connections.example.org"]),
+      }),
+    ).toEqual({ allowed: false, reason: "unapproved-host" });
   });
 });
 

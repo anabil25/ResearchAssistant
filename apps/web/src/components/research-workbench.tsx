@@ -10,7 +10,6 @@ import {
   Library,
   Menu,
   PanelRight,
-  PlugZap,
   Search,
   Settings,
   ShieldCheck,
@@ -19,11 +18,8 @@ import {
   Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 
-import { AgentRegistryView } from "@/components/agent-registry";
-import { AgentWorkspaceView } from "@/components/agent-workspace";
-import { ConnectionsView } from "@/components/connections-view";
 import {
   StudioForCapability,
   type StudioRunOptions,
@@ -41,6 +37,7 @@ import {
   runStudio,
   type WorkspaceData,
 } from "@/lib/api";
+import { useBlockingModalOpen } from "@/lib/blocking-modal";
 import type {
   CapabilityId,
   Citation,
@@ -56,9 +53,6 @@ function viewTitle(view: WorkspaceViewId): string {
   if (view === "library") return "Evidence Library";
   if (view === "runs") return "Runs & Approvals";
   if (view === "settings") return "Project Settings";
-  if (view === "registry") return "Agent Registry";
-  if (view === "agent") return "Agent Workspace";
-  if (view === "connections") return "Connections";
   return (
     CAPABILITY_CARDS.find((capability) => capability.id === view)?.shortTitle ??
     "Research Assistant"
@@ -71,9 +65,6 @@ function isWorkspaceView(candidate: string | null): candidate is WorkspaceViewId
     candidate === "library" ||
     candidate === "runs" ||
     candidate === "settings" ||
-    candidate === "registry" ||
-    candidate === "agent" ||
-    candidate === "connections" ||
     CAPABILITY_CARDS.some((capability) => capability.id === candidate)
   );
 }
@@ -264,21 +255,49 @@ export function ResearchWorkbench() {
   const [navOpen, setNavOpen] = useState(false);
   const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
+  const blockingModalOpen = useBlockingModalOpen();
   const [searchQuery, setSearchQuery] = useState("");
   const [studioResult, setStudioResult] = useState<StudioResult | null>(null);
   const [studioRunning, setStudioRunning] = useState(false);
   const [studioError, setStudioError] = useState<string | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
-  const [agentWorkspaceId, setAgentWorkspaceId] = useState<string | null>(
-    null,
-  );
+  const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const railCloseRef = useRef<HTMLButtonElement | null>(null);
+  const wasNavOpenRef = useRef(false);
+  // Several triggers can each start a workspace fetch independently and
+  // concurrently: the initial mount load, the transitional-state poll, the
+  // window "focus" listener, view navigation, and post-decision refreshes.
+  // Network responses are not guaranteed to resolve in the order they were
+  // issued, so an older in-flight request finishing after a newer one (e.g.
+  // a stale poll response landing just after a fresh post-approval refresh)
+  // would silently overwrite up-to-date data -- including the pending
+  // approvals count the notification bell reads -- with stale data. A
+  // monotonic request sequence number lets every refresh discard its own
+  // result if a newer refresh has since been issued, so only the
+  // most-recently-requested response is ever applied, deterministically.
+  const requestSequenceRef = useRef(0);
+  // executeStudio (below) issues its own runStudio() calls, independently of
+  // and interleaved with the workspace-data refresh above, so it needs its
+  // own monotonic sequence counter rather than sharing requestSequenceRef:
+  // a studio run's response racing against a workspace refresh is not the
+  // failure mode being guarded against here, but two studio runs racing
+  // against each other is -- e.g. re-running a slow validation, then
+  // immediately cloning into a new draft and running a fast one; without
+  // this guard the slow, now-stale first response could land after the
+  // fast one and silently overwrite the result the user is currently
+  // looking at with an answer for a configuration they've already
+  // abandoned.
+  const studioRequestSequenceRef = useRef(0);
 
   const refresh = useCallback(async () => {
+    const requestId = (requestSequenceRef.current += 1);
     try {
       const next = await getWorkspaceData();
+      if (requestSequenceRef.current !== requestId) return;
       setData(next);
       setLoadError(null);
     } catch (error) {
+      if (requestSequenceRef.current !== requestId) return;
       setLoadError(
         error instanceof Error
           ? error.message
@@ -288,34 +307,33 @@ export function ResearchWorkbench() {
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
+    // Inlined rather than calling the `refresh` useCallback directly: the
+    // mount effect must not invoke a state-setting function synchronously
+    // from its own body (react-hooks/set-state-in-effect), so the fetch is
+    // issued as an async continuation here instead, while still sharing the
+    // same monotonic `requestSequenceRef` guard `refresh` uses, so this
+    // initial load and any other concurrently-triggered refresh still
+    // resolve deterministically to whichever was requested most recently.
+    const requestId = (requestSequenceRef.current += 1);
     void getWorkspaceData()
       .then((next) => {
-        if (!cancelled) {
-          setData(next);
-          setLoadError(null);
-        }
+        if (requestSequenceRef.current !== requestId) return;
+        setData(next);
+        setLoadError(null);
       })
       .catch((error: unknown) => {
-        if (!cancelled) {
-          setLoadError(
-            error instanceof Error
-              ? error.message
-              : "Workspace data could not be loaded.",
-          );
-        }
+        if (requestSequenceRef.current !== requestId) return;
+        setLoadError(
+          error instanceof Error
+            ? error.message
+            : "Workspace data could not be loaded.",
+        );
       });
-    return () => {
-      cancelled = true;
-    };
   }, []);
 
   useEffect(() => {
     const restoreView = () => {
       setView(viewFromSearch(window.location.search));
-      setAgentWorkspaceId(
-        new URLSearchParams(window.location.search).get("agentId"),
-      );
       setNavOpen(false);
       setEvidenceOpen(false);
       setSearchOpen(false);
@@ -334,10 +352,36 @@ export function ResearchWorkbench() {
         ["planned", "running"].includes(run.status),
       );
     if (!hasTransitionalState) return;
-    const interval = window.setInterval(() => {
-      void refresh();
-    }, 3_000);
-    return () => window.clearInterval(interval);
+    // A fixed `setInterval` fires again every 3s regardless of whether the
+    // previous `refresh()` call is still in flight. If `getWorkspaceData()`
+    // consistently takes longer than 3s to resolve (a slow backend, a busy
+    // gateway, etc.), each tick bumps `requestSequenceRef` again *before*
+    // the prior response lands, so `refresh`'s own stale-response guard
+    // (see above) would discard every single response forever -- the
+    // transitional UI would poll indefinitely without ever applying a
+    // result, even once the underlying state genuinely finished
+    // processing. Scheduling the next poll only after the current one
+    // settles serializes polling (never more than one in-flight poll
+    // request at a time), so a slow response always gets to apply -- and
+    // the next request is only issued once there is nothing left for it to
+    // race against.
+    let cancelled = false;
+    let timeoutId: number | undefined;
+    const scheduleNext = () => {
+      timeoutId = window.setTimeout(() => {
+        void refresh().finally(() => {
+          if (!cancelled) scheduleNext();
+        });
+      }, 3_000);
+    };
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      // `timeoutId` is always assigned synchronously above before this
+      // cleanup can ever run, but `clearTimeout` safely no-ops on
+      // `undefined` regardless, so no extra guard is needed here.
+      window.clearTimeout(timeoutId);
+    };
   }, [data, refresh]);
 
   useEffect(() => {
@@ -350,6 +394,19 @@ export function ResearchWorkbench() {
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
+      // While an application-modal dialog is open elsewhere (it is portalled
+      // outside `.workbench-shell` precisely so the shell can be inerted
+      // behind it), every global shell shortcut is suppressed. Ctrl/Cmd+K in
+      // particular would otherwise open the command palette *on top of* that
+      // dialog -- a second modal living outside the first one's focus trap
+      // and outside the inert region -- and Escape would close shell surfaces
+      // the user cannot even see. The dialog stops propagation of its own
+      // keydowns too; this is the independent guard for events that never
+      // pass through it (dispatched directly on `window`, or fired while
+      // focus somehow sits outside both regions).
+      if (blockingModalOpen) {
+        return;
+      }
       if (event.key === "Escape") {
         setNavOpen(false);
         setEvidenceOpen(false);
@@ -362,7 +419,17 @@ export function ResearchWorkbench() {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+  }, [blockingModalOpen]);
+
+  useEffect(() => {
+    if (navOpen) {
+      wasNavOpenRef.current = true;
+      railCloseRef.current?.focus();
+    } else if (wasNavOpenRef.current) {
+      wasNavOpenRef.current = false;
+      mobileMenuTriggerRef.current?.focus();
+    }
+  }, [navOpen]);
 
   const navigate = (next: WorkspaceViewId) => {
     const url = new URL(window.location.href);
@@ -370,9 +437,6 @@ export function ResearchWorkbench() {
       url.searchParams.delete("view");
     } else {
       url.searchParams.set("view", next);
-    }
-    if (next !== "agent") {
-      url.searchParams.delete("agentId");
     }
     if (url.href !== window.location.href) {
       window.history.pushState(null, "", url);
@@ -385,16 +449,7 @@ export function ResearchWorkbench() {
     if (next !== "runs") {
       setFocusRunId(null);
     }
-    if (next !== "agent") {
-      setAgentWorkspaceId(null);
-    }
-    if (
-      next === "library" ||
-      next === "runs" ||
-      next === "settings" ||
-      next === "registry" ||
-      next === "connections"
-    ) {
+    if (next === "library" || next === "runs" || next === "settings") {
       void refresh();
     }
   };
@@ -404,37 +459,28 @@ export function ResearchWorkbench() {
     setFocusRunId(runId);
   };
 
-  const navigateToAgent = (agentId: string) => {
-    const url = new URL(window.location.href);
-    url.searchParams.set("view", "agent");
-    url.searchParams.set("agentId", agentId);
-    if (url.href !== window.location.href) {
-      window.history.pushState(null, "", url);
-    }
-    setView("agent");
-    setAgentWorkspaceId(agentId);
-    setNavOpen(false);
-    setSearchOpen(false);
-    void refresh();
-  };
-
   const executeStudio = async (
     capability: CapabilityId,
     objective: string,
     options: StudioRunOptions = {},
   ) => {
+    const requestId = (studioRequestSequenceRef.current += 1);
     setStudioRunning(true);
     setStudioError(null);
     try {
       const result = await runStudio(capability, objective, options);
+      if (studioRequestSequenceRef.current !== requestId) return;
       setStudioResult(result);
       void refresh();
     } catch (error) {
+      if (studioRequestSequenceRef.current !== requestId) return;
       setStudioError(
         error instanceof Error ? error.message : "The studio run failed.",
       );
     } finally {
-      setStudioRunning(false);
+      if (studioRequestSequenceRef.current === requestId) {
+        setStudioRunning(false);
+      }
     }
   };
 
@@ -466,16 +512,6 @@ export function ResearchWorkbench() {
         title: "Project Settings",
         subtitle: "Agents, connectors, evidence, and governance",
       },
-      {
-        id: "registry",
-        title: "Agent Registry",
-        subtitle: "System and researcher agents, purpose, boundary, and health",
-      },
-      {
-        id: "connections",
-        title: "Connections",
-        subtitle: "Workspace-level connectors and data sources",
-      },
       ...CAPABILITY_CARDS.map((capability) => ({
         id: capability.id,
         title: capability.title,
@@ -490,7 +526,19 @@ export function ResearchWorkbench() {
   }, [searchQuery]);
 
   return (
-    <div className="workbench-shell" data-workspace-ready={Boolean(data)}>
+    <div
+      className="workbench-shell"
+      data-workspace-ready={Boolean(data)}
+      // The entire shell -- rail, main content, evidence inspector, command
+      // palette -- is inert while an application-modal dialog is open. That
+      // dialog is portalled into `document.body`, outside this subtree, so it
+      // is unaffected. Without this, the dialog's own focus trap is the only
+      // thing keeping keyboard and assistive-technology users out of the
+      // shell, and anything that moved focus programmatically (or any control
+      // the trap's focusable-element query did not match) would land on
+      // background content the user cannot see.
+      inert={blockingModalOpen}
+    >
       {navOpen ? (
         <button
           className="mobile-scrim"
@@ -515,6 +563,7 @@ export function ResearchWorkbench() {
           <button
             className="rail-close"
             aria-label="Close navigation"
+            ref={railCloseRef}
             onClick={() => setNavOpen(false)}
           >
             <X size={18} />
@@ -583,30 +632,6 @@ export function ResearchWorkbench() {
           })}
         </nav>
 
-        <span className="rail-section-label">Agent Studio</span>
-        <nav className="rail-nav" aria-label="Agent Studio">
-          <button
-            className="rail-link"
-            data-active={view === "registry" || view === "agent"}
-            aria-current={
-              view === "registry" || view === "agent" ? "page" : undefined
-            }
-            onClick={() => navigate("registry")}
-          >
-            <Workflow size={17} />
-            <span>Agent Registry</span>
-          </button>
-          <button
-            className="rail-link"
-            data-active={view === "connections"}
-            aria-current={view === "connections" ? "page" : undefined}
-            onClick={() => navigate("connections")}
-          >
-            <PlugZap size={17} />
-            <span>Connections</span>
-          </button>
-        </nav>
-
         <div className="rail-spacer" />
         <button
           className="rail-link settings-link"
@@ -635,6 +660,7 @@ export function ResearchWorkbench() {
               aria-label="Open navigation"
               aria-controls="project-navigation"
               aria-expanded={navOpen}
+              ref={mobileMenuTriggerRef}
               onClick={() => setNavOpen(true)}
             >
               <Menu size={20} />
@@ -710,24 +736,7 @@ export function ResearchWorkbench() {
               key={data?.settings ? "settings-loaded" : "settings-loading"}
               data={data}
               onRefresh={refresh}
-              onOpenConnections={() => navigate("connections")}
             />
-          ) : view === "registry" ? (
-            <AgentRegistryView data={data} onOpenAgent={navigateToAgent} />
-          ) : view === "connections" ? (
-            <ConnectionsView data={data} onRefresh={refresh} />
-          ) : view === "agent" ? (
-            agentWorkspaceId ? (
-              <AgentWorkspaceView
-                key={agentWorkspaceId}
-                agentId={agentWorkspaceId}
-                data={data}
-                onRefresh={refresh}
-                onBack={() => navigate("registry")}
-              />
-            ) : (
-              <AgentRegistryView data={data} onOpenAgent={navigateToAgent} />
-            )
           ) : (
             <StudioForCapability
               capability={view}

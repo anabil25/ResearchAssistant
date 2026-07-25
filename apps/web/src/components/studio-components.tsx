@@ -32,15 +32,26 @@ import {
 import {
   lazy,
   Suspense,
+  useEffect,
+  useMemo,
+  useRef,
   useState,
   type ChangeEvent,
+  type KeyboardEvent as ReactKeyboardEvent,
   type ReactNode,
 } from "react";
+import { createPortal } from "react-dom";
 
 import {
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
+import { openBlockingModal } from "@/lib/blocking-modal";
+import {
+  connectorAvailability,
+  connectorAvailabilityCaption,
+  isConnectorRunnable,
+} from "@/lib/connector-availability";
 import type {
   AutomationStep,
   AutomationStudioResult,
@@ -86,7 +97,7 @@ interface StudioHeaderProps {
   title: string;
   description: string;
   workflow?: WorkflowBlueprint;
-  status?: string;
+  status: string;
 }
 
 function StudioHeader({
@@ -110,7 +121,7 @@ function StudioHeader({
             <p>{description}</p>
           </div>
         </div>
-        {status ? <span className="status-chip">{status}</span> : null}
+        <span className="status-chip">{status}</span>
       </header>
       {workflow ? (
         <ol
@@ -244,7 +255,11 @@ export function LiteratureStudio({
     "Compare current approaches to auditable retrieval-augmented research synthesis.",
   );
   const [dateFrom, setDateFrom] = useState("2020");
-  const [dateTo, setDateTo] = useState("2026");
+  // Defaults to the real current year (not a hardcoded literal) so the
+  // date-window validation below never treats the initial, untouched form
+  // state as an invalid future-dated window in any year after this file was
+  // last edited.
+  const [dateTo, setDateTo] = useState(() => String(new Date().getFullYear()));
   const [online, setOnline] = useState(false);
   const [sources, setSources] = useState([
     "PubMed",
@@ -284,6 +299,28 @@ export function LiteratureStudio({
     "ClinicalTrials.gov",
   ];
 
+  // Real date-window validation for the publication-year range: both fields
+  // must parse to whole years, "Published from" cannot be after "Through",
+  // and neither bound can be a future year -- published research cannot have
+  // a publication date that hasn't happened yet. This is deterministic,
+  // computed from the real form values on every render (not a static/
+  // always-valid stub), and blocks submission with a visible, specific error
+  // instead of silently accepting or discarding a nonsensical window.
+  const currentYear = new Date().getFullYear();
+  const fromYear = Number(dateFrom);
+  const toYear = Number(dateTo);
+  const dateWindowError: string | null =
+    !dateFrom.trim() ||
+    !dateTo.trim() ||
+    !Number.isFinite(fromYear) ||
+    !Number.isFinite(toYear)
+      ? "Enter a published-from and through year."
+      : fromYear > toYear
+        ? "\"Published from\" must not be after \"Through\"."
+        : toYear > currentYear || fromYear > currentYear
+          ? "The date window cannot include a future year."
+          : null;
+
   const includedCount = literature
     ? literature.screening.filter(
         (item) => (decisions[item.source_id] ?? "include") === "include",
@@ -310,6 +347,25 @@ export function LiteratureStudio({
     literature?.insight?.referenced_source_ids?.length ??
     literature?.citations.length ??
     0;
+  // Truthful audit outcome: "passed" requires real hosted-agent insight
+  // evidence AND zero unresolved source ids — never derived from the
+  // static "Claim & citation audit" header alone. When `insight` is absent
+  // (e.g. execution_mode "mock", or a hosted run that returned no insight),
+  // the claim/citation linkage has not actually been checked against
+  // evidence, so the outcome is "not-verified", never "passed".
+  const auditStatus: "not-verified" | "passed" | "warning" = !literature?.insight
+    ? "not-verified"
+    : unresolvedCount > 0
+      ? "warning"
+      : "passed";
+  const auditOutcomeCopy: Record<typeof auditStatus, string> = {
+    "not-verified":
+      "Not verified — no hosted-agent insight was returned for this run, so citations have not been checked against source evidence.",
+    passed:
+      "Passed — every citation was checked against source evidence with zero unresolved references.",
+    warning:
+      "Unresolved references found — some cited sources could not be verified against the underlying evidence.",
+  };
 
   const addCriterion = (
     kind: "inclusion" | "exclusion",
@@ -346,7 +402,6 @@ export function LiteratureStudio({
   };
 
   const exportExtractionCsv = () => {
-    if (!visibleExtraction.length) return;
     const header = ["source_id", "method", "population", "outcome", "limitation"];
     const rows = visibleExtraction.map((row) => [
       row.source_id,
@@ -387,6 +442,7 @@ export function LiteratureStudio({
         className="literature-protocol"
         onSubmit={(event) => {
           event.preventDefault();
+          if (dateWindowError) return;
           void onRun("literature", question, {
             onlineResearch: online,
             inputs: {
@@ -428,6 +484,10 @@ export function LiteratureStudio({
                 type="number"
                 value={dateFrom}
                 onChange={(event) => setDateFrom(event.target.value)}
+                aria-invalid={dateWindowError ? true : undefined}
+                aria-describedby={
+                  dateWindowError ? "literature-date-window-error" : undefined
+                }
               />
             </label>
             <label className="field">
@@ -436,9 +496,23 @@ export function LiteratureStudio({
                 type="number"
                 value={dateTo}
                 onChange={(event) => setDateTo(event.target.value)}
+                aria-invalid={dateWindowError ? true : undefined}
+                aria-describedby={
+                  dateWindowError ? "literature-date-window-error" : undefined
+                }
               />
             </label>
           </div>
+          {dateWindowError ? (
+            <div
+              id="literature-date-window-error"
+              className="error-banner"
+              role="alert"
+            >
+              <ShieldCheck size={15} />
+              <span>{dateWindowError}</span>
+            </div>
+          ) : null}
           <div className="criteria-block">
             <span>Include</span>
             <div className="tag-list">
@@ -555,7 +629,9 @@ export function LiteratureStudio({
             onChange={setOnline}
             note="Off by default. Public protocol text only."
           />
-          <RunButton running={running}>Search & screen evidence</RunButton>
+          <RunButton running={running} disabled={!!dateWindowError}>
+            Search & screen evidence
+          </RunButton>
         </aside>
       </form>
 
@@ -678,7 +754,9 @@ export function LiteratureStudio({
                     type="button"
                     className="secondary-button"
                     disabled={!visibleExtraction.length}
-                    onClick={exportExtractionCsv}
+                    onClick={
+                      visibleExtraction.length ? exportExtractionCsv : undefined
+                    }
                   >
                     Export CSV
                   </button>
@@ -784,6 +862,12 @@ export function LiteratureStudio({
                   <h3>Claim & citation audit</h3>
                   <span>{literature.citations.length} citations</span>
                 </div>
+                <p
+                  className={`audit-outcome audit-outcome-${auditStatus}`}
+                  data-audit-status={auditStatus}
+                >
+                  {auditOutcomeCopy[auditStatus]}
+                </p>
                 <div className="metric-line">
                   <span>
                     <strong>{resolvedCount}</strong> resolved
@@ -923,8 +1007,18 @@ export function GrantStudio({
   const fundingConnectors = (data?.connectors ?? []).filter((connector) =>
     connector.assigned_agents.includes("grant"),
   );
-  const discoverableConnectors = fundingConnectors.filter((connector) =>
-    fundingSources.includes(connector.id),
+  // Reconcile against current readiness, not just prior selection: a
+  // connector that was selected while runnable and later becomes
+  // disabled/unavailable/configuration_required (e.g. after a "Test
+  // connection" refresh changes its test_status) must stop appearing as a
+  // discoverable/searchable opportunity source. Without the
+  // isConnectorRunnable check here, `fundingSources` membership alone kept
+  // a now-unusable connector listed and clickable in "Opportunity
+  // discovery" even though `runnableFundingSources` below already
+  // correctly excludes it from the submitted payload.
+  const discoverableConnectors = fundingConnectors.filter(
+    (connector) =>
+      fundingSources.includes(connector.id) && isConnectorRunnable(connector),
   );
   const discoveryCapabilities = [
     "All",
@@ -953,6 +1047,12 @@ export function GrantStudio({
           item.title.toLowerCase().includes(section),
         );
 
+  const runnableFundingSources = fundingSources.filter((id) =>
+    fundingConnectors.some(
+      (connector) => connector.id === id && isConnectorRunnable(connector),
+    ),
+  );
+
   const runGrant = (action: GrantAction) => {
     setLastAction(action);
     void onRun(
@@ -968,7 +1068,7 @@ export function GrantStudio({
           project_facts: factsConfirmed
             ? ["Research office sponsor confirmed", "PI role confirmed"]
             : [],
-          funding_sources: fundingSources,
+          sources: runnableFundingSources,
           red_team_pass: action === "red_team",
           ...(online
             ? {
@@ -1090,22 +1190,32 @@ export function GrantStudio({
           <div className="funding-source-panel" aria-label="Funding source discovery">
             <span className="funding-source-heading">Funding source discovery</span>
             {fundingConnectors.length ? (
-              fundingConnectors.map((connector) => (
-                <label className="check-row" key={connector.id}>
-                  <input
-                    type="checkbox"
-                    checked={fundingSources.includes(connector.id)}
-                    onChange={(event) =>
-                      setFundingSources((current) =>
-                        event.target.checked
-                          ? [...current, connector.id]
-                          : current.filter((item) => item !== connector.id),
-                      )
-                    }
-                  />
-                  <span>{connector.name}</span>
-                </label>
-              ))
+              fundingConnectors.map((connector) => {
+                const runnable = isConnectorRunnable(connector);
+                const caption = connectorAvailabilityCaption(
+                  connectorAvailability(connector),
+                );
+                return (
+                  <label className="check-row" key={connector.id}>
+                    <input
+                      type="checkbox"
+                      checked={runnable && fundingSources.includes(connector.id)}
+                      disabled={!runnable}
+                      onChange={(event) =>
+                        setFundingSources((current) =>
+                          event.target.checked
+                            ? [...current, connector.id]
+                            : current.filter((item) => item !== connector.id),
+                        )
+                      }
+                    />
+                    <span>{connector.name}</span>
+                    {caption ? (
+                      <span className="connector-capability-list">{caption}</span>
+                    ) : null}
+                  </label>
+                );
+              })
             ) : (
               <p className="muted-copy">
                 No funding connectors are assigned yet. Assign one in Project
@@ -1344,18 +1454,16 @@ export function GrantStudio({
               onSubmit={(event) => {
                 event.preventDefault();
                 const form = new FormData(event.currentTarget);
-                const name = String(form.get("name") ?? "").trim();
-                const baseUrl = String(form.get("baseUrl") ?? "").trim();
-                const justification = String(
-                  form.get("justification") ?? "",
-                ).trim();
+                const name = String(form.get("name")).trim();
+                const baseUrl = String(form.get("baseUrl")).trim();
+                const justification = String(form.get("justification")).trim();
                 if (!name || !baseUrl || !justification) return;
                 setDraftRequests((current) => [
                   ...current,
                   {
                     id: `draft-${Date.now()}`,
                     name,
-                    category: String(form.get("category") ?? "Funding"),
+                    category: String(form.get("category")),
                     baseUrl,
                     justification,
                     requestedAt: new Date().toISOString(),
@@ -1401,7 +1509,7 @@ export function GrantStudio({
           </div>
         </div>
       ) : null}
-      {selectedRequirement ? (
+      {selectedRequirement && grant ? (
         <div className="modal-backdrop" role="presentation">
           <div
             className="modal-card"
@@ -1430,7 +1538,7 @@ export function GrantStudio({
               </strong>
             </p>
             {(() => {
-              const evidence = (grant?.citations ?? []).filter((citation) =>
+              const evidence = grant.citations.filter((citation) =>
                 selectedRequirement.evidence_ids.includes(citation.id),
               );
               return evidence.length ? (
@@ -1505,6 +1613,13 @@ export function MatchingStudio({
   const publicSources = (data?.connectors ?? []).filter((connector) =>
     connector.assigned_agents.includes("matching"),
   );
+  const runnableSources = sources.filter(
+    (id) =>
+      id === "institutional" ||
+      publicSources.some(
+        (connector) => connector.id === id && isConnectorRunnable(connector),
+      ),
+  );
 
   const toggleShortlist = (id: string) => {
     setShortlist((current) =>
@@ -1541,7 +1656,7 @@ export function MatchingStudio({
             inputs: {
               record_kinds: recordTypes,
               hard_filters: hardFilters,
-              sources,
+              sources: runnableSources,
               ...(online
                 ? {
                     public_search_query: query,
@@ -1621,24 +1736,28 @@ export function MatchingStudio({
               <span>Institutional directory</span>
             </label>
             {publicSources.length ? (
-              publicSources.map((connector) => (
-                <label className="check-row" key={connector.id}>
-                  <input
-                    type="checkbox"
-                    checked={sources.includes(connector.id)}
-                    disabled={!connector.enabled}
-                    onChange={(event) =>
-                      toggleSource(connector.id, event.target.checked)
-                    }
-                  />
-                  <span>{connector.name}</span>
-                  {!connector.enabled ? (
-                    <span className="connector-capability-list">
-                      Disabled in Settings
-                    </span>
-                  ) : null}
-                </label>
-              ))
+              publicSources.map((connector) => {
+                const runnable = isConnectorRunnable(connector);
+                const caption = connectorAvailabilityCaption(
+                  connectorAvailability(connector),
+                );
+                return (
+                  <label className="check-row" key={connector.id}>
+                    <input
+                      type="checkbox"
+                      checked={runnable && sources.includes(connector.id)}
+                      disabled={!runnable}
+                      onChange={(event) =>
+                        toggleSource(connector.id, event.target.checked)
+                      }
+                    />
+                    <span>{connector.name}</span>
+                    {caption ? (
+                      <span className="connector-capability-list">{caption}</span>
+                    ) : null}
+                  </label>
+                );
+              })
             ) : (
               <p className="muted-copy">
                 No public connectors are assigned to Matching yet. Assign one
@@ -1776,15 +1895,15 @@ export function MatchingStudio({
               {compareOpen ? (
                 <div className="shortlist-compare" role="table">
                   <div className="shortlist-compare-row shortlist-compare-head" role="row">
-                    <span>Name</span>
-                    <span>Score</span>
-                    <span>Top evidence factors</span>
+                    <span role="columnheader">Name</span>
+                    <span role="columnheader">Score</span>
+                    <span role="columnheader">Top evidence factors</span>
                   </div>
                   {shortlistedMatches.map((match) => (
                     <div className="shortlist-compare-row" role="row" key={match.id}>
-                      <strong>{match.name}</strong>
-                      <span>{match.score}</span>
-                      <span>
+                      <strong role="rowheader">{match.name}</strong>
+                      <span role="cell">{match.score}</span>
+                      <span role="cell">
                         {match.components
                           .slice(0, 2)
                           .map(
@@ -1866,6 +1985,9 @@ export function DatasetStudio({
   const [csvText, setCsvText] = useState<string | null>(null);
   const [fileKind, setFileKind] = useState<"csv" | "json" | null>(null);
   const [fileError, setFileError] = useState<string | null>(null);
+  const [csvReadStatus, setCsvReadStatus] = useState<
+    "idle" | "reading" | "ready" | "error"
+  >("idle");
   const [planApproved, setPlanApproved] = useState(false);
   const [libraryUploadStatus, setLibraryUploadStatus] = useState<
     "idle" | "uploading" | "uploaded" | "error"
@@ -1876,6 +1998,14 @@ export function DatasetStudio({
   const dataset =
     result && "analysis_plan" in result ? (result as DatasetStudioResult) : null;
   const largeAsset = assetMode === "large";
+  // Guards against a rapid-reselection race: each accepted file selection
+  // aborts whatever reader was previously in flight and bumps a generation
+  // counter. Every reader's onload/onerror captures its own generation and
+  // re-checks it before touching state, so a stale reader that resolves
+  // after a newer file was chosen can never overwrite the newer file's
+  // csvText/status with its own (now-irrelevant) result.
+  const activeReaderRef = useRef<FileReader | null>(null);
+  const uploadGenerationRef = useRef(0);
 
   const handleFileChange = (event: ChangeEvent<HTMLInputElement>) => {
     const file = event.target.files?.[0] ?? null;
@@ -1902,29 +2032,74 @@ export function DatasetStudio({
     setLibraryUploadError(null);
     setPlanApproved(false);
     setCsvText(null);
+    // Abort whatever reader was previously in flight (defense in depth) and
+    // bump the generation so that reader's onload/onerror — even if it
+    // still fires after abort() — is recognized as stale and ignored. A
+    // superseded reader's abort() call always dispatches its own "abort"
+    // event asynchronously (per the FileReader spec, via a queued task),
+    // i.e. strictly after this synchronous generation bump has already run;
+    // no onabort handler is needed since there is nothing to reconcile by
+    // the time it could fire, and the default (unhandled) "abort" event is
+    // a silent no-op.
+    activeReaderRef.current?.abort();
+    activeReaderRef.current = null;
+    uploadGenerationRef.current += 1;
+    const generation = uploadGenerationRef.current;
     if (isCsv) {
+      setCsvReadStatus("reading");
       const reader = new FileReader();
+      activeReaderRef.current = reader;
       reader.onload = () => {
-        setCsvText(typeof reader.result === "string" ? reader.result : null);
+        if (uploadGenerationRef.current !== generation) return;
+        activeReaderRef.current = null;
+        const text = typeof reader.result === "string" ? reader.result : null;
+        // A zero-byte (or whitespace-only) CSV file reads successfully as an
+        // empty string, which is truthy-adjacent enough to slip through a
+        // naive `csvText ? ... : {}` payload check while still leaving
+        // `csvReadStatus` as "ready" -- the RunButton would enable and the
+        // UI would claim the asset is ready to submit, but the actual
+        // request payload would silently omit `csv_text` entirely. Treat
+        // empty content as a read error up front so "ready" can never be
+        // reached without genuine, non-empty CSV text.
+        if (!text || text.trim().length === 0) {
+          setCsvText(null);
+          setCsvReadStatus("error");
+          setFileError(
+            "This CSV file is empty. Choose a file that contains data and try again.",
+          );
+          return;
+        }
+        setCsvText(text);
+        setCsvReadStatus("ready");
+      };
+      reader.onerror = () => {
+        if (uploadGenerationRef.current !== generation) return;
+        activeReaderRef.current = null;
+        setCsvText(null);
+        setCsvReadStatus("error");
+        setFileError(
+          "This CSV file could not be read. Choose a different file and try again.",
+        );
       };
       reader.readAsText(file);
+    } else {
+      setCsvReadStatus("ready");
     }
   };
 
-  const uploadToLibrary = () => {
-    if (!uploadedFile) return;
+  const uploadToLibrary = (file: File, kind: "csv" | "json") => {
     setLibraryUploadStatus("uploading");
     setLibraryUploadError(null);
     const form = new FormData();
-    form.append("title", uploadedFile.name);
+    form.append("title", file.name);
     form.append("kind", "Dataset");
     form.append("license", "Project supplied");
     form.append(
       "description",
-      `Dataset uploaded from Dataset Lab for deterministic profiling (${fileKind ?? "unknown"}).`,
+      `Dataset uploaded from Dataset Lab for deterministic profiling (${kind}).`,
     );
     form.append("source", "Workspace upload");
-    form.append("file", uploadedFile);
+    form.append("file", file);
     void uploadLibraryItem(form)
       .then(async () => {
         setLibraryUploadStatus("uploaded");
@@ -1940,8 +2115,25 @@ export function DatasetStudio({
       });
   };
 
+  // An uploaded asset must have a *ready* (successfully read) CSV body
+  // before it can be submitted -- "reading" and "error" must both block the
+  // run, not just "reading". Without this, a failed CSV read (csvReadStatus
+  // "error", csvText null) still left uploadedFile set, so approving and
+  // running would silently submit a payload with the filename but no
+  // csv_text at all.
+  //
+  // JSON uploads never read bytes at all (see handleFileChange) -- there is
+  // no client-side JSON parser/normalizer feeding the deterministic-profiling
+  // request, so a JSON asset can only ever produce a payload missing its
+  // file content entirely, contradicting the "JSON preview only uploads to
+  // Library" copy shown below. Require `fileKind === "csv"` here so the Run
+  // action can never be enabled for a JSON upload, matching that stated
+  // product intent instead of silently submitting a contentless request.
   const runDisabled =
-    running || !planApproved || (assetMode === "upload" && !uploadedFile);
+    running ||
+    !planApproved ||
+    (assetMode === "upload" &&
+      (!uploadedFile || fileKind !== "csv" || csvReadStatus !== "ready"));
 
   return (
     <div className="studio-page dataset-studio">
@@ -1965,7 +2157,14 @@ export function DatasetStudio({
                   estimated_bytes: uploadedFile.size,
                   compute_adapter_configured: true,
                   analysis_approved: planApproved,
-                  ...(csvText ? { csv_text: csvText } : {}),
+                  // `runDisabled` (above) already requires `fileKind ===
+                  // "csv" && csvReadStatus === "ready"` to reach this
+                  // branch at all, and `csvReadStatus` only ever becomes
+                  // "ready" in the same state update that sets `csvText`
+                  // to real, non-empty text -- so `csvText` is always a
+                  // populated string here. No conditional/omission case is
+                  // reachable.
+                  csv_text: csvText as string,
                 }
               : assetMode === "large"
                 ? {
@@ -2021,6 +2220,7 @@ export function DatasetStudio({
           <label
             className="asset-upload-tile"
             data-active={assetMode === "upload"}
+            data-read-status={csvReadStatus}
           >
             <span className="asset-icon">
               <Upload size={19} />
@@ -2029,7 +2229,9 @@ export function DatasetStudio({
               <strong>{uploadedFile ? uploadedFile.name : "Upload a dataset"}</strong>
               <small>
                 {uploadedFile
-                  ? `${(uploadedFile.size / 1_000_000).toFixed(2)} MB · ${fileKind?.toUpperCase()}`
+                  ? assetMode === "upload" && csvReadStatus === "reading"
+                    ? `Reading ${fileKind?.toUpperCase()}…`
+                    : `${(uploadedFile.size / 1_000_000).toFixed(2)} MB · ${fileKind?.toUpperCase()}`
                   : "CSV or JSON · up to 5 MB"}
               </small>
             </span>
@@ -2059,13 +2261,13 @@ export function DatasetStudio({
               <span>{fileError}</span>
             </div>
           ) : null}
-          {uploadedFile ? (
+          {uploadedFile && fileKind ? (
             <div className="upload-actions">
               <button
                 type="button"
                 className="secondary-button"
                 disabled={libraryUploadStatus === "uploading"}
-                onClick={uploadToLibrary}
+                onClick={() => uploadToLibrary(uploadedFile, fileKind)}
               >
                 {libraryUploadStatus === "uploading"
                   ? "Uploading…"
@@ -2292,7 +2494,6 @@ export function InstitutionalStudio({
   const [selectedCitation, setSelectedCitation] = useState<Citation | null>(
     null,
   );
-  const [workIqEnabled, setWorkIqEnabled] = useState(false);
   const institutional =
     result && "abstained" in result
       ? (result as InstitutionalStudioResult)
@@ -2333,7 +2534,7 @@ export function InstitutionalStudio({
             >
               <input
                 type="checkbox"
-                checked={corpusScopes[scope.id] ?? false}
+                checked={corpusScopes[scope.id]}
                 disabled={scope.locked}
                 onChange={(event) =>
                   setCorpusScopes((current) => ({
@@ -2498,9 +2699,8 @@ export function InstitutionalStudio({
         <label className="check-row emphasis-check work-iq-toggle">
           <input
             type="checkbox"
-            checked={workIqEnabled}
+            checked={false}
             disabled
-            onChange={(event) => setWorkIqEnabled(event.target.checked)}
             aria-describedby="work-iq-readiness-note"
           />
           <span>
@@ -2640,7 +2840,9 @@ function buildCatalogItems(data: WorkspaceData | null | undefined): CatalogItem[
     label: connector.name,
     group: "Tool",
     description: connector.description,
-    authorized: connector.enabled,
+    authorized:
+      isConnectorRunnable(connector) &&
+      connector.assigned_agents.includes("orchestration"),
     stepKind: "external_action",
   }));
   const studios: CatalogItem[] = AUTOMATION_STUDIO_CATALOG.map((item) => ({
@@ -2699,6 +2901,105 @@ function defaultAutomationSteps(): AutomationStep[] {
   ];
 }
 
+const AUTOMATION_TEMPLATES: readonly {
+  id: string;
+  title: string;
+  description: string;
+  steps: readonly AutomationStep[];
+}[] = [
+  {
+    id: "evidence-review-v2",
+    title: "Evidence review",
+    description: "Ingest → screen → synthesize",
+    steps: defaultAutomationSteps(),
+  },
+  {
+    id: "grant-review-v2",
+    title: "Grant red team",
+    description: "Draft → compliance → approval",
+    steps: [
+      {
+        id: "parse-notice",
+        label: "Parse notice",
+        kind: "activity",
+        depends_on: [],
+        retry_limit: 2,
+        approval_required: false,
+      },
+      {
+        id: "draft-response",
+        label: "Draft response",
+        kind: "agent",
+        depends_on: ["parse-notice"],
+        retry_limit: 1,
+        approval_required: false,
+      },
+      {
+        id: "compliance-review",
+        label: "Compliance review",
+        kind: "activity",
+        depends_on: ["draft-response"],
+        retry_limit: 1,
+        approval_required: false,
+      },
+      {
+        id: "approve-submission",
+        label: "Approve submission",
+        kind: "approval",
+        depends_on: ["compliance-review"],
+        retry_limit: 0,
+        approval_required: true,
+      },
+    ],
+  },
+  {
+    id: "dataset-profile-v2",
+    title: "Dataset profile",
+    description: "Validate → compute → interpret",
+    steps: [
+      {
+        id: "validate-schema",
+        label: "Validate schema",
+        kind: "activity",
+        depends_on: [],
+        retry_limit: 2,
+        approval_required: false,
+      },
+      {
+        id: "compute-profile",
+        label: "Compute profile",
+        kind: "fan_out",
+        depends_on: ["validate-schema"],
+        retry_limit: 2,
+        approval_required: false,
+      },
+      {
+        id: "interpret-results",
+        label: "Interpret results",
+        kind: "agent",
+        depends_on: ["compute-profile"],
+        retry_limit: 1,
+        approval_required: false,
+      },
+    ],
+  },
+];
+
+function cloneAutomationSteps(steps: readonly AutomationStep[]): AutomationStep[] {
+  return steps.map((step) => ({
+    ...step,
+    depends_on: [...step.depends_on],
+  }));
+}
+
+function workflowConfigurationFingerprint(
+  template: string,
+  trigger: string,
+  steps: readonly AutomationStep[],
+) {
+  return JSON.stringify({ template, trigger, steps });
+}
+
 interface StepDraft {
   label: string;
   kind: AutomationStep["kind"];
@@ -2716,11 +3017,14 @@ export function AutomationStudio({
   data,
   onNavigateToRun,
 }: StudioProps) {
-  const [template, setTemplate] = useState("evidence-review-v2");
-  const [trigger, setTrigger] = useState("Manual");
+  const initialTemplate = AUTOMATION_TEMPLATES[0].id;
+  const initialTrigger = "Manual";
+  const initialSteps = AUTOMATION_TEMPLATES[0].steps;
+  const [template, setTemplate] = useState(initialTemplate);
+  const [trigger, setTrigger] = useState(initialTrigger);
   const [zoom, setZoom] = useState(100);
   const [steps, setSteps] = useState<AutomationStep[]>(
-    defaultAutomationSteps(),
+    cloneAutomationSteps(initialSteps),
   );
   const [editingId, setEditingId] = useState<string | null>(null);
   const [draft, setDraft] = useState<StepDraft | null>(null);
@@ -2734,20 +3038,88 @@ export function AutomationStudio({
   });
   const [activated, setActivated] = useState(false);
   const [activationConfirmOpen, setActivationConfirmOpen] = useState(false);
+  // Modal focus lifecycle for the activation confirmation dialog: move
+  // focus into the dialog when it opens, and restore it to the trigger
+  // that opened it when it closes. `wasActivationOpenRef` distinguishes a
+  // genuine close (open -> closed) from the initial mount (never opened),
+  // so we don't yank focus to the trigger button on first render.
+  const activateTriggerRef = useRef<HTMLButtonElement | null>(null);
+  const activationCloseButtonRef = useRef<HTMLButtonElement | null>(null);
+  const activationStatusRef = useRef<HTMLParagraphElement | null>(null);
+  const wasActivationOpenRef = useRef(false);
+  useEffect(() => {
+    if (activationConfirmOpen) {
+      wasActivationOpenRef.current = true;
+      activationCloseButtonRef.current?.focus();
+    } else if (wasActivationOpenRef.current) {
+      wasActivationOpenRef.current = false;
+      // Restore focus to the control that opened the dialog -- but only if it
+      // can still actually receive focus. A *successful* activation disables
+      // that trigger (`disabled={!canActivate || activated}`), and browsers
+      // silently refuse to focus a disabled element, so calling `.focus()` on
+      // it would strand focus on `document.body` and drop a keyboard user
+      // back to the top of the page with no announcement. In that case move
+      // focus to the activation status message instead, which is both
+      // programmatically focusable and the most relevant thing to read at
+      // that moment.
+      const trigger = activateTriggerRef.current;
+      if (trigger && !trigger.disabled) {
+        trigger.focus();
+      } else {
+        activationStatusRef.current?.focus();
+      }
+    }
+  }, [activationConfirmOpen]);
+  // Suppress the surrounding shell (global shortcuts such as Ctrl/Cmd+K, and
+  // the shell's own focusable content) for as long as this dialog is open.
+  // See src/lib/blocking-modal.ts for why this cannot simply be passed down
+  // as a prop.
+  useEffect(() => {
+    if (!activationConfirmOpen) {
+      return;
+    }
+    return openBlockingModal();
+  }, [activationConfirmOpen]);
   const [catalogPreviewKey, setCatalogPreviewKey] = useState<string | null>(
     null,
   );
   const [graphDraftVersion, setGraphDraftVersion] = useState(1);
   const [cloneStatus, setCloneStatus] = useState<string | null>(null);
+  const [validationPending, setValidationPending] = useState(false);
+  // The version (graphDraftVersion) that was actually submitted the last
+  // time a dry run passed. Content equality alone is not enough: "Clone
+  // into a new draft" (see below) intentionally bumps graphDraftVersion
+  // without changing template/trigger/steps content, and that new draft
+  // version must require its own fresh validate+dry-run before it can be
+  // activated even though it is byte-for-byte identical to the version
+  // that already passed. Tracking the submitted version alongside content
+  // closes that gap.
+  const [validatedAtVersion, setValidatedAtVersion] = useState<number | null>(
+    null,
+  );
   const automation =
     result && "template_id" in result
       ? (result as AutomationStudioResult)
       : null;
-  const templates = [
-    ["evidence-review-v2", "Evidence review", "Ingest → screen → synthesize"],
-    ["grant-review-v2", "Grant red team", "Draft → compliance → approval"],
-    ["dataset-profile-v2", "Dataset profile", "Validate → compute → interpret"],
-  ];
+  // Derive the "last known-good configuration" fingerprint directly from
+  // the server's own dry-run result (its echoed template_id/trigger/steps)
+  // instead of from client-local initial state. Seeding this from
+  // hardcoded defaults (the prior behavior) meant that mounting the studio
+  // with any previously passed `result` for this capability -- regardless
+  // of which graph actually produced it -- could authorize activation of
+  // whatever the default template happened to be, without a matching dry
+  // run ever having run against the currently displayed configuration.
+  const validatedConfiguration = useMemo(
+    () =>
+      automation
+        ? workflowConfigurationFingerprint(
+            automation.template_id,
+            automation.trigger,
+            automation.steps,
+          )
+        : null,
+    [automation],
+  );
   const catalogItems = buildCatalogItems(data);
   const catalogLoading = data === null || data === undefined;
   const orchestrationRuns = (data?.runs ?? []).filter(
@@ -2755,10 +3127,35 @@ export function AutomationStudio({
   );
 
   const dependedOnIds = new Set(steps.flatMap((step) => step.depends_on));
+  const currentConfiguration = workflowConfigurationFingerprint(
+    template,
+    trigger,
+    steps,
+  );
   const canActivate = automation
     ? automation.dry_run_status === "passed" &&
-      automation.validation_errors.length === 0
+      automation.validation_errors.length === 0 &&
+      !error &&
+      !running &&
+      !validationPending &&
+      validatedConfiguration === currentConfiguration &&
+      validatedAtVersion === graphDraftVersion
     : false;
+  const resetActivation = () => {
+    setActivated(false);
+    // Any edit must invalidate the activation fingerprint gate itself, not
+    // just the transient `activated` flag: without this, editing a step
+    // away and then back to byte-identical content leaves
+    // `currentConfiguration` re-equal to the stale `validatedConfiguration`,
+    // and since `graphDraftVersion` never otherwise changes on ordinary
+    // edits, `validatedAtVersion === graphDraftVersion` stays trivially
+    // true -- so `canActivate` can flip back to true without a fresh dry
+    // run ever having run against the edited draft. Bumping
+    // graphDraftVersion here (mirroring the existing "Clone into a new
+    // draft" pattern below) guarantees `validatedAtVersion` can never
+    // coincidentally match again until a new dry run explicitly records it.
+    setGraphDraftVersion((current) => current + 1);
+  };
 
   const startEdit = (step: AutomationStep) => {
     setAddingStep(false);
@@ -2772,42 +3169,37 @@ export function AutomationStudio({
     });
   };
 
-  const saveEdit = () => {
-    if (!editingId || !draft) return;
+  const saveEdit = (id: string, nextDraft: StepDraft) => {
     setSteps((current) =>
       current.map((step) =>
-        step.id === editingId
+        step.id === id
           ? {
               ...step,
-              label: draft.label.trim() || step.label,
-              kind: draft.kind,
-              depends_on: draft.dependsOn,
-              retry_limit: Math.min(5, Math.max(0, draft.retryLimit)),
-              approval_required: draft.approvalRequired,
+              label: nextDraft.label.trim() || step.label,
+              kind: nextDraft.kind,
+              depends_on: nextDraft.dependsOn,
+              retry_limit: Math.min(5, Math.max(0, nextDraft.retryLimit)),
+              approval_required: nextDraft.approvalRequired,
             }
           : step,
       ),
     );
     setEditingId(null);
     setDraft(null);
+    resetActivation();
   };
 
   const removeStep = (id: string) => {
-    if (steps.length <= 1 || dependedOnIds.has(id)) return;
     setSteps((current) => current.filter((step) => step.id !== id));
-    if (editingId === id) {
-      setEditingId(null);
-      setDraft(null);
-    }
+    resetActivation();
   };
 
   const addStep = (form: StepDraft & { id: string }) => {
-    if (steps.length >= MAX_WORKFLOW_STEPS) return;
     setSteps((current) => [
       ...current,
       {
         id: form.id,
-        label: form.label.trim() || form.id,
+        label: form.label.trim(),
         kind: form.kind,
         depends_on: form.dependsOn,
         retry_limit: Math.min(5, Math.max(0, form.retryLimit)),
@@ -2815,10 +3207,26 @@ export function AutomationStudio({
       },
     ]);
     setAddingStep(false);
+    resetActivation();
   };
 
   return (
-    <div className="studio-page automation-studio">
+    <>
+      <div
+        className="studio-page automation-studio"
+        // While the activation confirmation dialog is open, the rest of this
+        // page is marked inert: the dialog is rendered through a portal (see
+        // below) so it lives outside this subtree and is unaffected. Without
+        // this, the full-viewport `.modal-backdrop` blocks pointer clicks on
+        // the background but does not stop keyboard Tab navigation or
+        // assistive-tech focus from reaching background controls (there is
+        // no separate focus trap), so a keyboard user could still reach and
+        // change the trigger/template/steps behind the "modal" dialog. This
+        // is defense-in-depth alongside (not a replacement for) the
+        // `canActivate` recheck in the Confirm handler below, which remains
+        // the actual authorization boundary.
+        inert={activationConfirmOpen}
+      >
       <StudioHeader
         icon={Workflow}
         eyebrow="Durable orchestration"
@@ -2833,43 +3241,66 @@ export function AutomationStudio({
       />
       <StudioError message={error} />
       <form
-        onSubmit={(event) => {
+        onSubmit={async (event) => {
           event.preventDefault();
-          void onRun(
-            "orchestration",
-            "Validate and dry run the configured evidence workflow.",
-            { inputs: { template_id: template, trigger, steps } },
-          );
+          const submittedVersion = graphDraftVersion;
+          setValidationPending(true);
+          try {
+            await onRun(
+              "orchestration",
+              "Validate and dry run the configured evidence workflow.",
+              { inputs: { template_id: template, trigger, steps } },
+            );
+            // Record which draft version this dry run actually validated.
+            // Whether the *content* now matches is derived from the
+            // server's own echoed result above (validatedConfiguration),
+            // not from what we optimistically submitted.
+            setValidatedAtVersion(submittedVersion);
+          } finally {
+            setValidationPending(false);
+          }
         }}
       >
         <section className="template-strip">
-          {templates.map(([id, title, description]) => (
+          {AUTOMATION_TEMPLATES.map((templateOption) => (
             <button
               type="button"
-              data-active={template === id}
-              key={id}
-              onClick={() => setTemplate(id)}
+              data-active={template === templateOption.id}
+              aria-pressed={template === templateOption.id}
+              key={templateOption.id}
+              onClick={() => {
+                setTemplate(templateOption.id);
+                setSteps(cloneAutomationSteps(templateOption.steps));
+                setEditingId(null);
+                setDraft(null);
+                setAddingStep(false);
+                resetActivation();
+              }}
             >
               <span className="template-icon">
                 <Workflow size={18} />
               </span>
               <span>
-                <strong>{title}</strong>
-                <small>{description}</small>
+                <strong>{templateOption.title}</strong>
+                <small>{templateOption.description}</small>
               </span>
-              {template === id ? <CheckCircle2 size={17} /> : null}
+              {template === templateOption.id ? <CheckCircle2 size={17} /> : null}
             </button>
           ))}
           <label className="field trigger-field">
             <span>Trigger</span>
             <select
               value={trigger}
-              onChange={(event) => setTrigger(event.target.value)}
+              onChange={(event) => {
+                setTrigger(event.target.value);
+                resetActivation();
+              }}
             >
               <option>Manual</option>
-              <option>Library upload</option>
               <option>Schedule</option>
-              <option>API event</option>
+              <option>Webhook</option>
+              <option>GitHub</option>
+              <option>Library upload</option>
             </select>
           </label>
         </section>
@@ -2895,7 +3326,9 @@ export function AutomationStudio({
                 >
                   −
                 </button>
-                <span>{zoom}%</span>
+                <output aria-label="Workflow zoom" aria-live="polite">
+                  {zoom}%
+                </output>
                 <button
                   type="button"
                   disabled={zoom >= MAX_ZOOM}
@@ -2985,7 +3418,9 @@ export function AutomationStudio({
                 <small>Destination + artifact version bound</small>
               </span>
             </div>
-            <RunButton running={running}>Validate & dry run</RunButton>
+            <RunButton running={running || validationPending}>
+              Validate & dry run
+            </RunButton>
             <button
               className="secondary-button full-button"
               type="button"
@@ -2996,9 +3431,22 @@ export function AutomationStudio({
                   : undefined
               }
               onClick={() => setActivationConfirmOpen(true)}
+              ref={activateTriggerRef}
             >
               {activated ? "Activated (draft workspace)" : "Activate after approval"}
             </button>
+            {activated ? (
+              <p
+                className="activation-status"
+                role="status"
+                tabIndex={-1}
+                ref={activationStatusRef}
+                data-testid="workflow-activation-status"
+              >
+                Workflow activated for this draft workspace. Edit the graph to
+                require a new passing dry run before activating again.
+              </p>
+            ) : null}
           </aside>
         </div>
 
@@ -3053,15 +3501,18 @@ export function AutomationStudio({
                               ? `Workflow already has the maximum of ${MAX_WORKFLOW_STEPS} steps.`
                               : undefined
                         }
-                        onClick={() =>
-                          addStep({
-                            id: `${item.key}-${Date.now().toString(36)}`,
-                            label: item.label,
-                            kind: item.stepKind,
-                            dependsOn: [],
-                            retryLimit: 1,
-                            approvalRequired: false,
-                          })
+                        onClick={
+                          !item.authorized || atCapacity
+                            ? undefined
+                            : () =>
+                                addStep({
+                                  id: `${item.key}-${Date.now().toString(36)}`,
+                                  label: item.label,
+                                  kind: item.stepKind,
+                                  dependsOn: [],
+                                  retryLimit: 1,
+                                  approvalRequired: false,
+                                })
                         }
                       >
                         Add to graph
@@ -3119,7 +3570,7 @@ export function AutomationStudio({
                       setEditingId(null);
                       setDraft(null);
                     }}
-                    onCommit={saveEdit}
+                    onCommit={() => saveEdit(step.id, draft)}
                     commitLabel="Save"
                   />
                 ) : (
@@ -3152,7 +3603,11 @@ export function AutomationStudio({
                               ? "A workflow needs at least one step."
                               : undefined
                         }
-                        onClick={() => removeStep(step.id)}
+                        onClick={
+                          steps.length <= 1 || dependedOnIds.has(step.id)
+                            ? undefined
+                            : () => removeStep(step.id)
+                        }
                       >
                         <Trash2 size={14} />
                       </button>
@@ -3228,6 +3683,11 @@ export function AutomationStudio({
                         current.map((step) => ({ ...step })),
                       );
                       setActivated(false);
+                      // Bumping graphDraftVersion (below) is sufficient to
+                      // invalidate canActivate: validatedAtVersion will no
+                      // longer match the new version even though the
+                      // content-based fingerprint is unchanged, so this new
+                      // draft version requires its own fresh dry run.
                       setGraphDraftVersion((current) => current + 1);
                       setCloneStatus(
                         `Cloned ${run.title} into a new draft (v${(
@@ -3278,58 +3738,122 @@ export function AutomationStudio({
         )}
       </section>
       {automation ? <InsightCard result={automation} /> : null}
-      {activationConfirmOpen ? (
-        <div className="modal-backdrop" role="presentation">
-          <div
-            className="modal-card"
-            role="dialog"
-            aria-modal="true"
-            aria-labelledby="activate-workflow-title"
-          >
-            <div className="modal-heading">
-              <div>
-                <span className="eyebrow">Confirm activation</span>
-                <h2 id="activate-workflow-title">
-                  Activate graph {automation?.graph_version ?? "2.0"}
-                </h2>
-              </div>
-              <button
-                aria-label="Close activation dialog"
-                onClick={() => setActivationConfirmOpen(false)}
-              >
-                <X size={19} />
-              </button>
-            </div>
-            <p>
-              This authorizes the exact validated graph
-              {automation ? ` (hash ${automation.graph_hash.slice(0, 12)}…)` : ""}{" "}
-              to run on its trigger. Activation is recorded only in this
-              workspace session — connect a real approval and scheduling
-              system before production use.
-            </p>
-            <div className="modal-actions">
-              <button
-                className="secondary-button"
-                type="button"
-                onClick={() => setActivationConfirmOpen(false)}
-              >
-                Cancel
-              </button>
-              <button
-                className="primary-button"
-                type="button"
-                onClick={() => {
-                  setActivated(true);
-                  setActivationConfirmOpen(false);
+      </div>
+      {activationConfirmOpen
+        ? createPortal(
+            <div className="modal-backdrop" role="presentation">
+              <div
+                className="modal-card"
+                role="dialog"
+                aria-modal="true"
+                aria-labelledby="activate-workflow-title"
+                onKeyDown={(event) => {
+                  // Every keydown that happens inside this dialog stops here.
+                  // The dialog is portalled into `document.body`, so without
+                  // this its native events keep bubbling to the `window`
+                  // keydown listener in research-workbench.tsx, where
+                  // Ctrl/Cmd+K would open the command palette *on top of*
+                  // this dialog -- a second modal outside this focus trap and
+                  // outside the shell's `inert` region. Stopping propagation
+                  // unconditionally (rather than per-shortcut) means a new
+                  // global shortcut added to the shell later cannot silently
+                  // reintroduce that escape hatch.
+                  event.stopPropagation();
+                  if (event.key === "Escape") {
+                    // Escape behaves exactly like Cancel/the close button: it
+                    // never activates, regardless of `canActivate`.
+                    setActivationConfirmOpen(false);
+                    return;
+                  }
+                  if (event.key !== "Tab") return;
+                  // `currentTarget` is exactly this dialog element (the one
+                  // this handler is bound to), so unlike a separately-read
+                  // ref it is never null here -- no defensive guard needed.
+                  const container = event.currentTarget;
+                  const focusable = Array.from(
+                    container.querySelectorAll<HTMLElement>(
+                      'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+                    ),
+                  );
+                  // The dialog always renders its close button and a Cancel
+                  // button (neither is ever disabled), so `focusable` can
+                  // never actually be empty; no length guard is needed
+                  // before indexing into it.
+                  const first = focusable[0];
+                  const last = focusable[focusable.length - 1];
+                  // Keep keyboard focus contained within the dialog while it
+                  // is open: wrap Tab past the last focusable element back to
+                  // the first, and Shift+Tab past the first back to the
+                  // last, so a keyboard user (or screen reader) can never
+                  // Tab out into the `inert`-marked background page.
+                  if (event.shiftKey && document.activeElement === first) {
+                    event.preventDefault();
+                    last.focus();
+                  } else if (!event.shiftKey && document.activeElement === last) {
+                    event.preventDefault();
+                    first.focus();
+                  }
                 }}
               >
-                Confirm activation
-              </button>
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </div>
+                <div className="modal-heading">
+                  <div>
+                    <span className="eyebrow">Confirm activation</span>
+                    <h2 id="activate-workflow-title">
+                      Activate graph {automation?.graph_version ?? "2.0"}
+                    </h2>
+                  </div>
+                  <button
+                    aria-label="Close activation dialog"
+                    ref={activationCloseButtonRef}
+                    onClick={() => setActivationConfirmOpen(false)}
+                  >
+                    <X size={19} />
+                  </button>
+                </div>
+                <p>
+                  This authorizes the exact validated graph
+                  {automation?.graph_hash
+                    ? ` (hash ${automation.graph_hash.slice(0, 12)}…)`
+                    : ""}{" "}
+                  to run on its trigger. Activation is recorded only in this
+                  workspace session — connect a real approval and scheduling
+                  system before production use.
+                </p>
+                <div className="modal-actions">
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    onClick={() => setActivationConfirmOpen(false)}
+                  >
+                    Cancel
+                  </button>
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={!canActivate}
+                    onClick={() => {
+                      // Recheck `canActivate` at confirm time, not just when the
+                      // dialog was opened: the dialog can stay open across an
+                      // edit (e.g. a step save in another panel, or a stale
+                      // background revalidation) that invalidates the
+                      // fingerprint gate while the confirmation is pending.
+                      // Without this guard, a stale-open confirm dialog could
+                      // activate a draft that no longer matches its last
+                      // passing dry run.
+                      if (!canActivate) return;
+                      setActivated(true);
+                      setActivationConfirmOpen(false);
+                    }}
+                  >
+                    Confirm activation
+                  </button>
+                </div>
+              </div>
+            </div>,
+            document.body,
+          )
+        : null}
+    </>
   );
 }
 
@@ -3353,12 +3877,19 @@ function StepDraftForm({
   isNew?: boolean;
 }) {
   const dependencyOptions = steps.filter((step) => step.id !== excludeId);
+  const commitOnEnter = (event: ReactKeyboardEvent<HTMLInputElement>) => {
+    if (event.key !== "Enter") return;
+    event.preventDefault();
+    if (isNew && !draft.label.trim()) return;
+    onCommit();
+  };
   return (
     <div className="step-editor-form">
       <label className="field">
         <span>Step label</span>
         <input
           value={draft.label}
+          onKeyDown={commitOnEnter}
           onChange={(event) =>
             onDraftChange({ ...draft, label: event.target.value })
           }
@@ -3389,6 +3920,7 @@ function StepDraftForm({
           min={0}
           max={5}
           value={draft.retryLimit}
+          onKeyDown={commitOnEnter}
           onChange={(event) =>
             onDraftChange({ ...draft, retryLimit: Number(event.target.value) })
           }

@@ -18,6 +18,8 @@ def test_disabled_adapter_never_claims_processing() -> None:
     assert any("No raw data" in assumption for assumption in estimate.assumptions)
     with pytest.raises(ComputePlatformNotConfiguredError):
         adapter.submit(estimate, approved=True, idempotency_key="job-1")
+    with pytest.raises(ComputePlatformNotConfiguredError):
+        adapter.get("job-1")
 
 
 def test_compute_submission_requires_approval_and_is_idempotent() -> None:
@@ -32,3 +34,5 @@ def test_compute_submission_requires_approval_and_is_idempotent() -> None:
 
     assert first == second
     assert adapter.get(first.id) == first
+    with pytest.raises(KeyError, match="Unknown local compute job"):
+        adapter.get("missing")

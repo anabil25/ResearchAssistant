@@ -4,6 +4,7 @@
   "schemas": {
     "ApprovalDecisionV3": {
       "additionalProperties": false,
+      "description": "Approval decision contract.\n\n``decision`` is restricted to ``approved``/``rejected`` to match the\nlive enforcement in ``research_assistant_api.workspace.ApprovalDecision.\nvalidate_decision``, which explicitly rejects any other value\n(including ``changes_requested``). ``cancelled`` is a system-driven\nstate transition (e.g. run cancellation), not an approver decision, so\nit is correctly excluded here too.",
       "properties": {
         "approval_id": {
           "title": "Approval Id",
@@ -21,8 +22,7 @@
         "decision": {
           "enum": [
             "approved",
-            "rejected",
-            "changes_requested"
+            "rejected"
           ],
           "title": "Decision",
           "type": "string"
@@ -45,6 +45,7 @@
     },
     "ApprovalRequestV3": {
       "additionalProperties": false,
+      "description": "Approval request lifecycle contract.\n\n``state`` intentionally mirrors the live, wired implementation in\n``research_assistant_api.workspace.ApprovalState`` (pending/approved/\nrejected/cancelled) rather than a broader aspirational set. There is no\n``changes_requested``/``expired``/``withdrawn`` transition anywhere in the\nrunning API, generated frontend client (``ApprovalState`` in\n``generated-api.ts``), or UI \u2014 keeping this literal in sync with those\nboundaries avoids the contract drift where this \"authoritative\" schema\npromised a decision the platform does not implement.",
       "properties": {
         "action": {
           "maxLength": 2000,
@@ -123,9 +124,7 @@
             "pending",
             "approved",
             "rejected",
-            "changes_requested",
-            "expired",
-            "withdrawn"
+            "cancelled"
           ],
           "title": "State",
           "type": "string"

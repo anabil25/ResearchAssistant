@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import runpy
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
@@ -9,8 +10,14 @@ import httpx
 import pytest
 import yaml
 from openai import APIStatusError
+from shared import credentials, runtime
 from shared.profiles import get_profile, list_profiles
-from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
+from shared.tools import (
+    _invoke_specialist,
+    build_delegate_tool,
+    delegated_agent_name,
+    tools_for_profile,
+)
 
 ROOT = Path(__file__).parents[1]
 
@@ -219,9 +226,255 @@ def test_coordinator_specialist_invocation_retries_transient_shapes(
     assert sleeps == [15, 2]
 
 
+def test_coordinator_specialist_invocation_rejects_non_retryable_and_empty_results(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    sleeps: list[int] = []
+    monkeypatch.setattr("shared.tools.time.sleep", sleeps.append)
+    status_error = APIStatusError(
+        "upstream failure",
+        response=httpx.Response(
+            500,
+            request=httpx.Request(
+                "POST",
+                "https://foundry.example.test/responses",
+            ),
+        ),
+        body={"error": {"code": "session_not_ready"}},
+    )
+
+    class FailedResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            raise status_error
+
+    with pytest.raises(APIStatusError) as raised:
+        _invoke_specialist(
+            SimpleNamespace(responses=FailedResponses()),
+            "Analyze supplied evidence.",
+            "literature-agent",
+        )
+    assert raised.value is status_error
+    assert sleeps == []
+
+    attempts = 0
+
+    class EmptyResponses:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            nonlocal attempts
+            attempts += 1
+            return SimpleNamespace(output_text=None)
+
+    with pytest.raises(
+        RuntimeError,
+        match="Hosted specialist literature-agent returned no output after bounded retries",
+    ):
+        _invoke_specialist(
+            SimpleNamespace(responses=EmptyResponses()),
+            "Analyze supplied evidence.",
+            "literature-agent",
+        )
+    assert attempts == 3
+    assert sleeps == [2, 5]
+
+
+def test_delegate_tool_validates_policy_before_remote_invocation() -> None:
+    delegate = build_delegate_tool()
+
+    unsupported = json.loads(
+        delegate.func(
+            capability="unknown",
+            request="Analyze supplied evidence.",
+            sensitivity="internal",
+        )
+    )
+    assert unsupported == {
+        "error": "unsupported_capability",
+        "allowed": ["dataset", "grant", "institutional_qa", "literature", "matching"],
+    }
+
+    invalid_sensitivity = json.loads(
+        delegate.func(
+            capability="literature",
+            request="Analyze supplied evidence.",
+            sensitivity="secret",
+        )
+    )
+    assert invalid_sensitivity == {
+        "error": "invalid_sensitivity",
+        "allowed": ["public", "internal", "confidential", "restricted"],
+    }
+
+
+def test_delegate_tool_constructs_the_bound_specialist_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    credential = object()
+    specialist_client = object()
+    calls: dict[str, Any] = {}
+
+    class FakeProjectClient:
+        def __init__(
+            self,
+            *,
+            endpoint: str,
+            credential: object,
+            allow_preview: bool,
+        ) -> None:
+            calls["project"] = (endpoint, credential, allow_preview)
+
+        def get_openai_client(self, *, agent_name: str) -> object:
+            calls["agent_name"] = agent_name
+            return specialist_client
+
+    def invoke_specialist(client: object, request: str, agent_name: str) -> str:
+        calls["invocation"] = (client, request, agent_name)
+        return "Bounded specialist analysis"
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test")
+    monkeypatch.setattr("shared.tools.get_credential", lambda: credential)
+    monkeypatch.setattr("shared.tools.AIProjectClient", FakeProjectClient)
+    monkeypatch.setattr("shared.tools._invoke_specialist", invoke_specialist)
+
+    result = build_delegate_tool().func(
+        capability="literature",
+        request="Analyze supplied evidence.",
+        sensitivity="internal",
+    )
+
+    assert result == "Bounded specialist analysis"
+    assert calls == {
+        "project": ("https://foundry.example.test", credential, True),
+        "agent_name": "literature-agent",
+        "invocation": (
+            specialist_client,
+            "Analyze supplied evidence.",
+            "literature-agent",
+        ),
+    }
+
+
 def test_coordinator_and_specialist_names_are_stable() -> None:
     assert get_profile("coordinator").name == "research-coordinator"
     assert get_profile("literature").name == "literature-agent"
+
+
+def test_unknown_agent_profile_is_rejected() -> None:
+    with pytest.raises(ValueError, match="Unknown research agent profile"):
+        get_profile("not-a-profile")
+
+
+def test_agent_credential_selection_is_environment_bound(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    managed_calls: list[str | None] = []
+    managed = object()
+    default = object()
+
+    def build_managed_credential(*, client_id: str | None) -> object:
+        managed_calls.append(client_id)
+        return managed
+
+    monkeypatch.setattr(
+        credentials,
+        "ManagedIdentityCredential",
+        build_managed_credential,
+    )
+    monkeypatch.setattr(credentials, "DefaultAzureCredential", lambda: default)
+    for name in ("AZURE_CLIENT_ID", "IDENTITY_ENDPOINT", "MSI_ENDPOINT"):
+        monkeypatch.delenv(name, raising=False)
+
+    assert credentials.get_credential() is default
+
+    monkeypatch.setenv("AZURE_CLIENT_ID", "managed-client")
+    assert credentials.get_credential() is managed
+    assert managed_calls == ["managed-client"]
+
+    monkeypatch.delenv("AZURE_CLIENT_ID")
+    monkeypatch.setenv("IDENTITY_ENDPOINT", "http://identity.test")
+    assert credentials.get_credential() is managed
+    assert managed_calls[-1] is None
+
+
+def test_agent_runtime_builds_and_hosts_the_selected_profile(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    loaded: list[bool] = []
+    hosted: list[object] = []
+    built_agents: list[dict[str, Any]] = []
+    client = object()
+    tool = object()
+    profile = get_profile("dataset")
+    monkeypatch.setattr(runtime, "load_dotenv", lambda *, override: loaded.append(override))
+    monkeypatch.setattr(runtime, "tools_for_profile", lambda selected, selected_client: [tool])
+    def build_fake_agent(**kwargs: Any) -> object:
+        built_agents.append(kwargs)
+        return object()
+
+    monkeypatch.setattr(runtime, "Agent", build_fake_agent)
+
+    runtime.build_agent("dataset", client=client)
+
+    assert loaded == [False]
+    assert built_agents == [
+        {
+            "client": client,
+            "name": profile.name,
+            "instructions": profile.instructions,
+            "tools": [tool],
+            "default_options": {"store": False},
+        }
+    ]
+
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test")
+    monkeypatch.setenv("AZURE_AI_MODEL_DEPLOYMENT_NAME", "test-model")
+    credential = object()
+    monkeypatch.setattr(runtime, "get_credential", lambda: credential)
+    monkeypatch.setattr(
+        runtime,
+        "FoundryChatClient",
+        lambda **kwargs: SimpleNamespace(**kwargs),
+    )
+    built_client = runtime._build_foundry_client()
+    assert built_client.project_endpoint == "https://foundry.example.test"
+    assert built_client.model == "test-model"
+    assert built_client.credential is credential
+
+    monkeypatch.setattr(runtime, "build_agent", lambda profile_id: profile_id)
+    monkeypatch.setattr(
+        runtime,
+        "ResponsesHostServer",
+        lambda selected: SimpleNamespace(run=lambda: hosted.append(selected)),
+    )
+    runtime.run_profile("dataset")
+    assert hosted == ["dataset"]
+    assert runtime.describe_profile("dataset") is profile
+
+
+def test_hosted_agent_entrypoints_are_import_safe_and_dispatch_exact_profiles(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    expected_profiles = [
+        "coordinator",
+        "dataset",
+        "grant",
+        "grant_online",
+        "institution",
+        "literature",
+        "literature_online",
+        "matching",
+        "matching_online",
+    ]
+    dispatched: list[str] = []
+    monkeypatch.setattr(runtime, "run_profile", dispatched.append)
+
+    for profile_id in expected_profiles:
+        entrypoint = ROOT / "agents" / profile_id / "main.py"
+        dispatch_count = len(dispatched)
+        runpy.run_path(str(entrypoint), run_name=f"coverage.{profile_id}")
+        assert len(dispatched) == dispatch_count
+        runpy.run_path(str(entrypoint), run_name="__main__")
+
+    assert dispatched == expected_profiles
 
 
 def test_each_hosted_agent_has_a_smoke_evaluation_dataset() -> None:

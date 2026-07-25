@@ -65,6 +65,32 @@ _SOURCE_ALIASES = {
     "semantic scholar": "semantic_scholar",
 }
 
+# The only two `ConnectorSetting.test_status` values that represent a
+# genuinely usable connector. Mirrors the identical allowlist already used
+# by `WorkspaceStore` (see workspace.py's readiness check) so both layers
+# agree: `configuration_required`/`unavailable`/any other value are never
+# treated as ready here, even if `connector.enabled` is true -- an enabled
+# connector whose last test came back configuration_required/unavailable
+# must not be offered to callers as if it could actually serve a request.
+# (The canonical set is ``_READY_STATUSES``, defined above; the duplicate
+# ``_READY_TEST_STATUSES`` that arrived on the state lineage was removed at
+# integration so the two cannot drift apart.)
+
+
+def _rejection_reason(connector: ConnectorSetting, logical_agent: str) -> str:
+    """Explain, in a caller-facing string, why an explicitly requested
+    source was rejected rather than silently dropped. Distinguishes the
+    three independent reasons a connector can fail the readiness gate so
+    the message accurately reflects which one applies."""
+    if not connector.enabled:
+        return f"The '{connector.id}' connector is disabled for this workspace."
+    if logical_agent not in connector.assigned_agents:
+        return f"The '{connector.id}' connector is not assigned to this capability."
+    return (
+        f"The '{connector.id}' connector's last test status is "
+        f"'{connector.test_status}', which is not ready."
+    )
+
 
 @dataclass(frozen=True)
 class ConnectorSourceViolation:
@@ -266,12 +292,21 @@ async def retrieve_public_metadata(
     requested_sources: list[str] | None = None,
 ) -> list[dict[str, Any]]:
     logical_agent = capability.value
+    connectors_by_id = {connector.id: connector for connector in connectors}
     # Defense-in-depth: even when a caller forgets to invoke
     # ``resolve_authorized_sources`` first, never select a connector that is
     # disabled, unassigned to this capability/agent, or not actually ready
     # (its persisted ``test_status`` is anything other than
     # ready/ready_with_key) -- this must match the checks in
     # ``resolve_authorized_sources`` exactly.
+    #
+    # Readiness-gated on purpose, not just ``enabled``: an enabled connector
+    # whose stored ``test_status`` is ``configuration_required``/
+    # ``unavailable``/anything outside the ready set must not be offered here
+    # -- otherwise the UI's ready/ready_with_key vs. configuration_required/
+    # unavailable vocabulary could be bypassed simply by an operator flipping
+    # ``enabled`` back on without the connector actually having retested as
+    # ready.
     enabled = {
         connector.id
         for connector in connectors
@@ -289,22 +324,73 @@ async def retrieve_public_metadata(
         if requested_ids is not None
         else set(_DEFAULT_SOURCES.get(capability, ()))
     )
-    selected = [
-        source
-        for source in _CAPABILITY_SOURCES.get(capability, ())
-        if source in enabled and source in candidates
-    ]
-    return list(
-        await asyncio.gather(
-            *(
-                _retrieve_one(
-                    capability,
-                    source,
-                    query,
-                    gateway,
-                )
-                for source in selected
+    capability_sources = _CAPABILITY_SOURCES.get(capability, ())
+    selected = [source for source in capability_sources if source in enabled and source in candidates]
+
+    # An explicitly requested source (as opposed to one silently drawn from
+    # the capability's own default set) that names a connector the server
+    # does not consider ready must be reported back with the connector's
+    # real, authoritative status rather than silently omitted from the
+    # response -- the server remains the enforcement boundary even against
+    # a UI bug or a client that bypasses the readiness gate client-side.
+    # The default (non-explicit) source set never triggers this: an
+    # unready default source is simply excluded from `selected`, exactly
+    # as before, since nothing was explicitly asked for.
+    rejected: list[dict[str, Any]] = []
+    if requested_ids is not None:
+        # An explicitly requested source ID that is not part of this
+        # capability's own vocabulary at all -- either genuinely unrecognized
+        # (e.g. a typo) or a real source name that simply belongs to a
+        # different capability (e.g. "pubmed" requested under Capability.GRANT)
+        # -- must be reported back too. The loop below this one only walks
+        # `capability_sources`, so without this check such an ID would
+        # silently vanish from both `selected` and `rejected`, leaving the
+        # caller with an empty response and no signal anything was wrong
+        # with their request. Sorted for deterministic output/tests.
+        for source in sorted(candidates - set(capability_sources)):
+            rejected.append(
+                {
+                    "source": source,
+                    "status": "unsupported",
+                    "error": (
+                        f"'{source}' is not a supported source for the "
+                        f"'{logical_agent}' capability."
+                    ),
+                    "records": [],
+                }
             )
+        for source in capability_sources:
+            if source not in candidates or source in enabled:
+                continue
+            connector = connectors_by_id.get(source)
+            if connector is None:
+                rejected.append(
+                    {
+                        "source": source,
+                        "status": "unavailable",
+                        "error": f"The '{source}' connector is not configured for this workspace.",
+                        "records": [],
+                    }
+                )
+                continue
+            rejected.append(
+                {
+                    "source": source,
+                    "status": connector.test_status,
+                    "error": _rejection_reason(connector, logical_agent),
+                    "records": [],
+                }
+            )
+
+    fetched = await asyncio.gather(
+        *(
+            _retrieve_one(
+                capability,
+                source,
+                query,
+                gateway,
+            )
+            for source in selected
         )
     )
-
+    return [*rejected, *fetched]

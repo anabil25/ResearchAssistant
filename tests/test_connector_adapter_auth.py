@@ -54,6 +54,37 @@ def test_gateway_token_requires_exact_apim_principal(
         validator.validate("Bearer signed-token")
 
 
+def test_gateway_auth_configuration_is_all_or_nothing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.delenv("RESEARCH_APIM_PRINCIPAL_ID", raising=False)
+    monkeypatch.delenv("RESEARCH_WORKSPACE_TENANT_ID", raising=False)
+    assert build_gateway_validator() is None
+
+    monkeypatch.setenv("RESEARCH_APIM_PRINCIPAL_ID", "principal")
+    with pytest.raises(RuntimeError, match="Both RESEARCH_APIM_PRINCIPAL_ID"):
+        build_gateway_validator()
+
+    monkeypatch.delenv("RESEARCH_APIM_PRINCIPAL_ID")
+    monkeypatch.setenv("RESEARCH_WORKSPACE_TENANT_ID", "tenant")
+    with pytest.raises(RuntimeError, match="Both RESEARCH_APIM_PRINCIPAL_ID"):
+        build_gateway_validator()
+
+    monkeypatch.setenv("RESEARCH_APIM_PRINCIPAL_ID", "principal")
+    validator = build_gateway_validator()
+    assert validator is not None
+
+
+def test_gateway_token_rejects_non_bearer_authorization() -> None:
+    validator = GatewayTokenValidator(
+        tenant_id="tenant-1",
+        principal_id="apim-principal",
+        jwks=FakeJwks(),
+    )
+    with pytest.raises(GatewayAuthorizationError, match="bearer token"):
+        validator.validate("Basic credentials")
+
+
 def test_gateway_token_rejects_missing_or_invalid_tokens(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

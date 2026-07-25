@@ -32,6 +32,15 @@ export type UrlPolicyDecision =
   | { allowed: true; url: string; host: string }
   | { allowed: false; reason: UrlPolicyRejectionReason };
 
+export interface ExternalUrlPolicy {
+  /**
+   * Exact, lowercase hostnames approved by the owning product surface.
+   * Keep these deterministic in production code; never derive them from
+   * retrieved content or an API response.
+   */
+  allowedHosts: ReadonlySet<string>;
+}
+
 /**
  * Hosts that are known, approved publishers of terms-of-service documents
  * for the research connectors registered in
@@ -52,11 +61,16 @@ export const APPROVED_EXTERNAL_URL_HOSTS: ReadonlySet<string> = new Set([
   "grants.gov",
   "reporter.nih.gov",
   "datacite.org",
+  "support.datacite.org",
   "info.orcid.org",
   "orcid.org",
   "ror.org",
   "www.semanticscholar.org",
 ]);
+
+export const CONNECTOR_TERMS_URL_POLICY: ExternalUrlPolicy = {
+  allowedHosts: APPROVED_EXTERNAL_URL_HOSTS,
+};
 
 const LOOPBACK_HOSTS = new Set(["localhost", "0.0.0.0", "::1", "[::1]"]);
 const PRIVATE_IPV4_PATTERNS: RegExp[] = [
@@ -90,6 +104,7 @@ function isPrivateOrLocalHost(hostname: string): boolean {
  */
 export function evaluateExternalUrlPolicy(
   candidate: string | null | undefined,
+  policy: ExternalUrlPolicy = CONNECTOR_TERMS_URL_POLICY,
 ): UrlPolicyDecision {
   if (!candidate || candidate.trim().length === 0) {
     return { allowed: false, reason: "missing-url" };
@@ -119,7 +134,7 @@ export function evaluateExternalUrlPolicy(
     return { allowed: false, reason: "private-or-local-host" };
   }
 
-  if (!APPROVED_EXTERNAL_URL_HOSTS.has(hostname)) {
+  if (!policy.allowedHosts.has(hostname)) {
     return { allowed: false, reason: "unapproved-host" };
   }
 
