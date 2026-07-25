@@ -711,6 +711,22 @@ different file.** Grep across the suite for the *property*, not the idiom.
   `completed_replay` to a non-DENY mode. Adding the fix leaves the suite green, so
   nothing would catch the defect *or* its reintroduction.
 
+  **Boundary note, recorded so nobody re-derives it — and *not* a finding.**
+  `argument_hash` **does** cover the arguments: both in-tree producers derive it
+  from the real request (`workflows.py:237` digests
+  `request.model_dump(mode="json")`; `middleware.py:496` digests
+  `{"function": …, "arguments": arguments}`). A reviewer briefly suspected "new
+  arguments silently ignored" and **withdrew it after measuring** — varying an
+  argument changes the digest, changes the key, and yields a fresh execution, so
+  the replay finding stands on **cross-release replay alone**. What *is* true is
+  narrower: `capabilities.py:841` reads
+  `argument_hash = cast(str, context.operation_fingerprint)`, so the capability
+  layer **carries** the caller's fingerprint rather than re-deriving it.
+  **`argument_hash` therefore binds what the caller *declared* the arguments were,
+  not what the callee *received*** — the recorded-not-verified shape again, but
+  here a caller obligation that both existing producers honour. Measured against
+  the two producers that exist; it claims nothing about producers that don't.
+
   **Fix specification, agreed before the freeze:**
   - **Do not add `principal_id` to `IdempotencyKey`.** Principal is a *verify*
     fact, not an *identity* fact; keying on it would partition the idempotency
@@ -1078,6 +1094,17 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Under-quantified is not false — and it needs a different remedy.** Two durable
+  sentences in this repo were *"true along the path the author was reading, and
+  silent about the path they weren't"*: **"an independently regenerable
+  correctness control"** (true for an auditor holding the repo, false at runtime)
+  and **"prior-release approvals are rejected"** (true on `ACQUIRED`, silent on
+  `COMPLETED`). Neither is a false statement; both are **under-quantified**. A
+  reviewer checking either against the path it describes finds it correct, which
+  is why they survive. **The remedy is not to weaken the claim but to state the
+  negative explicitly**, and this repo already contains the model sentence for
+  how: *"It never hashes worktree, ZIP, or OCI bytes."* Write the missing
+  quantifier in that voice.
 - **Match the check's scope to the proposition's scope — a file-level answer to a
   field-level question is wrong in *either* direction.** Asked whether idempotency
   lookup identity is release-independent, `grep release agents/shared/idempotency.py`
