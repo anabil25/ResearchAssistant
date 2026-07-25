@@ -1167,6 +1167,16 @@ From the review program that produced §5.
   reported a stale SHA at least once; one branch was rebuilt ten times.
   `git branch --contains` is a *reachability* test, not a tip test — it passes for
   every commit in history.
+- **Evidence must name its *range*, not only its SHA — correct evidence for a
+  closed sub-range reads as current evidence once the range label is dropped.**
+  A reviewer working `94de900..f36947b` held figures of 1261 tests / 478 stmts
+  while the tip measured 1277 / 483, which looked like a stale report. It was not:
+  the numbers were **correct for `94de900`**, which was the tip when they were
+  declared and the base of the range the reviewer had been assigned. **The
+  diagnosis drives the remedy and the two differ** — if evidence is stale the fix
+  is *report fresher*; if it is correctly scoped to a superseded range the fix is
+  *label the range*, and reporting fresher would not have prevented it. Getting
+  this backwards installs a remedy that cannot work against the failure it targets.
 - **Prefer a *produced* quantity over an *asserted* one when checking whether
   evidence matches its subject.** This is the general form of the test-count rule
   and the reason it works: **a SHA is asserted; a count is produced.** An asserted
