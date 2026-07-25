@@ -541,6 +541,22 @@ unreviewed surface is considerably better instrumented than the heading suggests
 and a reviewer should start by reading that file to learn which invariants are
 already pinned.
 
+**The twenty are not equally strong, and the owner graded them honestly — read
+the split before relying on any one of them.** Roughly **ten are STRUCTURAL**:
+member/type/`isinstance`/signature checks that **cannot be evaded without deleting
+the test** — the reader Protocol declaring exactly `{get}`, `BindingResolution`
+carrying no `deployment_id`, the binding writer having no delete affordance,
+`RuntimeConnectionRef` holding no secret-shaped field, `RuntimeMappingView`
+having no `lifecycle_state`, and the `@runtime_checkable` `isinstance` test
+(`runtime_mapping_store.py:162`, with its rationale sited *at the definition*)
+proving a control-plane adapter is not a reader. The other **ten are SOURCE/AST
+tripwires**: no `upsert_item`, no non-atomic fallback, no `datetime.now(` in the
+authz path, the mount importing no control-plane adapter, and so on. **Those catch
+the harmless-looking addition but a deliberate rename would slip past.** That
+residual is real, was disclosed rather than discovered, and closing it fully needs
+language support that does not exist here. **Treat the source-based ten as
+tripwires, not proofs.**
+
 **That file is not the complete index, though — check before concluding a
 property is unguarded.** At least one absence invariant lives elsewhere: the
 bidirectional no-inheritance guard between the runtime and control-plane ports is
