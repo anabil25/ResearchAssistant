@@ -1675,6 +1675,31 @@ From the review program that produced §5.
   an **NFC-reordering path**, because `git ls-tree` emits raw-byte order and paths
   are NFC-normalised before sorting — so on ASCII the sort is a *no-op* and any
   ASCII fixture would be an assertion that cannot fail.
+
+  **Ranked together, the five carried items compress to one sentence — and it is
+  the sentence an implementer needs first:**
+
+  ```
+  N1      drift check installed      property enforced, unasserted
+  N2      ordering cannot matter     property enforced, unasserted (inert on the tested class)
+  F1      three sets must relate     property unenforced, currently true
+  F-PROV  git ids resolved           property never claimed in code, claimed in prose
+  replay  completed_replay = DENY    property true by default, nothing asserts the default
+  ```
+
+  **Four of the five are one test each. None is a code fix. The implementation is
+  right; what is missing is the assertion that keeps it right.** Anyone opening §5
+  should read that before the individual entries, because the entries describe
+  defects and the summary describes the *shape* of the work — and the shape is what
+  determines whether this is an afternoon or a rewrite.
+
+  **The distinction that makes those rows writable as tests:** *a fact about the
+  fixtures* tells you what the tests happen to contain; *a fact about the control*
+  tells you what they **must** contain. N2 read as "breaks for non-ASCII" — a fact
+  about the fixtures, and an observation. Restated as "the control is inert on the
+  entire input class the tests use," it is a fact about the control, and a
+  specification. **Only the second can be written as a test**, which is why every
+  finding here was pushed toward the control-shaped phrasing before being recorded.
 - **A stale verdict fails in the direction nobody audits.** A *wrong* verdict gets
   challenged on its content; a verdict that quietly stops describing the code
   keeps being cited, because the thing that changed is not in the document.
