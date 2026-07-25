@@ -51,14 +51,37 @@ checked-in manifest holds **49 entries: 48 `.py` + `requirements.txt`** —
 byte-for-byte the same inclusion policy as the incumbent's 49 identity-eligible
 files, so **it does not close the gap it was built to close.**
 
-Two of its ideas are better than the incumbent's and should be ported as a small
+Three of its ideas are better than the incumbent's and should be ported as a small
 delta rather than merged:
 
 1. **A checked-in exact-set manifest instead of a recomputed walk.** A walk
    silently absorbs whatever it finds; a committed snapshot fails loudly when a
-   file is added or removed. The incumbent cannot detect that at all.
+   file is added or removed. The incumbent cannot detect that at all. Delivered
+   as a tracked `agents/source_manifest.json` with a CI `--check` step that fails
+   on staleness, matching the repo's existing generated-contract pattern.
 2. **`blob_id` per entry plus `source_tree_git_id`** — identity witnessed by git's
-   own object IDs, a second witness.
+   own object IDs, a second witness. Derived from covered **blob** SHAs rather
+   than a HEAD commit sha, so it is deterministic and non-circular; an embedded
+   commit sha would be stale on every commit and the staleness check could never
+   pass.
+3. **Its validator recomputes every digest the document claims, on every parse**
+   — `if self.source_tree_git_id != _source_tree_git_id(self.entries): raise` —
+   so a truncated or edited manifest fails closed. **This is the direct answer to
+   F-PROV**, where the incumbent *records* `source_commit`/`source_tree` and never
+   verifies them, accepting forged values with a recomputed self-digest.
+   **Verification is not schema parsing**, and this is the one place in either
+   implementation where that distinction is enforced.
+
+Also worth taking: it proved **stray-file immunity end-to-end against a real
+temporary git repo** — committed LF, re-checked-out under `core.autocrlf=true` so
+worktree bytes were genuinely CRLF, then untracked, ignored and backup files
+dropped in; producer output byte-identical. That is a stronger demonstration than
+any fixture, because it proves the producer reads git objects rather than the
+worktree.
+
+**What it does *not* fix, which is why it was not merged:** its inclusion policy
+is byte-for-byte the incumbent's, so **F1 is untouched**. The verification is
+better; the *coverage* is identical.
 
 ---
 
