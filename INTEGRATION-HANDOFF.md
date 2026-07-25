@@ -1156,6 +1156,23 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Overstating a control's burden is its own route to its removal.** A team
+  documenting a fail-closed release-identity check nearly wrote that every
+  developer must generate a manifest before first run. They corrected it: the
+  manifest is a **tracked** file, so an ordinary checkout already has a valid one,
+  and local source changes make it **stale, not absent** — the fail-closed path
+  bites on *missing or corrupt*, which is rarer and less alarming. **The reason
+  they gave for caring is the transferable part:** overstating the requirement
+  *"would have made the control look more burdensome than it is, which is its own
+  route to someone adding a fallback."* Understating a gap gets a control trusted
+  past its range; **overstating its cost gets the control deleted by someone
+  optimising a workflow.** Both are accuracy failures, and only the first is
+  usually treated as one.
+  *(The tracked-vs-generated distinction matters here and is the §2 design split:
+  a checked-in manifest can go stale and needs a freshness check; `main`'s
+  `.release/source-tree.json` is build-produced and untracked, so it cannot go
+  stale but must be produced — different burden, different failure, same need to
+  describe it exactly.)*
 - **A test written to close a coverage gap must fail under mutation of the thing
   it now covers — otherwise the gate was satisfied rather than the risk.** This is
   the sharp edge of *neutralization over coverage*: closing a gap **to reach a
