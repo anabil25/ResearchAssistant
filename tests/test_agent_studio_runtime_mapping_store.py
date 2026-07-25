@@ -69,6 +69,25 @@ def test_head_model_is_frozen_and_extra_forbid() -> None:
         RuntimeDeploymentHead(deployment_id="dep-1", current_sequence=0, current_revision_id="rev-1")
 
 
+def test_runtime_and_control_ports_have_no_inheritance_relationship() -> None:
+    # Structural isolation (precision 1): the runtime reader port must NOT be
+    # widenable into the control-plane port. Separate Protocols, no inheritance
+    # either way, and the runtime port exposes ONLY `get` -- no head, no
+    # enumeration, no write accessor -- so "no head read reachable from the
+    # runtime authorization path" is true by construction.
+    from research_assistant_api.agent_studio.runtime_mapping_store import (
+        RuntimeDeploymentMappingControlPlane,
+        RuntimeDeploymentMappingReader,
+    )
+
+    assert RuntimeDeploymentMappingReader not in RuntimeDeploymentMappingControlPlane.__mro__
+    assert RuntimeDeploymentMappingControlPlane not in RuntimeDeploymentMappingReader.__mro__
+    reader_methods = {name for name in vars(RuntimeDeploymentMappingReader) if not name.startswith("_")}
+    assert reader_methods == {"get"}
+    for forbidden in ("get_head", "list_revisions", "commit_revision", "delete"):
+        assert forbidden not in vars(RuntimeDeploymentMappingReader)
+
+
 # --- InMemory: reads -------------------------------------------------------
 
 

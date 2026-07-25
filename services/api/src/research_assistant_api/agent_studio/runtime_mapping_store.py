@@ -85,15 +85,43 @@ class RuntimeDeploymentHead(BaseModel):
 
 
 class RuntimeDeploymentMappingReader(Protocol):
-    """RUNTIME port: exact point reads only -- no head, no latest, no enumeration."""
+    """RUNTIME port: exact point reads only -- no head, no latest, no enumeration.
+
+    STRUCTURAL ISOLATION (do not "improve" this into an inheritance relationship):
+    this port and ``RuntimeDeploymentMappingControlPlane`` are SEPARATE Protocols
+    with NO inheritance between them, precisely so the runtime port cannot be
+    widened into the control-plane one. A runtime dependency typed as this port
+    therefore has NO ``get_head``/``list_revisions``/write surface reachable at
+    all -- "no head read on the runtime authorization path" is true by
+    construction, not by vigilance. (The head-lead invariant is asserted ONLY in
+    the control plane, where a repoint already reads head; asserting it on the
+    runtime path would force a forbidden head read back onto the exact path that
+    must prove ZERO mapping reads for an unbound caller.) NOTE: this type split
+    prevents ACCIDENTS; it is NOT the security boundary. The security boundary is
+    the Azure identity/RBAC split -- the runtime app-role gets read-only data-plane
+    access while head/binding writes require a control-plane identity (see the IaC
+    RBAC that lands with the durable adapters).
+    """
 
     def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
         """Fresh exact point read of the ``(deployment_id, revision_sequence)`` revision (or ``None``)."""
         ...
 
 
-class RuntimeDeploymentMappingControlPlane(RuntimeDeploymentMappingReader, Protocol):
-    """CONTROL-PLANE port: head + revision enumeration + succession writes."""
+class RuntimeDeploymentMappingControlPlane(Protocol):
+    """CONTROL-PLANE port: exact point reads + head + revision enumeration + writes.
+
+    A SEPARATE Protocol from ``RuntimeDeploymentMappingReader`` with NO inheritance
+    relationship (see that port's note). It re-declares ``get`` independently
+    rather than inheriting it, so neither port is a sub/supertype of the other and
+    the runtime port can never be widened into this one. The concrete adapters
+    structurally satisfy BOTH ports, but the runtime composition constructs and
+    injects only a reader-typed dependency.
+    """
+
+    def get(self, deployment_id: str, revision_sequence: int) -> RuntimeDeploymentMapping | None:
+        """Fresh exact point read of the ``(deployment_id, revision_sequence)`` revision (or ``None``)."""
+        ...
 
     def get_head(self, deployment_id: str) -> RuntimeDeploymentHead | None:
         """The current succession head for ``deployment_id`` (or ``None`` before bootstrap)."""

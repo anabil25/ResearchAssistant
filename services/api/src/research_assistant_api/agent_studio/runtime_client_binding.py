@@ -105,6 +105,13 @@ class BindingResolution(BaseModel):
     plane uses to reject a rollback -- plus the binding ``status``. It never
     carries a deployment the caller did not assert. The store then performs an
     exact ``(deployment_id, revision_id)`` point read.
+
+    On a REVOKED tombstone, ``revision_sequence``/``revision_id`` are AUDIT-ONLY:
+    they record which revision the client was on WHEN it was revoked. Since the
+    per-deployment HEAD owns succession, NOTHING may derive succession or a
+    re-grant target from a tombstone's retained sequence -- an explicit re-grant
+    (``reinstate``) points at the CURRENT head, and uses the retained sequence
+    only as the CAS precondition (a concurrency mechanism), never as the target.
     """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
