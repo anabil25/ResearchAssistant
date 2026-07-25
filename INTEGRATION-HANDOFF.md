@@ -108,6 +108,27 @@ ignored and backup files dropped in; producer output byte-identical. That is a
 stronger demonstration than any fixture, because it proves the producer reads git
 objects rather than the worktree.
 
+**Adopt `blob_id` as an *addition*, never as a replacement — the two identities
+are not interchangeable.** Verified in the incumbent producer: `_normalized_source`
+(L79) reads content with `newline=None` (L85), i.e. universal-newlines
+translation, and paths are NFC-normalised at L76 with a collision check at L101.
+So **the logical digest deliberately normalises newline conventions, while a git
+`blob_id` witnesses the raw committed bytes.** Swapping one for the other would
+silently change what the identity *means*, and an LF/CRLF checkout difference
+would then produce a different release identity. Note this is also *why* the
+stray-file immunity proof above passes: byte-identical output under
+`core.autocrlf=true` is a consequence of that normalisation, so the two facts
+corroborate rather than being independent evidence.
+
+**And the incumbent's tree identity is real, checked the same way the rival's was
+disproved.** `build_agent_source_tree.py` L225–230 computes
+`git rev-parse --verify {commit}:{source_root}` — an actual **git tree object ID**
+for `agents/` at the named commit — alongside a real `source_commit` (L149) and a
+*separate* `source_tree_digest` (L231). Three fields, no overloading. That is the
+concrete asymmetry behind objection 1: the incumbent names real git objects
+because it runs after the commit exists; the rival's single `source_tree_git_id`
+is a synthetic SHA-256 over `(path, blob_id)` pairs.
+
 **One concrete, cheap improvement worth porting from `c90b9ce`: name the paths.**
 Its gate reports `untracked source would be uploaded: agents/scratch_probe.py` and
 lists every offending file. The incumbent's equivalent raises
