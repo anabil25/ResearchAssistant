@@ -32,17 +32,35 @@ directly conflicts with all eighteen immediately.
 
 ## 2. Deliberately NOT merged
 
-**Eight state-lineage branches, superseded by design.** `canonical-selective-port`
-is literally *"selective canonical state-coverage port onto d76a8eb"* — the
-canonical lineage already absorbed what was worth keeping. Verified rather than
-assumed: the merged tree has **14 e2e specs** against 11 in
-`canonical-selective-port` and 13 in `animated-engine`, and every artifact they
-conflict on is present and substantial.
+**Twelve state-lineage branches, now genuinely superseded — but the original
+reasoning here was wrong and was corrected by re-measurement.**
+
+The first version of this section argued supersession from a **count**: "the
+merged tree has 14 e2e specs against 11 in `canonical-selective-port` and 13 in
+`animated-engine`." **A count is not a set.** Re-measured by comparing file
+*sets*, the spec lists were **complementary**: `main` had 2 specs those branches
+lacked, and they had **3 `main` lacked** —
+`state-data-research.spec.ts` (19 tests), `state-literature-grant.spec.ts` (6),
+`state-workspace.spec.ts` (10). The branch carried *both*
+`literature-state-closure` and `state-literature-grant`, so they were additional
+specs, not renames. **35 tests were being discarded on a counting argument.**
+
+Those three are now merged (`8aedbc0`), with the missing `formatTime` /
+`statusLabel` exports in `workspace-views.tsx` restored — `main` did not
+typecheck before that commit.
+
+**Supersession is now established the right way: by file set, at every branch.**
+Twelve branches carry **zero** files `main` lacks, and on the shared files they
+differ over, `main`'s versions are newer and larger (e.g.
+`verify-playwright-runtime-coverage.mjs` 310 lines vs 244;
+`run-e2e-coverage-gate.mjs` 242 vs 119) — and
+`policy-gated-external-link.test.tsx` is byte-identical.
 
 Superseded: `canonical-selective-port`, `playwright-state-coverage-truth`,
 `review-canonical-5562b391`, `cover-workflow-states`, `close-web-coverage`,
 `close-playwright-coverage-gaps`, `close-python-domain-coverage`,
-`scaling-adventure`.
+`scaling-adventure`, `cover-literature-grant-states`, `cover-settings-states`,
+`state-coverage-close-gaps`, `state-data-research-coverage`.
 
 **`fix-release-source-identity` — a duplicate, adjudicated out.** A second,
 divergent implementation of release source identity, built from the same base as
