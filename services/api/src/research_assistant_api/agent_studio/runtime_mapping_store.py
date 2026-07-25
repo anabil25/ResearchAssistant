@@ -286,6 +286,13 @@ class CosmosRuntimeDeploymentMappingStore:
             return
         revision_doc = self._revision_document(mapping)
         head_doc = self._head_document(mapping)
+        # ONE batch shape (two ops, one partition key, all-or-nothing), TWO head
+        # preconditions -- never an unconditional upsert on the head (a bare upsert
+        # would silently clobber a concurrent head advance with NO 412, destroying
+        # monotonicity). BOOTSTRAP: the head op is a create-only ``create`` (lands
+        # only if ABSENT). SUPERSEDE: the head op is a ``replace`` with If-Match
+        # (lands only if UNCHANGED). Both abort the whole batch on their
+        # precondition, so head can neither be skipped nor overwritten.
         batch: list[tuple[Any, ...]]
         if expected_head_sequence is None:
             batch = [("create", (revision_doc,)), ("create", (head_doc,))]

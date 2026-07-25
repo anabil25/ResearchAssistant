@@ -171,6 +171,21 @@ class ReinstateStateError(RuntimeError):
     a never-revoked client is an ordinary ``repoint``, not a reinstate."""
 
 
+class CrossDeploymentBindingError(RuntimeError):
+    """Raised when a write would bind a client to a DIFFERENT deployment than its
+    existing row -- violating the locked 1:1 cardinality (one client bound to
+    exactly one deployment, for its lifetime).
+
+    Each Hosted Agent deployment has its OWN managed identity, so a single
+    ``client_app_id`` belongs to exactly one deployment by construction; a write
+    re-targeting it to another deployment is a misconfiguration and exactly the
+    shared-runtime-spanning-deployments blast-radius case the contract forbids.
+    Enforced at the WRITER (the control-plane mutation surface), NOT the resolver:
+    the resolver already returns ``None`` for a wrong-deployment pair, but only the
+    writer can refuse to CREATE the cross-deployment state in the first place.
+    """
+
+
 class ClientDeploymentBindingWriter(Protocol):
     """Control-plane-only mutation surface (never handed to the runtime plane)."""
 
@@ -353,6 +368,11 @@ class InMemoryClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         binding = self._by_client.get(client_app_id)
+        if binding is not None and binding.deployment_id != deployment_id:
+            raise CrossDeploymentBindingError(
+                f"client '{client_app_id}' is already bound to '{binding.deployment_id}'; "
+                f"it cannot be bound to '{deployment_id}' (1:1 cardinality)."
+            )
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
         observed_status: RuntimeBindingStatus | None = None
@@ -385,6 +405,11 @@ class InMemoryClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         binding = self._by_client.get(client_app_id)
+        if binding is not None and binding.deployment_id != deployment_id:
+            raise CrossDeploymentBindingError(
+                f"client '{client_app_id}' is already bound to '{binding.deployment_id}'; "
+                f"it cannot be reinstated onto '{deployment_id}' (1:1 cardinality)."
+            )
         observed_sequence: int | None = None
         observed_status: RuntimeBindingStatus | None = None
         if binding is not None and binding.deployment_id == deployment_id:
@@ -504,6 +529,11 @@ class CosmosClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         document = self._read(client_app_id)
+        if document is not None and document.get("deployment_id") != deployment_id:
+            raise CrossDeploymentBindingError(
+                f"client '{client_app_id}' is already bound to '{document.get('deployment_id')}'; "
+                f"it cannot be bound to '{deployment_id}' (1:1 cardinality)."
+            )
         observed_sequence: int | None = None
         observed_revision_id: str | None = None
         observed_status: RuntimeBindingStatus | None = None
@@ -560,6 +590,11 @@ class CosmosClientDeploymentBindingIndex:
         expected_current_sequence: int | None,
     ) -> None:
         document = self._read(client_app_id)
+        if document is not None and document.get("deployment_id") != deployment_id:
+            raise CrossDeploymentBindingError(
+                f"client '{client_app_id}' is already bound to '{document.get('deployment_id')}'; "
+                f"it cannot be reinstated onto '{deployment_id}' (1:1 cardinality)."
+            )
         observed_sequence: int | None = None
         observed_status: RuntimeBindingStatus | None = None
         observed_etag: str | None = None

@@ -361,6 +361,9 @@ def test_grant_non_convergence_leaves_intent_without_applied() -> None:
         producer.grant(_mapping(revision_sequence=1), actor_id=ACTOR, now=NOW)
     assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_GRANTED, "intent")) == 1
     assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_GRANTED, "applied")) == 0
+    # Exhaustion is resolved EXPLICITLY as "failed" (not left dangling, not applied),
+    # so it is distinguishable from a crash's half-resolved intent.
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_GRANTED, "failed")) == 1
 
 
 class _NonMonotonicWriter:
@@ -664,8 +667,13 @@ class _AlwaysPreconditionReinstateWriter:
 
 def test_reinstate_non_convergence_raises_precondition() -> None:
     store, index = _grant_then_revoke()
+    audit_store = InMemoryAuditStore()
     producer = RuntimeDeploymentProducer(
-        store, _AlwaysPreconditionReinstateWriter(), index, AuditService(InMemoryAuditStore())
+        store, _AlwaysPreconditionReinstateWriter(), index, AuditService(audit_store)
     )
     with pytest.raises(BindingPreconditionError):
         producer.reinstate("dep-1", (CLIENT,), actor_id=ACTOR, now=NOW)
+    # Exhaustion resolved explicitly as "failed", intent recorded, never applied.
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "intent")) == 1
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "applied")) == 0
+    assert len(_events(audit_store, AuditEventKind.RUNTIME_BINDING_REINSTATED, "failed")) == 1

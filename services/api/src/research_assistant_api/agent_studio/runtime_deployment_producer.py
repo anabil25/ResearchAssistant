@@ -303,6 +303,15 @@ class RuntimeDeploymentProducer:
                 client_app_id=client_app_id, prior=resolution,
             )
             return
+        # Bounded-retry exhaustion is a KNOWN terminal outcome, so we resolve the
+        # intent EXPLICITLY as "failed" (never leave it dangling and never mark it
+        # applied). A dangling intent with neither an applied nor a failed record
+        # therefore means a CRASH mid-repoint -- distinguishable from exhaustion,
+        # which warrants a different reconciliation response.
+        self._record_binding_event(
+            mapping, kind=kind, phase="failed", intent_id=intent_id, actor_id=actor_id, now=now,
+            client_app_id=client_app_id, prior=prior,
+        )
         raise BindingPreconditionError(
             f"repoint for '{client_app_id}' did not converge within {_MAX_REPOINT_ATTEMPTS} attempts."
         )
@@ -400,6 +409,12 @@ class RuntimeDeploymentProducer:
                 actor_id=actor_id, now=now, client_app_id=client_app_id, prior=resolution,
             )
             return
+        # Explicit "failed" resolution on exhaustion (see _cas_repoint): a known
+        # terminal outcome is recorded, so only a CRASH leaves a dangling intent.
+        self._record_binding_event(
+            mapping, kind=AuditEventKind.RUNTIME_BINDING_REINSTATED, phase="failed", intent_id=intent_id,
+            actor_id=actor_id, now=now, client_app_id=client_app_id, prior=prior,
+        )
         raise BindingPreconditionError(
             f"reinstate for '{client_app_id}' did not converge within {_MAX_REPOINT_ATTEMPTS} attempts."
         )

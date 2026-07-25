@@ -14,6 +14,7 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
     BindingResolution,
     ClientDeploymentBindingResolver,
     CosmosClientDeploymentBindingIndex,
+    CrossDeploymentBindingError,
     InMemoryClientDeploymentBindingIndex,
     NonMonotonicRepointError,
     ReinstateStateError,
@@ -142,12 +143,24 @@ def test_repoint_precondition_on_stale_expected() -> None:
         index.repoint(CLIENT, "dep-1", 2, REV2, ACTIVE, expected_current_sequence=0)
 
 
-def test_one_to_one_replace_to_other_deployment() -> None:
+def test_cross_deployment_rebind_is_refused() -> None:
+    # 1:1 cardinality enforced at the writer: a client bound to one deployment may
+    # never be re-targeted to another (each deployment has its own managed
+    # identity, so a client spanning deployments is the blast-radius case we forbid).
     index = InMemoryClientDeploymentBindingIndex()
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
-    index.repoint(CLIENT, "dep-2", 1, "rev-b", ACTIVE, expected_current_sequence=None)
-    assert index.resolve_binding(CLIENT, "dep-1") is None
-    assert index.resolve_binding(CLIENT, "dep-2") is not None
+    with pytest.raises(CrossDeploymentBindingError):
+        index.repoint(CLIENT, "dep-2", 1, "rev-b", ACTIVE, expected_current_sequence=None)
+    assert index.resolve_binding(CLIENT, "dep-1") is not None  # original binding intact
+    assert index.resolve_binding(CLIENT, "dep-2") is None
+
+
+def test_cross_deployment_reinstate_is_refused() -> None:
+    index = InMemoryClientDeploymentBindingIndex()
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(CrossDeploymentBindingError):
+        index.reinstate(CLIENT, "dep-2", 1, "rev-b", expected_current_sequence=1)
 
 
 def test_revoke_is_a_tombstone_not_a_delete() -> None:
@@ -374,6 +387,14 @@ def test_cosmos_resolve_wrong_deployment_is_none() -> None:
     assert index.resolve_binding(CLIENT, "dep-2") is None
 
 
+def test_cosmos_cross_deployment_rebind_is_refused() -> None:
+    container = _FakeBindingContainer()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    with pytest.raises(CrossDeploymentBindingError):
+        index.repoint(CLIENT, "dep-2", 1, "rev-b", ACTIVE, expected_current_sequence=None)
+
+
 def test_cosmos_cas_advances() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
@@ -430,6 +451,15 @@ def test_cosmos_reinstate_absent_binding_is_state_error() -> None:
     index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, _FakeBindingContainer()))
     with pytest.raises(ReinstateStateError):
         index.reinstate(CLIENT, "dep-1", 1, REV, expected_current_sequence=None)
+
+
+def test_cosmos_cross_deployment_reinstate_is_refused() -> None:
+    container = _FakeBindingContainer()
+    index = CosmosClientDeploymentBindingIndex(cast(ContainerProxy, container))
+    index.repoint(CLIENT, "dep-1", 1, REV, ACTIVE, expected_current_sequence=None)
+    index.repoint(CLIENT, "dep-1", 1, REV, REVOKED, expected_current_sequence=1)
+    with pytest.raises(CrossDeploymentBindingError):
+        index.reinstate(CLIENT, "dep-2", 1, "rev-b", expected_current_sequence=1)
 
 
 def test_cosmos_reinstate_precondition_on_stale_expected() -> None:
