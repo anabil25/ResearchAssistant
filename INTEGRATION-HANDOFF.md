@@ -393,6 +393,27 @@ two-thirds behind.
 
 ### Runtime trust (never independently reviewed — 107 commits)
 
+**Read this before judging the section by its heading.** "Never independently
+reviewed" is true and the HMAC finding below is confirmed still live in `main`
+(`infra/modules/keyvault.bicep:3`, `agent_studio/models.py:1617`). But this line
+also carries the most systematic machine-checked evidence in the repo:
+`tests/test_agent_studio_runtime_absence_controls.py` holds **20 numbered absence
+controls**, each asserting that something is *not* present — no `default_factory`
+on digest-feeding timestamps, no unconditional upsert on the head, no non-atomic
+fallback in the succession retry, no `latest`/`current` accessor on the ports, no
+`deployment_id` in the resolver return, no ambient `datetime.now()` reachable from
+domain authorization, no hard-delete affordance on the binding writer, no secret
+material in the mapping, no internal reason or `str(exc)` surfaced to clients, and
+so on.
+
+That is the §7 practice — *when a property holds because something is absent,
+assert the absence* — applied more thoroughly than anywhere else in this
+integration. It does not substitute for review, and it cannot: every one of those
+controls asserts a property someone chose to name. But it does mean the
+unreviewed surface is considerably better instrumented than the heading suggests,
+and a reviewer should start by reading that file to learn which invariants are
+already pinned.
+
 - **The attestation key is HMAC, so the verifier necessarily holds the signing
   key.** No identity split can separate the roles; an earlier ruling saying
   otherwise was withdrawn. **The primitive must change** — a Key Vault key with
