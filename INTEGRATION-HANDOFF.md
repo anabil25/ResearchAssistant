@@ -1271,6 +1271,48 @@ From the review program that produced §5.
   — a **deleted call on a line the smoke test executes** — entirely undetected.
   **Coverage-driven tests are the population most likely to be decorative,
   precisely because a number, not a risk, motivated them.**
+
+  **Here the cheapest test is not merely useless, it is harmful — and the reason
+  is structural.** All nine entry points are identical and six statements long:
+
+  ```python
+  import sys
+  from pathlib import Path
+
+  sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+
+  from coordinator.factory import run     # resolves ONLY after line 4
+
+  if __name__ == "__main__":
+      run()
+  ```
+
+  Verified in-tree: **9 of 9 mutate `sys.path`**, 9 × 6 = 54, and no test imports
+  any of them (`test_connector_adapter_entrypoint.py` imports
+  `research_assistant_connector_adapter.main`, a different module). Two
+  consequences an implementer must design around:
+
+  1. **They are not importable as `agents.<name>.main`.** The line-6 import is
+     `coordinator.factory`, reachable only through the path hack — so the obvious
+     `import agents.coordinator.main` does not work.
+  2. **Importing one mutates global interpreter state that persists.**
+     `sys.path.insert(0, …)` outlives the test and can change how *later* tests
+     resolve modules — order-dependent pollution, the exact class flagged on the
+     provider branch.
+
+  **So the naive nine-smoke-test remedy would satisfy `fail_under = 100`, leave
+  N1-class wiring defects uncaught, *and* introduce cross-test pollution — worse
+  than the gap it closes.** The specification is: exercise the entry point without
+  leaking `sys.path`, assert *what it invokes*, and verify the test fails when that
+  invocation is removed. `tests/test_connector_adapter_entrypoint.py` is already a
+  worked example of that shape in this repo — it imports an entrypoint module and
+  asserts bounded network defaults under `monkeypatch` — and is the template to
+  copy rather than inventing one.
+
+  **The general form: a gap's size tells you nothing about the shape of its fix,
+  and a remedy specified from the number alone will be the cheapest thing that
+  moves the number.** 54 sounds like nine trivial tests; it is nine tests that each
+  need isolation, behaviour assertion, and a neutralization check.
 - **Reading does not produce random error — it produces error biased toward the
   story you already hold.** Every read-based figure corrected in this program was
   wrong in the **alarming** direction: 22 shipped-but-unhashed files instead of
