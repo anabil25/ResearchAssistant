@@ -1156,6 +1156,22 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Make an unnecessary suppression a build failure at the edit site — the
+  strongest form of "assert the absence."** With `warn_unused_ignores = true`
+  (`pyproject.toml:83` here), write a `TYPE_CHECKING`-only assignment that *should*
+  fail type-checking and mark it `# type: ignore[assignment]` — e.g. assigning a
+  control-plane store to a runtime-reader port. **If someone later adds the
+  convenience method that makes the assignment valid, the ignore becomes unused
+  and mypy fails — at the line they edited**, not in a distant test they may not
+  run. This beats a source scan on the axis that matters: **it cannot be evaded by
+  renaming**, because the type checker resolves structure rather than text. It is
+  the natural upgrade path for the source/AST tripwires in the absence-control
+  suite, roughly half of which currently catch only the obvious edit.
+  *(Related upgrades from the same line, recorded because the technique
+  generalises: assert a Protocol's `__protocol_attrs__` as an **exact set** rather
+  than checking for known-bad members, so any addition fires; and remove a default
+  from a CAS parameter — `_replace_head_or_claim_error(etag=…)` — so an
+  unconditional write is **unrepresentable** rather than merely untested.)*
 - **Overstating a control's burden is its own route to its removal.** A team
   documenting a fail-closed release-identity check nearly wrote that every
   developer must generate a manifest before first run. They corrected it: the
