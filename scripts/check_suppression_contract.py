@@ -21,7 +21,8 @@ SCHEMA_VERSION = "research-assistant.suppression-contract.v1"
 BASELINE_REVIEW_POLICY = (
     "The committed exact baseline deliberately replaces git-history comparison. "
     "Every baseline shrink requires a matching source removal in the same reviewed "
-    "diff; additions and substitutions require explicit review. No semantic laundering."
+    "diff. Growth requires --suppression-addition-reason, and the stated reason is "
+    "stored beside every added multiset entry. No semantic laundering."
 )
 BASELINE_DRIFT_MESSAGE = (
     "current suppression inventory differs from the committed exact set; "
@@ -638,14 +639,55 @@ def report_exclusions(
     )
 
 
-def _suppression_identity(record: dict[str, Any]) -> tuple[str, str, str, str, str]:
+def _suppression_identity(record: dict[str, Any]) -> tuple[str, str, str, str]:
     return (
         record["path"],
         record["kind"],
         record["scope"],
         record["reason"],
-        record["posture"],
     )
+
+
+def _suppression_counter(
+    records: Iterable[dict[str, Any]],
+) -> Counter[tuple[str, str, str, str]]:
+    counter: Counter[tuple[str, str, str, str]] = Counter()
+    for record in records:
+        counter[_suppression_identity(record)] += record["count"]
+    return counter
+
+
+def apply_suppression_addition_review(
+    previous: dict[str, Any] | None,
+    inventory: dict[str, Any],
+    reason: str | None,
+) -> list[str]:
+    previous_counter = _suppression_counter(
+        (previous or {}).get("sourceSuppressions", [])
+    )
+    current_records = inventory["sourceSuppressions"]
+    additions = _suppression_counter(current_records) - previous_counter
+    stated_reason = (reason or "").strip()
+    if not additions:
+        if reason is not None:
+            return [
+                "--suppression-addition-reason was provided but the suppression "
+                "multiset did not grow"
+            ]
+        return []
+    if not stated_reason:
+        return [
+            "refusing to grow the committed suppression baseline without "
+            "--suppression-addition-reason <human review reason>"
+        ]
+
+    for record in current_records:
+        added_count = additions.get(_suppression_identity(record), 0)
+        if added_count:
+            record["additionReviews"].append(
+                {"reason": stated_reason, "count": added_count}
+            )
+    return []
 
 
 def suppression_records(
@@ -672,6 +714,7 @@ def suppression_records(
                 record.get("role", "standard"),
                 record.get("protectedTest"),
                 record.get("protectedControl"),
+                record.get("additionReviews", []),
             )
             for record in previous.get("sourceSuppressions", [])
         }
@@ -679,9 +722,10 @@ def suppression_records(
     records = []
     for key, count in sorted(counter.items()):
         path, kind, scope, reason, posture = key
-        role, protected_test, protected_control = previous_metadata.get(
-            key,
-            ("standard", None, None),
+        metadata_key = (path, kind, scope, reason)
+        role, protected_test, protected_control, addition_reviews = previous_metadata.get(
+            metadata_key,
+            ("standard", None, None, []),
         )
         records.append(
             {
@@ -693,6 +737,7 @@ def suppression_records(
                 "role": role,
                 "protectedTest": protected_test,
                 "protectedControl": protected_control,
+                "additionReviews": list(addition_reviews),
                 "count": count,
             }
         )
@@ -868,6 +913,15 @@ def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]
                         f"load-bearing suppression has unresolved {field}: "
                         f"{record['path']} -> {link['path']}::{link['anchor']}"
                     )
+        for review in record["additionReviews"]:
+            if (
+                not isinstance(review, dict)
+                or not isinstance(review.get("reason"), str)
+                or not review["reason"].strip()
+                or not isinstance(review.get("count"), int)
+                or review["count"] < 1
+            ):
+                errors.append(f"invalid suppression addition review: {record['path']}")
     return errors
 
 
@@ -973,6 +1027,7 @@ def main() -> int:
         default=Path("coverage/python/mypy-domain/linecount.txt"),
     )
     parser.add_argument("--write-baseline", action="store_true")
+    parser.add_argument("--suppression-addition-reason")
     args = parser.parse_args()
 
     root = repository_root()
@@ -985,6 +1040,8 @@ def main() -> int:
     previous = _load_json(baseline_path) if baseline_path.exists() else None
 
     try:
+        if args.suppression_addition_reason is not None and not args.write_baseline:
+            raise ValueError("--suppression-addition-reason requires --write-baseline")
         inventory, unknown = build_inventory(
             root,
             coverage_json,
@@ -992,6 +1049,14 @@ def main() -> int:
             previous,
         )
         errors = validate_inventory(root, inventory, unknown)
+        if args.write_baseline:
+            errors.extend(
+                apply_suppression_addition_review(
+                    previous,
+                    inventory,
+                    args.suppression_addition_reason,
+                )
+            )
     except (OSError, ValueError, KeyError, tokenize.TokenError, SyntaxError) as exc:
         _write_json(
             report_path,

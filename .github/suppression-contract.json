@@ -1,5 +1,5 @@
 {
-  "baselineReviewPolicy": "The committed exact baseline deliberately replaces git-history comparison. Every baseline shrink requires a matching source removal in the same reviewed diff; additions and substitutions require explicit review. No semantic laundering.",
+  "baselineReviewPolicy": "The committed exact baseline deliberately replaces git-history comparison. Every baseline shrink requires a matching source removal in the same reviewed diff. Growth requires --suppression-addition-reason, and the stated reason is stored beside every added multiset entry. No semantic laundering.",
   "coverageConfig": {
     "json": {
       "output": "coverage/python/coverage.json",
@@ -2598,6 +2598,7 @@
   ],
   "sourceSuppressions": [
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "agents/shared/runtime.py",
@@ -2609,6 +2610,7 @@
       "scope": "import-untyped"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "agents/shared/tools.py",
@@ -2620,6 +2622,7 @@
       "scope": "import-untyped"
     },
     {
+      "additionReviews": [],
       "count": 4,
       "kind": "type-ignore",
       "path": "scripts/postprovision.py",
@@ -2631,6 +2634,7 @@
       "scope": "operator"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "noqa",
       "path": "scripts/smoke_connectors.py",
@@ -2642,6 +2646,7 @@
       "scope": "E402"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "services/api/src/research_assistant_api/orchestration.py",
@@ -2653,6 +2658,7 @@
       "scope": "import-untyped"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "services/worker/src/research_assistant_worker/runtime.py",
@@ -2664,6 +2670,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 2,
       "kind": "type-ignore",
       "path": "services/worker/src/research_assistant_worker/runtime.py",
@@ -2675,6 +2682,7 @@
       "scope": "no-untyped-call"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_blob_sources.py",
@@ -2686,6 +2694,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 4,
       "kind": "type-ignore",
       "path": "tests/test_config_api.py",
@@ -2697,6 +2706,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_connector_gateway.py",
@@ -2708,6 +2718,7 @@
       "scope": "method-assign"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_cosmos_workspace.py",
@@ -2719,6 +2730,7 @@
       "scope": "attr-defined"
     },
     {
+      "additionReviews": [],
       "count": 2,
       "kind": "type-ignore",
       "path": "tests/test_cosmos_workspace.py",
@@ -2730,6 +2742,7 @@
       "scope": "comparison-overlap"
     },
     {
+      "additionReviews": [],
       "count": 11,
       "kind": "type-ignore",
       "path": "tests/test_cosmos_workspace.py",
@@ -2741,6 +2754,7 @@
       "scope": "no-untyped-call"
     },
     {
+      "additionReviews": [],
       "count": 5,
       "kind": "type-ignore",
       "path": "tests/test_deployment_hooks.py",
@@ -2752,6 +2766,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 3,
       "kind": "type-ignore",
       "path": "tests/test_deployment_hooks.py",
@@ -2763,6 +2778,7 @@
       "scope": "attr-defined"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_ingestion.py",
@@ -2774,6 +2790,7 @@
       "scope": "attr-defined"
     },
     {
+      "additionReviews": [],
       "count": 7,
       "kind": "type-ignore",
       "path": "tests/test_orchestration.py",
@@ -2785,6 +2802,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_orchestration.py",
@@ -2796,6 +2814,7 @@
       "scope": "import-untyped"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_provisioning.py",
@@ -2807,6 +2826,7 @@
       "scope": "arg-type"
     },
     {
+      "additionReviews": [],
       "count": 10,
       "kind": "type-ignore",
       "path": "tests/test_runtime.py",
@@ -2818,6 +2838,7 @@
       "scope": "attr-defined"
     },
     {
+      "additionReviews": [],
       "count": 1,
       "kind": "type-ignore",
       "path": "tests/test_search_repository.py",
@@ -2829,6 +2850,7 @@
       "scope": "comparison-overlap"
     },
     {
+      "additionReviews": [],
       "count": 22,
       "kind": "type-ignore",
       "path": "tests/test_worker.py",

@@ -1,14 +1,19 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 
+import pytest
+
+import scripts.check_suppression_contract as suppression_contract
 from scripts.check_suppression_contract import (
     BASELINE_DRIFT_MESSAGE,
     BASELINE_REVIEW_POLICY,
     Suppression,
     _javascript_comments,
+    apply_suppression_addition_review,
     census,
     compare_inventory,
     coverage_source_evidence,
@@ -20,6 +25,7 @@ from scripts.check_suppression_contract import (
     parse_python_comment,
     posture_partition,
     source_entry_files,
+    suppression_records,
     validate_inventory,
 )
 
@@ -73,6 +79,142 @@ def test_compare_inventory_is_exact_in_both_directions() -> None:
     assert compare_inventory(expected, {"sourceSuppressions": [{"path": "b.py"}]})
     assert "matching source removal" in BASELINE_DRIFT_MESSAGE
     assert "No semantic laundering" in BASELINE_DRIFT_MESSAGE
+
+
+def test_write_baseline_refuses_legal_growth_without_review_reason(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    existing = _suppression_record(path="existing.py")
+    added = _suppression_record(path="added.py")
+    baseline = {"sourceSuppressions": [existing]}
+    inventory = {
+        "sourceSuppressions": [
+            {**existing, "additionReviews": []},
+            {**added, "additionReviews": []},
+        ]
+    }
+    baseline_path = tmp_path / "baseline.json"
+    report_path = tmp_path / "report.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    original_bytes = baseline_path.read_bytes()
+    monkeypatch.setattr(suppression_contract, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        suppression_contract,
+        "build_inventory",
+        lambda *_args, **_kwargs: (inventory, []),
+    )
+    monkeypatch.setattr(
+        suppression_contract,
+        "validate_inventory",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(suppression_contract, "census", lambda _inventory: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_suppression_contract.py",
+            "--baseline",
+            str(baseline_path),
+            "--coverage-json",
+            str(tmp_path / "coverage.json"),
+            "--mypy-report",
+            str(tmp_path / "linecount.txt"),
+            "--report",
+            str(report_path),
+            "--write-baseline",
+        ],
+    )
+
+    assert suppression_contract.main() == 1
+    assert baseline_path.read_bytes() == original_bytes
+
+
+def test_write_baseline_records_reason_beside_legal_addition(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    existing = _suppression_record(path="existing.py")
+    added = _suppression_record(path="added.py", count=2)
+    baseline = {"sourceSuppressions": [existing]}
+    inventory = {
+        "sourceSuppressions": [
+            {**existing, "additionReviews": []},
+            {**added, "additionReviews": []},
+        ]
+    }
+    baseline_path = tmp_path / "baseline.json"
+    baseline_path.write_text(json.dumps(baseline), encoding="utf-8")
+    monkeypatch.setattr(suppression_contract, "repository_root", lambda: tmp_path)
+    monkeypatch.setattr(
+        suppression_contract,
+        "build_inventory",
+        lambda *_args, **_kwargs: (inventory, []),
+    )
+    monkeypatch.setattr(
+        suppression_contract,
+        "validate_inventory",
+        lambda *_args, **_kwargs: [],
+    )
+    monkeypatch.setattr(suppression_contract, "census", lambda _inventory: {})
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "check_suppression_contract.py",
+            "--baseline",
+            str(baseline_path),
+            "--coverage-json",
+            str(tmp_path / "coverage.json"),
+            "--mypy-report",
+            str(tmp_path / "linecount.txt"),
+            "--report",
+            str(tmp_path / "report.json"),
+            "--write-baseline",
+            "--suppression-addition-reason",
+            "SDK boundary requires a scoped compatibility suppression",
+        ],
+    )
+
+    assert suppression_contract.main() == 0
+    written = json.loads(baseline_path.read_text(encoding="utf-8"))
+    added_record = next(
+        record for record in written["sourceSuppressions"] if record["path"] == "added.py"
+    )
+    assert added_record["additionReviews"] == [
+        {
+            "count": 2,
+            "reason": "SDK boundary requires a scoped compatibility suppression",
+        }
+    ]
+
+
+def test_growth_guard_ignores_derived_posture_changes() -> None:
+    previous_record = _suppression_record(path="agent.py", posture="test")
+    previous_record["additionReviews"] = [
+        {"reason": "Existing reviewed SDK boundary", "count": 1}
+    ]
+    current_record = suppression_records(
+        [Suppression("agent.py", "type-ignore", "arg-type", "")],
+        {"agent.py": ["hosted-agent-project:coordinator:agents"]},
+        set(),
+        {"sourceSuppressions": [previous_record]},
+    )[0]
+    inventory = {"sourceSuppressions": [current_record]}
+
+    assert (
+        apply_suppression_addition_review(
+            {"sourceSuppressions": [previous_record]},
+            inventory,
+            None,
+        )
+        == []
+    )
+    assert inventory["sourceSuppressions"][0]["additionReviews"] == [
+        {"reason": "Existing reviewed SDK boundary", "count": 1}
+    ]
+    assert current_record["posture"] == "production"
 
 
 def test_validate_inventory_rejects_bare_and_javascript_suppressions(tmp_path: Path) -> None:
@@ -433,5 +575,6 @@ def _suppression_record(
         "role": "standard",
         "protectedTest": None,
         "protectedControl": None,
+        "additionReviews": [],
         "count": count,
     }
