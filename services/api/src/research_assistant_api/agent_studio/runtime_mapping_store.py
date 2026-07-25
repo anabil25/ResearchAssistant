@@ -34,7 +34,7 @@ exists to close.
 
 from __future__ import annotations
 
-from typing import Any, Protocol
+from typing import Any, Protocol, runtime_checkable
 
 from azure.core import MatchConditions
 from azure.cosmos import ContainerProxy
@@ -117,8 +117,18 @@ class RuntimeDeploymentHead(BaseModel):
     bound_client_app_id: str | None = None
 
 
+@runtime_checkable
 class RuntimeDeploymentMappingReader(Protocol):
     """RUNTIME port: the single exact point read, and NOTHING else.
+
+    ``@runtime_checkable`` is deliberate: it lets the absence-control test module
+    assert ``not isinstance(control_plane_adapter, RuntimeDeploymentMappingReader)``
+    -- turning "the control-plane adapter must not structurally satisfy the runtime
+    port" (absence 13) into a POSITIVE executable test. ABSENCE-SITING WARNING: the
+    control-plane adapter satisfies this only by NOT exposing ``get`` (it composes a
+    reader instead); a later convenience ``get()`` delegating to ``self.reader.get``
+    silently restores structural compatibility and this isinstance test stops
+    failing -- do not add it.
 
     STANDING REVIEW RULE -- adding ANY method to this Protocol is a
     SECURITY-RELEVANT change and requires explicit justification. Reachability from
