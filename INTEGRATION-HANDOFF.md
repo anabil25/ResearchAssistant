@@ -1037,6 +1037,22 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Choose operation order by which crash-intermediate state fails closed.** When
+  a logical operation spans two writes, the ordering is not a style question — it
+  decides what a crash between them leaves behind. Worked example from the runtime
+  line: **GRANT** claims the head *then* creates the binding, because a crash
+  leaves an inert dangling claim and an absent binding denies; **REVOKE**
+  tombstones the binding *then* clears the head claim, because the reverse opens a
+  window where the head is free while the old binding is still ACTIVE — a new
+  client could be granted while the old one still has access, i.e. **two live
+  bindings at once**. Both orderings were chosen by asking *what does the
+  half-finished state permit?*, not by symmetry.
+  **The dividend is that one recovery path covers both crashes:** a reconciler
+  that clears a dangling claim **only after verifying no ACTIVE binding names the
+  client** handles a crashed grant (binding absent) and a half-finished revoke
+  (binding revoked) identically, and can never free a legitimately-held head.
+  Ordering for fail-closed *and* convergence on a single intermediate state is
+  what makes recovery one function instead of a case analysis.
 - **A probe surviving a tree change is not the same as its *result* surviving.**
   Classifying a check as "position-independent" means it can be **re-run
   unchanged** against a moved tip — it does *not* mean the earlier answer still
