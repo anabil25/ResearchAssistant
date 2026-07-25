@@ -751,6 +751,16 @@ amplification of **251×**, measured across 1/5/10/25 providers with no inflecti
 A second datum: 150 KB of warning text under a 200 KB cap emitted **324 warnings /
 295,650 bytes**, passed through verbatim.
 
+**Mind the seam in that figure: the *shape* of the bound is measured, the
+*magnitude* is arithmetic.** Linear scaling was measured at small N (up to 25
+providers, and independently at N=6 where 960,000 chars `== 6 × 4 × 40,000`
+exactly). The ~2 GB is **extrapolated to the shipped default of 250, not
+observed there** — at that scale allocator, GC and OOM-killer behaviour could
+dominate long before the arithmetic ceiling is reached. The structural claim
+(nothing bounds the aggregate) is established; the specific number is a
+projection. **Do not cite ~2 GB as a measured figure**, and if the decision turns
+on the magnitude rather than the existence of the gap, measure at N=250 first.
+
 **Do not record this as a mislabelled control — the setting is honest, and the
 ingress bound is well implemented.** `config.py:257` reads *"Hard cap on the
 number of bytes read from **any single** provider discovery HTTP response,"*
