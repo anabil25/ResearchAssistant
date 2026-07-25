@@ -188,23 +188,63 @@ invocation gets its own:
 
 - ephemeral ports for the gateway, API, and web server, allocated as one
   simultaneously-bound set and held under a cross-process file lock
-  (`src/testing/port-lock.ts`), with an identity handshake after server
-  startup (`src/testing/port-lock-handshake.ts`);
-- Playwright `outputDir`, JSON report, and HTML report directory, all nested
-  under `test-results/gate-<uuid>/` — Playwright clears both its `outputDir`
-  and the HTML reporter's `outputFolder` at the start of every invocation, so
-  sharing either one means concurrent runs delete each other's artifacts;
+  (`src/testing/port-lock.ts`);
+- Playwright `outputDir` and JSON report under `test-results/gate-<uuid>/`;
+- an HTML report directory under `playwright-report/gate-<uuid>/`. This is a
+  *sibling* of the output directory, never a child: Playwright refuses to
+  start when the HTML reporter's folder lives inside the test output folder
+  (`HTML reporter output folder clashes with the tests output folder`),
+  because the runner's own cleanup would delete the report it just wrote.
+  Both directories are cleared at the start of every invocation, so sharing
+  either one means concurrent runs delete each other's artifacts;
 - Next.js build directory under `.next-gate/gate-<uuid>/`. This one matters
   because `npm run test:e2e` is `next build && playwright test`: every gate
   invocation runs a real build, and two builds into the same `.next` fail with
   `Another next build process is already running` before Playwright even
-  starts.
+  starts. `next build` also rewrites the tracked `tsconfig.json`, appending an
+  include entry per build directory, so the gate strips `.next-gate/` entries
+  afterwards to keep the tree clean.
+
+#### The port-lock handshake, and what it protects against
+
+Ports are OS-allocated, which leaves an unavoidable window between the
+allocation probe closing its socket and the real server binding that port. The
+file lock closes the part of that window that matters in practice — a second
+invocation of this same tooling selecting a port the first already claimed —
+by recording an owner (PID, per-invocation nonce, worktree root, heartbeat)
+for each claimed port under the OS temp directory.
+
+A live invocation refreshes its heartbeat every 15s. A lock whose heartbeat
+has not advanced for 45s is treated as abandoned and may be reclaimed, because
+a dead claimant's PID can be reused by an unrelated process and so PID
+liveness alone is not a reliable signal.
+
+After every local server is up and answering its health check, `globalSetup`
+(`src/testing/port-lock-handshake.ts`) re-verifies that each port this
+invocation claimed *still* records this invocation as its owner. **Operator-
+visible symptom:** the run aborts before any test executes, with an error
+naming the specific port(s) and stating that the lock is `no longer recorded
+as the current owner`. That means another invocation reclaimed the port as
+stale — typically because this one stalled long enough for its heartbeat to
+lapse (a suspended laptop, a debugger pause, or a badly oversubscribed
+machine). It is deliberately a hard failure: continuing would run tests
+against a server that a *different* invocation may now be driving, and a
+silently cross-talking run is far worse than an aborted one.
+
+Note that these lock files are **machine-wide**, under the OS temp directory,
+and are shared by every checkout on the machine. A checkout old enough to
+predate the mutation-token protocol will not respect it, so avoid running gates
+from two different revisions of this repo simultaneously.
 
 Plain `npm run test:e2e` (without the gate wrapper) still uses the shared
 `.next`, `test-results/`, and `playwright-report/` paths, and is therefore
 **not** safe to run concurrently with itself or with a gate invocation in the
-same checkout. It exists as the "exact command, run twice" determinism proof,
-where serial execution is the point.
+same checkout. Two runs sharing a checkout collide at the build step first —
+the second dies with `Another next build process is already running` — and, if
+that is somehow avoided, then on artifact directories each run clears at
+startup, so the survivor's report is an unattributable mix. It exists as the
+"exact command, run twice" determinism proof, where serial execution is the
+point.
 
 `scripts/prove-concurrent-gate-report-isolation.mjs` is a standalone,
 reproducible proof of the path-isolation scheme.

@@ -24,6 +24,23 @@ import {
   type WorkspaceData,
 } from "@/lib/api";
 
+/**
+ * `userEvent.setup` with the artificial inter-event delay removed. See the
+ * identical helper in `studio-components.test.tsx` for the full rationale:
+ * userEvent v14's default `delay: 0` awaits a real `setTimeout(..., 0)`
+ * between every dispatched event, and the interaction-heavy tests in this
+ * file accumulate enough of those hops to sit at ~60-65% of Jest's 5s default
+ * budget under the full `--runInBand` suite. Removing the waiting -- not the
+ * events, which are all still dispatched in the same order -- restores the
+ * headroom. Safe here because `workspace-views.tsx` owns no timers and no
+ * assertion in this file depends on time passing between two events.
+ */
+function setupUser(
+  options: Parameters<typeof userEvent.setup>[0] = {},
+): ReturnType<typeof userEvent.setup> {
+  return userEvent.setup({ delay: null, ...options });
+}
+
 jest.mock("@/lib/api", () => ({
   decideApproval: jest.fn(),
   testConnector: jest.fn(),
@@ -211,7 +228,7 @@ function buildWorkspaceData(
 
 describe("Overview", () => {
   it("renders live metrics, capability navigation, and recent runs accessibly", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onNavigate = jest.fn();
     const data = buildWorkspaceData({
       runs: [
@@ -328,7 +345,7 @@ describe("LibraryView", () => {
   });
 
   it("filters sources, opens detail dialogs, and handles empty library results accessibly", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const data = buildWorkspaceData({
       library: [
         buildLibraryItem(),
@@ -444,7 +461,7 @@ describe("LibraryView", () => {
   });
 
   it("submits ingestion, shows a queued state, and refreshes on success", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const deferred = createDeferred<{
       item: LibraryItem;
@@ -502,7 +519,7 @@ describe("LibraryView", () => {
   });
 
   it("shows specific and fallback ingestion errors while keeping the dialog open", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     jest
       .mocked(uploadLibraryItem)
       .mockRejectedValueOnce(new Error("License validation blocked the upload."))
@@ -634,7 +651,7 @@ describe("RunsView", () => {
   }
 
   it("filters runs, switches selections, renders timelines, and remains accessible", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { container } = render(
       <RunsView data={buildRunsWorkspaceData()} onRefresh={jest.fn()} />,
     );
@@ -670,7 +687,7 @@ describe("RunsView", () => {
   it(
     "requires rationale before rejection and clears it after a successful decision",
     async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const deferred = createDeferred<ApprovalRecord>();
     jest.mocked(decideApproval).mockReturnValue(deferred.promise);
@@ -725,7 +742,7 @@ describe("RunsView", () => {
   it(
     "keeps rationale disabled mid-flight and re-enables it with the typed text preserved after a failed decision",
     async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const firstAttempt = createDeferred<ApprovalRecord>();
     jest
@@ -783,7 +800,7 @@ describe("SettingsView", () => {
   });
 
   it("renders fallback settings states and every policy tab when data is unavailable", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { container } = render(
       <SettingsView data={null} onRefresh={jest.fn()} />,
     );
@@ -834,7 +851,7 @@ describe("SettingsView", () => {
   });
 
   it("saves project settings, persists edits, and reports validation errors", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const saveDeferred = createDeferred<WorkspaceData["settings"]>();
     jest
@@ -906,7 +923,7 @@ describe("SettingsView", () => {
   });
 
   it("renders agent and connector states, filters the catalog, and saves connector assignments", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const pubmed = buildConnector();
     const grants = buildConnector({
@@ -1077,7 +1094,7 @@ describe("SettingsView", () => {
     const { container } = render(
       <SettingsView data={data} onRefresh={onRefresh} />,
     );
-    await userEvent.setup().click(
+    await setupUser().click(
       screen.getByRole("button", { name: /Connectors 1/i }),
     );
 
@@ -1100,7 +1117,7 @@ describe("SettingsView", () => {
     const { container } = render(
       <SettingsView data={data} onRefresh={onRefresh} />,
     );
-    await userEvent.setup().click(
+    await setupUser().click(
       screen.getByRole("button", { name: /Connectors 1/i }),
     );
 
@@ -1115,7 +1132,7 @@ describe("SettingsView", () => {
   });
 
   it("shows connector test tones, fallback test errors, and update failures", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const onRefresh = jest.fn().mockResolvedValue(undefined);
     const datacite = buildConnector({
       id: "datacite",
@@ -1200,7 +1217,7 @@ describe("SettingsView", () => {
   });
 
   it("blocks enabled connector configurations with no assigned specialist", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const datacite = buildConnector({
       id: "datacite",
       name: "DataCite",

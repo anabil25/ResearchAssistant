@@ -22,6 +22,30 @@ import type {
 } from "@/lib/types";
 import type { ComponentType } from "react";
 
+/**
+ * `userEvent.setup` with the artificial inter-event delay removed. See the
+ * identical helper in `studio-components.test.tsx` for the full rationale.
+ *
+ * Short version: userEvent v14 defaults to `delay: 0`, which awaits a real
+ * `setTimeout(..., 0)` between *every* dispatched event. The omnibus tests in
+ * this file perform dozens of interactions each, so they accumulate enough of
+ * those hops to sit at ~70% of Jest's 5s default budget under the full
+ * `--runInBand` suite -- close enough that a slower machine tips them over,
+ * which is exactly how this file's timeout-class flake was reported.
+ *
+ * Safe here despite `research-workbench.tsx` owning a real polling timer: the
+ * option removes userEvent's *own* waiting, not the component's timers, and no
+ * assertion in this file depends on time passing between two events. It is
+ * also strictly safer for the three tests that install fake timers, since
+ * userEvent's default delay needs an `advanceTimers` bridge to work under them
+ * at all.
+ */
+function setupUser(
+  options: Parameters<typeof userEvent.setup>[0] = {},
+): ReturnType<typeof userEvent.setup> {
+  return userEvent.setup({ delay: null, ...options });
+}
+
 jest.mock("@/lib/api", () => ({
   getWorkspaceData: jest.fn(),
   runStudio: jest.fn(),
@@ -377,7 +401,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("opens the distinct Literature Studio protocol", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -395,7 +419,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("renders real Library and Runs data", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -416,7 +440,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("opens functional project settings and connector setup", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -438,7 +462,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("shows a complete mobile navigation close control", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -456,7 +480,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:open] moves focus into the drawer's close control when opened", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -472,7 +496,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:close-button] restores focus to the trigger when closed via the rail close button", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -493,7 +517,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:close-scrim] restores focus to the trigger when closed via the scrim", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -518,7 +542,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:close-escape] restores focus to the trigger when closed via Escape", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -540,7 +564,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:tab-order] tabs forward from the close control through the rail navigation links", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -557,7 +581,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("[pw.mobile-nav:axe] has no automated accessibility violations while the drawer is open", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { container } = render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -592,7 +616,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("renders loading defaults, then shows empty states and auth-constrained matching controls", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const deferred = createDeferred<WorkspaceData>();
     const emptyWorkspace = cloneWorkspaceData();
     emptyWorkspace.summary.library_items = 0;
@@ -656,7 +680,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("surfaces initial load failures while keeping the shell usable", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     mockedGetWorkspaceData
       .mockRejectedValueOnce("boot failure")
       .mockResolvedValueOnce(cloneWorkspaceData());
@@ -822,7 +846,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("discards a stale refresh response that resolves after a newer refresh was issued (workspace-ready / approval-notification race)", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const deferredStaleNavigateRefresh = createDeferred<WorkspaceData>();
     const freshFocusWorkspace = cloneWorkspaceData();
     freshFocusWorkspace.summary.library_items = 42;
@@ -878,7 +902,7 @@ describe("ResearchWorkbench", () => {
       .mockReturnValueOnce(deferredStaleNavigateRefresh.promise) // navigate("runs") refresh, held open, will reject
       .mockResolvedValueOnce(freshFocusWorkspace); // focus refresh, resolves before the older one
 
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -985,7 +1009,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("supports search, evidence, and navigation controls through buttons, scrims, and keyboard shortcuts", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -1084,7 +1108,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("suppresses global shortcuts and inerts the shell while a blocking modal is open", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const { container } = render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
@@ -1208,7 +1232,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("defaults studio run options when a studio submits without explicit options", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const sharedReact = jest.requireActual<typeof import("react")>("react");
     jest.doMock("react", () => sharedReact);
     jest.doMock("@/components/studio-components", () => ({
@@ -1262,7 +1286,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("keeps the hosted-agent boundary hidden for successful runs without insight metadata", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     jest.mocked(runStudio).mockResolvedValue({
       ...literatureResult,
       citations: [],
@@ -1287,7 +1311,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("navigates through search and rails, opens library dialogs, and runs literature research with evidence boundaries", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const refreshedWorkspace = cloneWorkspaceData();
     refreshedWorkspace.summary.active_runs = 2;
 
@@ -1375,7 +1399,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("handles studio failures, renders no-citation evidence results, and routes orchestration inspections to Runs", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const orchestrationWorkspace = cloneWorkspaceData();
     orchestrationWorkspace.runs.unshift({
       id: "run-orc-1",
@@ -1485,7 +1509,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("discards a stale Workflow Automation dry-run response that resolves after a newer one already applied its result", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const staleResult: AutomationStudioResult = {
       run: baseRun({
         capability: "orchestration",
@@ -1562,7 +1586,7 @@ describe("ResearchWorkbench", () => {
   });
 
   it("discards a stale Workflow Automation dry-run rejection that arrives after a newer request already applied its result", async () => {
-    const user = userEvent.setup();
+    const user = setupUser();
     const freshResult: AutomationStudioResult = {
       run: baseRun({
         capability: "orchestration",
