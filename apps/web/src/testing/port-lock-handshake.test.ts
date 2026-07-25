@@ -1,4 +1,4 @@
-import { writeFileSync } from "node:fs";
+import { rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
 import {
@@ -131,7 +131,21 @@ describe("port-lock-handshake globalSetup", () => {
       );
     } finally {
       releasePortLock(deps, stillOwnedPort);
-      releasePortLock(deps, stolenPort);
+      // `releasePortLock` deliberately refuses to delete a lock this
+      // invocation does not own -- that is the whole point of the
+      // ownership-conditional release, and it is what stops a superseded
+      // invocation from freeing a port its successor is actively serving on.
+      // The consequence here is that the *foreign* lock this test fabricates
+      // above is not ours to release, so it would survive into the shared
+      // lock directory and make the next claim of this port fail. Since the
+      // test wrote that file directly, it removes it directly too.
+      //
+      // Found by running this module in isolation under `--randomize`: the
+      // leak is invisible in declaration order and surfaced as a 1-in-8
+      // failure, because whether the stale foreign lock still looked "held"
+      // depended on its heartbeat age and on whether `deps.pid + 1` happened
+      // to name a live process.
+      rmSync(join(deps.lockDir, `${stolenPort}.lock`), { force: true });
     }
   });
 });

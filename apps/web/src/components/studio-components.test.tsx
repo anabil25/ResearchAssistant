@@ -397,7 +397,7 @@ describe("LiteratureStudio", () => {
       screen.getByRole("list", { name: "Literature Studio workflow" }),
     ).toBeInTheDocument();
     expect(screen.getByText("Protocol")).toBeInTheDocument();
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
+    expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "Analysis",
     );
 
@@ -658,7 +658,7 @@ describe("LiteratureStudio", () => {
     expect(screen.getByRole("status")).toHaveTextContent(
       "Exported 1 extraction row as extraction-matrix-draft.csv.",
     );
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
+    expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "Fallback analysis",
     );
   });
@@ -1049,7 +1049,7 @@ describe("GrantStudio", () => {
     expect(screen.getByText(/export blocked by/i)).toHaveTextContent(
       "budget sign-off",
     );
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
+    expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "Draft package reviewed.",
     );
 
@@ -2796,7 +2796,7 @@ describe("InstitutionalStudio", () => {
     expect(screen.getByText("Retention timing")).toBeInTheDocument();
     expect(screen.getByText("IRB Handbook")).toBeInTheDocument();
     expect(screen.getByText(/v2\.0 · Effective 2026-01-01/i)).toBeInTheDocument();
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
+    expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "The corpus abstained until counsel confirms the retained wording.",
     );
 
@@ -3589,7 +3589,7 @@ describe("AutomationStudio", () => {
     expect(
       screen.getByText("Review step depends on missing evidence output."),
     ).toBeInTheDocument();
-    expect(screen.getByTestId("research-markdown")).toHaveTextContent(
+    expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "Dry run failed before any external action was enabled.",
     );
   });
