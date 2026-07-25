@@ -1001,8 +1001,20 @@ From the review program that produced §5.
   reported a stale SHA at least once; one branch was rebuilt ten times.
   `git branch --contains` is a *reachability* test, not a tip test — it passes for
   every commit in history.
-- **Report the test count next to the SHA.** A SHA is asserted; a count is produced
-  by the run and cannot be copied from stale notes.
+- **Report the test count next to the SHA — but treat a matching count as absence
+  of evidence, not evidence of freshness.** A SHA is asserted; a count is produced
+  by the run and cannot be copied from stale notes, and it caught a real
+  1261-vs-1277 discrepancy for free. **The detector is one-way, though: a *changed*
+  count proves a different tree; an *equal* count proves nothing.** Measured on one
+  chain: `94de900`→1261, `f86a855`→1264, `f2cc5ac`→1277, `f36947b`→1277 — so a
+  report claiming `f2cc5ac` at 1277 would have looked self-consistent while naming
+  the wrong commit, and the fingerprint would have *confirmed* the stale SHA.
+  Worse than the "docs-only commit" framing suggests: `f2cc5ac`→`f36947b` changes
+  a test file **materially** (+37/−10 in
+  `test_agent_studio_capability_discovery_golden.py`) and still moves the count by
+  zero, because it adds no new `test(`/`it(` declarations. **A tree can change
+  substantively inside test files without the count noticing.** Pair it with
+  `rev-parse` and never let it stand alone.
 - **Neutralization over coverage.** 100% line-and-branch coexisted with a live
   blocker on lines proven executed.
 - **When a property holds because something is absent, assert the absence** — the
