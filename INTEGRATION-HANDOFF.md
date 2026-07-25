@@ -292,12 +292,24 @@ Defects the reviews found. **Not** merge damage; they survive into this branch.
 - **LOW** — a failing outcome-write inside the `except` handlers masks the original
   error; a *successful* send can be reported as 500.
 
-### Provider (APPROVED ×2)
+### Provider (APPROVED ×2) — **the carried item is CLOSED and merged**
 
-- `_verbatim_optional_text` should **normalise** `""` and `"   "` to `None`;
-  `_verbatim_required_text` should **reject** both. Currently `""` rejects the whole
-  instance while `"   "` is accepted *into a content digest* — three semantically
-  identical inputs, three outcomes.
+`9eb4950` landed the fix and is in `main`: `_verbatim_optional_text` **normalises**
+absent / `""` / `"   "` to `None` — three spellings of "the provider stated no
+value", which previously produced three *different* outcomes and let an
+informationless value pin as a distinct one in
+`compute_instance_fingerprint`. `_verbatim_required_text` **rejects** all three,
+since a blank names nothing and would otherwise stand in as an identity.
+
+**Normalising rather than rejecting on the optional field is deliberate:** a
+version string is not authority, so dropping a whole discovered capability
+instance over a blank display field would deny service on a non-authority value.
+**And whitespace is used only to *decide*, never to *transform*** — a surviving
+value is returned byte-for-byte, so `" v1 "` keeps its padding, because these
+strings become provider-owned pins and trimming would silently mutate pinned
+content.
+
+Nothing outstanding on this workstream.
 
 ### State / web
 
