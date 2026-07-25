@@ -1167,8 +1167,9 @@ overhead multiplier, rather than on N=6. **A much smaller gap, but not zero.**
 The remediation is unchanged and still correct — per-warning `max_length` plus an
 aggregate cap; only the magnitude a reviewer sizes against moves.
 
-**Do not record this as a mislabelled control — the setting is honest, and the
-ingress bound is well implemented.** `config.py:257` reads *"Hard cap on the
+**The *field description* is honest and the ingress bound is well implemented — but
+an earlier revision cleared this as "not a mislabelled control," and that clearance
+was wrong.** `config.py:257` reads *"Hard cap on the
 number of bytes read from **any single** provider discovery HTTP response,"*
 which is exactly what it does. Verified at the mechanism: `_get_json` streams via
 `response.aiter_bytes()` and the size check at **L1087 fires *before*
@@ -1176,6 +1177,37 @@ which is exactly what it does. Verified at the mechanism: `_get_json` streams vi
 `json.loads` (L1098) only ever sees a bounded buffer. A hostile provider cannot
 force a parse or an allocation beyond 8 MB on any single response.
 **Ingress protection works; there is simply no second bound on the aggregate.**
+
+**But the field description was never the prose in doubt — and there IS a
+mislabelled control, one level up.** The block comment at **`config.py:244–250`**
+speaks for the *whole group* of settings, and claims:
+
+> *"an untrusted provider response can never talk the adapter into **unbounded
+> memory**, cardinality, fan-out, or wall-clock cost."*
+
+**That asserts precisely the property this finding says is absent.** And the
+singular phrasing does not rescue it: **the catalog response is itself an untrusted
+provider response, and it is the input that sets N.** One hostile catalog listing
+`max_providers` entries is what drives the ~2 GB — this is not an aggregate of many
+independent responses, it is *one* response choosing the fan-out. The claim fails
+on its own singular reading.
+
+Suggested replacement, from the module's author:
+
+```
+#: talk the adapter into unbounded cardinality, fan-out, or wall-clock cost, or
+#: into unbounded memory *per response*. NOTE: these bounds do not compose —
+#: a catalog listing max_providers providers, each answering at max_response_bytes,
+#: retains ~providers x bytes concurrently (see §5 aggregate warning-volume finding).
+```
+
+**Why this one was expensive: a false clear is more durable than a missed defect,
+because it terminates the search.** "Not a mislabelled control" sat in the record
+as a positive finding, and the next reader would have stopped there. The clearance
+was produced by reading the artifact — the right instinct — but **a per-response
+cap describing itself as a per-response cap cannot overclaim.** The only prose that
+*could* overclaim is the prose that speaks for the set, which is the one neither
+reviewer read.
 
 **So this is a *circumstance*, not a control failure — the distinction both
 reviewers converged on independently.** The egress bound is **arithmetic, not
@@ -1920,6 +1952,25 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **A false clear is more durable than a missed defect, because it terminates the
+  search.** A missed defect stays findable — the next reader has no reason to skip
+  it. **A finding recorded as *cleared* stops everyone**, and it stops them with the
+  authority of something already checked. This document cleared a mislabelling
+  finding as "not a mislabelled control"; the mislabel was real, one level up, in
+  `config.py:244–250` — a block comment speaking for the whole settings group and
+  claiming *"can never talk the adapter into unbounded memory,"* the exact property
+  the open finding says is absent.
+
+  **The clearance came from reading the artifact — the right instinct, aimed one
+  step short.** The *field description* was inspected and found honest, but **a
+  per-response cap describing itself as a per-response cap cannot overclaim.** It
+  was never the prose in doubt. **The only prose that can overclaim is the prose
+  that speaks for the set** — the group comment, the module docstring, the
+  architecture paragraph — and that is the level neither reviewer read.
+  **So: when clearing an overclaim, identify the widest scope the prose speaks
+  for and read *that*.** Anything narrower is guaranteed to be honest about itself.
+  And weight a clearance accordingly: **it deserves more evidence than a finding
+  does, not less**, because it is the one verdict that stops future looking.
 - **A negative result carries no evidence — give it a known-positive control before
   believing it.** Positive findings arrive with their own proof: the grep printed a
   line, the test went red, the query returned a row. **A null returns the same
