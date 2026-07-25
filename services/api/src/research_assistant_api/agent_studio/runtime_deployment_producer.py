@@ -49,8 +49,8 @@ from research_assistant_api.agent_studio.runtime_client_binding import (
 )
 from research_assistant_api.agent_studio.runtime_deployment_mapping import RuntimeDeploymentMapping
 from research_assistant_api.agent_studio.runtime_mapping_store import (
-    RuntimeDeploymentHead,
     RuntimeDeploymentMappingControlPlane,
+    RuntimeHeadClaimError,
     RuntimeHeadPreconditionError,
 )
 
@@ -181,15 +181,15 @@ class RuntimeDeploymentProducer:
         (monotonic advance, not strict successor) and are reconcilable.
         """
         now = _require_aware_utc_now(now)
+        self._sole_client(mapping)  # bijective: exactly one authorized client
         head = self._mapping_store.get_head(mapping.deployment_id)
-        self._enforce_bijective_grant(mapping, head)
         if head is None:
             if mapping.revision_sequence != 1:
                 raise RollbackRepointError(
                     f"bootstrap grant for '{mapping.deployment_id}' must be sequence 1, "
                     f"got {mapping.revision_sequence}."
                 )
-            self._mapping_store.commit_revision(mapping, expected_head_sequence=None)
+            self._commit_revision(mapping, expected_head_sequence=None)
         else:
             if mapping.revision_sequence == head.current_sequence:
                 # A re-grant of the CURRENT sequence is only legal if it is the
@@ -205,7 +205,7 @@ class RuntimeDeploymentProducer:
                     f"supersede grant for '{mapping.deployment_id}' must be the strict successor of head "
                     f"{head.current_sequence}, got {mapping.revision_sequence}."
                 )
-            self._mapping_store.commit_revision(mapping, expected_head_sequence=head.current_sequence)
+            self._commit_revision(mapping, expected_head_sequence=head.current_sequence)
         self._repoint_all_active(mapping, actor_id=actor_id, now=now)
         return mapping
 
@@ -245,9 +245,9 @@ class RuntimeDeploymentProducer:
                     f"build_revision must return deployment '{deployment_id}' at sequence {next_sequence}, "
                     f"got '{mapping.deployment_id}' at {mapping.revision_sequence}."
                 )
-            self._enforce_bijective_grant(mapping, head)
+            self._sole_client(mapping)  # bijective: exactly one authorized client
             try:
-                self._mapping_store.commit_revision(
+                self._commit_revision(
                     mapping, expected_head_sequence=None if head is None else head.current_sequence
                 )
             except RuntimeHeadPreconditionError:
@@ -260,9 +260,28 @@ class RuntimeDeploymentProducer:
             f"succession for '{deployment_id}' did not converge within {_MAX_SUCCESSION_ATTEMPTS} attempts."
         )
 
+    def _commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
+        """Commit the revision, mapping a head-claim conflict to a producer error.
+
+        The deployment->one-client direction of bijective cardinality is enforced
+        by the store as the head's ``bound_client_app_id`` CAS-from-null claim, so a
+        grant whose deployment is claimed by another client surfaces here as
+        ``RuntimeHeadClaimError``; we re-raise it as ``BijectiveCardinalityError``
+        for a uniform producer API. (A ``RuntimeHeadPreconditionError`` -- head
+        sequence moved -- is left to propagate for the succession-retry loop.)
+        """
+        try:
+            self._mapping_store.commit_revision(mapping, expected_head_sequence=expected_head_sequence)
+        except RuntimeHeadClaimError as exc:
+            raise BijectiveCardinalityError(str(exc)) from exc
+
     @staticmethod
     def _sole_client(mapping: RuntimeDeploymentMapping) -> str:
-        """The single authorized client of ``mapping`` (bijective 1:1: exactly one)."""
+        """The single authorized client of ``mapping`` (bijective 1:1: exactly one).
+
+        Validating exactly-one is what keeps SUPERSEDE to a single binding repoint
+        and lets the head carry a single ``bound_client_app_id`` claim.
+        """
         bindings = mapping.allowed_client_app_role_bindings
         if len(bindings) != 1:
             raise BijectiveCardinalityError(
@@ -270,37 +289,6 @@ class RuntimeDeploymentProducer:
                 f"(bijective 1:1), got {len(bindings)}."
             )
         return bindings[0].client_app_id
-
-    def _enforce_bijective_grant(
-        self, mapping: RuntimeDeploymentMapping, head: RuntimeDeploymentHead | None
-    ) -> None:
-        """Enforce the deployment->one-client direction of bijective cardinality.
-
-        Also enforces EXACTLY ONE authorized client per mapping (via ``_sole_client``,
-        which is what keeps SUPERSEDE to a single repoint). The client->one-deployment
-        direction is enforced at the binding writer, not here. For a supersede
-        (``head`` present), the deployment's CURRENT client is the sole client of the
-        head revision; if the new grant names a DIFFERENT client while that current
-        client is still ACTIVE, it would create a two-client overlap on one deployment
-        -- refused. A revoked current client does NOT block the new client (that is the
-        explicit REVOKE-then-GRANT migration). Bootstrap has no current client to
-        conflict with.
-        """
-        new_client = self._sole_client(mapping)
-        if head is None:
-            return
-        current = self._mapping_store.reader.get(mapping.deployment_id, head.current_sequence)
-        if current is None:
-            return  # head points at a missing revision; grant's own checks handle it
-        current_client = self._sole_client(current)
-        if current_client == new_client:
-            return
-        existing = self._binding_resolver.resolve_binding(current_client, mapping.deployment_id)
-        if existing is not None and existing.status is RuntimeBindingStatus.ACTIVE:
-            raise BijectiveCardinalityError(
-                f"deployment '{mapping.deployment_id}' is already ACTIVELY bound to client "
-                f"'{current_client}'; revoke it before granting '{new_client}' (no dual-client overlap)."
-            )
 
     def _repoint_all_active(
         self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime
@@ -385,24 +373,46 @@ class RuntimeDeploymentProducer:
         return AuditEventKind.RUNTIME_BINDING_GRANTED if prior is None else AuditEventKind.RUNTIME_BINDING_REPOINTED
 
     def revoke(self, mapping: RuntimeDeploymentMapping, *, actor_id: str, now: datetime) -> None:
-        """Revoke authority for ``mapping``'s deployment: tombstone the binding(s).
+        """Revoke authority for ``mapping``'s deployment: tombstone binding, then clear head claim.
 
-        Under the ratified split, revocation is NOT a mapping fact (an immutable,
-        digest-covered document can never be flipped to revoked). It is a SINGLE
-        CAS write per client that flips the binding ``status`` to ``REVOKED`` at
-        the SAME (sequence, revision_id) -- a tombstone. It is a tombstone (not a
-        hard delete) NOT to preserve a succession counter (the HEAD owns
-        succession), but to keep the revocation AUDIT RECORD and to keep "absent"
-        unambiguous (a revoked client must stay distinguishable from a never-granted
-        one). No new mapping revision is written. Authority is withdrawn immediately
-        (the loader denies on ``status != ACTIVE``); ``mapping`` must be the CURRENT
-        active revision, else the CAS precondition fails. Revocation is TERMINAL: an
-        ordinary grant/supersede can never resurrect it -- only the explicit,
-        separately-audited ``reinstate`` can.
+        TWO writes, ordered so every partial state is SAFE (fails closed): FIRST
+        flip the binding ``status`` to REVOKED (a tombstone at the same sequence --
+        access is withdrawn immediately, the loader denies on ``status != ACTIVE``),
+        THEN clear the head's ``bound_client_app_id`` claim so the deployment becomes
+        grantable to a NEW client. The reverse order would open a window where the
+        head is free but the old binding is still ACTIVE, letting a new client be
+        granted while the old one still has access (two active bindings -- FAIL
+        OPEN). A crash between the two leaves the dangling-claim state reconciliation
+        clears (one recovery path). Revocation is a tombstone (not a hard delete) to
+        keep the AUDIT RECORD and keep "absent" unambiguous. Revocation is TERMINAL
+        for ordinary grants; only the explicit ``reinstate`` can un-tombstone.
+        ``mapping`` must be the CURRENT active revision, else the CAS fails.
         """
         now = _require_aware_utc_now(now)
-        for binding in mapping.allowed_client_app_role_bindings:
-            self._cas_repoint(binding.client_app_id, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
+        client = self._sole_client(mapping)
+        self._cas_repoint(client, mapping, RuntimeBindingStatus.REVOKED, actor_id=actor_id, now=now)
+        self._mapping_store.clear_head_claim(mapping.deployment_id, expected_client=client)
+
+    def reconcile_dangling_head_claim(self, deployment_id: str) -> bool:
+        """Clear a DANGLING head claim (crashed grant, or half-finished revoke).
+
+        A claim is dangling when the head names a ``bound_client_app_id`` but that
+        client has NO ACTIVE binding to the deployment -- either a GRANT that
+        claimed the head then failed before creating the binding, or a REVOKE that
+        tombstoned the binding then crashed before clearing the head. Clearing it
+        makes the deployment grantable again. It clears ONLY when there is no
+        ACTIVE binding for the claimed client (verified FIRST), so reconciliation
+        can never free a head that is legitimately held. Returns whether it cleared.
+        """
+        head = self._mapping_store.get_head(deployment_id)
+        if head is None or head.bound_client_app_id is None:
+            return False
+        claimed = head.bound_client_app_id
+        binding = self._binding_resolver.resolve_binding(claimed, deployment_id)
+        if binding is not None and binding.status is RuntimeBindingStatus.ACTIVE:
+            return False  # legitimately held -- never free an active claim
+        self._mapping_store.clear_head_claim(deployment_id, expected_client=claimed)
+        return True
 
     def reinstate(
         self, deployment_id: str, client_app_ids: tuple[str, ...], *, actor_id: str, now: datetime

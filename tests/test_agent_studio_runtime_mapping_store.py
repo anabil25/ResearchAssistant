@@ -21,13 +21,18 @@ from research_assistant_api.agent_studio.runtime_mapping_store import (
     CosmosRuntimeDeploymentMappingStore,
     InMemoryRuntimeDeploymentMappingStore,
     RuntimeDeploymentHead,
+    RuntimeHeadClaimError,
     RuntimeHeadPreconditionError,
     RuntimeMappingConflictError,
 )
 
 
 def _mapping(
-    *, deployment_id: str = "dep-1", backend_version: str = "1.2.3", revision_sequence: int = 1
+    *,
+    deployment_id: str = "dep-1",
+    backend_version: str = "1.2.3",
+    revision_sequence: int = 1,
+    client_app_id: str = "client-app-1",
 ) -> RuntimeDeploymentMapping:
     binding = RuntimeBindingDescriptor(
         binding_id="binding-1",
@@ -50,7 +55,7 @@ def _mapping(
         provider_artifact_digest="sha256:provider-artifact",
         binding=binding,
         allowed_client_app_role_bindings=(
-            AllowedClientAppRoleBinding(client_app_id="client-app-1", app_role="research-assistant.runtime"),
+            AllowedClientAppRoleBinding(client_app_id=client_app_id, app_role="research-assistant.runtime"),
         ),
         revision_sequence=revision_sequence,
         revision_created_at=datetime(2026, 1, 1, 12, 0, 0, tzinfo=UTC),
@@ -136,6 +141,48 @@ def test_bootstrap_then_get_round_trips_and_sets_head() -> None:
     assert head is not None
     assert head.current_sequence == 1
     assert head.current_revision_id == mapping.revision_id
+    assert head.bound_client_app_id == "client-app-1"  # deployment->one-client claim set
+
+
+# --- InMemory: bound-client claim + clear_head_claim -----------------------
+
+
+def test_commit_refuses_a_different_client_claim() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError, match="claimed by client 'c1'"):
+        store.commit_revision(
+            _mapping(revision_sequence=2, client_app_id="c2", backend_version="9.9.9"), expected_head_sequence=1
+        )
+
+
+def test_clear_head_claim_then_new_client_may_claim() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    store.clear_head_claim("dep-1", expected_client="c1")
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id is None
+    # A new client can now claim it (migration).
+    store.commit_revision(
+        _mapping(revision_sequence=2, client_app_id="c2", backend_version="9.9.9"), expected_head_sequence=1
+    )
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id == "c2"
+
+
+def test_clear_head_claim_is_idempotent_when_absent_or_already_null() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.clear_head_claim("missing", expected_client="c1")  # no head -> no-op
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    store.clear_head_claim("dep-1", expected_client="c1")
+    store.clear_head_claim("dep-1", expected_client="c1")  # already null -> no-op
+
+
+def test_clear_head_claim_wrong_client_is_refused() -> None:
+    store = InMemoryRuntimeDeploymentMappingStore()
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError, match="held by 'c1'"):
+        store.clear_head_claim("dep-1", expected_client="other")
 
 
 def test_get_with_wrong_sequence_is_none() -> None:
@@ -315,6 +362,15 @@ class _FakeContainer:
             self.items[item_id] = self._bump(doc)
         return []
 
+    def replace_item(
+        self, *, item: str, body: dict[str, Any], etag: str, match_condition: Any
+    ) -> dict[str, Any]:
+        current = self.items.get(item)
+        if current is None or current.get("_etag") != etag:
+            raise CosmosHttpResponseError(status_code=412, message="precondition failed")  # type: ignore[no-untyped-call]
+        self.items[item] = self._bump(body)
+        return dict(self.items[item])
+
 
 def test_cosmos_get_returns_none_when_absent() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
@@ -324,6 +380,69 @@ def test_cosmos_get_returns_none_when_absent() -> None:
 def test_cosmos_get_head_is_none_before_bootstrap() -> None:
     store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
     assert store.get_head("dep-1") is None
+
+
+def test_cosmos_bootstrap_sets_and_reads_bound_client_claim() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id == "c1"
+
+
+def test_cosmos_commit_refuses_a_different_client_claim() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError, match="claimed by client 'c1'"):
+        store.commit_revision(
+            _mapping(revision_sequence=2, client_app_id="c2", backend_version="9.9.9"), expected_head_sequence=1
+        )
+
+
+def test_cosmos_clear_head_claim_then_new_client_may_claim() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.commit_revision(_mapping(revision_sequence=1, client_app_id="c1"), expected_head_sequence=None)
+    store.clear_head_claim("dep-1", expected_client="c1")
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id is None
+    store.commit_revision(
+        _mapping(revision_sequence=2, client_app_id="c2", backend_version="9.9.9"), expected_head_sequence=1
+    )
+    head = store.get_head("dep-1")
+    assert head is not None and head.bound_client_app_id == "c2"
+
+
+def test_cosmos_clear_head_claim_idempotent_and_wrong_client() -> None:
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, _FakeContainer()))
+    store.clear_head_claim("missing", expected_client="c1")  # no head -> no-op
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError, match="held by 'c1'"):
+        store.clear_head_claim("dep-1", expected_client="other")
+    store.clear_head_claim("dep-1", expected_client="c1")
+    store.clear_head_claim("dep-1", expected_client="c1")  # already null -> no-op
+
+
+def test_cosmos_clear_head_claim_concurrent_modification_is_claim_error() -> None:
+    class _RacingOnReplace(_FakeContainer):
+        def replace_item(self, *, item: str, body: dict[str, Any], etag: str, match_condition: Any) -> dict[str, Any]:
+            raise CosmosHttpResponseError(status_code=412, message="precondition failed")  # type: ignore[no-untyped-call]
+
+    container = _RacingOnReplace()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(RuntimeHeadClaimError, match="modified concurrently"):
+        store.clear_head_claim("dep-1", expected_client="c1")
+
+
+def test_cosmos_clear_head_claim_reraises_unexpected_error() -> None:
+    class _BrokenOnReplace(_FakeContainer):
+        def replace_item(self, *, item: str, body: dict[str, Any], etag: str, match_condition: Any) -> dict[str, Any]:
+            raise CosmosHttpResponseError(status_code=503, message="unavailable")  # type: ignore[no-untyped-call]
+
+    container = _BrokenOnReplace()
+    store = CosmosRuntimeDeploymentMappingStore(cast(ContainerProxy, container))
+    store.commit_revision(_mapping(client_app_id="c1"), expected_head_sequence=None)
+    with pytest.raises(CosmosHttpResponseError):
+        store.clear_head_claim("dep-1", expected_client="c1")
 
 
 def test_cosmos_bootstrap_then_get_and_head() -> None:

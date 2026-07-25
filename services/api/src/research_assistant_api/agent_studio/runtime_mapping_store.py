@@ -36,6 +36,7 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+from azure.core import MatchConditions
 from azure.cosmos import ContainerProxy
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
 from pydantic import BaseModel, ConfigDict, Field
@@ -66,6 +67,19 @@ class RuntimeHeadPreconditionError(RuntimeDeploymentMappingStoreError):
     """
 
 
+class RuntimeHeadClaimError(RuntimeDeploymentMappingStoreError):
+    """Raised when a grant would claim a deployment already claimed by another client.
+
+    The head carries ``bound_client_app_id`` -- the deployment->one-client half of
+    the BIJECTIVE cardinality, set by CAS FROM NULL. A grant may claim it only when
+    it is NULL (a fresh/migrated deployment) or already equals this client (an
+    idempotent same-client supersede). A DIFFERENT non-null claim means the
+    deployment is legitimately held by another client -- refused. Because this is a
+    single-partition conditional write on the head, the deployment direction is
+    store-adjudicated without a cross-partition query over the binding container.
+    """
+
+
 def _revision_item_id(deployment_id: str, revision_sequence: int) -> str:
     return f"{deployment_id}:{revision_sequence}"
 
@@ -74,14 +88,33 @@ def _head_item_id(deployment_id: str) -> str:
     return f"{deployment_id}:head"
 
 
+def _bound_client(mapping: RuntimeDeploymentMapping) -> str:
+    """The deployment's sole authorized client (bijective 1:1).
+
+    Under bijective cardinality a mapping authorizes EXACTLY ONE client (the
+    control-plane producer validates this before commit), so the head's
+    ``bound_client_app_id`` claim is the first (only) allowed client.
+    """
+    return mapping.allowed_client_app_role_bindings[0].client_app_id
+
+
 class RuntimeDeploymentHead(BaseModel):
-    """The mutable per-deployment succession pointer (single source of ``next``)."""
+    """The mutable per-deployment succession pointer + bound-client claim.
+
+    Besides the succession pointer (``current_sequence``/``current_revision_id``),
+    the head carries ``bound_client_app_id``: the deployment->one-client half of
+    bijective cardinality, set by CAS FROM NULL at grant and CLEARED at revoke, so
+    the deployment direction is a single-partition head write rather than a
+    cross-partition query over the binding container. ``None`` means the deployment
+    is currently un-claimed and grantable to any (otherwise-eligible) client.
+    """
 
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     deployment_id: str
     current_sequence: int = Field(ge=1)
     current_revision_id: str
+    bound_client_app_id: str | None = None
 
 
 class RuntimeDeploymentMappingReader(Protocol):
@@ -159,6 +192,17 @@ class RuntimeDeploymentMappingControlPlane(Protocol):
         """Delete one exact revision item (retention; never the head, never 'latest')."""
         ...
 
+    def clear_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+        """CLEAR the head's ``bound_client_app_id`` claim (the REVOKE second write).
+
+        Conditional (CAS): the current claim must equal ``expected_client`` (else
+        ``RuntimeHeadClaimError`` -- someone else holds it); an already-null claim
+        is an idempotent no-op. Clearing makes the deployment grantable to a new
+        client, so REVOKE is TOMBSTONE-BINDING-THEN-CLEAR-HEAD (the safe partial:
+        access is already denied before the deployment becomes grantable again).
+        """
+        ...
+
 
 class InMemoryRuntimeDeploymentMappingReader:
     """In-memory RUNTIME reader: exposes ONLY ``get`` over a shared revisions dict."""
@@ -201,18 +245,27 @@ class InMemoryRuntimeDeploymentMappingStore:
 
     def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
         item_id = _revision_item_id(mapping.deployment_id, mapping.revision_sequence)
+        bound_client = _bound_client(mapping)
         existing_rev = self._revisions.get(item_id)
         head = self._heads.get(mapping.deployment_id)
-        # Idempotent replay: the revision AND the head already reflect this exact
-        # commit -> no-op success (a retried, fully-applied commit).
+        # Idempotent replay: the revision AND the head (incl. its claim) already
+        # reflect this exact commit -> no-op success (a retried, fully-applied commit).
         if (
             existing_rev is not None
             and existing_rev.mapping_digest == mapping.mapping_digest
             and head is not None
             and head.current_sequence == mapping.revision_sequence
             and head.current_revision_id == mapping.revision_id
+            and head.bound_client_app_id == bound_client
         ):
             return
+        # Deployment->one-client claim (CAS from null): a DIFFERENT non-null claim
+        # means the deployment is legitimately held by another client -> refuse.
+        if head is not None and head.bound_client_app_id is not None and head.bound_client_app_id != bound_client:
+            raise RuntimeHeadClaimError(
+                f"deployment '{mapping.deployment_id}' is claimed by client '{head.bound_client_app_id}'; "
+                f"'{bound_client}' cannot claim it (revoke the current client first)."
+            )
         if expected_head_sequence is None:
             if head is not None:
                 raise RuntimeHeadPreconditionError(
@@ -234,10 +287,22 @@ class InMemoryRuntimeDeploymentMappingStore:
             deployment_id=mapping.deployment_id,
             current_sequence=mapping.revision_sequence,
             current_revision_id=mapping.revision_id,
+            bound_client_app_id=bound_client,
         )
 
     def delete(self, deployment_id: str, revision_sequence: int) -> None:
         self._revisions.pop(_revision_item_id(deployment_id, revision_sequence), None)
+
+    def clear_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+        head = self._heads.get(deployment_id)
+        if head is None or head.bound_client_app_id is None:
+            return
+        if head.bound_client_app_id != expected_client:
+            raise RuntimeHeadClaimError(
+                f"cannot clear claim on '{deployment_id}': held by '{head.bound_client_app_id}', "
+                f"not '{expected_client}'."
+            )
+        self._heads[deployment_id] = head.model_copy(update={"bound_client_app_id": None})
 
 
 #: Cosmos ``documentType`` discriminators and partition-key path.
@@ -306,10 +371,12 @@ class CosmosRuntimeDeploymentMappingStore:
             document = dict(self._container.read_item(item=_head_item_id(deployment_id), partition_key=deployment_id))
         except CosmosResourceNotFoundError:
             return None
+        claim = document.get("bound_client_app_id")
         return RuntimeDeploymentHead(
             deployment_id=deployment_id,
             current_sequence=int(document["current_sequence"]),
             current_revision_id=str(document["current_revision_id"]),
+            bound_client_app_id=None if claim is None else str(claim),
         )
 
     def list_revisions(self, deployment_id: str) -> tuple[int, ...]:
@@ -345,9 +412,11 @@ class CosmosRuntimeDeploymentMappingStore:
             "deployment_id": mapping.deployment_id,
             "current_sequence": mapping.revision_sequence,
             "current_revision_id": mapping.revision_id,
+            "bound_client_app_id": _bound_client(mapping),
         }
 
     def commit_revision(self, mapping: RuntimeDeploymentMapping, *, expected_head_sequence: int | None) -> None:
+        bound_client = _bound_client(mapping)
         existing_rev = self._reader.get(mapping.deployment_id, mapping.revision_sequence)
         head = self.get_head(mapping.deployment_id)
         if (
@@ -356,8 +425,16 @@ class CosmosRuntimeDeploymentMappingStore:
             and head is not None
             and head.current_sequence == mapping.revision_sequence
             and head.current_revision_id == mapping.revision_id
+            and head.bound_client_app_id == bound_client
         ):
             return
+        # Deployment->one-client claim (CAS from null): a DIFFERENT non-null claim
+        # means the deployment is legitimately held by another client -> refuse.
+        if head is not None and head.bound_client_app_id is not None and head.bound_client_app_id != bound_client:
+            raise RuntimeHeadClaimError(
+                f"deployment '{mapping.deployment_id}' is claimed by client '{head.bound_client_app_id}'; "
+                f"'{bound_client}' cannot claim it (revoke the current client first)."
+            )
         revision_doc = self._revision_document(mapping)
         head_doc = self._head_document(mapping)
         # ONE batch shape (two ops, one partition key, all-or-nothing), TWO head
@@ -406,6 +483,31 @@ class CosmosRuntimeDeploymentMappingStore:
             )
         except CosmosResourceNotFoundError:
             return
+
+    def clear_head_claim(self, deployment_id: str, *, expected_client: str) -> None:
+        head_raw = self._read_head_raw(deployment_id)
+        if head_raw is None or head_raw.get("bound_client_app_id") is None:
+            return  # nothing to clear (idempotent)
+        if str(head_raw["bound_client_app_id"]) != expected_client:
+            raise RuntimeHeadClaimError(
+                f"cannot clear claim on '{deployment_id}': held by '{head_raw['bound_client_app_id']}', "
+                f"not '{expected_client}'."
+            )
+        cleared = dict(head_raw)
+        cleared["bound_client_app_id"] = None
+        try:
+            self._container.replace_item(
+                item=cleared["id"],
+                body=cleared,
+                etag=str(head_raw["_etag"]),
+                match_condition=MatchConditions.IfNotModified,
+            )
+        except CosmosHttpResponseError as exc:
+            if exc.status_code == 412:
+                raise RuntimeHeadClaimError(
+                    f"claim on '{deployment_id}' was modified concurrently; re-read and retry."
+                ) from exc
+            raise
 
     def _read_head_raw(self, deployment_id: str) -> dict[str, Any] | None:
         try:
