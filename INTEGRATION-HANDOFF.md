@@ -1790,6 +1790,25 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **A measurement tool that fails *silently* on a subset will under-report, and
+  the subset is never random.** Three instances here, all costing a wrong number
+  before being caught:
+  - PowerShell `Get-Content $path` (without `-LiteralPath`) treats `[...]` as a
+    wildcard, so `apps/web/src/app/api/backend/[...path]/route.test.ts` returns
+    **null** rather than erroring. A repo-wide scan silently skips it. Bit twice.
+  - An `ast`-based scan restricted to `.py` could not see release gates being
+    deleted from `ci.yml`, so a silent CI regression passed the audit built to
+    catch silent regressions.
+  - `git diff --diff-filter=A main...<branch>` reports files added on **both**
+    sides as branch-only, inflating "files `main` lacks" from **4** to **37**.
+
+  **The common shape: the tool answers a question adjacent to the one asked, and
+  returns a well-formed answer either way.** A null read looks like an empty file;
+  a `.py` filter looks like a clean scan; a three-dot diff looks like a set
+  difference. **None of them errors**, which is precisely why each survived to
+  produce a number that was then quoted. Where a scan claims *repo-wide* coverage,
+  verify the denominator independently — count the files the scan actually opened
+  and compare it against `git ls-files`.
 - **An invariant established early enough becomes a detector, and that beats
   foresight — which nobody has.** The provider adapter's no-trim fix was not
   anticipated. The author reached for `.strip()` as the obvious way to write a
