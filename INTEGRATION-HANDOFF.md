@@ -30,6 +30,20 @@ directly conflicts with all eighteen immediately.
 | 9 | `main` | — |
 | 10 | `agent-harness-foundation` | **APPROVED** on both ranges |
 
+**Branches are retained deliberately — do not prune them.** They are the evidence
+base for every merge and exclusion decision in this document; deleting them makes
+§2's claims unverifiable. Every branch other than
+`fix-release-source-identity` (excluded by design) now carries **zero files
+`main` lacks**.
+
+**Two integration tools live on `integration/with-harness` and were deliberately
+not merged:** `find_dropped_defs.py` and `restore_dropped_defs.py`, the AST scan
+that recovered six silently-dropped Python definitions. They are kept out of
+`main` because they are scratch tooling, and because **the scan has the known
+blind spot documented in §3 — it enumerates `.py` only**, which is exactly why it
+could not see the release gates being deleted from `ci.yml`. Recover and widen
+them before reuse; do not run them as-is and treat a clean result as coverage.
+
 ## 2. Deliberately NOT merged
 
 **Twelve state-lineage branches, now genuinely superseded — but the original
