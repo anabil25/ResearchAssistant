@@ -232,9 +232,33 @@ Defects the reviews found. **Not** merge damage; they survive into this branch.
 
 - **N1 — the drift check's *wiring* into `main()` is untested.** Deleting the call
   leaves the suite green; neutering the raise inside the function goes red. This
-  is the step that makes the branch's durable identity claim true.
-- **N2** — permutation-invariance holds only because `git ls-tree` emits sorted
-  paths. An accident, not an invariant.
+  is the step that makes the branch's durable identity claim true. **The ordering
+  matters as much as the wiring:** the manifest hashes **committed** blobs while
+  azd packages the **worktree**, so a manifest written *before* validation is
+  correct about what it hashed and silent about what ships — F1's harm relocated
+  into `main()`'s statement order. One test invoking `main()` against a dirty
+  worktree, asserting non-zero exit, pins wiring and order together.
+- **N2 — the sort is *inert on the entire input class the tests use*.** Removing
+  the explicit sort leaves the suite green, and the reason is sharper than
+  "fixtures lack non-ASCII paths". The producer only ever feeds `git ls-tree`
+  order. On **ASCII paths git order already is canonical order, so the sort is a
+  literal no-op** — every ASCII fixture exercises the line and asserts nothing
+  about it. On a path where NFC normalisation reorders relative to raw bytes
+  (`cafe\u0301.py` sorts before `cafz.py` by raw bytes, after it by NFC) git
+  order is *not* canonical order and the sort becomes load-bearing:
+
+  ```
+  ASCII-only paths     with_sort == without_sort   -> sort is a NO-OP
+  NFC-reordering path  with_sort != without_sort   -> sort is load-bearing
+  ```
+
+  Note removal breaks order-invariance for **arbitrary** input including ASCII;
+  it is only *git-ordered* ASCII on which the control is inert. **So the test must
+  use an NFC-reordering path**, which pins the property that actually matters —
+  canonical order is not git order, and the digest must follow canonical order. A
+  two-ASCII-orders test would catch removal but not document why the sort exists.
+  This is the coverage-versus-correctness distinction at the level of a single
+  statement.
 - **F1** — 12 shipped-but-unhashed files (`GAP A = 12, GAP B = 0`). The fix must be
   **one derived definition**: the enumerated set lives at *two sites*, so a new
   file type widens the gap **and** blinds the drift check in the same edit with no
