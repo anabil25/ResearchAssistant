@@ -18,6 +18,10 @@ from shared.tools import (
     delegated_agent_name,
     tools_for_profile,
 )
+from shared.errors import ConfigurationError
+from shared.settings import HarnessSettings
+from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
+from scripts.build_agent_source_tree import source_tree_digest
 
 ROOT = Path(__file__).parents[1]
 
@@ -585,3 +589,31 @@ def test_delegate_tool_rejects_invalid_routes_and_invokes_valid_agent(
         )
         == "Verified delegation"
     )
+
+
+def test_missing_toolbox_never_falls_back_to_web_search() -> None:
+    class FakeClient:
+        def get_web_search_tool(self, **kwargs: Any) -> dict[str, Any]:
+            return {"kind": "web_search", **kwargs}
+
+    for profile in list_profiles():
+        requires_toolbox = any(
+            binding.operation_ref.id.startswith("foundry.toolbox.") for binding in profile.capability_bindings
+        )
+        if requires_toolbox:
+            with pytest.raises(ConfigurationError, match="Toolbox"):
+                tools_for_profile(profile, FakeClient())
+        else:
+            assert tools_for_profile(profile, FakeClient()) == []
+
+
+def test_toolbox_bindings_match_deployed_operation_names() -> None:
+    expected = {
+        "dataset": {"code_interpreter"},
+        "literature_online": {"web_search", "searchLiteratureMetadata"},
+        "grant_online": {"web_search", "searchGrantOpportunities"},
+        "matching_online": {"web_search", "searchMatchingMetadata"},
+    }
+    for profile_id, tool_names in expected.items():
+        manifest = get_profile(profile_id)
+        assert {binding.operation_ref.id.rsplit(".", 1)[-1] for binding in manifest.capability_bindings} == tool_names

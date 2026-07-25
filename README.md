@@ -72,10 +72,23 @@ All agents use direct-code deployment, the Foundry Responses protocol `2.0.0`,
 dedicated endpoints, and dedicated Entra agent identities. The implementation
 does not use the retiring shared-endpoint `agent_reference` pattern.
 
+Agent manifests in source control are authority-free templates. `azure.yaml`
+injects the real workspace tenant and Foundry project name into every Hosted
+Agent as `RESEARCH_WORKSPACE_TENANT_ID` and
+`RESEARCH_WORKSPACE_PROJECT_ID`; startup uses them to produce the scoped
+manifest and immutable release identity. Capability-bearing agents fail closed
+when either value is absent.
+
 The API—not the model—derives tenant identity, filters Azure AI Search, resolves
 citations, calculates match scores, and records approvals. Hosted Agent text is
 supplemental `model_analysis` until its source IDs resolve. Agents do not query
 multi-tenant Search directly.
+
+Dataset compute additionally requires an application-installed durable
+`ApprovalContextResolverFactory`. The Azure Container App sets
+`RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER=true`, so its backend composition
+must install that adapter before startup; absence intentionally prevents the API
+from serving rather than accepting client-supplied approval authority.
 
 See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete topology and data flows.
 

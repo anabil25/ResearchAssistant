@@ -88,6 +88,7 @@ class StudioService:
         hosted_content: str | None = None,
         hosted_agent_name: str | None = None,
         generic: ResearchResult | None = None,
+        dataset_compute_authorized: bool = False,
     ) -> (
         LiteratureStudioResult
         | GrantStudioResult
@@ -123,7 +124,13 @@ class StudioService:
         if capability == Capability.MATCHING:
             return self._matching(generic, request, owner, insight)
         if capability == Capability.DATASET:
-            return self._dataset(generic, request, owner, insight)
+            return self._dataset(
+                generic,
+                request,
+                owner,
+                insight,
+                compute_authorized=dataset_compute_authorized,
+            )
         if capability == Capability.INSTITUTIONAL_QA:
             return self._institutional(generic, request, owner, insight)
         return self._automation(generic, request, owner, insight)
@@ -381,6 +388,8 @@ class StudioService:
         request: StudioRunRequest,
         owner: str,
         insight: AgentInsight | None,
+        *,
+        compute_authorized: bool,
     ) -> DatasetStudioResult:
         # Dataset analysis approval is enforced upstream in ``run_studio``
         # against a durable, server-resolved ``DatasetApprovalRequest``
@@ -388,7 +397,11 @@ class StudioService:
         # client-supplied ``analysis_approved`` boolean is never treated as
         # authoritative here. ``validate_dataset_execution`` below is a
         # request-shape guard, not an authorization check, and must never be
-        # relied on as one.
+        # relied on as one. The ``compute_authorized`` check is a local
+        # backstop so this method cannot be called directly with unapproved
+        # CSV content; it too is secondary to the upstream enforcement.
+        if request.inputs.get("csv_text") and not compute_authorized:
+            raise ValueError("Trusted dataset compute approval context is required.")
         validate_dataset_execution(request)
         profile = generic.metadata["profile"]
         estimated_bytes = int(request.inputs.get("estimated_bytes", 0))

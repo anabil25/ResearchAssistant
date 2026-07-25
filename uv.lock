@@ -3014,6 +3014,7 @@ source = { editable = "packages/research_core" }
 dependencies = [
     { name = "duckdb" },
     { name = "nbformat" },
+    { name = "opentelemetry-sdk" },
     { name = "orjson" },
     { name = "polars" },
     { name = "pydantic" },
@@ -3025,6 +3026,7 @@ dependencies = [
 requires-dist = [
     { name = "duckdb", specifier = ">=1.4,<2" },
     { name = "nbformat", specifier = ">=5.10,<6" },
+    { name = "opentelemetry-sdk", specifier = "==1.43.0" },
     { name = "orjson", specifier = ">=3.11,<4" },
     { name = "polars", specifier = ">=1.35,<2" },
     { name = "pydantic", specifier = ">=2.12,<3" },

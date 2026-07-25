@@ -3,7 +3,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from shared.runtime import run_profile
+from grant_online.factory import run
 
 if __name__ == "__main__":
-    run_profile("grant_online")
+    run()

@@ -9,6 +9,7 @@
 !.env.example
 agents/.env
 agents/.foundry/
+agents/.release/source-tree.json
 
 # Python
 .venv/

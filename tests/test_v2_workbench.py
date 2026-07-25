@@ -25,6 +25,10 @@ from research_assistant_core.studio_models import EvidenceState, StudioRunReques
 from research_assistant_api.app import app
 from research_assistant_core.models import Capability
 from research_assistant_core.studio_models import EvidenceState
+from research_assistant_api.approval_context import (
+    ApprovalContextRequest,
+    ResolvedApprovalContext,
+)
 
 
 @pytest.fixture
@@ -1381,3 +1385,35 @@ def test_hosted_dataset_rejects_before_agent_invocation(
 
     assert response.status_code == 422
     assert invocations == []
+
+
+class TrustedDatasetApprovalResolver:
+    is_durable = True
+
+    async def resolve(
+        self,
+        request: ApprovalContextRequest,
+    ) -> ResolvedApprovalContext:
+        return ResolvedApprovalContext(
+            request_digest=request.digest,
+            approval_decision_id="approval-inline-1",
+            invocation_id="invocation-inline-1",
+        )
+
+
+def test_inline_dataset_analysis_is_unavailable_without_trusted_resolver(
+    client: TestClient,
+) -> None:
+    response = client.post(
+        "/api/studios/dataset/run",
+        json={
+            "objective": "Analyze the supplied dataset.",
+            "inputs": {
+                "filename": "inline.csv",
+                "csv_text": "group,score\ncontrol,10\n",
+            },
+        },
+    )
+
+    assert response.status_code == 503
+    assert "approval" in response.json()["detail"].lower()

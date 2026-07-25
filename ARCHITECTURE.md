@@ -53,6 +53,76 @@ flowchart LR
   by a profile-specific entry point.
 - Each specialist declares a distinct workflow and output contract. The API
   owns typed artifacts; free-form Hosted Agent text is supplemental analysis.
+- Checked-in agent manifests are unscoped templates and carry no tenant or
+  project authority. Each Hosted Agent receives
+  `RESEARCH_WORKSPACE_TENANT_ID` and `RESEARCH_WORKSPACE_PROJECT_ID` from the
+  deployment environment. Startup binds those trusted values into a new frozen
+  manifest, every capability binding, provider attestation, and the immutable
+  release identity. Missing scope fails startup for capability-bearing agents;
+  legacy `provider-discovery://` sentinels and cross-scope attestations or
+  invocations are rejected.
+
+### Release identity and lineage boundary
+
+- `scripts/build_agent_source_tree.py` derives logical source identity from
+  committed Git blobs at a named commit and `agents/` tree, using a versioned
+  inclusion policy. It never hashes worktree, ZIP, or OCI bytes. The generated
+  `agents/.release/source-tree.json` carries its own canonical digest, which
+  runtime recomputes before accepting the identity. Because anyone can
+  regenerate the manifest from its named Git objects, it is a correctness
+  control rather than an unverified consistency snapshot.
+- `HarnessSettings.source_tree_digest` is required. Making this field required
+  is a deliberate exception to the harness's additive-only contract rule and
+  marks an explicit release-lineage boundary. Missing manifests fail closed and
+  name the producer; direct Python launches, offline harnesses, and deployment
+  paths that bypass the producer receive no ambient filesystem fallback.
+- A source-lineage change changes `release_id`. `ApprovalConsumptionRequest`
+  includes `release_id` in its canonical digest, so an approval minted for a
+  prior release is rejected with `approval_binding_mismatch` and must be issued
+  again for the successor release. Idempotency lookup identity remains
+  release-independent; release provenance is checked after record retrieval.
+- Predeploy validation rejects package-eligible tracked or untracked worktree
+  drift so the direct-code remote-build upload cannot claim a committed source
+  identity for different bytes. Checkout-only newline translation is allowed.
+  A future immutable deployed-artifact digest is separate evidence and must not
+  be folded into release, approval, idempotency, or parent-lineage identity.
+
+### Runtime governance boundary
+
+- Hosted startup fails before constructing or serving an agent unless an
+  application-owned durable release attestor confirms the immutable release,
+  schemas, source tree, model/provider pins, and every objective hard gate.
+  Evaluator scores are advisory and never substitute for these gates.
+- Consequential capabilities claim durable idempotency first, atomically
+  consume an exact-bound one-time `approval_decision_id`, persist the receipt,
+  and only then resolve the runtime handler. Client booleans are never
+  authorization.
+- The API accepts a backend-owned `ApprovalContextResolverFactory` only through
+  its application composition root. Lifespan binds the factory to the trusted
+  workspace scope and accepts only a resolver declaring durable semantics.
+  `RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER=true` (and `prod`/`production`
+  environments) fail startup when no provider is installed. Optional
+  environments return 503 for approval-gated dataset compute rather than
+  deriving authority from client input.
+- Provider attachments require the exact
+  `research-assistant.integration-provider.v6` wire contract and canonical
+  OpenAPI SHA-256. The harness retains its runtime-neutral typed references,
+  independently revalidates binding/resource/schema/policy/configuration pins,
+  and resolves non-serialized handlers only after GA + ACTIVE attestation.
+- Governance telemetry emits hashed tenant, actor, approval, and idempotency
+  identifiers plus release/capability/outcome metadata. Payloads, queries,
+  credentials, evidence content, and raw decision references are excluded.
+- Hosted `ResponsesHostServer` entry points explicitly disable the beta
+  hosting SDK's default observability initializer. Hosted exporters remain
+  off until an application-owned configurator with deterministic lifecycle
+  and managed-identity policy is injected.
+- In-memory state, approval, idempotency, and attestation providers are local
+  or test-only. Hosted conversation, user, project, or private-agent
+  persistence stays disabled unless an application-owned durable provider is
+  injected.
+- `agent-framework-foundry-hosting==1.0.0b260721` remains an exact-pinned beta
+  serving dependency. Agent Framework workflow orchestration is separately
+  recorded as preview risk; neither is represented as GA.
 
 ## Online source layer
 

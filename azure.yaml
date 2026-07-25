@@ -70,6 +70,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: TOOLBOX_ENDPOINT
               value: ${TOOLBOX_DATASET_MCP_ENDPOINT}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
@@ -103,6 +107,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.6-sol
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
               value: "false"
         kind: hosted
@@ -134,6 +142,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: TOOLBOX_ENDPOINT
               value: ${TOOLBOX_GRANT_MCP_ENDPOINT}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
@@ -168,6 +180,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
               value: "false"
         kind: hosted
@@ -199,6 +215,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.6-sol
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
               value: "false"
         kind: hosted
@@ -230,6 +250,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: TOOLBOX_ENDPOINT
               value: ${TOOLBOX_LITERATURE_MCP_ENDPOINT}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
@@ -264,6 +288,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
               value: "false"
         kind: hosted
@@ -295,6 +323,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: TOOLBOX_ENDPOINT
               value: ${TOOLBOX_MATCHING_MCP_ENDPOINT}
             - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
@@ -329,6 +361,10 @@ services:
         environmentVariables:
             - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
               value: gpt-5.4-mini
+            - name: RESEARCH_WORKSPACE_TENANT_ID
+              value: ${AZURE_TENANT_ID}
+            - name: RESEARCH_WORKSPACE_PROJECT_ID
+              value: ${AZURE_AI_PROJECT_NAME}
             - name: RESEARCH_LITERATURE_AGENT_NAME
               value: literature-agent
             - name: RESEARCH_GRANT_AGENT_NAME
@@ -377,6 +413,13 @@ services:
 infra:
     provider: microsoft.foundry
 hooks:
+    predeploy:
+        windows:
+            shell: pwsh
+            run: ./scripts/predeploy.ps1
+        posix:
+            shell: sh
+            run: ./scripts/predeploy.sh
     postdeploy:
         windows:
             shell: pwsh

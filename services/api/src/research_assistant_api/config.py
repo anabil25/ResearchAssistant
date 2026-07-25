@@ -313,8 +313,24 @@ class Settings(BaseSettings):
         ),
     )
 
-    @field_validator("allowed_origins", mode="before")
-    @classmethod
+    require_approval_context_resolver: bool = Field(
+        default=False,
+        validation_alias="RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER",
+        description=(
+            "Require a trusted approval-context resolver to be configured. Always "
+            "effectively true in production (see approval_context_resolver_required); "
+            "this flag lets non-production environments opt in explicitly."
+        ),
+    )
+
+    @property
+    def approval_context_resolver_required(self) -> bool:
+        return self.require_approval_context_resolver or self.environment.casefold() in {
+            "prod",
+            "production",
+        }
+
+    @field_validator("allowed_origins", mode="before")    @classmethod
     def parse_origins(cls, value: object) -> object:
         if isinstance(value, str):
             return [item.strip() for item in value.split(",") if item.strip()]

@@ -18,6 +18,22 @@ from research_assistant_api.foundry import (
 from research_assistant_core.models import Capability, ResearchRequest
 from research_assistant_core.service import ResearchService
 from research_assistant_core.studio_models import StudioRunRequest
+import importlib
+import json
+from typing import Any, cast
+from fastapi.testclient import TestClient
+from research_assistant_api.app import _agent_message, app
+from research_assistant_api.approval_context import (
+    ApprovalContextRejectedError,
+    ApprovalContextRequest,
+    ApprovalContextResolverScope,
+    ApprovalContextUnavailableError,
+    ApprovalRejectionCode,
+    ResolvedApprovalContext,
+    compose_approval_context_resolver,
+    resolve_approval_context,
+)
+from research_assistant_api.foundry import HostedAgentInvocationError, HostedAgentReply
 
 
 class FakeCredential(TokenCredential):
@@ -511,3 +527,356 @@ def test_gateway_recovers_from_transient_empty_agent_output(
     assert response.response_id == "response-ready"
     assert attempts == 2
     assert sleeps == [2]
+
+
+def test_agent_message_maps_dataset_approval_and_coordinator_routes() -> None:
+    service = ResearchService()
+    dataset = service.run(
+        Capability.DATASET,
+        ResearchRequest(
+            query="Profile approved data",
+            context={"csv_text": "value\n1\n"},
+        ),
+    )
+    dataset_message = json.loads(
+        _agent_message(
+            Capability.DATASET,
+            StudioRunRequest(
+                objective="Profile approved data",
+                inputs={
+                    "filename": "approved.csv",
+                },
+            ),
+            dataset,
+        )
+    )
+    assert "approved_compute" not in dataset_message
+    assert "approval_decision_id" not in dataset_message
+    assert "invocation_id" not in dataset_message
+    assert "idempotency_key" not in dataset_message
+
+    orchestration = service.run(
+        Capability.ORCHESTRATION,
+        ResearchRequest(query="Coordinate a literature and grant review"),
+    )
+    coordinator_message = json.loads(
+        _agent_message(
+            Capability.ORCHESTRATION,
+            StudioRunRequest(
+                objective="Coordinate a literature and grant review",
+                inputs={"requested_capabilities": ["literature", "grant"]},
+            ),
+            orchestration,
+        )
+    )
+    assert coordinator_message["requested_capabilities"] == [
+        "literature",
+        "grant",
+    ]
+    with pytest.raises(ValueError, match="requested_capabilities"):
+        _agent_message(
+            Capability.ORCHESTRATION,
+            StudioRunRequest(objective="Invalid orchestration", inputs={}),
+            orchestration,
+        )
+
+
+def test_dataset_hosted_envelope_is_bounded_and_uses_stable_caller_key() -> None:
+    service = ResearchService()
+    result = service.run(
+        Capability.DATASET,
+        ResearchRequest(query="Profile bounded data"),
+    )
+    envelope = json.loads(
+        _agent_message(
+            Capability.DATASET,
+            StudioRunRequest(
+                objective="Profile bounded data",
+                inputs={
+                    "filename": "large.csv",
+                    "csv_text": "x" * 50_000,
+                    "idempotency_key": "dataset-operation-1",
+                },
+            ),
+            result,
+            approval_context=ResolvedApprovalContext(
+                request_digest="a" * 64,
+                approval_decision_id="approval-server-1",
+                invocation_id="invocation-server-1",
+            ),
+        )
+    )
+    assert len(envelope["query"]) == 40_000
+    assert envelope["query"].endswith("[INPUT TRUNCATED TO HOSTED CONTRACT LIMIT]")
+    assert "approved_compute" not in envelope
+    assert envelope["approval_decision_id"] == "approval-server-1"
+    assert envelope["invocation_id"] == "invocation-server-1"
+    assert envelope["idempotency_key"] == "dataset-operation-1"
+
+
+class FakeApprovalContextResolver:
+    is_durable = True
+
+    def __init__(
+        self,
+        rejection: ApprovalRejectionCode | None = None,
+        *,
+        mismatch: bool = False,
+    ) -> None:
+        self.rejection = rejection
+        self.mismatch = mismatch
+        self.requests: list[ApprovalContextRequest] = []
+
+    async def resolve(self, request: ApprovalContextRequest) -> ResolvedApprovalContext:
+        self.requests.append(request)
+        if self.rejection is not None:
+            raise ApprovalContextRejectedError(
+                self.rejection,
+                "The durable decision is not consumable.",
+            )
+        return ResolvedApprovalContext(
+            request_digest=("0" * 64 if self.mismatch else request.digest),
+            approval_decision_id="approval-server-1",
+            invocation_id="invocation-server-1",
+        )
+
+
+class FakeApprovalContextResolverFactory:
+    def __init__(self, resolver: Any) -> None:
+        self.resolver = resolver
+        self.scopes: list[ApprovalContextResolverScope] = []
+
+    def build(self, scope: ApprovalContextResolverScope) -> Any:
+        self.scopes.append(scope)
+        return self.resolver
+
+
+class CapturingDatasetGateway:
+    def __init__(self) -> None:
+        self.messages: list[str] = []
+
+    def invoke(
+        self,
+        message: str,
+        *,
+        agent_name: str | None = None,
+        allow_tools: bool = True,
+    ) -> HostedAgentReply:
+        del allow_tools
+        self.messages.append(message)
+        return HostedAgentReply(
+            agent_name=agent_name or "dataset-agent",
+            content="Bounded dataset analysis",
+            response_id="response-dataset-1",
+        )
+
+
+def _hosted_dataset_request(**inputs: Any) -> dict[str, Any]:
+    return {
+        "query": "Profile the approved bounded dataset",
+        "tenant_id": "demo",
+        "project_id": "demo-project",
+        "context": {
+            "filename": "approved.csv",
+            "csv_text": "value\n1\n",
+            "approval_reference": "approval-request-1",
+            "idempotency_key": "dataset-operation-1",
+            **inputs,
+        },
+    }
+
+
+def test_dataset_api_uses_only_trusted_resolved_approval_context() -> None:
+    resolver = FakeApprovalContextResolver()
+    gateway = CapturingDatasetGateway()
+    with TestClient(app) as client:
+        app.state.settings = Settings(
+            execution_mode="hosted",
+            foundry_project_endpoint="https://foundry.example.test/api/projects/test",
+        )
+        app.state.approval_context_resolver = resolver
+        app.state.hosted = gateway
+        response = client.post("/api/research/dataset", json=_hosted_dataset_request())
+
+    assert response.status_code == 200
+    assert len(resolver.requests) == 1
+    approval_request = resolver.requests[0]
+    assert approval_request.tenant_id == "demo"
+    assert approval_request.project_id == "demo-project"
+    assert approval_request.actor_id == "demo-researcher"
+    assert approval_request.operation_id == "dataset.compute"
+    envelope = json.loads(gateway.messages[0])
+    assert envelope["approval_decision_id"] == "approval-server-1"
+    assert envelope["invocation_id"] == "invocation-server-1"
+    assert envelope["idempotency_key"] == "dataset-operation-1"
+    assert "approved_compute" not in envelope
+    assert "analysis_approved" not in envelope
+
+
+def test_dataset_api_fails_closed_without_trusted_resolver() -> None:
+    gateway = CapturingDatasetGateway()
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="hosted")
+        app.state.hosted = gateway
+        response = client.post("/api/research/dataset", json=_hosted_dataset_request())
+
+    assert response.status_code == 503
+    assert gateway.messages == []
+
+
+def test_dataset_api_rejects_client_supplied_authority_before_resolution() -> None:
+    resolver = FakeApprovalContextResolver()
+    gateway = CapturingDatasetGateway()
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="hosted")
+        app.state.approval_context_resolver = resolver
+        app.state.hosted = gateway
+        response = client.post(
+            "/api/research/dataset",
+            json=_hosted_dataset_request(
+                approval_decision_id="forged-decision",
+                invocation_id="forged-invocation",
+            ),
+        )
+
+    assert response.status_code == 422
+    assert resolver.requests == []
+    assert gateway.messages == []
+
+
+@pytest.mark.parametrize("missing_field", ["approval_reference", "idempotency_key"])
+def test_dataset_api_rejects_missing_server_context_fields(
+    missing_field: str,
+) -> None:
+    resolver = FakeApprovalContextResolver()
+    payload = _hosted_dataset_request()
+    payload["context"].pop(missing_field)
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="hosted")
+        app.state.approval_context_resolver = resolver
+        response = client.post("/api/research/dataset", json=payload)
+
+    assert response.status_code == 403
+    assert response.json()["detail"].endswith("(missing).")
+    assert resolver.requests == []
+
+
+@pytest.mark.parametrize("rejection", ["expired", "forged", "missing", "revoked"])
+def test_dataset_api_rejects_unconsumable_durable_decisions(
+    rejection: ApprovalRejectionCode,
+) -> None:
+    resolver = FakeApprovalContextResolver(rejection)
+    gateway = CapturingDatasetGateway()
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="hosted")
+        app.state.approval_context_resolver = resolver
+        app.state.hosted = gateway
+        response = client.post("/api/research/dataset", json=_hosted_dataset_request())
+
+    assert response.status_code == 403
+    assert response.json()["detail"].endswith(f"({rejection}).")
+    assert gateway.messages == []
+
+
+def test_dataset_api_rejects_mismatched_resolver_output() -> None:
+    resolver = FakeApprovalContextResolver(mismatch=True)
+    gateway = CapturingDatasetGateway()
+    with TestClient(app) as client:
+        app.state.settings = Settings(execution_mode="hosted")
+        app.state.approval_context_resolver = resolver
+        app.state.hosted = gateway
+        response = client.post("/api/research/dataset", json=_hosted_dataset_request())
+
+    assert response.status_code == 403
+    assert response.json()["detail"].endswith("(mismatch).")
+    assert gateway.messages == []
+
+
+@pytest.mark.asyncio
+async def test_approval_context_helper_fails_closed_without_resolver() -> None:
+    request = ApprovalContextRequest.from_inputs(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        actor_id="actor-a",
+        inputs={
+            "approval_reference": "approval-request-1",
+            "idempotency_key": "dataset-operation-1",
+        },
+    )
+    with pytest.raises(ApprovalContextUnavailableError):
+        await resolve_approval_context(None, request)
+
+
+def test_approval_resolver_composition_requires_a_durable_app_owned_provider() -> None:
+    scope = ApprovalContextResolverScope(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        environment="production",
+    )
+    assert compose_approval_context_resolver(None, scope, required=False) is None
+    with pytest.raises(ApprovalContextUnavailableError, match="no provider"):
+        compose_approval_context_resolver(None, scope, required=True)
+
+    durable = FakeApprovalContextResolver()
+    factory = FakeApprovalContextResolverFactory(durable)
+    assert compose_approval_context_resolver(factory, scope, required=True) is durable
+    assert factory.scopes == [scope]
+
+    non_durable = SimpleNamespace(is_durable=False)
+    with pytest.raises(ApprovalContextUnavailableError, match="not a durable"):
+        compose_approval_context_resolver(
+            FakeApprovalContextResolverFactory(non_durable),
+            scope,
+            required=True,
+        )
+
+
+def test_api_lifespan_installs_required_production_approval_provider(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    app_module = importlib.import_module("research_assistant_api.app")
+    production = Settings(
+        environment="production",
+        workspace_tenant_id="tenant-real",
+        workspace_project_id="project-real",
+    )
+    monkeypatch.setattr(app_module, "get_settings", lambda: production)
+    resolver = FakeApprovalContextResolver()
+    factory = FakeApprovalContextResolverFactory(resolver)
+    app.state.approval_context_resolver_factory = factory
+    try:
+        with TestClient(app):
+            assert app.state.approval_context_resolver is resolver
+            assert factory.scopes == [
+                ApprovalContextResolverScope(
+                    tenant_id="tenant-real",
+                    project_id="project-real",
+                    environment="production",
+                )
+            ]
+    finally:
+        del app.state.approval_context_resolver_factory
+
+    with (
+        pytest.raises(ApprovalContextUnavailableError, match="no provider"),
+        TestClient(app),
+    ):
+        pass
+
+
+@pytest.mark.asyncio
+async def test_approval_context_helper_rejects_non_durable_resolver() -> None:
+    request = ApprovalContextRequest.from_inputs(
+        tenant_id="tenant-a",
+        project_id="project-a",
+        actor_id="actor-a",
+        inputs={
+            "approval_reference": "approval-request-1",
+            "idempotency_key": "dataset-operation-1",
+        },
+    )
+    with pytest.raises(ApprovalContextUnavailableError, match="not durable"):
+        await resolve_approval_context(
+            cast(Any, SimpleNamespace(is_durable=False)),
+            request,
+        )
