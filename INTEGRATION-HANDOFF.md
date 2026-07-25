@@ -152,9 +152,10 @@ out of the comparison" holds **only for files that pass that filter**. A
 gitignored `scratch.py` is caught; an untracked `scratch.yaml`, or an edit to
 `agents/evaluators/relevance/relevance.yaml`, is **not** — it passes the identity
 check and the worktree-divergence gate and still ships. **22 of the 71 files
-tracked under `agents/` are in that blind spot** (§5). Neither line catches them,
-so this remains a *parity* judgement about the untracked-file mechanism, not a
-claim that the incumbent's gate is complete.
+tracked under `agents/` fall outside the identity filter, and 12 of those are
+actually packaged** — the blind spot that matters (§5). Neither line catches
+them, so this remains a *parity* judgement about the untracked-file mechanism,
+not a claim that the incumbent's gate is complete.
 
 ---
 
@@ -526,22 +527,37 @@ different file.** Grep across the suite for the *property*, not the idiom.
   two-ASCII-orders test would catch removal but not document why the sort exists.
   This is the coverage-versus-correctness distinction at the level of a single
   statement.
-- **F1** — **22** shipped-but-unhashed files, re-measured at `main` (the earlier
-  `GAP A = 12` was taken on a smaller tree). Of **71** files tracked under
-  `agents/`, the identity policy covers **49** — `.py` plus `requirements.txt` —
-  and misses 10 `.jsonl`, 7 `.yaml`, 3 `.json`, 1 `.md` and `.agentignore`
-  itself. The fix must be **one derived definition**: the enumerated set lives at
-  *two sites* — `scripts/build_agent_source_tree.py` **L172** (committed view) and
+- **F1** — **12 shipped-but-unhashed files.** *(An earlier revision of this
+  document "corrected" this to 22. **That was wrong** — 22 is a different
+  measurement, and the distinction matters:)*
+
+  | measure | count | meaning |
+  |---|---|---|
+  | tracked under `agents/` | 71 | everything in git |
+  | identity-eligible | 49 | `.py` (48) + `requirements.txt` (1) |
+  | **not** identity-eligible | 22 | tracked but unhashed |
+  | …of those, excluded by `.agentignore` | 10 | `*.md` ×1, `evals/` ×9 — **never packaged** |
+  | **shipped-but-unhashed** | **12** | **packaged *and* unhashed ⇒ the actual gap** |
+
+  The 12: `.agent_configs/baseline/metadata.yaml`, `.agentignore`,
+  `coordinator.eval.yaml`, `dataset.eval.yaml`,
+  `datasets/smoke-core/smoke-core_dg.jsonl`, and 7 files under `evaluators/`.
+  **Counting the 10 ignored files inflates the finding**; they ship nowhere, so
+  their absence from identity is correct.
+
+  The fix must be **one derived definition**: the enumerated set lives at *two
+  sites* — `scripts/build_agent_source_tree.py` **L172** (committed view) and
   **L190** (worktree view) — so a new file type widens the gap **and** blinds the
   drift check in the same edit with no failing test.
   **Concretely, and worth stating because it undercuts a control praised
   elsewhere in this document:** because both views share the filter,
-  `validate_worktree_matches_commit` is blind to the same 22 files. Editing
+  `validate_worktree_matches_commit` is blind to the same files. Editing
   `agents/evaluators/relevance/relevance.yaml` in the worktree passes the identity
   check *and* the worktree-divergence gate, and still ships.
-  Both competing lines land on **exactly 49** covered files, which is the
-  measured basis for §2's claim that the rival's checked-in manifest serialises
-  the same incomplete filter rather than closing F1.
+  **Both competing lines land on exactly the same 49-file inclusion set**, so F1
+  is untouched by the walk-versus-snapshot choice and **cannot decide between
+  them** — it is a *coverage* question, not a *mechanism* one. Recording the wrong
+  set precisely does not make it the right set.
 - **F-PROV** — `source_commit`/`source_tree` are recorded and never verified;
   forged values with a recomputed self-digest are accepted.
 - **Wording** — `source_identity.py` and `ARCHITECTURE.md` claim an *"independently
