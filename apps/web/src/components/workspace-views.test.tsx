@@ -1,6 +1,7 @@
 import { render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 
+import { ConnectionsView } from "@/components/connections-view";
 import { RunsView, SettingsView } from "@/components/workspace-views";
 import { updateConnector } from "@/lib/api";
 import type { WorkspaceData } from "@/lib/api";
@@ -77,13 +78,10 @@ function baseWorkspaceData(
   };
 }
 
-describe("SettingsView connector versions", () => {
+describe("ConnectionsView connector versions", () => {
   it("shows APIM/MCP/Toolbox as a truthful, clearly disabled configuration-required state", async () => {
-    const user = userEvent.setup();
     const data = baseWorkspaceData();
-    render(<SettingsView data={data} onRefresh={jest.fn()} />);
-
-    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+    render(<ConnectionsView data={data} onRefresh={jest.fn()} />);
 
     expect(screen.getByText("Gateway & tool versions")).toBeInTheDocument();
     const apimCard = screen
@@ -102,7 +100,6 @@ describe("SettingsView connector versions", () => {
   });
 
   it("uses truthful connector data for a gateway card when a matching connector is registered", async () => {
-    const user = userEvent.setup();
     const data = baseWorkspaceData({
       connectors: [
         {
@@ -122,9 +119,7 @@ describe("SettingsView connector versions", () => {
         },
       ],
     });
-    render(<SettingsView data={data} onRefresh={jest.fn()} />);
-
-    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+    render(<ConnectionsView data={data} onRefresh={jest.fn()} />);
 
     const apimCard = screen
       .getByText("Azure API Management (APIM)")
@@ -136,13 +131,12 @@ describe("SettingsView connector versions", () => {
   });
 });
 
-describe("SettingsView connector manager", () => {
+describe("ConnectionsView connector manager", () => {
   beforeEach(() => {
     jest.clearAllMocks();
   });
 
   it("explains missing gateway setup without reporting a provider outage", async () => {
-    const user = userEvent.setup();
     const data = baseWorkspaceData({
       connectors: [
         {
@@ -152,12 +146,10 @@ describe("SettingsView connector manager", () => {
         },
       ],
     });
-    render(<SettingsView data={data} onRefresh={jest.fn()} />);
-
-    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
+    render(<ConnectionsView data={data} onRefresh={jest.fn()} />);
 
     expect(
-      screen.getByRole("heading", { name: "Connector manager" }),
+      screen.getByRole("heading", { name: "Connection manager" }),
     ).toBeInTheDocument();
     expect(screen.getAllByText("Setup required").length).toBeGreaterThan(0);
     expect(
@@ -180,9 +172,8 @@ describe("SettingsView connector manager", () => {
       enabled: false,
       assigned_agents: ["literature", "matching"],
     });
-    render(<SettingsView data={data} onRefresh={onRefresh} />);
+    render(<ConnectionsView data={data} onRefresh={onRefresh} />);
 
-    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
     await user.click(
       screen.getByRole("checkbox", { name: "Enable Europe PMC" }),
     );
@@ -205,6 +196,40 @@ describe("SettingsView connector manager", () => {
       ),
     );
     expect(onRefresh).toHaveBeenCalled();
+  });
+});
+
+describe("SettingsView connections redirect", () => {
+  it("shows the workspace-level redirect card and invokes onOpenConnections", async () => {
+    const user = userEvent.setup();
+    const data = baseWorkspaceData();
+    const onOpenConnections = jest.fn();
+    render(
+      <SettingsView
+        data={data}
+        onRefresh={jest.fn()}
+        onOpenConnections={onOpenConnections}
+      />,
+    );
+
+    expect(
+      screen.queryByRole("button", { name: /Connectors/i }),
+    ).not.toBeInTheDocument();
+
+    const navConnections = screen.getByRole("button", {
+      name: /Connections 1/i,
+    });
+    await user.click(navConnections);
+    expect(onOpenConnections).toHaveBeenCalledTimes(1);
+
+    await user.click(
+      screen.getByRole("button", { name: "Agents & Models" }),
+    );
+    expect(
+      screen.getByText("Connections are now workspace-level"),
+    ).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "Open Connections" }));
+    expect(onOpenConnections).toHaveBeenCalledTimes(2);
   });
 });
 

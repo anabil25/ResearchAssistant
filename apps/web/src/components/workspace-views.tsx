@@ -29,8 +29,6 @@ import { useMemo, useState } from "react";
 
 import {
   decideApproval,
-  testConnector,
-  updateConnector,
   updateSettings,
   uploadLibraryItem,
   type WorkspaceData,
@@ -38,7 +36,6 @@ import {
 import type {
   ApprovalRecord,
   CapabilityId,
-  ConnectorSetting,
   LibraryItem,
   ProjectSettings,
 } from "@/lib/types";
@@ -48,6 +45,9 @@ export type WorkspaceViewId =
   | "library"
   | "runs"
   | "settings"
+  | "registry"
+  | "agent"
+  | "connections"
   | CapabilityId;
 
 export interface CapabilityCard {
@@ -68,7 +68,7 @@ interface OverviewProps {
   onNavigate: (view: WorkspaceViewId) => void;
 }
 
-function formatTime(value: string | null | undefined): string {
+export function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en", {
     month: "short",
@@ -78,70 +78,10 @@ function formatTime(value: string | null | undefined): string {
   }).format(new Date(value));
 }
 
-function statusLabel(value: string): string {
+export function statusLabel(value: string): string {
   if (value === "configuration_required") return "setup required";
   if (value === "ready_with_key") return "ready, key recommended";
   return value.replaceAll("_", " ");
-}
-
-const CONNECTOR_SPECIALISTS = [
-  "literature",
-  "grant",
-  "matching",
-  "dataset",
-  "institution",
-] as const;
-
-function connectorStatusInfo(connector: ConnectorSetting): {
-  label: string;
-  detail: string;
-  tone: string;
-} {
-  if (!connector.enabled) {
-    return {
-      label: "Disabled",
-      detail:
-        "This connector is intentionally disabled and will not be used by research runs.",
-      tone: "disabled",
-    };
-  }
-  if (connector.test_status === "configuration_required") {
-    return {
-      label: "Setup required",
-      detail:
-        "The provider is not down. An administrator must configure the connector gateway URL and managed identity before tests can reach it.",
-      tone: "configuration-required",
-    };
-  }
-  if (connector.test_status === "unavailable") {
-    return {
-      label: "Connection failed",
-      detail:
-        "The gateway is configured, but the latest bounded provider probe failed. Retry the test or inspect gateway logs before using this source.",
-      tone: "unavailable",
-    };
-  }
-  if (connector.test_status === "ready_with_key") {
-    return {
-      label: "Ready, key recommended",
-      detail:
-        "The connector is reachable with limited anonymous quota. Add the optional deployment-managed key for more reliable capacity.",
-      tone: "warning",
-    };
-  }
-  if (connector.test_status === "ready") {
-    return {
-      label: "Ready",
-      detail:
-        "The latest bounded probe succeeded and this connector can serve its assigned specialists.",
-      tone: "ready",
-    };
-  }
-  return {
-    label: "Not tested",
-    detail: "Run a bounded connection test before relying on this source.",
-    tone: "untested",
-  };
 }
 
 export function Overview({
@@ -1025,12 +965,12 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
 interface SettingsViewProps {
   data: WorkspaceData | null;
   onRefresh: () => Promise<void>;
+  onOpenConnections?: () => void;
 }
 
 const SETTINGS_TABS = [
   "General",
   "Agents & Models",
-  "Connectors",
   "Retrieval & Evidence",
   "Governance",
   "Evaluation",
@@ -1039,17 +979,11 @@ const SETTINGS_TABS = [
 
 type SettingsTab = (typeof SETTINGS_TABS)[number];
 
-const GATEWAY_VERSION_TARGETS: {
-  id: string;
-  label: string;
-  pattern: RegExp;
-}[] = [
-  { id: "apim", label: "Azure API Management (APIM)", pattern: /apim/i },
-  { id: "mcp", label: "MCP tool registry", pattern: /mcp/i },
-  { id: "toolbox", label: "Toolbox", pattern: /toolbox/i },
-];
-
-export function SettingsView({ data, onRefresh }: SettingsViewProps) {
+export function SettingsView({
+  data,
+  onRefresh,
+  onOpenConnections,
+}: SettingsViewProps) {
   const [tab, setTab] = useState<SettingsTab>("General");
   const [draft, setDraft] = useState<ProjectSettings | null>(
     data?.settings ?? null,
@@ -1059,109 +993,6 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
     message: string;
     tone: "success" | "warning" | "error";
   } | null>(null);
-  const [connectorQuery, setConnectorQuery] = useState("");
-  const [connectorCategory, setConnectorCategory] = useState("All");
-  const [busyConnector, setBusyConnector] = useState<string | null>(null);
-  const [managedConnectorId, setManagedConnectorId] = useState(
-    data?.connectors[0]?.id ?? "",
-  );
-  const managedConnector =
-    (data?.connectors ?? []).find(
-      (connector) => connector.id === managedConnectorId,
-    ) ??
-    data?.connectors[0] ??
-    null;
-  const [connectorDrafts, setConnectorDrafts] = useState<
-    Record<string, { enabled: boolean; assigned_agents: string[] }>
-  >({});
-  const connectorDraft = managedConnector
-    ? (connectorDrafts[managedConnector.id] ?? {
-        enabled: managedConnector.enabled,
-        assigned_agents: managedConnector.assigned_agents,
-      })
-    : null;
-
-  const connectorCategories = [
-    "All",
-    ...new Set((data?.connectors ?? []).map((item) => item.category)),
-  ];
-  const visibleConnectors = (data?.connectors ?? []).filter(
-    (connector) =>
-      (connectorCategory === "All" ||
-        connector.category === connectorCategory) &&
-      `${connector.name} ${connector.description}`
-        .toLowerCase()
-        .includes(connectorQuery.toLowerCase()),
-  );
-  const gatewayVersionCards = GATEWAY_VERSION_TARGETS.map((target) => ({
-    ...target,
-    connector: (data?.connectors ?? []).find(
-      (connector) =>
-        target.pattern.test(connector.id) ||
-        target.pattern.test(connector.category),
-    ),
-  }));
-  const managedConnectorStatus = managedConnector
-    ? connectorStatusInfo(managedConnector)
-    : null;
-
-  const mutateConnector = (
-    connector: ConnectorSetting,
-    update: Partial<ConnectorSetting>,
-  ) => {
-    setBusyConnector(connector.id);
-    setStatus(null);
-    void updateConnector({ ...connector, ...update })
-      .then(async () => {
-        await onRefresh();
-        setConnectorDrafts((current) => {
-          const next = { ...current };
-          delete next[connector.id];
-          return next;
-        });
-        setStatus({
-          message: `${connector.name} configuration saved.`,
-          tone: "success",
-        });
-      })
-      .catch((error: unknown) =>
-        setStatus({
-          message:
-            error instanceof Error ? error.message : "Connector update failed.",
-          tone: "error",
-        }),
-      )
-      .finally(() => setBusyConnector(null));
-  };
-
-  const runConnectorTest = (connector: ConnectorSetting) => {
-    setBusyConnector(connector.id);
-    setStatus(null);
-    void testConnector(connector.id)
-      .then(async (updated) => {
-        await onRefresh();
-        const updatedStatus = connectorStatusInfo(updated);
-        setStatus({
-          message: `${updated.name}: ${updatedStatus.label}. ${updatedStatus.detail}`,
-          tone:
-            updatedStatus.tone === "unavailable"
-              ? "error"
-              : ["configuration-required", "warning", "untested"].includes(
-                    updatedStatus.tone,
-                  )
-                ? "warning"
-                : "success",
-        });
-      })
-      .catch((error: unknown) =>
-        setStatus({
-          message:
-            error instanceof Error ? error.message : "Connector test failed.",
-          tone: "error",
-        }),
-      )
-      .finally(() => setBusyConnector(null));
-  };
 
   return (
     <div className="operational-page settings-page">
@@ -1170,8 +1001,8 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
           <span className="eyebrow">Project control plane</span>
           <h1>Project Settings</h1>
           <p>
-            Configure agents, connectors, retrieval, release policy, and
-            evaluations without exposing secret values.
+            Configure agents, retrieval, release policy, and evaluations
+            without exposing secret values.
           </p>
         </div>
         <span className="settings-environment">
@@ -1192,8 +1023,6 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <Settings size={16} />
               ) : item === "Agents & Models" ? (
                 <Sparkles size={16} />
-              ) : item === "Connectors" ? (
-                <Globe2 size={16} />
               ) : item === "Retrieval & Evidence" ? (
                 <Search size={16} />
               ) : item === "Governance" ? (
@@ -1204,11 +1033,17 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                 <Lock size={16} />
               )}
               {item}
-              {item === "Connectors" ? (
-                <em>{data?.connectors.length ?? 12}</em>
-              ) : null}
             </button>
           ))}
+          <button
+            className="settings-nav-external"
+            type="button"
+            onClick={onOpenConnections}
+          >
+            <Globe2 size={16} />
+            Connections
+            <em>{data?.connectors.length ?? 12}</em>
+          </button>
         </nav>
 
         <main className="settings-content">
@@ -1388,344 +1223,26 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
             </section>
           ) : null}
 
-          {tab === "Connectors" ? (
-            <section className="settings-section connector-settings">
-              <div className="settings-section-heading">
+          {tab === "Agents & Models" ? (
+            <section className="settings-section connections-redirect">
+              <div className="panel connections-redirect-card">
                 <div>
-                  <h2>Research data connectors</h2>
+                  <span className="eyebrow">Moved</span>
+                  <h2>Connections are now workspace-level</h2>
                   <p>
-                    Assign allowlisted public metadata sources to specific
-                    specialists, inspect terms, and run bounded health tests.
+                    Connector assignment, health checks, and gateway versions
+                    moved out of per-project settings into the workspace
+                    Connections view so they apply consistently across every
+                    studio and agent.
                   </p>
                 </div>
-                <span className="subtle-chip">
-                  {data?.summary.connector_ready ?? 0}/
-                  {data?.summary.connector_total ?? 12} ready
-                </span>
-              </div>
-              <div className="connector-toolbar">
-                <label className="search-field">
-                  <Search size={16} />
-                  <span className="sr-only">Search connectors</span>
-                  <input
-                    value={connectorQuery}
-                    onChange={(event) => setConnectorQuery(event.target.value)}
-                    placeholder="Search connectors"
-                  />
-                </label>
-                <div className="filter-pills">
-                  {connectorCategories.map((category) => (
-                    <button
-                      data-active={connectorCategory === category}
-                      key={category}
-                      onClick={() => setConnectorCategory(category)}
-                    >
-                      {category}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div
-                className="connector-management-widget panel"
-                aria-labelledby="connector-manager-title"
-              >
-                <aside className="connector-catalog">
-                  <div className="connector-catalog-heading">
-                    <div>
-                      <strong>Connector catalog</strong>
-                      <span>Select a source to inspect and manage.</span>
-                    </div>
-                    <span>{visibleConnectors.length}</span>
-                  </div>
-                  <div className="connector-grid">
-                    {visibleConnectors.map((connector) => {
-                      const connectorStatus = connectorStatusInfo(connector);
-                      return (
-                        <button
-                          type="button"
-                          className="connector-card"
-                          data-selected={managedConnector?.id === connector.id}
-                          key={connector.id}
-                          onClick={() => setManagedConnectorId(connector.id)}
-                        >
-                          <span className="connector-logo">
-                            {connector.category === "Funding" ? (
-                              <FileText size={18} />
-                            ) : connector.category === "Identity" ? (
-                              <Users size={18} />
-                            ) : connector.category === "Datasets" ? (
-                              <BarChart3 size={18} />
-                            ) : (
-                              <Globe2 size={18} />
-                            )}
-                          </span>
-                          <span>
-                            <strong>{connector.name}</strong>
-                            <small>{connector.category}</small>
-                          </span>
-                          <span
-                            className="connector-state"
-                            data-tone={connectorStatus.tone}
-                          >
-                            <span />
-                            {connectorStatus.label}
-                          </span>
-                        </button>
-                      );
-                    })}
-                  </div>
-                  {visibleConnectors.length === 0 ? (
-                    <div className="empty-connector-search">
-                      No connectors match this filter.
-                    </div>
-                  ) : null}
-                </aside>
-
-                {managedConnector && connectorDraft && managedConnectorStatus ? (
-                  <form
-                    className="connector-manager"
-                    onSubmit={(event) => {
-                      event.preventDefault();
-                      mutateConnector(managedConnector, connectorDraft);
-                    }}
-                  >
-                    <div className="connector-manager-heading">
-                      <div>
-                        <span className="eyebrow">Configuration widget</span>
-                        <h3 id="connector-manager-title">Connector manager</h3>
-                      </div>
-                      <label className="field connector-selector">
-                        <span>Connector</span>
-                        <select
-                          aria-label="Connector to manage"
-                          value={managedConnector.id}
-                          onChange={(event) =>
-                            setManagedConnectorId(event.target.value)
-                          }
-                        >
-                          {(data?.connectors ?? []).map((connector) => (
-                            <option value={connector.id} key={connector.id}>
-                              {connector.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                    </div>
-
-                    <div className="managed-connector-title">
-                      <span className="connector-logo">
-                        {managedConnector.category === "Funding" ? (
-                          <FileText size={20} />
-                        ) : managedConnector.category === "Identity" ? (
-                          <Users size={20} />
-                        ) : managedConnector.category === "Datasets" ? (
-                          <BarChart3 size={20} />
-                        ) : (
-                          <Globe2 size={20} />
-                        )}
-                      </span>
-                      <div>
-                        <strong>{managedConnector.name}</strong>
-                        <span>
-                          {managedConnector.category} · {managedConnector.auth_kind}
-                        </span>
-                      </div>
-                      <span
-                        className="connector-health-badge"
-                        data-tone={managedConnectorStatus.tone}
-                      >
-                        {managedConnectorStatus.label}
-                      </span>
-                    </div>
-
-                    <div
-                      className="connector-diagnostic"
-                      data-tone={managedConnectorStatus.tone}
-                    >
-                      <div>
-                        <strong>{managedConnectorStatus.label}</strong>
-                        <p>{managedConnectorStatus.detail}</p>
-                      </div>
-                      <dl>
-                        <div>
-                          <dt>Credential</dt>
-                          <dd>{managedConnector.secret_status}</dd>
-                        </div>
-                        <div>
-                          <dt>Last tested</dt>
-                          <dd>{formatTime(managedConnector.last_tested_at)}</dd>
-                        </div>
-                      </dl>
-                    </div>
-
-                    <label className="connector-enable-row">
-                      <span>
-                        <strong>Enable connector</strong>
-                        <small>
-                          {["pubmed", "grants_gov"].includes(managedConnector.id)
-                            ? "Required baseline connectors cannot be disabled."
-                            : "Disabled connectors are excluded from research runs."}
-                        </small>
-                      </span>
-                      <input
-                        type="checkbox"
-                        aria-label={`Enable ${managedConnector.name}`}
-                        checked={connectorDraft.enabled}
-                        disabled={
-                          busyConnector === managedConnector.id ||
-                          ["pubmed", "grants_gov"].includes(managedConnector.id)
-                        }
-                        onChange={(event) =>
-                          setConnectorDrafts((current) => ({
-                            ...current,
-                            [managedConnector.id]: {
-                              ...connectorDraft,
-                              enabled: event.target.checked,
-                            },
-                          }))
-                        }
-                      />
-                    </label>
-
-                    <fieldset className="agent-assignments connector-manager-agents">
-                      <legend>Assigned specialists</legend>
-                      <p>
-                        Only selected specialists can use this connector during
-                        an opted-in public metadata run.
-                      </p>
-                      <div>
-                        {CONNECTOR_SPECIALISTS.map((agent) => (
-                          <label key={agent}>
-                            <input
-                              type="checkbox"
-                              aria-label={`Assign ${agent} to ${managedConnector.name}`}
-                              checked={connectorDraft.assigned_agents.includes(agent)}
-                              disabled={busyConnector === managedConnector.id}
-                              onChange={(event) => {
-                                const assigned = event.target.checked
-                                  ? [...connectorDraft.assigned_agents, agent]
-                                  : connectorDraft.assigned_agents.filter(
-                                      (item) => item !== agent,
-                                    );
-                                setConnectorDrafts((current) => ({
-                                  ...current,
-                                  [managedConnector.id]: {
-                                    ...connectorDraft,
-                                    assigned_agents: assigned,
-                                  },
-                                }));
-                              }}
-                            />
-                            <span>{agent}</span>
-                          </label>
-                        ))}
-                      </div>
-                    </fieldset>
-
-                    <div className="connector-manager-details">
-                      <div>
-                        <strong>Capabilities</strong>
-                        <span>{managedConnector.capabilities.join(" · ")}</span>
-                      </div>
-                      <div>
-                        <strong>Data boundary</strong>
-                        <span>{managedConnector.data_boundary}</span>
-                      </div>
-                    </div>
-
-                    <div className="connector-manager-actions">
-                      <a
-                        href={managedConnector.terms_url}
-                        target="_blank"
-                        rel="noreferrer"
-                      >
-                        Provider terms <ArrowUpRight size={13} />
-                      </a>
-                      <div>
-                        <button
-                          type="button"
-                          disabled={busyConnector === managedConnector.id}
-                          onClick={() => runConnectorTest(managedConnector)}
-                        >
-                          {busyConnector === managedConnector.id
-                            ? "Testing…"
-                            : "Test connection"}
-                        </button>
-                        <button
-                          className="primary-button"
-                          type="submit"
-                          disabled={busyConnector === managedConnector.id}
-                        >
-                          Save configuration
-                        </button>
-                      </div>
-                    </div>
-                  </form>
-                ) : (
-                  <div className="empty-connector-manager">
-                    Select a connector to configure it.
-                  </div>
-                )}
-              </div>
-              <article className="web-search-policy panel">
-                <span className="connector-logo">
-                  <Search size={18} />
-                </span>
-                <div>
-                  <strong>Foundry Web Search</strong>
-                  <p>
-                    Separate from the 12 metadata connectors. Available only to
-                    literature, grant, and matching runs when the user opts in
-                    and the context is public.
-                  </p>
-                </div>
-                <span className="subtle-chip">Per-run only</span>
-              </article>
-
-              <div className="settings-section-heading">
-                <div>
-                  <h2>Gateway & tool versions</h2>
-                  <p>
-                    Version promotion and rollback are unavailable until an
-                    administrator registers a real gateway or tool registry.
-                    Nothing here promotes a version by default.
-                  </p>
-                </div>
-              </div>
-              <div className="readiness-card-grid">
-                {gatewayVersionCards.map((target) => (
-                  <article className="panel readiness-status-card" key={target.id}>
-                    <div>
-                      <strong>{target.label}</strong>
-                      <span className="subtle-chip">
-                        {target.connector
-                          ? statusLabel(target.connector.test_status)
-                          : "Not configured"}
-                      </span>
-                    </div>
-                    <p>
-                      {target.connector
-                        ? `${target.connector.name} is registered, but version promotion still requires administrator approval.`
-                        : "No gateway or tool registry connection is configured for this capability yet."}
-                    </p>
-                    <div className="connector-actions">
-                      <button
-                        type="button"
-                        disabled
-                        title="Version promotion requires a verified gateway release and administrator approval; not available in this workspace."
-                      >
-                        Promote to default
-                      </button>
-                      <button
-                        type="button"
-                        disabled
-                        title="Rollback requires an active promoted version."
-                      >
-                        Roll back
-                      </button>
-                    </div>
-                  </article>
-                ))}
+                <button
+                  type="button"
+                  className="primary-button"
+                  onClick={onOpenConnections}
+                >
+                  Open Connections
+                </button>
               </div>
             </section>
           ) : null}

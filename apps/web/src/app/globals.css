@@ -738,6 +738,63 @@ button {
   text-transform: capitalize;
 }
 
+.status-chip[data-tone="configuration-required"],
+.status-chip[data-tone="warning"],
+.status-chip[data-tone="untested"] {
+  color: #7b551d;
+  background: #f5e9d2;
+  border-color: #ead8b5;
+}
+
+.status-chip[data-tone="unavailable"] {
+  color: #88443e;
+  background: #f7dfdc;
+  border-color: #ebcbc7;
+}
+
+.status-chip[data-tone="deprecated"] {
+  color: #7b551d;
+  background: #f5e9d2;
+  border-color: #ead8b5;
+}
+
+.status-chip[data-tone="retired"] {
+  color: #88443e;
+  background: #f7dfdc;
+  border-color: #ebcbc7;
+}
+
+.agent-capability-lifecycle-warning[data-tone="unavailable"],
+.agent-capability-lifecycle-warning[data-tone="deprecated"] {
+  display: block;
+  margin-top: 2px;
+  color: #7b551d;
+}
+
+.agent-capability-lifecycle-warning[data-tone="retired"] {
+  display: block;
+  margin-top: 2px;
+  color: #88443e;
+}
+
+.agent-capability-destinations {
+  display: block;
+  margin-top: 2px;
+  color: #4a5560;
+}
+
+.agent-capability-discovery-note[data-tone="unavailable"] {
+  display: block;
+  margin-bottom: 6px;
+  color: #88443e;
+}
+
+.status-chip[data-tone="disabled"] {
+  color: #606863;
+  background: #e8ebe8;
+  border-color: #d7dbd6;
+}
+
 .error-banner {
   display: flex;
   align-items: center;
@@ -3760,6 +3817,42 @@ button {
   border-color: #ebcbc7;
 }
 
+/*
+ * `[data-tone]` variants for `.save-status`, used specifically by the
+ * Memory Forget confirmation result (`agent-workspace.tsx`), which needs
+ * the full `AsyncErrorKind` set (not just the existing `.warning`/`.error`
+ * class modifiers other callers use for a 3-state success/warning/error
+ * status message) — a forget attempt can fail unauthorized, unavailable,
+ * needing a connection, needing approval, degraded, or as a plain error,
+ * and those must not all collapse into one undifferentiated look.
+ */
+.save-status[data-tone="unauthorized"],
+.save-status[data-tone="needs_approval"] {
+  color: #7b551d;
+  background: #fff8eb;
+  border-color: #ead8b5;
+}
+
+.save-status[data-tone="unavailable"],
+.save-status[data-tone="needs_connection"] {
+  color: #445569;
+  background: #eaf0f6;
+  border-color: #cdd9e6;
+}
+
+.save-status[data-tone="degraded"],
+.save-status[data-tone="error"] {
+  color: #88443e;
+  background: #fff1ef;
+  border-color: #ebcbc7;
+}
+
+.save-status[data-tone="conflict"] {
+  color: #5b3f8f;
+  background: #f2edfa;
+  border-color: #d9cef0;
+}
+
 .settings-section-heading {
   display: flex;
   align-items: flex-start;
@@ -4334,6 +4427,19 @@ button {
   align-items: center;
   gap: 4px;
   color: #466b50;
+  font-size: var(--font-size-caption);
+  font-weight: 750;
+}
+
+.connector-terms-blocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  color: #88443e;
+  background: #f7dfdc;
+  border: 1px solid #ebcbc7;
+  border-radius: 999px;
+  padding: 3px 10px;
   font-size: var(--font-size-caption);
   font-weight: 750;
 }
@@ -6155,3 +6261,767 @@ button.library-row {
   font-size: var(--font-size-caption);
   line-height: 1.5;
 }
+
+/* -------------------------------------------------------------------------
+ * Agent Registry / Agent Workspace / Connections (Agent Studio)
+ * ---------------------------------------------------------------------- */
+
+.async-state-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin: 14px 0;
+  padding: 11px 13px;
+  color: #4b5d4f;
+  background: #eef4ed;
+  border: 1px solid #d6e2d3;
+  border-radius: 9px;
+  font-size: var(--font-size-label);
+}
+
+.async-state-banner strong {
+  display: block;
+  margin-bottom: 2px;
+}
+
+.async-state-banner p {
+  margin: 0;
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.async-state-banner button {
+  margin-left: auto;
+  padding: 5px 11px;
+  color: var(--ink-soft);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.async-state-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 50%;
+  background: rgb(255 255 255 / 60%);
+}
+
+.async-state-banner[data-tone="unauthorized"],
+.async-state-banner[data-tone="needs_approval"] {
+  color: #7b551d;
+  background: #fff8eb;
+  border-color: #ead8b5;
+}
+
+.async-state-banner[data-tone="unavailable"],
+.async-state-banner[data-tone="needs_connection"] {
+  color: #445569;
+  background: #eaf0f6;
+  border-color: #cdd9e6;
+}
+
+.async-state-banner[data-tone="degraded"],
+.async-state-banner[data-tone="error"] {
+  color: #88443e;
+  background: #fff1ef;
+  border-color: #ebcbc7;
+}
+
+/*
+ * "conflict" (an optimistic-concurrency etag mismatch) is deliberately its
+ * own color, distinct from the plain "error"/"degraded" red: a conflict is
+ * actionable and expected (reload and retry), not a failure of the system,
+ * so collapsing it into the same red as a real error would mislead a
+ * researcher into thinking something is broken. Contrast-checked at 7.16:1
+ * (#5b3f8f on #f2edfa), comfortably above WCAG AA's 4.5:1 for normal text.
+ */
+.async-state-banner[data-tone="conflict"] {
+  color: #5b3f8f;
+  background: #f2edfa;
+  border-color: #d9cef0;
+}
+
+/*
+ * `.tone-badge` is a small icon + text label (see `ToneBadge` in
+ * `async-state.tsx`) embedded inside plain-text containers that don't have
+ * room for a full `AsyncStateBanner` — Builder chat messages and the Memory
+ * Forget result. It exists specifically so tone is never color-only: the
+ * icon and label differ per tone regardless of any color perception.
+ *
+ * The badge always keeps a near-white fill and a `currentColor` border so
+ * it stays visible as a distinct chip even when its container (e.g.
+ * `.agent-build-message`/`.save-status`) already carries the exact same
+ * tone tint — a same-tone parent must not make the badge blend away.
+ */
+.tone-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-right: 7px;
+  padding: 2px 8px;
+  background: rgb(255 255 255 / 70%);
+  border: 1px solid currentColor;
+  border-radius: 999px;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  white-space: nowrap;
+  vertical-align: middle;
+}
+
+.tone-badge[data-tone="success"] {
+  color: #3f6348;
+}
+
+.tone-badge[data-tone="unauthorized"],
+.tone-badge[data-tone="needs_approval"] {
+  color: #7b551d;
+}
+
+.tone-badge[data-tone="unavailable"],
+.tone-badge[data-tone="needs_connection"] {
+  color: #445569;
+}
+
+.tone-badge[data-tone="degraded"],
+.tone-badge[data-tone="error"] {
+  color: #88443e;
+}
+
+.tone-badge[data-tone="conflict"] {
+  color: #5b3f8f;
+}
+
+.empty-block {
+  display: grid;
+  gap: 8px;
+  justify-items: start;
+  padding: 32px 22px;
+  color: var(--muted);
+  background: rgb(255 254 250 / 60%);
+  border: 1px dashed var(--line-strong);
+  border-radius: 12px;
+  font-size: var(--font-size-label);
+  text-align: left;
+}
+
+.empty-block strong {
+  color: var(--ink);
+  font-size: 15px;
+}
+
+.empty-block p {
+  margin: 0;
+  max-width: 520px;
+  line-height: 1.55;
+}
+
+/* Connections redirect (Settings > Agents & Models) */
+.connections-redirect-card {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 16px 18px;
+}
+
+.connections-redirect-card h2 {
+  margin: 4px 0 5px;
+  font-family: var(--font-editorial), Georgia, serif;
+  font-size: 19px;
+  font-weight: 620;
+}
+
+.connections-redirect-card p {
+  max-width: 560px;
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-label);
+  line-height: 1.55;
+}
+
+.settings-nav-external {
+  display: flex;
+  min-height: 39px;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+  padding: 0 9px;
+  color: var(--forest-2);
+  text-align: left;
+  background: var(--sage-soft);
+  border: 1px dashed #c3d6c1;
+  border-radius: 8px;
+  font-size: var(--font-size-label);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.settings-nav-external:hover {
+  background: #dfeadc;
+}
+
+.settings-nav-external em {
+  margin-left: auto;
+  padding: 2px 5px;
+  color: #49634f;
+  background: #dce6da;
+  border-radius: 999px;
+  font-size: var(--font-size-caption);
+  font-style: normal;
+}
+
+/* Agent Registry */
+.agent-registry-toolbar {
+  margin-bottom: 16px;
+}
+
+.agent-registry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 14px;
+}
+
+.agent-registry-card {
+  display: flex;
+  flex-direction: column;
+  padding: 16px;
+}
+
+.agent-registry-card-main {
+  display: grid;
+  gap: 10px;
+  padding: 0;
+  color: inherit;
+  text-align: left;
+  background: none;
+  border: 0;
+  cursor: pointer;
+}
+
+.agent-registry-card-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.agent-registry-card-heading > div {
+  display: grid;
+  flex: 1;
+  gap: 2px;
+  min-width: 0;
+}
+
+.agent-registry-card-heading strong {
+  font-family: var(--font-editorial), Georgia, serif;
+  font-size: 16px;
+}
+
+.agent-registry-icon {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 34px;
+  color: var(--forest);
+  background: var(--sage-soft);
+  border: 1px solid #d2dfd0;
+  border-radius: 10px;
+}
+
+.agent-registry-owner {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+.agent-registry-owner[data-owner="platform"] {
+  color: var(--forest-2);
+  font-weight: 700;
+}
+
+.agent-registry-lifecycle {
+  padding: 3px 9px;
+  color: #3f6348;
+  background: var(--sage-soft);
+  border-radius: 999px;
+  font-size: var(--font-size-caption);
+  font-weight: 800;
+  text-transform: capitalize;
+}
+
+.agent-registry-lifecycle[data-lifecycle="draft"],
+.agent-registry-lifecycle[data-lifecycle="validating"],
+.agent-registry-lifecycle[data-lifecycle="evaluating"],
+.agent-registry-lifecycle[data-lifecycle="deploying"] {
+  color: #7b551d;
+  background: #f5e9d2;
+}
+
+.agent-registry-lifecycle[data-lifecycle="deprecated"],
+.agent-registry-lifecycle[data-lifecycle="archived"] {
+  color: #606863;
+  background: #e8ebe8;
+}
+
+.agent-registry-purpose {
+  margin: 0;
+  color: var(--ink-soft);
+  font-size: var(--font-size-label);
+  line-height: 1.5;
+}
+
+.agent-registry-boundary {
+  margin: 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.agent-registry-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.agent-registry-chips .subtle-chip {
+  gap: 4px;
+  text-transform: none;
+}
+
+.agent-registry-facts {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin: 4px 0 0;
+  padding-top: 10px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-registry-facts dt {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+.agent-registry-facts dd {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: var(--font-size-label);
+  font-weight: 700;
+}
+
+.agent-registry-card-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--line);
+}
+
+.agent-registry-disclosure {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0;
+  color: var(--ink-soft);
+  background: none;
+  border: 0;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-registry-fork {
+  padding: 6px 11px;
+  color: var(--ink-soft);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-registry-fork:disabled {
+  cursor: wait;
+  opacity: 0.62;
+}
+
+.agent-registry-fork-result {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+.agent-registry-live {
+  margin-top: 10px;
+}
+
+.agent-registry-live-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
+  gap: 10px;
+  padding: 10px;
+  background: #f8f8f3;
+  border-radius: 9px;
+}
+
+.agent-registry-live-grid > div {
+  display: grid;
+  gap: 2px;
+}
+
+.agent-registry-live-grid strong {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+.agent-registry-live-grid span {
+  color: var(--ink);
+  font-size: var(--font-size-label);
+  font-weight: 700;
+}
+
+.agent-create-panel {
+  display: grid;
+  gap: 14px;
+  margin-bottom: 18px;
+  padding: 18px;
+}
+
+.agent-create-heading {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 15px;
+}
+
+.agent-create-heading h2 {
+  margin: 4px 0 0;
+  font-family: var(--font-editorial), Georgia, serif;
+  font-size: 19px;
+  font-weight: 620;
+}
+
+.agent-create-heading button {
+  padding: 5px 11px;
+  color: var(--ink-soft);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-create-actions {
+  display: flex;
+  justify-content: flex-end;
+}
+
+/* Agent Workspace */
+.agent-workspace-header {
+  align-items: center;
+  gap: 16px;
+}
+
+.agent-workspace-header h1 {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+}
+
+.agent-workspace-back {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 11px;
+  color: var(--ink-soft);
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-workspace-layout {
+  display: grid;
+  grid-template-columns: minmax(280px, 340px) minmax(0, 1fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.agent-workspace-contract {
+  position: sticky;
+  top: 16px;
+  display: grid;
+  gap: 14px;
+  padding: 18px;
+}
+
+.agent-workspace-contract h2 {
+  margin: 0;
+  font-family: var(--font-editorial), Georgia, serif;
+  font-size: 17px;
+  font-weight: 640;
+}
+
+.agent-workspace-contract dl {
+  display: grid;
+  gap: 12px;
+  margin: 0;
+}
+
+.agent-workspace-contract dt {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.agent-workspace-contract dd {
+  margin: 3px 0 0;
+  color: var(--ink-soft);
+  font-size: var(--font-size-label);
+  line-height: 1.5;
+}
+
+.agent-connections-list {
+  display: grid;
+  gap: 5px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-connections-list li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.agent-workspace-advanced-toggle {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 0 0;
+  color: var(--forest-2);
+  background: none;
+  border: 0;
+  border-top: 1px solid var(--line);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.agent-workspace-advanced {
+  display: grid;
+  gap: 10px;
+  margin: 0;
+  padding: 12px;
+  background: #f8f8f3;
+  border-radius: 9px;
+}
+
+.agent-workspace-advanced dt {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+  font-weight: 700;
+}
+
+.agent-workspace-advanced dd {
+  margin: 2px 0 0;
+  color: var(--ink-soft);
+  font-size: var(--font-size-caption);
+  line-height: 1.5;
+}
+
+.agent-workspace-main {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 14px;
+}
+
+.agent-workspace-main > * {
+  min-width: 0;
+}
+
+.agent-workspace-tabs {
+  align-self: start;
+}
+
+.agent-build-tab,
+.agent-evaluate-tab,
+.agent-deploy-tab,
+.agent-monitor-tab,
+.agent-versions-tab {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+}
+
+.agent-build-chat {
+  display: grid;
+  gap: 8px;
+  max-height: 320px;
+  padding: 4px;
+  overflow-y: auto;
+}
+
+.agent-build-message {
+  padding: 10px 12px;
+  color: var(--ink-soft);
+  background: #f8f8f3;
+  border-radius: 10px;
+  font-size: var(--font-size-label);
+  line-height: 1.5;
+}
+
+.agent-build-message[data-role="user"] {
+  color: #f7fbf6;
+  background: var(--forest);
+  justify-self: end;
+}
+
+.agent-build-message[data-tone="success"] {
+  color: #3f6348;
+  background: var(--sage-soft);
+}
+
+.agent-build-message[data-tone="unavailable"],
+.agent-build-message[data-tone="needs_connection"] {
+  color: #445569;
+  background: #eaf0f6;
+}
+
+.agent-build-message[data-tone="unauthorized"],
+.agent-build-message[data-tone="needs_approval"] {
+  color: #7b551d;
+  background: #fff8eb;
+}
+
+.agent-build-message[data-tone="degraded"],
+.agent-build-message[data-tone="error"] {
+  color: #88443e;
+  background: #fff1ef;
+}
+
+/* See the `.async-state-banner[data-tone="conflict"]` comment above: a
+ * Builder etag conflict is actionable/expected, not a system failure, so it
+ * gets its own violet tone rather than sharing "error"'s red. */
+.agent-build-message[data-tone="conflict"] {
+  color: #5b3f8f;
+  background: #f2edfa;
+}
+
+.agent-build-composer {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.agent-build-composer textarea {
+  width: 100%;
+  padding: 10px;
+  color: var(--ink);
+  background: #fffefa;
+  border: 1px solid var(--line-strong);
+  border-radius: 8px;
+  line-height: 1.52;
+  resize: vertical;
+}
+
+.agent-hard-gates {
+  display: grid;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-hard-gates li {
+  padding: 8px 11px;
+  color: #88443e;
+  background: #fff1ef;
+  border: 1px solid #ebcbc7;
+  border-radius: 8px;
+  font-size: var(--font-size-label);
+  font-weight: 700;
+}
+
+.agent-hard-gates li[data-passing="true"] {
+  color: #3f6348;
+  background: var(--sage-soft);
+  border-color: #d1e0cf;
+}
+
+.agent-version-list {
+  display: grid;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.agent-version-list li {
+  display: grid;
+  gap: 3px;
+  padding: 10px 12px;
+  background: #f8f8f3;
+  border-radius: 9px;
+}
+
+.agent-version-list small {
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+.agent-workspace-empty-note {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-top: 14px;
+  color: var(--muted);
+  font-size: var(--font-size-caption);
+}
+
+@media (max-width: 1080px) {
+  .agent-workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-workspace-contract {
+    position: static;
+  }
+}
+
+@media (max-width: 720px) {
+  .agent-registry-grid {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .agent-registry-facts {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .connections-redirect-card {
+    flex-direction: column;
+    align-items: flex-start;
+  }
+}
+

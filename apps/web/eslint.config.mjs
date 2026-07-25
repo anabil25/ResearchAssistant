@@ -12,6 +12,8 @@ const eslintConfig = defineConfig([
     "out/**",
     "build/**",
     "next-env.d.ts",
+    // Generated Jest coverage reports (gitignored) should never be linted.
+    "coverage/**",
   ]),
 ]);
 

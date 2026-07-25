@@ -281,8 +281,10 @@ describe("ResearchWorkbench", () => {
       screen.getByRole("heading", { name: "Project Settings" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
-    expect(screen.getByText("Research data connectors")).toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: /Connections 1/i }));
+    expect(
+      screen.getByRole("heading", { name: "Connections" }),
+    ).toBeInTheDocument();
     expect(screen.getAllByText("PubMed").length).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: "Test connection" }),

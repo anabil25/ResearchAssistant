@@ -1,9 +1,31 @@
 import { NextRequest, NextResponse } from "next/server";
 
-const ALLOWED_PREFIXES = ["api/", "health", "ready"];
+// Only "api/" (every feature router, including agent-studio — see below)
+// and the two health-check paths may reach the backend.
+//
+// The agent-studio router's mount point moved during Phase2: earlier
+// backend checkpoints (`d6df0fe`) mounted it at a standalone `/v1/agent-studio`
+// prefix, which is why an earlier round of this file carried a dedicated
+// `AGENT_STUDIO_PATH` allowlist entry alongside the generic "api/" prefix.
+// Verified directly against the current backend commit `5dab8b7`
+// (`services/api/src/research_assistant_api/agent_studio/router.py`):
+// `router = APIRouter(prefix="/api/agent-studio", ...)`, mounted via
+// `app.include_router(agent_studio_router)` with no extra prefix — so the
+// real, final mount point is `/api/agent-studio`, already inside the
+// existing "api/" prefix. The standalone `/v1/agent-studio` entry is now
+// removed: it is no longer a real backend route, and leaving it allowlisted
+// would keep open a namespace nothing serves. See the matching history
+// entry in `lib/api.ts` for the `AGENT_STUDIO_BASE` retarget.
+const EXACT_ALLOWED_PATHS = ["health", "ready"];
+const ALLOWED_PREFIXES = ["api/"];
 const MAX_PROXY_BODY_BYTES = 21_000_000;
 
 class PayloadTooLargeError extends Error {}
+
+function isAllowedPath(joined: string): boolean {
+  if (EXACT_ALLOWED_PATHS.includes(joined)) return true;
+  return ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix));
+}
 
 function boundedBody(
   body: ReadableStream<Uint8Array> | null,
@@ -25,16 +47,13 @@ function boundedBody(
   );
 }
 
-function resolveBackendUrl(path: string[]): URL {
+function resolveBackendUrl(path: string[], search: string): URL {
   const joined = path.join("/");
-  if (
-    joined.includes("..") ||
-    !ALLOWED_PREFIXES.some((prefix) => joined.startsWith(prefix))
-  ) {
+  if (joined.includes("..") || !isAllowedPath(joined)) {
     throw new Error("Backend route is not allowlisted");
   }
   const base = process.env.INTERNAL_API_URL ?? "http://127.0.0.1:8000";
-  return new URL(joined, `${base.replace(/\/$/, "")}/`);
+  return new URL(`${joined}${search}`, `${base.replace(/\/$/, "")}/`);
 }
 
 async function proxy(
@@ -45,7 +64,7 @@ async function proxy(
     request.headers.get("X-Request-ID") ?? crypto.randomUUID();
   try {
     const { path } = await context.params;
-    const url = resolveBackendUrl(path);
+    const url = resolveBackendUrl(path, request.nextUrl.search);
     const contentLength = Number(request.headers.get("Content-Length") ?? "0");
     if (contentLength > MAX_PROXY_BODY_BYTES) {
       throw new PayloadTooLargeError(

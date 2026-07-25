@@ -10,6 +10,7 @@ import {
   Library,
   Menu,
   PanelRight,
+  PlugZap,
   Search,
   Settings,
   ShieldCheck,
@@ -20,6 +21,9 @@ import {
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
+import { AgentRegistryView } from "@/components/agent-registry";
+import { AgentWorkspaceView } from "@/components/agent-workspace";
+import { ConnectionsView } from "@/components/connections-view";
 import {
   StudioForCapability,
   type StudioRunOptions,
@@ -52,6 +56,9 @@ function viewTitle(view: WorkspaceViewId): string {
   if (view === "library") return "Evidence Library";
   if (view === "runs") return "Runs & Approvals";
   if (view === "settings") return "Project Settings";
+  if (view === "registry") return "Agent Registry";
+  if (view === "agent") return "Agent Workspace";
+  if (view === "connections") return "Connections";
   return (
     CAPABILITY_CARDS.find((capability) => capability.id === view)?.shortTitle ??
     "Research Assistant"
@@ -64,6 +71,9 @@ function isWorkspaceView(candidate: string | null): candidate is WorkspaceViewId
     candidate === "library" ||
     candidate === "runs" ||
     candidate === "settings" ||
+    candidate === "registry" ||
+    candidate === "agent" ||
+    candidate === "connections" ||
     CAPABILITY_CARDS.some((capability) => capability.id === candidate)
   );
 }
@@ -259,6 +269,9 @@ export function ResearchWorkbench() {
   const [studioRunning, setStudioRunning] = useState(false);
   const [studioError, setStudioError] = useState<string | null>(null);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
+  const [agentWorkspaceId, setAgentWorkspaceId] = useState<string | null>(
+    null,
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -300,6 +313,9 @@ export function ResearchWorkbench() {
   useEffect(() => {
     const restoreView = () => {
       setView(viewFromSearch(window.location.search));
+      setAgentWorkspaceId(
+        new URLSearchParams(window.location.search).get("agentId"),
+      );
       setNavOpen(false);
       setEvidenceOpen(false);
       setSearchOpen(false);
@@ -355,6 +371,9 @@ export function ResearchWorkbench() {
     } else {
       url.searchParams.set("view", next);
     }
+    if (next !== "agent") {
+      url.searchParams.delete("agentId");
+    }
     if (url.href !== window.location.href) {
       window.history.pushState(null, "", url);
     }
@@ -366,7 +385,16 @@ export function ResearchWorkbench() {
     if (next !== "runs") {
       setFocusRunId(null);
     }
-    if (next === "library" || next === "runs" || next === "settings") {
+    if (next !== "agent") {
+      setAgentWorkspaceId(null);
+    }
+    if (
+      next === "library" ||
+      next === "runs" ||
+      next === "settings" ||
+      next === "registry" ||
+      next === "connections"
+    ) {
       void refresh();
     }
   };
@@ -374,6 +402,20 @@ export function ResearchWorkbench() {
   const navigateToRun = (runId: string) => {
     navigate("runs");
     setFocusRunId(runId);
+  };
+
+  const navigateToAgent = (agentId: string) => {
+    const url = new URL(window.location.href);
+    url.searchParams.set("view", "agent");
+    url.searchParams.set("agentId", agentId);
+    if (url.href !== window.location.href) {
+      window.history.pushState(null, "", url);
+    }
+    setView("agent");
+    setAgentWorkspaceId(agentId);
+    setNavOpen(false);
+    setSearchOpen(false);
+    void refresh();
   };
 
   const executeStudio = async (
@@ -423,6 +465,16 @@ export function ResearchWorkbench() {
         id: "settings",
         title: "Project Settings",
         subtitle: "Agents, connectors, evidence, and governance",
+      },
+      {
+        id: "registry",
+        title: "Agent Registry",
+        subtitle: "System and researcher agents, purpose, boundary, and health",
+      },
+      {
+        id: "connections",
+        title: "Connections",
+        subtitle: "Workspace-level connectors and data sources",
       },
       ...CAPABILITY_CARDS.map((capability) => ({
         id: capability.id,
@@ -531,6 +583,30 @@ export function ResearchWorkbench() {
           })}
         </nav>
 
+        <span className="rail-section-label">Agent Studio</span>
+        <nav className="rail-nav" aria-label="Agent Studio">
+          <button
+            className="rail-link"
+            data-active={view === "registry" || view === "agent"}
+            aria-current={
+              view === "registry" || view === "agent" ? "page" : undefined
+            }
+            onClick={() => navigate("registry")}
+          >
+            <Workflow size={17} />
+            <span>Agent Registry</span>
+          </button>
+          <button
+            className="rail-link"
+            data-active={view === "connections"}
+            aria-current={view === "connections" ? "page" : undefined}
+            onClick={() => navigate("connections")}
+          >
+            <PlugZap size={17} />
+            <span>Connections</span>
+          </button>
+        </nav>
+
         <div className="rail-spacer" />
         <button
           className="rail-link settings-link"
@@ -634,7 +710,24 @@ export function ResearchWorkbench() {
               key={data?.settings ? "settings-loaded" : "settings-loading"}
               data={data}
               onRefresh={refresh}
+              onOpenConnections={() => navigate("connections")}
             />
+          ) : view === "registry" ? (
+            <AgentRegistryView data={data} onOpenAgent={navigateToAgent} />
+          ) : view === "connections" ? (
+            <ConnectionsView data={data} onRefresh={refresh} />
+          ) : view === "agent" ? (
+            agentWorkspaceId ? (
+              <AgentWorkspaceView
+                key={agentWorkspaceId}
+                agentId={agentWorkspaceId}
+                data={data}
+                onRefresh={refresh}
+                onBack={() => navigate("registry")}
+              />
+            ) : (
+              <AgentRegistryView data={data} onOpenAgent={navigateToAgent} />
+            )
           ) : (
             <StudioForCapability
               capability={view}
