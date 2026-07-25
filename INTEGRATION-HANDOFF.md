@@ -1364,25 +1364,34 @@ the third.** Ship the normalization with the rule, not after it.
   found by an outside session, not by any audit here.
 
   ```
-  stash@{0}  On main   "pre-integration: local AGENTS.md edit"
+  stash@{0}  On main   "pre-integration: local AGENTS.md edit"   -- RESOLVED
              apps/web/AGENTS.md   +3 −1
-             Documents that node_modules/next/dist/docs/ resolves from the file's
+             Documented that node_modules/next/dist/docs/ resolves from the file's
              directory (in a monorepo `next` may be invisible from the repo root),
              and that the block is re-added by `next dev` via
              node_modules/next/dist/server/lib/generate-agent-files.js — so
              dropping it from a diff only recreates the uncommitted change.
+             POPPED at 8e488cd and it applied as a NO-OP: all three lines were
+             already committed at 9101a2f (present at AGENTS.md L4 and L6). The
+             stash had become redundant during the integration and nobody noticed,
+             because applying it changes nothing. Stash object 983909957 remains
+             in the object store if the history is ever wanted.
 
   stash@{1}  On anabil25-workflow-page-redesign  "abandoned-workflow-redesign"
              apps/web/src/app/globals.css                   +965
              apps/web/src/components/studio-components.tsx  ~730
              1377 insertions, 318 deletions
              The workflow-page redesign the user halted after two turns. Never
-             committed, by instruction. Retained, not applied.
+             committed, by instruction. RETAINED by explicit decision — kept
+             stashed, not applied and not dropped.
   ```
 
-  **Neither is lost and neither is live.** `stash@{1}` is deliberately abandoned —
-  but *abandoned* and *forgotten* are the same state unless someone writes it down,
-  which is the only reason this entry exists.
+  **Nothing is lost and nothing is live.** The retained stash is deliberately
+  abandoned — but *abandoned* and *forgotten* are the same state unless someone
+  writes it down, which is the only reason this entry exists. **And note the
+  second-order trap the resolved one demonstrates: a stash can quietly become a
+  no-op**, so "it applied cleanly" is not evidence it carried anything. Check the
+  resulting diff, not the exit code.
 
 ## 7. Practices worth keeping
 
