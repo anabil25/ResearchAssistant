@@ -352,7 +352,46 @@ were measured at `main`, not inferred.
   as an unclassified exclusion. These are almost certainly all structural and want
   a classifier rule, not per-line suppressions.
 
-### Runtime trust (never independently reviewed — 107 commits)
+### Dataset approval — one operator tool exists but was never merged
+
+**`WorkspaceStore.dataset_approvals_without_requester_principal()` is missing from
+`main`, and `main` needs it.** Merged `main` *does* enforce the
+`UNATTRIBUTABLE_REQUESTER` denial (4 references), so the first deploy after this
+change produces a denial spike for every approval persisted before
+`requesterPrincipalId` existed. **`main` currently has no in-process way to
+enumerate that population**, which is the difference between a counted migration
+event and something that reads as an incident.
+
+It exists, complete and tested, at **`e0b5367`** (not on any branch tip; parent
+`673985b`, which *is* in `main`):
+
+| what | where in `e0b5367` |
+|---|---|
+| base implementation | `services/api/src/research_assistant_api/workspace.py:1152` |
+| Cosmos override (delegates to `super()`) | `.../cosmos_workspace.py:508` |
+| test | `tests/test_dataset_approval_boundary.py:1995` |
+
+It is read-only, additive, touches no request path, and its docstring carries the
+equivalent raw Cosmos `COUNT`/`LIST` queries for operators querying the container
+before deploying.
+
+**Why it was not cherry-picked:** `e0b5367` is **−450/+50 against what `main`
+already has** — `main` took a later, larger build of the same work (`1affe85`,
+merged). Lifting the whole commit would *remove* content from `main`. Taking just
+this method means hand-surgery against a test file that is 241 lines divergent, on
+a frozen branch, for a tool that cannot be used until the 71 failures are fixed.
+**Port it as a three-file lift when that work starts.**
+
+**Also worth recording, because it inverts the obvious assumption:** of the three
+rulings that session reported as newly implemented at `e0b5367`, **two were
+already in `main`** — the `_dataset_sod_exempt` consume-chain separation and the
+wire-observable two-reason test
+(`test_the_two_consume_denials_are_distinct_and_both_wire_observable`) are both
+present. Only the operator-enumeration piece is genuinely absent. A branch
+reporting "all three implemented" was, against `main`, one-third new and
+two-thirds behind.
+
+
 
 - **The attestation key is HMAC, so the verifier necessarily holds the signing
   key.** No identity split can separate the roles; an earlier ruling saying
