@@ -795,6 +795,18 @@ Both are on the diagnostic channel, which is the surface nobody models as attack
 surface. That is the second time that category has produced a finding in this
 program.
 
+**A third member of the same family, measured and deliberately *not* escalated:**
+`unavailable_reason` is a raw, unvalidated `payload.get(...)` at
+`capability_discovery.py:894`. A reviewer proved by execution that it is
+**display-only** — it is not among the nine `ProviderInstancePins` fields, and two
+instances differing *only* in `unavailable_reason` produce an **identical**
+`config_fingerprint`. So it never reaches a pin or a digest. Worth siting; not
+worth blocking. **Recorded because the negative result is the useful part:** the
+same sweep that found it also confirmed every digest and pin input now routes
+through `_verbatim_required_digest` / `_verbatim_required_text` /
+`_verbatim_optional_text`, so exactly **two** unvalidated wire reads remain in the
+module and **both are on the display path**.
+
 This is an **enumerated-axes failure**: each bound is real and correct, and the
 gap is that no one asked what the product of two bounded axes could reach.
 Remediation is a per-warning `max_length` plus an aggregate cap, not a new axis.
