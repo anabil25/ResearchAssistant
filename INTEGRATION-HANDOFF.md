@@ -460,10 +460,22 @@ already pinned.
   two-ASCII-orders test would catch removal but not document why the sort exists.
   This is the coverage-versus-correctness distinction at the level of a single
   statement.
-- **F1** — 12 shipped-but-unhashed files (`GAP A = 12, GAP B = 0`). The fix must be
-  **one derived definition**: the enumerated set lives at *two sites*, so a new
-  file type widens the gap **and** blinds the drift check in the same edit with no
-  failing test.
+- **F1** — **22** shipped-but-unhashed files, re-measured at `main` (the earlier
+  `GAP A = 12` was taken on a smaller tree). Of **71** files tracked under
+  `agents/`, the identity policy covers **49** — `.py` plus `requirements.txt` —
+  and misses 10 `.jsonl`, 7 `.yaml`, 3 `.json`, 1 `.md` and `.agentignore`
+  itself. The fix must be **one derived definition**: the enumerated set lives at
+  *two sites* — `scripts/build_agent_source_tree.py` **L172** (committed view) and
+  **L190** (worktree view) — so a new file type widens the gap **and** blinds the
+  drift check in the same edit with no failing test.
+  **Concretely, and worth stating because it undercuts a control praised
+  elsewhere in this document:** because both views share the filter,
+  `validate_worktree_matches_commit` is blind to the same 22 files. Editing
+  `agents/evaluators/relevance/relevance.yaml` in the worktree passes the identity
+  check *and* the worktree-divergence gate, and still ships.
+  Both competing lines land on **exactly 49** covered files, which is the
+  measured basis for §2's claim that the rival's checked-in manifest serialises
+  the same incomplete filter rather than closing F1.
 - **F-PROV** — `source_commit`/`source_tree` are recorded and never verified;
   forged values with a recomputed self-digest are accepted.
 - **Wording** — `source_identity.py` and `ARCHITECTURE.md` claim an *"independently
