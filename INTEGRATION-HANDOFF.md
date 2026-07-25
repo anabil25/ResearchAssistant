@@ -760,6 +760,31 @@ value is returned byte-for-byte, so `" v1 "` keeps its padding, because these
 strings become provider-owned pins and trimming would silently mutate pinned
 content.
 
+**Known migration consequence of that fix — the pin moves, and the pin is
+drift-enforced.** `discovered_provider_version` sits **inside**
+`compute_instance_fingerprint`'s payload (`capability_registry.py:168`), so
+normalising `"   "` → `None` is **not digest-neutral**. Measured:
+
+```
+fingerprint(dpv='   ') = sha256:65761615d1347666…
+fingerprint(dpv=None)  = sha256:6e0416b4c1e1858d…
+identical: False
+```
+
+That fingerprint is enforced, not merely recorded — `capability_registry.py:919`
+raises *"(instance_ref.fingerprint mismatch) — rebind and re-review before
+release/invoke"*, and `models.py:453` states it **hard-fails on drift (stale
+binding)**. So an **already-released binding** pinning an instance whose provider
+reports a whitespace-only version will recompute a different fingerprint and hard
+-fail as stale, requiring rebind and re-review.
+
+**This is correct behaviour and the fix should stand: the pin genuinely changed.**
+Scope is narrow — only blank-but-present versions, i.e. **the population that
+breaks is exactly the population that was wrong.** Same shape as a golden
+re-baseline: a correctness fix that necessarily moves a pin should move it
+*deliberately and audibly*, never be avoided to preserve a wrong pin. Land it as a
+stated migration consequence rather than letting it surface at release time.
+
 **One item IS outstanding, found after approval and verified in `main`: aggregate
 warning volume is unbounded.** Every individual axis in
 `capability_discovery.py` is bounded — `DEFAULT_MAX_RESPONSE_BYTES = 8_000_000`,
@@ -1096,16 +1121,20 @@ From the review program that produced §5.
   reported a stale SHA at least once; one branch was rebuilt ten times.
   `git branch --contains` is a *reachability* test, not a tip test — it passes for
   every commit in history.
-- **Report the test count next to the SHA — but treat a matching count as absence
-  of evidence, not evidence of freshness.** A SHA is asserted; a count is produced
-  by the run and cannot be copied from stale notes, and it caught a real
-  1261-vs-1277 discrepancy for free. **The detector is one-way, though: a *changed*
-  count proves a different tree; an *equal* count proves nothing.** Measured on one
-  chain: `94de900`→1261, `f86a855`→1264, `f2cc5ac`→1277, `f36947b`→1277 — so a
-  report claiming `f2cc5ac` at 1277 would have looked self-consistent while naming
-  the wrong commit, and the fingerprint would have *confirmed* the stale SHA.
-  Worse than the "docs-only commit" framing suggests: `f2cc5ac`→`f36947b` changes
-  a test file **materially** (+37/−10 in
+- **Prefer a *produced* quantity over an *asserted* one when checking whether
+  evidence matches its subject.** This is the general form of the test-count rule
+  and the reason it works: **a SHA is asserted; a count is produced.** An asserted
+  value can be copied from stale notes and survives the copy intact; a produced
+  value is re-derived by the act of measuring and cannot be. The test count is
+  merely the cheapest produced quantity available — coverage `Stmts` worked
+  identically here (478 vs 483) and is a second instance of the same technique.
+  **But treat a matching count as absence of evidence, not evidence of
+  freshness.** A *changed* count proves a different tree; an *equal* count proves
+  nothing. Measured on one chain: `94de900`→1261, `f86a855`→1264, `f2cc5ac`→1277,
+  `f36947b`→1277 — so a report claiming `f2cc5ac` at 1277 would have looked
+  self-consistent while naming the wrong commit, and the fingerprint would have
+  *confirmed* the stale SHA. Worse than the "docs-only commit" framing suggests:
+  `f2cc5ac`→`f36947b` changes a test file **materially** (+37/−10 in
   `test_agent_studio_capability_discovery_golden.py`) and still moves the count by
   zero, because it adds no new `test(`/`it(` declarations. **A tree can change
   substantively inside test files without the count noticing.** Pair it with
