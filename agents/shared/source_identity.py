@@ -40,7 +40,12 @@ def load_baked_source_tree_manifest(path: Path | None = None) -> BakedSourceTree
                 "producer": "scripts/build_agent_source_tree.py",
             },
         ) from exc
-    # Git-object provenance makes this an independently regenerable correctness control.
+    # This recomputes the manifest's OWN self-digest only. It does NOT re-derive the
+    # entry set from git, and it does NOT verify `source_commit`/`source_tree` against
+    # any real object -- those are pattern-validated strings, so a forged pair with a
+    # recomputed self-digest loads clean. The manifest is independently *verifiable* by
+    # an auditor holding the repository; it is not verified at runtime. Reproducibility
+    # coordinates, not runtime-attested claims.
     expected_digest = canonical_digest(
         manifest.model_dump(mode="json", exclude={"source_manifest_digest"})
     )

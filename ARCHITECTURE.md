@@ -80,10 +80,22 @@ flowchart LR
   includes `release_id` in its canonical digest, so an approval minted for a
   prior release is rejected with `approval_binding_mismatch` and must be issued
   again for the successor release. Idempotency lookup identity remains
-  release-independent; release provenance is checked after record retrieval.
-- Predeploy validation rejects package-eligible tracked or untracked worktree
+  release-independent; release provenance is checked after record retrieval
+  **on the `ACQUIRED` path only.** On `COMPLETED`, `capabilities.py:883-884`
+  returns the stored result before `_consume_approval` at `:887`, and the
+  provenance check at `:1080-1086` is `ACQUIRED`-gated — so a completed-replay
+  returns without reaching it. **Latent, not live:** every shipped descriptor
+  leaves `completed_replay` at its `DENY` default, so the path is unreachable in
+  shipped configuration. One non-`DENY` descriptor makes it live.
+- Predeploy validation rejects identity-eligible (`.py` + `requirements.txt`)
+  tracked or untracked worktree
   drift so the direct-code remote-build upload cannot claim a committed source
   identity for different bytes. Checkout-only newline translation is allowed.
+  **It does not cover the wider package-eligible set:** shipped non-Python files
+  (`.agent_configs/baseline/metadata.yaml`, root `*.eval.yaml`,
+  `datasets/**.jsonl`, `evaluators/**.{json,yaml}`) are outside the identity
+  filter, so drifting one passes this check. Measured: 12 shipped-but-unhashed
+  files. Closing that gap is tracked as F1.
   A future immutable deployed-artifact digest is separate evidence and must not
   be folded into release, approval, idempotency, or parent-lineage identity.
 
