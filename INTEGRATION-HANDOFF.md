@@ -205,9 +205,21 @@ is a synthetic SHA-256 over `(path, blob_id)` pairs.
 Its gate reports `untracked source would be uploaded: agents/scratch_probe.py` and
 lists every offending file. The incumbent's equivalent raises
 `"Identity-eligible agent source (.py + requirements.txt) differs from committed
-content"` and names
-nothing, so an engineer who trips it at deploy time has to go find the divergence
-by hand. Same detection, strictly worse diagnostics.
+content"` — which names the **policy class** but not a single **member**, so an
+engineer who trips it at deploy time knows *which kind* of file diverged and must
+still find *which file* by hand. Same detection, strictly worse diagnostics.
+
+**Detection really is equivalent — verified, and stronger than an earlier
+description in this document.** The incumbent compares full canonical entry
+**sets**, not per-file content:
+`if canonical_source_entries(worktree) != canonical_source_entries(committed)`.
+So additions, modifications, untracked, ignored **and deletions** all fall out of
+one comparison — a deleted file is in `committed`, absent from `worktree`, sets
+differ, gate fires. An earlier revision here described it as comparing "file
+content, not path presence," which read literally would leave deletions
+undetected. **The code is stronger than that description was.** The remaining gap
+is purely diagnostic, and the fix is local: the set difference is already computed
+at the raise point, so naming the diverging entries needs no new detection logic.
 
 **What is *not* worth porting, on measurement:** that branch lists untracked files
 with `git ls-files --others` deliberately **without** `--exclude-standard`, so a
