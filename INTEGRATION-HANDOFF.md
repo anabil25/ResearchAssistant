@@ -1264,6 +1264,23 @@ From the review program that produced §5.
   (binding revoked) identically, and can never free a legitimately-held head.
   Ordering for fail-closed *and* convergence on a single intermediate state is
   what makes recovery one function instead of a case analysis.
+  **Two corollaries, both learned the hard way on the same line:**
+  **(a) The repair path is itself a multi-write and needs the same analysis.** A
+  reconciler that clears a dangling claim races the operation that is still
+  creating it, so it must be explicit, audited, and CAS-guarded exactly like the
+  operations it repairs — otherwise the thing that fixes partial states becomes a
+  source of them.
+  **(b) A CAS guards the resource it names, not the operation you care about.**
+  The obvious fix — an etag CAS on the head — does **not** close the reap-an-
+  in-flight-grant race, because **the grant's second write touches the *binding*,
+  not the head**, so nothing about it invalidates a head etag. What closes it is a
+  **state transition on the shared resource that both parties must perform**:
+  `CLAIMING → BOUND` as an explicit `finalize_head_claim`, with the reaper doing a
+  state-CAS on the exact phase it observed. Then a concurrent finalize changes the
+  phase and the reaper's clear fails, or the reaper wins and the grant's finalize
+  fails and rolls back its own binding. **Exactly one wins.** When choosing a CAS,
+  ask what the racing writer actually modifies — if it is a different object, the
+  CAS is decoration.
 - **A probe surviving a tree change is not the same as its *result* surviving.**
   Classifying a check as "position-independent" means it can be **re-run
   unchanged** against a moved tip — it does *not* mean the earlier answer still
