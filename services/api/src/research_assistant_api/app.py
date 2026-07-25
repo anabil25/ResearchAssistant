@@ -45,7 +45,11 @@ from research_assistant_api.agent_studio.builder_service import (
     BuilderService,
     build_manifest_proposal_generator,
 )
-from research_assistant_api.agent_studio.capability_registry import default_registry
+from research_assistant_api.agent_studio.capability_discovery import (
+    CapabilityDiscoveryRequest,
+    build_capability_discovery_source,
+)
+from research_assistant_api.agent_studio.capability_registry import build_registry_from_source
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
 from research_assistant_api.agent_studio.evaluation_runner import build_evaluation_runner
@@ -61,6 +65,7 @@ from research_assistant_api.agent_studio.playground_invoker import build_playgro
 from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
 from research_assistant_api.agent_studio.release_service import ReleaseService
 from research_assistant_api.agent_studio.router import router as agent_studio_router
+from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.agent_studio.store import AgentStudioStoreError
 from research_assistant_api.agent_studio.template_catalog import default_template_catalog
 from research_assistant_api.blob_sources import (
@@ -144,7 +149,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
-    _init_agent_studio(application, settings)
+    await _init_agent_studio(application, settings)
     _reconcile_pending_runs(
         application.state.workspace,
         application.state.scheduler,
@@ -154,9 +159,18 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     finally:
         cast(RunScheduler, application.state.scheduler).close()
         await cast(ConnectorGateway, application.state.connector_gateway).close()
+        # ``build_capability_discovery_source`` only returns a ``close``-able
+        # adapter (``HttpCapabilityDiscoverySource``) when a real provider is
+        # configured; ``NullCapabilityDiscoverySource`` -- the honest default
+        # -- owns no HTTP client/credential and has no ``close`` method, so
+        # this is looked up defensively rather than assumed to always exist.
+        capability_discovery_source = getattr(application.state, "agent_studio_capability_discovery_source", None)
+        close_capability_discovery_source = getattr(capability_discovery_source, "close", None)
+        if close_capability_discovery_source is not None:
+            await close_capability_discovery_source()
 
 
-def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
+async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     """Construct Agent Studio's stores/services for the app state.
 
     Metadata and memory persistence are Cosmos-backed in production and
@@ -168,12 +182,27 @@ def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     API process from starting, which would break unrelated features (and
     local/dev environments that don't configure Cosmos) in one stroke.
     """
-    registry = default_registry()
-    # ``default_registry()`` takes no source and is never seeded with the
-    # hard-coded catalog (see capability_registry module docstring): until a
-    # real CapabilityDiscoverySource adapter is wired at this call site, the
-    # registry honestly reports ``available=False`` rather than looking like
-    # an empty-but-successful catalog.
+    capability_discovery_source = build_capability_discovery_source(settings)
+    application.state.agent_studio_capability_discovery_source = capability_discovery_source
+    # A single, startup-time discovery pass scoped to this deployment's one
+    # tenant/project (``settings.workspace_tenant_id``/``workspace_project_id``
+    # -- the same single-tenant-per-deployment boundary ``cosmos_workspace``/
+    # ``identity`` already assume) is composed here via
+    # ``build_capability_discovery_source``: the real, authenticated
+    # ``HttpCapabilityDiscoverySource`` when a provider URL is configured, or
+    # the honest ``NullCapabilityDiscoverySource`` otherwise. ``router.py``'s
+    # capability routes read a single shared ``app.state.agent_studio_registry``
+    # per request (not a per-request re-discovery), so one pass here -- never
+    # a hard-coded seed catalog -- is the correct composition, not a
+    # shortcut.
+    registry = await build_registry_from_source(
+        capability_discovery_source,
+        CapabilityDiscoveryRequest(
+            scope=ScopeContext(tenant_id=settings.workspace_tenant_id, project_id=settings.workspace_project_id),
+            principal="system:agent-studio-startup-capability-discovery",
+            correlation_id=str(uuid4()),
+        ),
+    )
     application.state.agent_studio_registry = registry
     # Application-owned adapter for the ``ProjectMembershipResolver`` domain
     # port (see ``agent_studio.authz``). Explicit here (rather than relying

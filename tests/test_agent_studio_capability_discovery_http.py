@@ -10,6 +10,9 @@ from typing import Any, Self
 import httpx
 import pytest
 from azure.core.credentials import AccessToken
+from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import ClientAuthenticationError
+from azure.identity import CredentialUnavailableError
 from research_assistant_api.agent_studio.capability_discovery import (
     EXPECTED_CANONICALIZATION_VERSION,
     EXPECTED_PROVIDER_CONTRACT_VERSION,
@@ -48,6 +51,47 @@ class FakeCredential:
         del claims, tenant_id, enable_cae, kwargs
         self.scopes.extend(scopes)
         return AccessToken("test-token", int(time()) + 3600)
+
+    async def close(self) -> None:
+        self.closed = True
+
+    async def __aenter__(self) -> Self:
+        return self
+
+    async def __aexit__(
+        self,
+        exc_type: type[BaseException] | None = None,
+        exc_value: BaseException | None = None,
+        traceback: TracebackType | None = None,
+    ) -> None:
+        del exc_type, exc_value, traceback
+
+
+class FailingCredential:
+    """Credential whose ``get_token`` always raises, for fail-closed tests.
+
+    Mirrors ``FakeCredential``'s shape (``get_token``/``close``/async context
+    manager) but simulates a token-acquisition failure -- the realistic
+    ``ClientAuthenticationError``/``CredentialUnavailableError`` a real
+    ``ManagedIdentityCredential`` raises whenever no managed identity is
+    reachable, which is the common case for this adapter running outside an
+    Azure host with a real MI endpoint.
+    """
+
+    def __init__(self, error: Exception) -> None:
+        self._error = error
+        self.closed = False
+
+    async def get_token(
+        self,
+        *scopes: str,
+        claims: str | None = None,
+        tenant_id: str | None = None,
+        enable_cae: bool = False,
+        **kwargs: object,
+    ) -> AccessToken:
+        del scopes, claims, tenant_id, enable_cae, kwargs
+        raise self._error
 
     async def close(self) -> None:
         self.closed = True
@@ -193,9 +237,9 @@ def _capabilities_payload(
     }
 
 
-def _source(handler: Any, *, credential: FakeCredential | None = None, token_scope: str | None = None) -> tuple[
-    HttpCapabilityDiscoverySource, httpx.AsyncClient
-]:
+def _source(
+    handler: Any, *, credential: AsyncTokenCredential | None = None, token_scope: str | None = None
+) -> tuple[HttpCapabilityDiscoverySource, httpx.AsyncClient]:
     client = httpx.AsyncClient(base_url="https://provider.example", transport=httpx.MockTransport(handler))
     source = HttpCapabilityDiscoverySource(
         "https://provider.example", credential=credential, token_scope=token_scope, client=client
@@ -397,6 +441,161 @@ async def test_discover_reports_unavailable_when_catalog_request_fails() -> None
     assert result.unavailable_reason is not None
     assert result.descriptors == ()
     assert result.instances == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_credential_token_acquisition_fails() -> None:
+    """Managed-identity token acquisition failure must degrade the same way
+    an unreachable catalog endpoint does -- never raise uncaught out of
+    ``discover()``. Prior to this fix, ``_headers()`` (and its
+    ``credential.get_token`` call) ran *outside* the try/except that only
+    covered the catalog HTTP request, so a real
+    ``ClientAuthenticationError`` here would have propagated through
+    ``discover_with_timeout``/``CapabilityRegistry.from_source`` uncaught --
+    crashing whatever composed this adapter (e.g. application startup)."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise AssertionError("the catalog endpoint must not be called when token acquisition fails")
+
+    credential = FailingCredential(ClientAuthenticationError("token endpoint unreachable"))
+    source, client = _source(handler, credential=credential, token_scope="https://management.azure.com/.default")
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "token endpoint unreachable" in (result.unavailable_reason or "")
+    assert result.descriptors == ()
+    assert result.instances == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_managed_identity_is_unavailable() -> None:
+    """``CredentialUnavailableError`` (no managed identity endpoint found at
+    all -- the realistic case for this adapter running anywhere outside an
+    Azure host with a real MI) is a subclass of ``ClientAuthenticationError``
+    and must degrade identically, not crash startup."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        raise AssertionError("the catalog endpoint must not be called when no managed identity is available")
+
+    credential = FailingCredential(CredentialUnavailableError("no managed identity endpoint found"))
+    source, client = _source(handler, credential=credential, token_scope="https://management.azure.com/.default")
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "no managed identity endpoint found" in (result.unavailable_reason or "")
+    assert result.descriptors == ()
+    assert result.instances == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_reports_unavailable_when_catalog_providers_field_is_not_a_list() -> None:
+    """A catalog whose ``providers`` field is not itself a JSON array is a
+    catalog-level schema failure (not a single malformed entry): it must
+    degrade the whole pass to ``available=False`` rather than raising while
+    iterating a non-iterable/wrongly-shaped value."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["providers"] = {"not": "a list"}
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is False
+    assert "providers" in (result.unavailable_reason or "")
+
+
+@pytest.mark.asyncio
+async def test_discover_skips_non_object_provider_catalog_entries() -> None:
+    """A malformed (non-object) entry within an otherwise well-formed
+    ``providers`` array must be silently skipped, not crash the whole
+    catalog pass -- mirroring how a malformed descriptor/instance already
+    degrades to a per-item skip rather than a total failure."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/v1/providers":
+            payload = _catalog_payload(["good"])
+            payload["providers"].append("not-an-object")
+            payload["providers"].append(42)
+            return httpx.Response(200, json=payload)
+        return httpx.Response(200, json=_capabilities_payload("good"))
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert len(result.descriptors) == 1
+    assert result.descriptors[0].provider == "good"
+
+
+@pytest.mark.asyncio
+async def test_discover_treats_null_catalog_providers_field_as_empty() -> None:
+    """A catalog whose ``providers`` field is explicitly ``null`` is a valid
+    (if empty) provider list -- distinct from an outright non-array schema
+    failure -- and must degrade to an empty catalog rather than crashing."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["providers"] = None
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.descriptors == ()
+    assert result.instances == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_treats_non_list_catalog_warnings_field_as_empty() -> None:
+    """A catalog ``warnings`` field that is not itself a JSON array (e.g. a
+    bare object) is a malformed-but-non-fatal caveat container: it must
+    degrade to "no warnings" rather than raising while iterating a
+    non-iterable value."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["warnings"] = {"not": "a list"}
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert result.warnings == ()
+
+
+@pytest.mark.asyncio
+async def test_discover_stringifies_non_object_catalog_warning_entries() -> None:
+    """A catalog ``warnings`` entry that is not itself an object (a
+    malformed but still honestly-surfaced caveat) is stringified rather than
+    raising ``AttributeError`` from an unguarded ``.get(...)`` call."""
+
+    async def handler(request: httpx.Request) -> httpx.Response:
+        del request
+        payload = _catalog_payload([])
+        payload["warnings"] = ["a bare string warning"]
+        return httpx.Response(200, json=payload)
+
+    source, client = _source(handler)
+    result = await source.discover(_request())
+    await client.aclose()
+
+    assert result.available is True
+    assert any("a bare string warning" in warning for warning in result.warnings)
 
 
 @pytest.mark.asyncio

@@ -31,13 +31,14 @@ test-only, mirroring the ``InMemoryModelDiscovery`` pattern used for model
 discovery, and additionally supports simulating a slow/cancelled provider
 for ``discover_with_timeout`` contract tests.
 
-Until a real adapter is wired (translating the operational provider layer's
-``ProviderRegistry``/``DiscoveryResult`` into this module's
-``CapabilityDiscoveryResult``), production composition
-(``research_assistant_api.app``) wires ``NullCapabilityDiscoverySource`` (or
-an equivalent explicit-unavailable source) — never a hard-coded seed catalog
-masquerading as discovery output. See ``capability_registry.seeded_test_registry``
-for the test-only fixture that still exercises a populated catalog.
+Production composition (``research_assistant_api.app._init_agent_studio``)
+wires ``build_capability_discovery_source(settings)``: the real
+``HttpCapabilityDiscoverySource`` when a provider URL is configured
+(``agent_studio_capability_provider_url``), else the honest
+``NullCapabilityDiscoverySource`` -- never a hard-coded seed catalog
+masquerading as discovery output. See
+``capability_registry.seeded_test_registry`` for the test-only fixture that
+still exercises a populated catalog.
 """
 
 from __future__ import annotations
@@ -52,6 +53,7 @@ from typing import Any, Protocol, TypeGuard
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.exceptions import ClientAuthenticationError
 from azure.identity.aio import ManagedIdentityCredential
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
@@ -1118,7 +1120,19 @@ class HttpCapabilityDiscoverySource:
         headers = await self._headers()
         try:
             catalog = await self._get_json("v1/providers", headers)
-        except (httpx.HTTPError, ValueError, CapabilityResponseTooLargeError) as exc:
+        except (
+            httpx.HTTPError,
+            ValueError,
+            CapabilityResponseTooLargeError,
+            ClientAuthenticationError,
+        ) as exc:
+            # ``_headers()`` (managed-identity token acquisition) can fail with
+            # ``ClientAuthenticationError``/``CredentialUnavailableError`` on any
+            # host without a real managed identity, including most non-Azure
+            # dev/test hosts. That is as much a "capability provider
+            # unavailable" condition as an unreachable catalog endpoint, and must
+            # degrade to an honest ``available=False`` rather than propagate
+            # uncaught and crash whatever composed this adapter (e.g. startup).
             return CapabilityDiscoveryResult(
                 available=False,
                 unavailable_reason=f"Capability provider catalog request failed: {exc}",
