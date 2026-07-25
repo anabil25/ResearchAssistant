@@ -108,12 +108,30 @@ the code rather than reading its description.
    `azure.yaml` exposes only `postdeploy`. A direct `azd deploy` can therefore
    ship changed worktree code alongside an old, internally-valid manifest — a
    trustworthy-looking identity that describes something else.
-   **↳ Closed on that branch at `c90b9ce`, verified.** It now registers a
+   **↳ Closed on that branch at `c90b9ce`, verified. The branch tip is
+   `e121e41`, not `c90b9ce` — cite the tip.** Three commits sit on `b7969d6`
+   (`76e8812` → `c90b9ce` → `e121e41`), none reachable from `main`; `e121e41`
+   ("Name the source manifest producer in every fail-closed error") carries the
+   bypass-surface work, the offline-harness path, and the docs. **Citing the
+   middle commit makes the third invisible to anyone porting from this branch.**
+   It now registers a
    `predeploy` hook (`scripts/predeploy.{ps1,sh}`) running
    `--verify-worktree --check`, so the hook set is
    `{predeploy, postdeploy, preprovision, postprovision}`. **This objection is no
    longer a reason to prefer the incumbent** and is recorded as closed so the
    verdict does not keep being cited after it stopped describing the code.
+
+   **↳↳ And the incumbent is stronger here than the branch that raised it.**
+   `main`'s `main()` calls `validate_worktree_matches_commit(...)` **with no
+   guarding flag**, and both predeploy scripts invoke
+   `python -m scripts.build_agent_source_tree` **with no arguments** — so
+   divergence is gated **by default**. The branch put the same check behind an
+   opt-in `--verify-worktree`. The branch author verified this themselves and
+   withdrew their own standing concern about the `rglob` in
+   `worktree_source_entries` — it walks the worktree *specifically to compare it
+   against the committed set*, which is the honest use, not a fallback.
+   **A concern raised twice against the incumbent was wrong both times, and the
+   incumbent's design was better on the exact axis it was challenged on.**
    It does **not** disturb objections 1, 2, 3 or 5, which are structural.
    Note also what it does *not* change: **the incumbent already had both** a
    `predeploy` hook and a worktree-divergence gate
@@ -686,6 +704,22 @@ different file.** Grep across the suite for the *property*, not the idiom.
   The 12: `.agent_configs/baseline/metadata.yaml`, `.agentignore`,
   `coordinator.eval.yaml`, `dataset.eval.yaml`,
   `datasets/smoke-core/smoke-core_dg.jsonl`, and 7 files under `evaluators/`.
+
+  **A second session later "confirmed 22" — and that confirmation is false, in an
+  instructive way.** They counted *policy-excluded tracked files* (22, plus a 23rd,
+  their branch's `source_manifest.json`, legitimately excluded as it cannot hash
+  itself) and reported the numeral as agreement. But that is row 3 of the table
+  above, not row 5: **10 of those 22 are never packaged**, so they cannot be
+  shipped-and-unhashed. Re-verified at `076e757` — `agents/.agentignore` excludes
+  `*.md` (1 file) and `evals/` (9 files); 22 − 10 = **12**. F1 stands at 12.
+
+  **The trap: their number matched the figure this document had already retracted.**
+  Two parties agreeing on a numeral while measuring different quantities looks
+  exactly like confirmation, and here it looked like confirmation *of a known-wrong
+  value* — which would have reopened a settled correction. **A confirmation that
+  agrees with a retracted figure is evidence the two sides are counting different
+  things, not evidence the retraction was premature.** Confirm the denominator
+  before accepting the number.
   **Counting the 10 ignored files inflates the finding**; they ship nowhere, so
   their absence from identity is correct.
 
@@ -1631,6 +1665,30 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **Identical field names across two "independent" implementations are a
+  fingerprint of a duplicated brief, not of copying — and the coordinator should
+  suspect their own dispatch record first.** Two sessions produced
+  `source_tree_digest`, `schema_version`, `inclusion_policy_version` and
+  `manifest_digest`, plus matching NFC normalization, case-fold collision
+  rejection and bare-CR handling. I judged that convergence implausible and asked
+  whether one had read the other. **Neither had: both kickoff prompts specified
+  those names verbatim.** The duplication was mine, and the tell I read as evidence
+  of contact was evidence of a common source — *me*. **Before asking "did you copy
+  this?", check what you handed out**, because the coordinator is the one party who
+  can confirm it and the only one who will not think to look.
+- **When a value is protected by one digest, a second witness over different bytes
+  is the test that the first is load-bearing.** Proposed on the release-identity
+  branch and worth keeping even though the branch was not adopted: store git's own
+  `blob_id` (raw bytes) alongside `content_digest` (canonicalized bytes). They fail
+  **independently** — a canonicalization bug moves one, a git-object read bug moves
+  the other — so each cross-checks the other, where a single digest cross-checks
+  nothing. **The acceptance test is the neutralization form**: corrupt one
+  `blob_id` while every `content_digest` still validates, and require the load to
+  fail closed. A test that cannot distinguish "second witness enforced" from
+  "second witness stored and ignored" has not tested the second witness.
+  Related and cheaper: **a recomputed walk absorbs set changes silently** — delete
+  a covered file and the digest becomes a *different valid digest*. A committed
+  exact set turns that into a CI failure naming the file.
 - **An addition reads as a substitution, and it is not one.** Correct text appearing
   where you asked for a correction feels like the incorrect text was replaced —
   because the thing you were looking for is now there. It usually was *added
