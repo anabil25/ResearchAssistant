@@ -649,9 +649,38 @@ Two structural reasons, both read from the code:
    *requests*, not retained *results*. So the ceiling is **concurrent peak
    memory**, not a sum over time.
 
-Measured by the owner and consistent with the constants: aggregate scales exactly
-linearly in providers — `providers × per-response payload`, exact — giving a
-theoretical ceiling of **250 × 8 MB ≈ 2 GB** of retained warning text.
+Measured by the owner and independently by the reviewer, consistent with the
+constants: aggregate scales linearly in **responses**, not providers, because the
+catalog fetch (`_get_json("v1/providers")`, L1124) is a response in its own right
+and its warnings are concatenated with the per-provider ones (L1224, L1239). So
+the relation is **`(1 catalog + N providers) × per-response warning bytes`**,
+giving a ceiling at shipped defaults of **`(1 + 250) × 8 MB ≈ 2.01 GB`** — an
+amplification of **251×**, measured across 1/5/10/25 providers with no inflection.
+A second datum: 150 KB of warning text under a 200 KB cap emitted **324 warnings /
+295,650 bytes**, passed through verbatim.
+
+**Do not record this as a mislabelled control — the setting is honest.**
+`config.py:257` reads *"Hard cap on the number of bytes read from **any single**
+provider discovery HTTP response,"* which is exactly what it does, and a
+single response above the cap is correctly refused (`available=False`, nothing
+emitted). **Ingress protection works; there is simply no second bound on the
+aggregate.** The finding is a *missing* cap, not a lying one — which matters,
+because the two have different fixes.
+
+**Severity: medium-low, not a security bypass.** Reaching it needs a provider that
+is already Entra-authenticated and already permitted to send 8 MB per response,
+and the effect is resource amplification rather than a control being evaded. It
+also fails in the honest direction — a large snapshot, not a wrong one.
+
+**Cheapest correct disposition is a sited rationale, not necessarily code.** State
+beside the setting (or in the class docstring) that the byte cap is per-response
+and that aggregate warning volume is bounded transitively at
+`MAX_RESPONSE_BYTES × (1 + MAX_PROVIDERS)`. That converts an inference a reader
+must make into a stated bound they can check — **and if that figure is judged
+acceptable, saying so *is* the fix.** If a structural bound is preferred instead,
+the module's own pattern supplies the shape: a `max_warnings_per_response`
+cardinality cap alongside the other four, plus a `max_length` on message text
+matching the `principal`/`correlation_id` precedent.
 
 **The sharpest form of it:** this module *already applies* the fix pattern.
 `principal` and `correlation_id` carry explicit `max_length=200` (L108–L109). The
