@@ -1,253 +1,330 @@
 # Integration handoff
 
-**Branch:** `integration/consolidated` @ `d421a97`
-**Created:** 2026-07-24, by a coordination session that reviewed ~10 parallel workstreams.
-**Status:** partial merge. 4 of 18 branches merged cleanly. 14 conflict.
+**Branch:** `integration/consolidated`
+**State:** all reachable work merged into one branch. **The tree builds and imports, but the suite is red: 2058 passing, 71 failing, 16 errors.**
 
-Read this before touching anything. The short version: **most of these branches
-are reviewed and approved, the conflicts are mechanical rather than
-disagreements, and the two files that will hurt you are `app.py` and
-`generated-api.ts`.**
+Complete record of what was merged, how each conflict was resolved, what is still
+broken, and why. **Read §4 before fixing anything** — the remaining failures are
+*semantic*, and several are two branches disagreeing about the same security
+control.
 
 ---
 
-## 1. What is already merged into `d421a97`
+## 1. What was merged
 
-Merged in this order, all clean:
+Ten branches onto a base of `anabil25-fix-runtime-trust-clean` — chosen because
+it has the deepest shared history (107 commits), so it produces the fewest
+conflicts. Every branch forked *before* `main`'s tip, so merging onto `main`
+directly conflicts with all eighteen immediately.
 
-| branch | tip | status |
+| # | branch | review status |
 |---|---|---|
-| `anabil25-fix-runtime-trust-clean` | `540312b` | base (107 commits) — **not reviewed** |
-| `anabil25-harden-provider-adapter` | `9eb4950` | **APPROVED** by two independent reviewers |
-| `anabil25-fix-dataset-approval-boundary` | `1affe85` | **APPROVED**, 0 blockers, 2 LOW |
-| `anabil25-agent-studio-registry-workspace` | `5603972` | not reviewed |
+| 1 | `fix-runtime-trust-clean` (base) | **never independently reviewed** |
+| 2 | `harden-provider-adapter` | **APPROVED** ×2 reviewers |
+| 3 | `fix-dataset-approval-boundary` | **APPROVED**, 0 blockers, 2 LOW |
+| 4 | `agent-studio-registry-workspace` | not reviewed |
+| 5 | `agent-studio-platform-backend` | not reviewed |
+| 6 | `agent-studio-integrations` | not reviewed |
+| 7 | `animated-engine` (state/web) | partially reviewed |
+| 8 | `coverage-release-gates` | review was in flight |
+| 9 | `main` | — |
+| 10 | `agent-harness-foundation` | **APPROVED** on both ranges |
 
-**Why runtime-trust is the base and not `main`:** every branch forked before
-`main`'s tip `a62cd0a`, so merging onto `main` conflicts immediately with all 18.
-Using the branch with the deepest shared history (107 commits) minimises
-conflicts. **`main` still needs merging in — it conflicts with 10 hunks across 5
-files.**
+## 2. Deliberately NOT merged
 
----
+**Eight state-lineage branches, superseded by design.** `canonical-selective-port`
+is literally *"selective canonical state-coverage port onto d76a8eb"* — the
+canonical lineage already absorbed what was worth keeping. Verified rather than
+assumed: the merged tree has **14 e2e specs** against 11 in
+`canonical-selective-port` and 13 in `animated-engine`, and every artifact they
+conflict on is present and substantial.
 
-## 2. What did not merge, ordered by difficulty
+Superseded: `canonical-selective-port`, `playwright-state-coverage-truth`,
+`review-canonical-5562b391`, `cover-workflow-states`, `close-web-coverage`,
+`close-playwright-coverage-gaps`, `close-python-domain-coverage`,
+`scaling-adventure`.
 
-Re-derive with `git merge --no-edit <branch>` then `git merge --abort`.
+**`fix-release-source-identity` — a duplicate, adjudicated out.** A second,
+divergent implementation of release source identity, built from the same base as
+`agent-harness-foundation` by a session that did not know the other existed. Its
+checked-in manifest holds **49 entries: 48 `.py` + `requirements.txt`** —
+byte-for-byte the same inclusion policy as the incumbent's 49 identity-eligible
+files, so **it does not close the gap it was built to close.**
 
-| branch | files | hunks | conflicting files |
-|---|---|---|---|
-| `agent-studio-platform-backend` | 1 | 2 | `capability_discovery.py` |
-| `agent-studio-integrations` | 3 | 3 | `main.bicep`, `resources.bicep`, `test_connector_adapter_auth.py` |
-| `close-python-domain-coverage` | 1 | 3 | `api.test.ts` |
-| `close-playwright-coverage-gaps` | 2 | 4 | `api.test.ts`, `generated-api.ts` |
-| **`main`** | 5 | 10 | `workspace-views.tsx`, `api.test.ts`, `app.py`, `studios.py`, `test_v2_workbench.py` |
-| `scaling-adventure` | 4 | 11 | `api.test.ts`, `test_cosmos_workspace.py`, `test_identity.py`, `test_v2_workbench.py` |
-| `close-web-coverage` | 4 | 12 | `route.test.ts`, `workspace-views.*`, `api.test.ts` |
-| **`agent-harness-foundation`** | 7 | 18 | `generated-api.ts`, `app.py`, `config.py`, `studios.py`, `conftest.py`, `test_agents.py`, `test_v2_workbench.py` |
-| `fix-release-source-identity` | 7 | 18 | *(identical set — see §5, this is a duplicate)* |
-| `coverage-release-gates` | 8 | 21 | web tests + `test_cosmos_workspace.py`, `test_identity.py`, `test_v2_workbench.py` |
-| `cover-workflow-states` | 9 | 22 | as above + `research-workbench.tsx` |
-| `playwright-state-coverage-truth` | 11 | 32 | as above + `url-policy.*` |
-| `canonical-selective-port` | 12 | 34 | as above + `public_research.py` |
-| `review-canonical-5562b391` | 15 | 39 | as above + `*.spec.ts` |
-| `animated-engine` | 16 | 40 | largest; adds `app.py` |
-
-**The conflicts cluster, which is good news.** Four files account for most of
-them: `app.py`, `generated-api.ts`, `api.test.ts`, `test_v2_workbench.py`.
-Resolve those four consistently and most branches fall in behind.
-
-**`generated-api.ts` is generated — do not hand-merge it.** Take either side,
-then regenerate: `cd apps/web && npm ci && npm run generate:contracts`. Several
-workstreams verified it regenerates byte-identical.
-
-**Suggested order:** smallest first (`agent-studio-platform-backend`), then
-`main`, then the web-test cluster together, then `agent-harness-foundation`
-last — its `app.py`/`config.py`/`studios.py` hunks are the semantically hardest.
-
----
-
-## 3. Do not blind-resolve these
-
-`app.py`, `config.py`, `studios.py` and `workspace.py` carry **authorization
-boundaries, fail-closed guards, and approval-consumption logic** that were
-individually argued and tested during review. A wrong resolution silently
-removes a guard and every test still passes — that failure mode was found
-repeatedly across these branches.
-
-**When resolving a hunk in those files, find the review finding that produced it
-(§4) before choosing a side.**
-
----
-
-## 4. Open work, per workstream
-
-### Runtime trust (`540312b`) — merged, **not reviewed**, has the most serious open finding
-
-- **The attestation key is HMAC**, so the verifier necessarily holds the signing
-  key. **No identity split can separate the roles** — an earlier ruling that said
-  otherwise was withdrawn. An attestation whose verifier holds the signing key is
-  a checksum with access control. **Fix requires changing the primitive**: a Key
-  Vault key with sign/verify (private material never leaves the vault), or an
-  asymmetric algorithm where the verifier holds only a public key.
-  `infra/modules/keyvault.bicep` grants a single `apiPrincipalId` Key Vault
-  Secrets User. **Unactioned; nobody is tracking it.**
-- `decide_approval`'s `state != PENDING → raise` guard is **read-check-write**
-  and does not prevent a lost update across processes. Needs `If-Match` on the
-  store write. Pre-registered test: two concurrent decides from the same observed
-  `PENDING`, one must fail deterministically. Today both succeed.
-- Mount decision: the runtime port should get **its own ASGI app and ingress**,
-  because its specified capability set (exact point reads only, never
-  `list_revisions`) makes control-plane paths need to be *unreachable*, not merely
-  unauthorized.
-- This branch is 107 commits and **has never been independently reviewed.**
-
-### Provider adapter (`9eb4950`) — merged, **APPROVED** ×2
-
-- **Open fix:** `_verbatim_optional_text` should **normalise** `""` and `"   "` to
-  `None` (matching the already-accepted absent case); `_verbatim_required_text`
-  should **reject** both. Currently `""` rejects the whole instance while `"   "`
-  is accepted *into a content digest* — three semantically identical inputs, three
-  outcomes. Pin all four cases per field.
-
-### Dataset boundary (`1affe85`) — merged, **APPROVED**, 2 LOW open
-
-- **Ordering + fixture, as one work item:** `workspace.py` checks
-  `plan_fingerprint` (~L1024) before `_verify_consuming_principal` (~L1044), so
-  `UNATTRIBUTABLE_REQUESTER` can never fire for the legacy population it exists
-  for. **And a test masks it** —
-  `test_unattributable_requester_is_observable_on_the_wire` builds a v3
-  fingerprint then pops the requester, a state that cannot occur in production.
-  Fix the ordering **and** seed the test with a v2-era digest; either alone leaves
-  the system lying.
-- **Documentation contradiction:** correct wording was *added* without the
-  incorrect wording being *deleted*. `app.py:1444` still says
-  `action="consumed"` "must imply data really left". The doc-assertion test
-  inspects two docstrings and misses this third one — adding
-  `_consume_dataset_analysis.__doc__` to the set fixes it in one line and forces
-  the correction.
-- **LOW:** a failing outcome-write inside the `except` handlers (`app.py`
-  ~`:1581`, ~`:1749`) masks the original error — a successful send can be
-  reported as 500.
-
-### Harness (`34543f1`) — **NOT merged**, **APPROVED** on both ranges
-
-57 probes, 24 mutations across three independent passes. Carried items:
-
-- **N1 (raised above medium):** the drift check's *wiring* into `main()` is
-  untested — deleting the call leaves the suite green, while neutering the raise
-  inside the function goes red. This is the step that makes the branch's durable
-  claim true.
-- **N2:** permutation-invariance holds only because `git ls-tree` emits sorted
-  paths. An accident, not an invariant.
-- **F1:** 12 shipped-but-unhashed files (`GAP A = 12, GAP B = 0`). The fix must be
-  **one derived definition**, not two synchronised copies — the enumerated set
-  lives at two sites, so a new file type widens the gap *and* blinds the drift
-  check in the same edit with no failing test.
-- **F-PROV:** `source_commit`/`source_tree` are recorded and never verified —
-  forged values with a recomputed self-digest are accepted. Needs one docstring
-  sentence.
-- **Wording:** `source_identity.py` L43 and `ARCHITECTURE.md` claim an
-  *"independently regenerable correctness control"*. Regenerable is true;
-  *control* is not — nothing re-derives from Git at runtime. Auditable, not
-  checked.
-- **HIGH gate-readiness — cross-release/cross-principal replay.** Reproduced:
-  a COMPLETED record replays under a successor release with no provenance check
-  and no approval consumption. Latent only because every shipped descriptor
-  defaults to `CompletedReplayMode.DENY`. **Reverse neutralization showed adding
-  the fix leaves the suite green**, so nothing would catch the defect *or* its
-  reintroduction. **Highest-value mitigation is not the fix** — it is an invariant
-  test that no non-test capability sets `completed_replay` to a non-DENY mode.
-
-### Coverage/suppression gates (`a781298`) — **NOT merged**, independent review in flight
-
-- Suppression contract with an exact-set baseline; growth requires
-  `--suppression-addition-reason`, and the reason is written into the artifact.
-- **Shrink is still unguarded** — a baseline shrink passes silently if the source
-  suppression is genuinely removed. Correctly deferred: it only matters once
-  `role: load-bearing` entries exist, which is nobody yet.
-- Mypy domain exact at 101 files; coverage 56/56 across 15 derived roots.
-
-### State / web (`9d7b90b`) — **NOT merged**, largest conflict set
-
-- **37 bare `userEvent.setup()` calls remain**, against a report of complete
-  conversion: **22 in `research-workbench.test.tsx`**, 14 in
-  `workspace-views.test.tsx`, 1 in `error.test.tsx`.
-- **The fix was applied to the suite that was not at risk.**
-  `studio-components` carries a `15000` override on its heaviest test (ratio
-  0.34). `research-workbench` has **no override**, sits at **0.735**, retains all
-  22 unconverted sites, and is the historical failing site.
-  `research-markdown.integration` is at **0.523** and is in neither the fix nor
-  the report.
-- **BLOCKER: machine-wide port locks.** `tmpdir()/research-assistant-playwright-port-locks`
-  with fixed ports 40105/40106 and no per-checkout namespace. Confirmed by finding
-  a lock file from another checkout mid-run. **Will break parallel CI shards.**
-  Fix is a per-checkout namespace or ephemeral port — *not* a longer timeout or a
-  retry, which would convert a deterministic collision into a slow flake.
-
----
-
-## 5. `fix-release-source-identity` is a duplicate — do not merge it
-
-`e121e41` is a **second, divergent implementation of release source identity**,
-built from the same base as `agent-harness-foundation` by a session that did not
-know the other existed. Adjudicated by measurement:
-
-- Its checked-in manifest contains **49 entries: 48 `.py` + `requirements.txt`** —
-  **byte-for-byte the same inclusion policy** as the incumbent's 49
-  identity-eligible files. **It does not close the gap it was built to close.**
-- Its conflict set against the integration branch is *identical* to the harness's.
-
-**Two of its ideas are better than the incumbent's and should be ported as a small
-delta rather than merged wholesale:**
+Two of its ideas are better than the incumbent's and should be ported as a small
+delta rather than merged:
 
 1. **A checked-in exact-set manifest instead of a recomputed walk.** A walk
    silently absorbs whatever it finds; a committed snapshot fails loudly when a
    file is added or removed. The incumbent cannot detect that at all.
-2. **`blob_id` per entry and `source_tree_git_id`** — identity witnessed by git's
-   own object IDs, a genuine second witness.
-
-Its commit `c90b9ce` ("refuse to deploy a worktree that diverges from packaged
-identity") targets the same weakness as harness N1.
+2. **`blob_id` per entry plus `source_tree_git_id`** — identity witnessed by git's
+   own object IDs, a second witness.
 
 ---
 
-## 6. Known integration facts
+## 3. How the non-obvious conflicts were resolved
 
-- **The merge will fail coverage by exactly 54 statements / 18 branches.** Two
-  branches carry `fail_under = 100` over all ten agent packages. `skip_empty`
-  rescues the nine zero-statement `__init__.py` and cannot rescue the nine
-  `main.py` at 6 statements each. **Decision required before merging: test them,
-  do not exclude them** — a six-statement entry point that no test imports is
-  exactly where a wiring defect hides, and harness N1 is that exact defect.
-- **The same merge closes the mypy hole.** The gates branch sets
-  `files = ["packages","services","agents","scripts","tests"]` — the whole tree —
-  so 27 previously-unchecked files come into the domain. Coverage breaks, mypy
-  heals.
-- **Environment defect:** a remote named `Main` collides case-insensitively with
-  branch `main` on Windows, so `git worktree add` from `main` fails and
-  `git rev-parse main` warns about ambiguity. Fix:
-  `git remote rename Main origin`.
+**`capability_discovery.py` — kept HEAD, added one exception.** HEAD had the
+reviewed hardened version (deadline via `asyncio.timeout`, `_get_json` with size
+limits, `_wire_warnings`, provider caps, `_is_safe_provider_id`, duplicate
+detection). The incoming side was the pre-review version whose `str()` coercions
+two reviewers had approved removing. Took HEAD, but added
+`ClientAuthenticationError` to the caught set — the one thing the incoming side
+had that HEAD lacked, with sound rationale: a credential failure on a host
+without managed identity is as much "provider unavailable" as an unreachable
+endpoint, and must not crash startup.
+
+**`app.py` connector sources — kept both, ordered.** The two sides solve
+*different* problems and are both security controls. HEAD's
+`_authorize_requested_sources` re-validates every requested connector against the
+registry. `animated-engine`'s `_reject_conflicting_source_fields` rejects the
+retired `funding_sources` alias, because `funding_sources: []` — an explicit
+deselect-all — was read as "no preference" and **silently widened back to the
+default connector set**. Rejection now runs first, so the merge in
+`_raw_requested_sources` only ever sees agreeing values and cannot reintroduce
+the widening.
+
+**`studios.py` — kept all three layers**, with comments stating which is
+authorization and which is request-shape validation, so a later reader cannot
+mistake the shape check for a security control.
+
+**`public_research.py` — removed a duplicate constant.** The merge produced both
+`_READY_STATUSES` and `_READY_TEST_STATUSES` with identical values. Kept the
+former; a comment records why, so the two cannot drift.
+
+**`ci.yml` and `jest.config.ts` — kept the stronger gate.** `main`'s jest config
+set global thresholds to 0 with per-file 100; HEAD covers `src/**/*.{ts,tsx}`
+broadly. `main`'s CI ran a narrow `--cov` list; HEAD has the full gate (mypy
+linecount, 100% coverage, suppression contract, artifact upload, pip-audit) plus
+the harness's source-identity bake step.
+
+**`api.test.ts` — took ours; known coverage risk.** Both sides were complete
+suites with their own mocks (4 vs 5 tests, no overlap); concatenating would
+duplicate declarations. **`main`'s five upload/multipart tests were dropped.** The
+jest threshold should surface any gap.
+
+**Test files — unioned at AST granularity, not by line.** A naive line-level union
+truncated a function mid-call. The union appends any top-level def/class from the
+incoming side whose name is not already present, plus new imports, then re-parses
+to prove validity. Duplicate `def test_*` names were checked explicitly, because
+Python silently keeps only the last definition — a silent test drop.
 
 ---
 
-## 7. Working notes for whoever picks this up
+## 4. What is broken, and why
 
-Two documents in the coordination session's folder are worth reading:
-`review-standards.md` (~60 KB, named defect shapes and measurement rules) and
-`integration-criteria.md` (~22 KB, eight blockers with re-check commands).
+Mechanically complete — zero conflict markers, zero syntax errors,
+`pyproject.toml` parses — but semantically incomplete.
 
-The habits that produced every finding here:
+```
+2058 passed   71 failed   16 errors
 
-- **Verify the tip with `git rev-parse` before reading any report.** Every
-  workstream reported a stale SHA at least once; one branch was rebuilt ten times.
+18  tests/test_dataset_approval_boundary.py
+16  tests/test_ingestion.py            (teardown errors)
+14  tests/test_foundry_gateway.py
+11  tests/test_agents.py
+ 8  tests/test_cosmos_workspace.py
+ 7  tests/test_v2_workbench.py
+ 5  tests/test_agent_studio_capability_discovery_http.py
+ 4  tests/test_api.py
+ 2  tests/test_connector_adapter_auth.py
+ 1  tests/test_identity.py
+ 1  tests/test_runtime.py
+```
+
+**Measured: the harness merge is not the main cause.**
+
+| tree | passing | failing |
+|---|---|---|
+| without `agent-harness-foundation` | 1980 | 45 |
+| with it (current) | 2058 | 71 |
+
+It adds 78 passing tests and 26 failures; **45 failures exist independently of
+it.** Keeping it was the better trade.
+
+### Root cause
+
+**`agent-harness-foundation` and `fix-dataset-approval-boundary` both add an
+approval system to the same code path, and were never reconciled.**
+
+- The dataset branch owns `_validate_dataset_analysis`,
+  `_require_dataset_send_grant`, a durable server-resolved
+  `DatasetApprovalRequest`, a validate/consume split, principal binding.
+- The harness branch threads an `approval_context` resolver
+  (`compose_approval_context_resolver`, `ApprovalContextResolverScope`,
+  `_dataset_approval_context`) through the same path, and adds
+  `require_approval_context_resolver` / `approval_context_resolver_required` to
+  `Settings`.
+
+Nine conflicting hunks in `app.py` are the two systems meeting. **`app.py` was
+resolved by taking the dataset side**, so the harness resolver exists in the tree
+— module, settings, helpers all restored — but is **not wired into the request
+path**. Harness tests asserting that wiring therefore fail:
+`test_inline_dataset_analysis_is_unavailable_without_trusted_resolver`,
+`test_api_lifespan_installs_required_production_approval_provider`,
+`test_dataset_api_rejects_unconsumable_durable_decisions[*]`.
+
+**This must be resolved by the two owners, not by a merge.** Deciding it blind
+means choosing which approval control governs a dataset send, and a wrong choice
+removes a guard while every remaining test still passes.
+
+### A subtler class: definitions silently dropped by auto-merge
+
+Where git resolved a file by taking one side wholesale, definitions the other
+side depended on disappeared **with no conflict marker**. Found by scanning every
+module's top-level names against each merged branch:
+
+```
+agents/shared/runtime.py     _build_foundry_client
+agents/shared/tools.py       _agent_names, _online_agent_names, build_delegate_tool
+capability_discovery.py      _tag_provider_digest, _PROVIDER_DIGEST_PREFIX
+app.py                       _authorize_dataset_analysis, _agent_prompt,
+                             _dataset_approval_context, _TELEMETRY_MODE
+telemetry.py (api + worker)  _configured
+```
+
+Function and class losses were restored. **`_configured` was deliberately not
+restored** — the merged `telemetry.py` uses a newer `TelemetryController` design,
+so `main`'s global is obsolete; the four tests asserting it were removed as
+superseded.
+
+**Re-run that scan after any further merge.** A silent definition loss produces
+import errors far from the merge and nothing in the diff records it. The check:
+for each module, compare `ast` top-level names in the working tree against the
+same path on each merged branch.
+
+### Remaining fix categories
+
+1. **Approval-system reconciliation** (`app.py`, ~9 hunks) — owners required.
+   Accounts for most of `test_dataset_approval_boundary`, `test_foundry_gateway`,
+   `test_v2_workbench`.
+2. **`test_ingestion.py` teardown** — a conftest fixture calls `.cache_clear()` on
+   a function that is no longer `lru_cache`d. Mechanical.
+3. **`test_agents.py` assertions** — union pulled in tests from branches asserting
+   different behaviour of the same helper. Per-test triage: keep the newer
+   assertion, delete the superseded test.
+4. **`api.test.ts` coverage gap** — five upload/multipart tests dropped, see §3.
+
+---
+
+## 5. Open findings carried from review
+
+Defects the reviews found. **Not** merge damage; they survive into this branch.
+
+### Runtime trust (never independently reviewed — 107 commits)
+
+- **The attestation key is HMAC, so the verifier necessarily holds the signing
+  key.** No identity split can separate the roles; an earlier ruling saying
+  otherwise was withdrawn. **The primitive must change** — a Key Vault key with
+  sign/verify, or an asymmetric algorithm where the verifier holds only a public
+  key. `infra/modules/keyvault.bicep` grants a single `apiPrincipalId` Key Vault
+  Secrets User. **An attestation whose verifier holds the signing key is a
+  checksum with access control.**
+- `decide_approval`'s `state != PENDING → raise` guard is **read-check-write** and
+  does not prevent a lost update across processes. Needs `If-Match` on the store
+  write. Pre-registered test: two concurrent decides from the same observed
+  `PENDING`, one must fail deterministically. Today both succeed.
+- The runtime port should get **its own ASGI app and ingress** — its capability set
+  (exact point reads only, never `list_revisions`) means control-plane paths must
+  be *unreachable*, not merely unauthorized.
+
+### Harness (APPROVED, items carried)
+
+- **N1 — the drift check's *wiring* into `main()` is untested.** Deleting the call
+  leaves the suite green; neutering the raise inside the function goes red. This
+  is the step that makes the branch's durable identity claim true.
+- **N2** — permutation-invariance holds only because `git ls-tree` emits sorted
+  paths. An accident, not an invariant.
+- **F1** — 12 shipped-but-unhashed files (`GAP A = 12, GAP B = 0`). The fix must be
+  **one derived definition**: the enumerated set lives at *two sites*, so a new
+  file type widens the gap **and** blinds the drift check in the same edit with no
+  failing test.
+- **F-PROV** — `source_commit`/`source_tree` are recorded and never verified;
+  forged values with a recomputed self-digest are accepted.
+- **Wording** — `source_identity.py` and `ARCHITECTURE.md` claim an *"independently
+  regenerable correctness control"*. Regenerable is true; *control* is not —
+  nothing re-derives from git at runtime. Auditable, not checked.
+- **HIGH — cross-release/cross-principal replay.** Reproduced: a COMPLETED record
+  replays under a successor release with no provenance check and no approval
+  consumption. Latent only because every shipped descriptor defaults to
+  `CompletedReplayMode.DENY`. **The highest-value mitigation is not the fix** — it
+  is an invariant test that no non-test capability sets `completed_replay` to a
+  non-DENY mode. Adding the fix leaves the suite green, so nothing would catch the
+  defect *or* its reintroduction.
+
+### Dataset (APPROVED, 2 LOW)
+
+- **Ordering + fixture, one work item.** `workspace.py` checks `plan_fingerprint`
+  before `_verify_consuming_principal`, so `UNATTRIBUTABLE_REQUESTER` can never
+  fire for the legacy population it exists for. **A test masks it** —
+  `test_unattributable_requester_is_observable_on_the_wire` builds a v3 fingerprint
+  then pops the requester, a state that cannot occur in production. Fix the
+  ordering **and** seed the test with a v2-era digest.
+- **Documentation contradiction.** Correct wording was *added* without the incorrect
+  wording being *deleted*; `app.py` still says `action="consumed"` "must imply data
+  really left". The doc-assertion test inspects two docstrings and misses the third
+  — adding `_consume_dataset_analysis.__doc__` to the set fixes it in one line and
+  forces the correction.
+- **LOW** — a failing outcome-write inside the `except` handlers masks the original
+  error; a *successful* send can be reported as 500.
+
+### Provider (APPROVED ×2)
+
+- `_verbatim_optional_text` should **normalise** `""` and `"   "` to `None`;
+  `_verbatim_required_text` should **reject** both. Currently `""` rejects the whole
+  instance while `"   "` is accepted *into a content digest* — three semantically
+  identical inputs, three outcomes.
+
+### State / web
+
+- **37 bare `userEvent.setup()` calls remain** against a report of complete
+  conversion: **22 in `research-workbench.test.tsx`**, 14 in
+  `workspace-views.test.tsx`, 1 in `error.test.tsx`.
+- **The fix was applied to the suite that was not at risk.** `studio-components`
+  carries a `15000` override on its heaviest test (ratio 0.34). `research-workbench`
+  has **no override**, sits at **0.735**, retains all 22 unconverted sites, and is
+  the historical failing site. `research-markdown.integration` is at **0.523** and is
+  in neither the fix nor the report.
+- **Machine-wide port locks.** `tmpdir()/research-assistant-playwright-port-locks`
+  with fixed ports 40105/40106 and no per-checkout namespace; confirmed by finding a
+  lock file from another checkout mid-run. **Will break parallel CI shards.** Fix is
+  a per-checkout namespace or ephemeral port — *not* a longer timeout or retry, which
+  converts a deterministic collision into a slow flake.
+
+### Coverage / suppression gates
+
+- Growth requires `--suppression-addition-reason`, written into the artifact.
+  **Shrink is still unguarded** — correctly deferred until `role: load-bearing`
+  entries exist.
+- **Expect the coverage gate to fail by exactly 54 statements / 18 branches.** Nine
+  `main.py` entry points at 6 statements each; `skip_empty` rescues the nine
+  zero-statement `__init__.py` and cannot rescue these. **Decision: test them, do not
+  exclude them** — a six-statement entry point no test imports is exactly where a
+  wiring defect hides, and harness N1 is that exact defect.
+
+---
+
+## 6. Environment
+
+- A remote named `Main` collides case-insensitively with branch `main` on Windows,
+  so `git rev-parse main` warns about ambiguity and `git worktree add` from `main`
+  fails. Fix: `git remote rename Main origin`.
+- `uv sync --all-packages --all-extras` is required; a plain `uv sync` leaves
+  `fastapi` and the workspace packages uninstalled.
+
+## 7. Practices worth keeping
+
+From the review program that produced §5.
+
+- **Verify the tip with `git rev-parse` before reading any report.** Every workstream
+  reported a stale SHA at least once; one branch was rebuilt ten times.
   `git branch --contains` is a *reachability* test, not a tip test — it passes for
   every commit in history.
-- **Report the test count next to the SHA.** A SHA is asserted; a count is
-  produced by the run and cannot be copied from stale notes.
+- **Report the test count next to the SHA.** A SHA is asserted; a count is produced
+  by the run and cannot be copied from stale notes.
 - **Neutralization over coverage.** 100% line-and-branch coexisted with a live
-  blocker on lines proven executed. Break each guard and confirm a specific test
-  goes red.
+  blocker on lines proven executed.
 - **When a property holds because something is absent, assert the absence** — the
   method set, the module set, the call count, the config default.
-- **A striking result deserves more verification than a dull one.** The most
-  quoted number in this program was computed against the wrong denominator.
+- **A striking result deserves more verification than a dull one.** The most-quoted
+  number in this program was computed against the wrong denominator.
