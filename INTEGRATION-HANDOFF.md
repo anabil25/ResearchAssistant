@@ -21,7 +21,7 @@ directly conflicts with all eighteen immediately.
 |---|---|---|
 | 1 | `fix-runtime-trust-clean` (base) | **never independently reviewed** |
 | 2 | `harden-provider-adapter` | **APPROVED** ×2 reviewers |
-| 3 | `fix-dataset-approval-boundary` | **APPROVED**, 0 blockers, 2 LOW |
+| 3 | `fix-dataset-approval-boundary` | **APPROVED — but of a tree that did not ship.** Verdicts cover `c5fad2e`/`cfb9366`/`10d3e39`; `1affe85` merged, **+168 lines of `workspace.py` authorization code after the last review**. Do not cite as reviewed — see §5 |
 | 4 | `agent-studio-registry-workspace` | not reviewed |
 | 5 | `agent-studio-platform-backend` | not reviewed |
 | 6 | `agent-studio-integrations` | not reviewed |
@@ -835,7 +835,31 @@ different file.** Grep across the suite for the *property*, not the idiom.
     omission exists — the correctly-guarded path bundles both checks in a function
     that does have the context.
 
-### Dataset (APPROVED, 2 LOW)
+### Dataset — **NO REVIEW COVERS THE SHIPPED TREE.** Read this before citing an approval
+
+**The "APPROVED, 2 LOW" verdict does not apply to what merged.** The reviewer
+approved `c5fad2e`, `cfb9366` and `10d3e39`. What shipped is `1affe85`, and
+**all three reviewed `services` subtrees differ from it.** Measured:
+
+```
+git diff --stat 10d3e39 1affe85 -- services packages
+  cosmos_workspace.py    26 ++
+  workspace.py          148 ++++++++++++++
+  2 files changed, 168 insertions(+), 6 deletions(-)
+```
+
+**168 lines of production source landed after the last review, concentrated in
+`workspace.py` — the file carrying the consume-path authorization logic.** The
+reviewer detected this themselves by subtree-hash comparison and reported it
+rather than letting the approval be cited: *"no approval of mine covers the
+shipped dataset tree."*
+
+**This is the failure this whole document warns about, landed on this document.**
+A verdict was recorded against a range and then cited against a tip that had moved
+— exactly what §7 says to guard against. The findings below are therefore **known
+and open**, not "resolved because it was approved," and the HIGH CSV-egress bypass
+that `673985b` closed **is** genuinely closed (verified by exhaustive egress
+enumeration) — that one does not depend on the later delta.
 
 - **Ordering + fixture, one work item.** `workspace.py` checks `plan_fingerprint`
   before `_verify_consuming_principal`, so `UNATTRIBUTABLE_REQUESTER` can never
@@ -843,6 +867,9 @@ different file.** Grep across the suite for the *property*, not the idiom.
   `test_unattributable_requester_is_observable_on_the_wire` builds a v3 fingerprint
   then pops the requester, a state that cannot occur in production. Fix the
   ordering **and** seed the test with a v2-era digest.
+  **Operational consequence:** the deploy-day spike surfaces as
+  `fingerprint_mismatch`, which is **indistinguishable from a plan-swap attempt** —
+  so the signal that should say "expected migration" says "possible attack."
 - **Documentation contradiction.** Correct wording was *added* without the incorrect
   wording being *deleted*; `app.py` still says `action="consumed"` "must imply data
   really left". The doc-assertion test inspects two docstrings and misses the third
@@ -1562,3 +1589,41 @@ From the review program that produced §5.
   outright once measured.
 - **A striking result deserves more verification than a dull one.** The most-quoted
   number in this program was computed against the wrong denominator.
+- **An addition reads as a substitution, and it is not one.** Correct text appearing
+  where you asked for a correction feels like the incorrect text was replaced —
+  because the thing you were looking for is now there. It usually was *added
+  alongside*. This single reflex produced **two independent failures here**: the
+  `app.py` docstring that still says `action="consumed"` "must imply data really
+  left" *next to* the correction, and a reviewer's own retracted claim, withdrawn
+  when they realised they had inferred a replacement from the presence of the
+  replacement text.
+  **The general form: evidence of the desired state is not evidence of the
+  undesired state's absence.** It applies to a reviewer reading a diff exactly as
+  it applies to code. **So a correction ruling must name the deletion** — "delete
+  the incorrect wording," never "document the correct behaviour" — and the test
+  that enforces it must **assert the wrong text is gone**, not that the right text
+  is present. A doc-assertion test that only checks for the correct string passes
+  happily while the contradiction sits one line below it, which is the state
+  `main` is in today.
+- **"Was it approved?" and "was *this* approved?" are different questions, and only
+  the second is answerable by measurement.** Ancestry proves a commit is reachable;
+  it says nothing about whether the reviewed *content* survived. The check that
+  answers it is one command — compare the **subtree hash** of the reviewed tag
+  against the shipped tip:
+  `git rev-parse <reviewed-tag>:services` vs `git rev-parse <shipped>:services`.
+  Equal means the approval covers what shipped. Unequal means it does not, and the
+  diff tells you by how much.
+  **This is not hypothetical: it is how the dataset workstream's "APPROVED" was
+  caught in this very document.** Three reviewed tags, all differing from the
+  merged tree, **+168 lines of authorization code arriving after the last review** —
+  found by the reviewer, on their own verdict, and reported rather than left to be
+  cited. **A reviewer who volunteers that their approval does not cover what
+  shipped is doing the most valuable thing a reviewer can do**, and the record must
+  make that cheap to do rather than costly.
+- **The failure this document describes is the failure this document committed.**
+  §7 warned about verdicts outliving their range while §2 carried "APPROVED, 0
+  blockers" for a tree no approval covered. The handoff is not exempt from its own
+  practices, and it is the artifact least likely to be re-measured — every other
+  claim here has code under it that someone will eventually run. **Prose is the
+  only thing in a repository that cannot fail a test**, which makes confident prose
+  the most durable place for an error to survive.
