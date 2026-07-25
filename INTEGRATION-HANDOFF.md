@@ -1185,14 +1185,14 @@ Nothing else outstanding on this workstream.
 
 - **The `userEvent.setup()` conversion is now complete for the state lineage** —
   `c6370e5` landed after the first integration pass and is merged. **50 bare calls
-  remain in `main`, and they belong to the agent-studio workstream, which never
-  did this conversion at all:**
+  remain in `main`. 49 belong to the agent-studio workstream, which never did this
+  conversion at all; the 50th does not:**
 
   ```
-  21  agent-workspace.test.tsx
-  15  agent-registry.test.tsx
-  13  connections-view.test.tsx
-   1  error.test.tsx
+  21  agent-workspace.test.tsx      agent-studio
+  15  agent-registry.test.tsx       agent-studio
+  13  connections-view.test.tsx     agent-studio
+   1  error.test.tsx                close-web-coverage  <- NOT agent-studio
   ```
 
   `userEvent.setup()` defaults to `delay: 0`, which awaits a real
