@@ -949,6 +949,19 @@ the third.** Ship the normalization with the rule, not after it.
 
 From the review program that produced §5.
 
+- **Measure in the execution form that ships, or the number describes a scenario
+  that never occurs.** The same test measured **2869 ms in isolation (ratio 0.57)
+  and 5099 ms under full-suite contention (ratio 1.02, hard timeout)**. Isolation
+  was never the failure mode — it was consistently 66/66 clean — so an isolated
+  measurement of ~0.40 and a firing full-in-band gate are **both true at once**,
+  and neither party is wrong. When two measurements of "the same thing" disagree,
+  establish whether they share an execution form *before* trying to reconcile the
+  values. Worth noting what settled it: a **passive** instrument (a jest-circus
+  environment bracketing `test_fn_start → test_fn_success`) showed body time
+  2869 ms vs reported 2872 ms — a 3 ms delta that killed the
+  metric-definition hypothesis outright, converting *"we may be measuring
+  different things"* into the harder and more useful *"we measure the same thing
+  and disagree."*
 - **Under structural typing, "separate types" is not a boundary — you must remove
   the method.** Python `Protocol`s match structurally, so two ports with *no
   inheritance relationship* still both accept any concrete class that happens to
