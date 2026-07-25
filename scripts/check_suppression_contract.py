@@ -18,6 +18,16 @@ from typing import Any
 import yaml
 
 SCHEMA_VERSION = "research-assistant.suppression-contract.v1"
+BASELINE_REVIEW_POLICY = (
+    "The committed exact baseline deliberately replaces git-history comparison. "
+    "Every baseline shrink requires a matching source removal in the same reviewed "
+    "diff; additions and substitutions require explicit review. No semantic laundering."
+)
+BASELINE_DRIFT_MESSAGE = (
+    "current suppression inventory differs from the committed exact set; "
+    "a shrink requires a matching source removal and reviewed baseline update. "
+    "No semantic laundering."
+)
 PYTHON_SUFFIXES = {".py", ".pyi"}
 JAVASCRIPT_SUFFIXES = {".js", ".jsx", ".ts", ".tsx", ".mjs", ".cjs"}
 
@@ -733,6 +743,7 @@ def build_inventory(
     )
     inventory = {
         "schemaVersion": SCHEMA_VERSION,
+        "baselineReviewPolicy": BASELINE_REVIEW_POLICY,
         "coverageConfig": config,
         "mypyConfig": mypy_config,
         "discoveredSourceRoots": discovered_roots,
@@ -776,6 +787,8 @@ def build_inventory(
 
 def validate_inventory(root: Path, inventory: dict[str, Any], unknown: list[str]) -> list[str]:
     errors: list[str] = []
+    if inventory["baselineReviewPolicy"] != BASELINE_REVIEW_POLICY:
+        errors.append("baseline review policy must remain exact")
     config = inventory["coverageConfig"]
     if config["run"]["branch"] is not True:
         errors.append("coverage branch measurement must remain enabled")
@@ -1003,7 +1016,7 @@ def main() -> int:
     else:
         differences = compare_inventory(previous, inventory)
         if differences:
-            errors.append("current suppression inventory differs from the committed exact set")
+            errors.append(BASELINE_DRIFT_MESSAGE)
 
     report = {
         "schemaVersion": SCHEMA_VERSION,

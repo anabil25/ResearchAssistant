@@ -5,6 +5,8 @@ from pathlib import Path
 from typing import Any
 
 from scripts.check_suppression_contract import (
+    BASELINE_DRIFT_MESSAGE,
+    BASELINE_REVIEW_POLICY,
     Suppression,
     _javascript_comments,
     census,
@@ -69,6 +71,8 @@ def test_compare_inventory_is_exact_in_both_directions() -> None:
     assert compare_inventory(expected, expected) == []
     assert compare_inventory(expected, {"sourceSuppressions": []})
     assert compare_inventory(expected, {"sourceSuppressions": [{"path": "b.py"}]})
+    assert "matching source removal" in BASELINE_DRIFT_MESSAGE
+    assert "No semantic laundering" in BASELINE_DRIFT_MESSAGE
 
 
 def test_validate_inventory_rejects_bare_and_javascript_suppressions(tmp_path: Path) -> None:
@@ -342,6 +346,7 @@ def test_committed_suppression_contract_has_expected_zero_categories() -> None:
     kinds = {record["kind"] for record in baseline["sourceSuppressions"]}
 
     assert baseline["schemaVersion"] == "research-assistant.suppression-contract.v1"
+    assert baseline["baselineReviewPolicy"] == BASELINE_REVIEW_POLICY
     assert not kinds.intersection(
         {
             "coverage-pragma",
@@ -363,6 +368,7 @@ def test_committed_suppression_contract_has_expected_zero_categories() -> None:
 
 def _minimal_inventory() -> dict[str, Any]:
     return {
+        "baselineReviewPolicy": BASELINE_REVIEW_POLICY,
         "coverageConfig": {
             "run": {
                 "branch": True,

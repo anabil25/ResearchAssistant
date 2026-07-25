@@ -1,4 +1,5 @@
 {
+  "baselineReviewPolicy": "The committed exact baseline deliberately replaces git-history comparison. Every baseline shrink requires a matching source removal in the same reviewed diff; additions and substitutions require explicit review. No semantic laundering.",
   "coverageConfig": {
     "json": {
       "output": "coverage/python/coverage.json",
