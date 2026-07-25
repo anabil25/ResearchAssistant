@@ -706,11 +706,21 @@ the third.** Ship the normalization with the rule, not after it.
 - Growth requires `--suppression-addition-reason`, written into the artifact.
   **Shrink is still unguarded** — correctly deferred until `role: load-bearing`
   entries exist.
-- **Expect the coverage gate to fail by exactly 54 statements / 18 branches.** Nine
-  `main.py` entry points at 6 statements each; `skip_empty` rescues the nine
-  zero-statement `__init__.py` and cannot rescue these. **Decision: test them, do not
-  exclude them** — a six-statement entry point no test imports is exactly where a
-  wiring defect hides, and harness N1 is that exact defect.
+- **Re-measured at `main`: the coverage gate fails by 277 statements / 112
+  branches, not 54 / 18.** The original figure was correct for the tree it was
+  taken on, and its *reasoning* still holds — the nine `main.py` entry points at
+  6 statements each are still there, and **eight of the nine still miss all six**
+  (`agents/coordinator/main.py` is now covered), giving **48 statements / 16
+  branches**. What changed is the other **229 statements / 96 branches**, which
+  come from code merged from branches the gates work never saw. Overall: 17,448
+  statements, 3,950 branches, **98.18%**.
+  **Read the 229 with its caveat:** 71 tests are failing in `main`, so an unknown
+  share of it is failing-test artifact rather than genuinely untested code. The
+  48/16 entry-point figure is the trustworthy part; re-measure the remainder once
+  the suite is green.
+  **Decision unchanged: test the entry points, do not exclude them** — a
+  six-statement entry point no test imports is exactly where a wiring defect
+  hides, and harness N1 is that exact defect.
 
 ---
 
