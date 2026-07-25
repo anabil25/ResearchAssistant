@@ -69,7 +69,7 @@ interface OverviewProps {
   onNavigate: (view: WorkspaceViewId) => void;
 }
 
-function formatTime(value: string | null | undefined): string {
+export function formatTime(value: string | null | undefined): string {
   if (!value) return "—";
   return new Intl.DateTimeFormat("en", {
     month: "short",
@@ -79,7 +79,7 @@ function formatTime(value: string | null | undefined): string {
   }).format(new Date(value));
 }
 
-function statusLabel(value: string): string {
+export function statusLabel(value: string): string {
   if (value === "configuration_required") return "setup required";
   if (value === "ready_with_key") return "ready, key recommended";
   return value.replaceAll("_", " ");
