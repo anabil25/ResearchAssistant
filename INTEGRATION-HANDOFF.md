@@ -51,37 +51,51 @@ checked-in manifest holds **49 entries: 48 `.py` + `requirements.txt`** —
 byte-for-byte the same inclusion policy as the incumbent's 49 identity-eligible
 files, so **it does not close the gap it was built to close.**
 
-Three of its ideas are better than the incumbent's and should be ported as a small
-delta rather than merged:
+**Do not port its manifest wholesale.** An earlier draft of this document
+credited three of its mechanisms too generously; corrected here after measuring
+the code rather than reading its description.
 
-1. **A checked-in exact-set manifest instead of a recomputed walk.** A walk
-   silently absorbs whatever it finds; a committed snapshot fails loudly when a
-   file is added or removed. The incumbent cannot detect that at all. Delivered
-   as a tracked `agents/source_manifest.json` with a CI `--check` step that fails
-   on staleness, matching the repo's existing generated-contract pattern.
-2. **`blob_id` per entry plus `source_tree_git_id`** — identity witnessed by git's
-   own object IDs, a second witness. Derived from covered **blob** SHAs rather
-   than a HEAD commit sha, so it is deterministic and non-circular; an embedded
-   commit sha would be stale on every commit and the staleness check could never
-   pass.
-3. **Its validator recomputes every digest the document claims, on every parse**
-   — `if self.source_tree_git_id != _source_tree_git_id(self.entries): raise` —
-   so a truncated or edited manifest fails closed. **This is the direct answer to
-   F-PROV**, where the incumbent *records* `source_commit`/`source_tree` and never
-   verifies them, accepting forged values with a recomputed self-digest.
-   **Verification is not schema parsing**, and this is the one place in either
-   implementation where that distinction is enforced.
+1. **`source_tree_git_id` is *not* a git tree object ID.** Measured:
+   `_source_tree_git_id(entries) = canonical_digest([[path, blob_id] …])` — a
+   **synthetic SHA-256 over filtered `(path, blob_id)` pairs**. The per-entry
+   `blob_id`s *are* real git object IDs and are worth adopting; the aggregate is
+   not, and calling it a git-object witness overstates it.
+2. **Its recompute-on-parse is a self-consistency check, not external
+   verification.** It proves entries ↔ digest agree, so a truncated or edited
+   manifest fails closed — genuinely stronger than the incumbent's single
+   self-digest. But it does **not** verify the entries against a real commit, so
+   it is the same *category* as the incumbent's self-digest rather than the answer
+   to **F-PROV**. An earlier draft said it was; that was wrong.
+3. **A checked-in manifest cannot name the commit that contains it** without
+   recursion, which is why this one omits commit identity entirely. A
+   build-produced manifest is generated *after* the commit exists and is excluded
+   from identity, so it can name the exact `source_commit` and the real `agents/`
+   subtree object. **That naming is the property worth keeping.**
+4. **Staleness has no runtime guard.** Its freshness check exists only in CI
+   (`build_source_manifest.py --check`); there is no predeploy hook and its
+   `azure.yaml` exposes only `postdeploy`. A direct `azd deploy` can therefore
+   ship changed worktree code alongside an old, internally-valid manifest — a
+   trustworthy-looking identity that describes something else.
+5. **Its checked-in set is not the package set.** Its `.agentignore` does not
+   exclude package-eligible non-Python files (`.agent_configs/baseline/metadata.yaml`,
+   the root `*.eval.yaml`, `datasets/**.jsonl`, `evaluators/**.{json,yaml}`), so
+   the snapshot **serializes the same incomplete filter**. F1 is untouched.
 
-Also worth taking: it proved **stray-file immunity end-to-end against a real
-temporary git repo** — committed LF, re-checked-out under `core.autocrlf=true` so
-worktree bytes were genuinely CRLF, then untracked, ignored and backup files
-dropped in; producer output byte-identical. That is a stronger demonstration than
-any fixture, because it proves the producer reads git objects rather than the
-worktree.
+**Better synthesis, and the recommended shape:** keep `build_agent_source_tree.py`
+and the uncommitted `.release/source-tree.json` as build-produced provenance.
+Solve F1 with a **separate** checked-in, versioned package-inclusion contract
+derived from the actual azd package rules, and have **predeploy compare three
+things**: (a) actual package-eligible worktree files, (b) committed git blobs, and
+(c) that approved exact set — *before* generating the runtime manifest. That takes
+the exact-set mechanism's real benefit (an unexpected topology change fails loudly)
+without accepting stale or self-referential release evidence.
 
-**What it does *not* fix, which is why it was not merged:** its inclusion policy
-is byte-for-byte the incumbent's, so **F1 is untouched**. The verification is
-better; the *coverage* is identical.
+**Worth adopting selectively:** per-entry `blob_id` content evidence, and its
+**stray-file immunity proof** — committed LF, re-checked-out under
+`core.autocrlf=true` so worktree bytes were genuinely CRLF, then untracked,
+ignored and backup files dropped in; producer output byte-identical. That is a
+stronger demonstration than any fixture, because it proves the producer reads git
+objects rather than the worktree.
 
 ---
 
