@@ -124,6 +124,17 @@ it for free: `worktree_source_entries` enumerates with `root.rglob("*")`, a
 **content** rather than path presence. So untracked, ignored *and* modified
 tracked files all fall out of the same comparison.
 
+**Read that with its limit, which is F1 and which both lines share.** The `rglob`
+walk is filtered at `build_agent_source_tree.py` **L190** by the same
+`.py`/`requirements.txt` test used for the committed view at **L172**. So "falls
+out of the comparison" holds **only for files that pass that filter**. A
+gitignored `scratch.py` is caught; an untracked `scratch.yaml`, or an edit to
+`agents/evaluators/relevance/relevance.yaml`, is **not** — it passes the identity
+check and the worktree-divergence gate and still ships. **22 of the 71 files
+tracked under `agents/` are in that blind spot** (§5). Neither line catches them,
+so this remains a *parity* judgement about the untracked-file mechanism, not a
+claim that the incumbent's gate is complete.
+
 ---
 
 ## 3. How the non-obvious conflicts were resolved
