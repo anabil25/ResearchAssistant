@@ -751,18 +751,28 @@ amplification of **251×**, measured across 1/5/10/25 providers with no inflecti
 A second datum: 150 KB of warning text under a 200 KB cap emitted **324 warnings /
 295,650 bytes**, passed through verbatim.
 
-**Do not record this as a mislabelled control — the setting is honest.**
-`config.py:257` reads *"Hard cap on the number of bytes read from **any single**
-provider discovery HTTP response,"* which is exactly what it does, and a
-single response above the cap is correctly refused (`available=False`, nothing
-emitted). **Ingress protection works; there is simply no second bound on the
-aggregate.** The finding is a *missing* cap, not a lying one — which matters,
-because the two have different fixes.
+**Do not record this as a mislabelled control — the setting is honest, and the
+ingress bound is well implemented.** `config.py:257` reads *"Hard cap on the
+number of bytes read from **any single** provider discovery HTTP response,"*
+which is exactly what it does. Verified at the mechanism: `_get_json` streams via
+`response.aiter_bytes()` and the size check at **L1087 fires *before*
+`chunks.append(chunk)` at L1091**, so an over-cap chunk is **never buffered** and
+`json.loads` (L1098) only ever sees a bounded buffer. A hostile provider cannot
+force a parse or an allocation beyond 8 MB on any single response.
+**Ingress protection works; there is simply no second bound on the aggregate.**
 
-**Severity: medium-low, not a security bypass.** Reaching it needs a provider that
-is already Entra-authenticated and already permitted to send 8 MB per response,
-and the effect is resource amplification rather than a control being evaded. It
-also fails in the honest direction — a large snapshot, not a wrong one.
+**So this is a *circumstance*, not a control failure — the distinction both
+reviewers converged on independently.** The egress bound is **arithmetic, not
+enforced**: nothing stops a provider spending its full per-response budget on
+warnings across every response. Measured across 1/5/10/25 providers, emitted
+bytes per response held at 40,150 · 40,106 · 40,096 · 40,089 — **linear, no
+inflection, nothing intervening** — and the cardinality family confirms the
+absence structurally (`a warnings-specific cap present: False`).
+
+**It is not an amplification finding.** Reaching it needs a provider already
+Entra-authenticated and already permitted 8 MB per response, and it **fails in
+the honest direction — a large snapshot, not a wrong one.** Whether ~2 GB of
+aggregate is acceptable is a judgement about the deployment, not about the code.
 
 **Cheapest correct disposition is a sited rationale, not necessarily code.** State
 beside the setting (or in the class docstring) that the byte cap is per-response
