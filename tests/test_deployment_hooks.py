@@ -860,6 +860,34 @@ def test_toolbox_project_retry_budget_covers_fresh_foundry_provisioning() -> Non
     assert postprovision.TOOLBOX_PROJECT_RETRY_DELAYS[-1] >= 300
 
 
+def test_toolbox_readiness_probe_allows_project_propagation(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    monkeypatch.setattr(
+        postprovision,
+        "_toolbox_command_result",
+        lambda _command: Completed("Project not found", returncode=1),
+    )
+
+    postprovision.probe_toolbox_project_readiness("https://foundry.example")
+
+    assert "still propagating" in capsys.readouterr().out
+
+
+def test_toolbox_readiness_probe_fails_for_non_propagation_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        postprovision,
+        "_toolbox_command_result",
+        lambda _command: Completed("permission denied", returncode=1),
+    )
+
+    with pytest.raises(RuntimeError, match="Toolbox project-readiness command failed"):
+        postprovision.probe_toolbox_project_readiness("https://foundry.example")
+
+
 def test_connector_toolboxes_reject_non_https_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -931,6 +959,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     credential = object()
     documents = [{"id": "one"}, {"id": "two"}]
     values = {
+        "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example/projects/project-name",
         "AZURE_SEARCH_ENDPOINT": "https://search.example",
         "AZURE_SEARCH_INDEX_NAME": "research-index",
         "AZURE_TENANT_ID": "tenant-id",
@@ -944,6 +973,9 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     def create_credential() -> object:
         calls.append("credential")
         return credential
+
+    def probe_toolbox_readiness(project_endpoint: str) -> None:
+        calls.append(("toolbox-readiness", project_endpoint))
 
     def load_documents(**kwargs: str) -> list[dict[str, str]]:
         calls.append(("load", kwargs))
@@ -978,6 +1010,11 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     monkeypatch.setattr(postprovision, "sync_canonical_azd_outputs", sync_outputs)
     monkeypatch.setattr(postprovision, "DefaultAzureCredential", create_credential)
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
+    monkeypatch.setattr(
+        postprovision,
+        "probe_toolbox_project_readiness",
+        probe_toolbox_readiness,
+    )
     monkeypatch.setattr(postprovision, "load_documents", load_documents)
     monkeypatch.setattr(postprovision, "create_index", create_index)
     monkeypatch.setattr(postprovision, "embed_documents", embed_documents)
@@ -1016,6 +1053,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
 
     assert calls == [
         "sync",
+        ("toolbox-readiness", "https://foundry.example/projects/project-name"),
         "credential",
         (
             "load",

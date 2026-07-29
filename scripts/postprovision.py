@@ -524,6 +524,32 @@ def with_toolbox_project_retry[T](
     ) from last_error
 
 
+def probe_toolbox_project_readiness(project_endpoint: str) -> None:
+    """Start data-plane discovery while independent provisioning work runs."""
+    result = _toolbox_command_result(
+        [
+            AZD_CLI,
+            "ai",
+            "toolbox",
+            "list",
+            "--project-endpoint",
+            project_endpoint,
+            "--output",
+            "json",
+        ]
+    )
+    if result.returncode == 0:
+        print("Foundry project Toolbox endpoint is ready.")
+        return
+    if "project not found" in _toolbox_error_text(result).lower():
+        print(
+            "Foundry project Toolbox endpoint is still propagating; "
+            "continuing independent provisioning work before bounded retries."
+        )
+        return
+    _raise_for_toolbox_failure(result, toolbox_name="project-readiness")
+
+
 def configure_connector_toolboxes() -> dict[str, str]:
     project_id = required_env("AZURE_AI_PROJECT_ID")
     project_endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
@@ -635,6 +661,7 @@ def configure_connector_adapter_identity() -> None:
 
 def main() -> None:
     sync_canonical_azd_outputs()
+    probe_toolbox_project_readiness(required_env("FOUNDRY_PROJECT_ENDPOINT"))
     credential = DefaultAzureCredential()
     endpoint = required_env("AZURE_SEARCH_ENDPOINT")
     index_name = required_env("AZURE_SEARCH_INDEX_NAME")
