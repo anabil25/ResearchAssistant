@@ -855,6 +855,11 @@ def test_connector_toolboxes_retry_when_foundry_project_is_not_ready(
     assert sleeps == [2]
 
 
+def test_toolbox_project_retry_budget_covers_fresh_foundry_provisioning() -> None:
+    assert sum(postprovision.TOOLBOX_PROJECT_RETRY_DELAYS) >= 900
+    assert postprovision.TOOLBOX_PROJECT_RETRY_DELAYS[-1] >= 300
+
+
 def test_connector_toolboxes_reject_non_https_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

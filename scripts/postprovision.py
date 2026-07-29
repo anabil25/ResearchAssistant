@@ -32,7 +32,7 @@ from scripts.azd_env import sync_canonical_azd_outputs
 
 ROOT = Path(__file__).resolve().parents[1]
 RETRY_DELAYS = (0, 30, 60, 90, 120)
-TOOLBOX_PROJECT_RETRY_DELAYS = (0, 15, 30, 60, 90, 120)
+TOOLBOX_PROJECT_RETRY_DELAYS = (0, 15, 30, 60, 90, 120, 180, 240, 300)
 AZ_CLI = "az.cmd" if os.name == "nt" else "az"
 AZD_CLI = "azd.exe" if os.name == "nt" else "azd"
 
