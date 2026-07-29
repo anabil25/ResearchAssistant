@@ -126,6 +126,9 @@ def test_bicep_model_parameters_match_azure_manifest() -> None:
     parameters = json.loads((ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8"))
 
     assert parameters["parameters"]["deployments"]["value"] == (manifest["services"]["ai-project"]["deployments"])
+    assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "rg-${AZURE_ENV_NAME}"
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${AZURE_ENV_NAME}"
 
 
 def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
