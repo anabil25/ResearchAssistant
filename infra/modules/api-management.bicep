@@ -5,7 +5,6 @@ param location string
 param tags object = {}
 param publisherName string
 param publisherEmail string
-param subnetResourceId string
 param connectorBackendUrl string
 param tenantId string
 param apiPrincipalId string
@@ -117,10 +116,7 @@ resource apiManagement 'Microsoft.ApiManagement/service@2024-05-01' = {
     publisherName: publisherName
     publisherEmail: publisherEmail
     publicNetworkAccess: 'Enabled'
-    virtualNetworkType: 'External'
-    virtualNetworkConfiguration: {
-      subnetResourceId: subnetResourceId
-    }
+    virtualNetworkType: 'None'
     customProperties: {
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls10': 'false'
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Protocols.Tls11': 'false'

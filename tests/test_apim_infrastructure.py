@@ -15,7 +15,8 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
 
     assert "Microsoft.ApiManagement/service@2024-05-01" in module
     assert "name: 'StandardV2'" in module
-    assert "virtualNetworkType: 'External'" in module
+    assert "virtualNetworkType: 'None'" in module
+    assert "virtualNetworkConfiguration" not in module
     assert "Microsoft.ApiManagement/service/apis@2025-09-01-preview" in module
     assert "type: 'mcp'" in module
     assert module.count(
@@ -34,17 +35,16 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "research-connectors/v1'" not in module
 
 
-def test_apim_has_a_dedicated_delegated_network_boundary() -> None:
-    network = (
-        ROOT / "infra" / "modules" / "app-private-network.bicep"
-    ).read_text(encoding="utf-8")
+def test_apim_uses_the_public_network_in_the_poc_profile() -> None:
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
+        encoding="utf-8"
+    )
+    container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
+        encoding="utf-8"
+    )
 
-    assert "snet-api-management" in network
-    assert "10.70.3.0/24" in network
-    assert "Microsoft.Web/serverFarms" in network
-    assert "apiManagementNsg" in network
-    assert "Storage" in network
-    assert "AzureKeyVault" in network
+    assert "app-private-network.bicep" not in resources
+    assert "infrastructureSubnetId" not in container_apps
 
 
 def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> None:
