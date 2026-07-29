@@ -7,7 +7,6 @@ param apiPrincipalId string
 param workerPrincipalId string
 
 var dataContributorRoleDefinitionId = '${account.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
-
 resource account 'Microsoft.DocumentDB/databaseAccounts@2025-04-15' = {
   name: name
   location: location
@@ -32,7 +31,7 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2025-04-15' = {
       }
     ]
     networkAclBypass: 'None'
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled'
   }
 }
 

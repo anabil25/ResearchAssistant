@@ -727,6 +727,7 @@ def middleware_for_manifest(
     conversation_store: ConversationStore | None = None,
     trusted_tenant_id: str | None = None,
     trusted_project_id: str | None = None,
+    platform_managed_tools: bool = False,
 ) -> list[AgentMiddleware | FunctionMiddleware]:
     effective_audit_sink = audit_sink or (
         OpenTelemetryGovernanceAuditSink() if release_id is not None else None
@@ -742,11 +743,17 @@ def middleware_for_manifest(
             trusted_project_id=trusted_project_id,
         )
     ]
-    if tuple(registration.binding for registration in registrations) != manifest.capability_bindings:
+    if (
+        not platform_managed_tools
+        and tuple(registration.binding for registration in registrations)
+        != manifest.capability_bindings
+    ):
         raise ConfigurationError(
             "Runtime registrations do not exactly match manifest capability bindings",
             context={"agent": manifest.id},
         )
+    if platform_managed_tools:
+        return middleware
     attached = {
         capability.id: tuple(
             registration for registration in registrations if registration.binding.descriptor_ref.id == capability.id

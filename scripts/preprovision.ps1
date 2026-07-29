@@ -8,18 +8,28 @@ if (-not $subscription -or -not $location) {
 }
 
 $accountUser = az account show --query user --output json | ConvertFrom-Json
-if ($accountUser.type -eq "user") {
-  $principalId = az ad signed-in-user show --query id --output tsv
-  $principalType = "User"
-} else {
-  $principalId = az ad sp show --id $accountUser.name --query id --output tsv
-  $principalType = "ServicePrincipal"
-}
+$principalType = if ($accountUser.type -eq "user") { "User" } else { "ServicePrincipal" }
+$accessToken = az account get-access-token `
+  --resource https://management.azure.com/ `
+  --query accessToken `
+  --output tsv
+$payload = $accessToken.Split('.')[1].Replace('-', '+').Replace('_', '/')
+$payload = $payload.PadRight($payload.Length + ((4 - ($payload.Length % 4)) % 4), '=')
+$principalId = (
+  [System.Text.Encoding]::UTF8.GetString(
+    [System.Convert]::FromBase64String($payload)
+  ) | ConvertFrom-Json
+).oid
 if (-not $principalId) {
   throw "The active Azure principal object id could not be resolved."
 }
 azd env set AZURE_PRINCIPAL_ID $principalId
 azd env set AZURE_PRINCIPAL_TYPE $principalType
+$tenantId = az account show --query tenantId --output tsv
+if (-not $tenantId) {
+  throw "The active Azure tenant id could not be resolved."
+}
+azd env set AZURE_TENANT_ID $tenantId
 
 $displayLocation = az account list-locations `
   --query "[?name=='$location'].displayName | [0]" `

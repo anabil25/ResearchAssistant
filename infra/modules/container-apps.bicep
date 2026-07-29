@@ -32,7 +32,6 @@ param documentIntelligenceEndpoint string
 param embeddingDeploymentName string
 param durableTaskEndpoint string
 param durableTaskHubName string
-param infrastructureSubnetId string
 param workspaceTenantId string
 param workspaceProjectId string
 param connectorGatewayUrl string
@@ -118,10 +117,6 @@ resource environment 'Microsoft.App/managedEnvironments@2026-01-01' = {
       }
     }
     zoneRedundant: false
-    vnetConfiguration: {
-      infrastructureSubnetId: infrastructureSubnetId
-      internal: false
-    }
   }
 }
 

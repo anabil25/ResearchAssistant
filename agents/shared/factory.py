@@ -60,6 +60,56 @@ class GovernedAgentFactory:
     def __init__(self, manifest: AgentManifest) -> None:
         self.manifest = manifest
 
+    def build_hosted(
+        self,
+        *,
+        client: Any | None = None,
+        settings: HarnessSettings | None = None,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
+        conversation_store: ConversationStore | None = None,
+    ) -> Agent:
+        """Build a Foundry Hosted Agent with platform-managed tools and lifecycle."""
+        load_dotenv(override=False)
+        effective_settings = settings or HarnessSettings.from_environment()
+        prepared = self.prepare_hosted(
+            effective_settings,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
+        )
+        deployment_scope = prepared.manifest.deployment_scope
+        if client is None:
+            client = _build_foundry_client(effective_settings)
+        contracts = bind_contracts(prepared.manifest)
+        return Agent(
+            client=client,
+            name=prepared.manifest.name,
+            instructions=prepared.manifest.instructions,
+            tools=tools_for_profile(prepared.manifest, client, effective_settings),
+            default_options={
+                "store": False,
+                "response_format": contracts.output_model,
+            },
+            middleware=middleware_for_manifest(
+                prepared.manifest,
+                effective_settings,
+                prepared.capabilities,
+                (),
+                platform_managed_tools=True,
+                conversation_store=conversation_store,
+                trusted_tenant_id=(
+                    deployment_scope.tenant_id
+                    if deployment_scope is not None
+                    else None
+                ),
+                trusted_project_id=(
+                    deployment_scope.project_id
+                    if deployment_scope is not None
+                    else None
+                ),
+            ),
+        )
+
     def build(
         self,
         *,
@@ -303,6 +353,36 @@ class GovernedAgentFactory:
             manifest=prepared_manifest,
             capabilities=capabilities,
             registrations=registrations,
+        )
+
+    def prepare_hosted(
+        self,
+        settings: HarnessSettings,
+        *,
+        trusted_tenant_id: str | None = None,
+        trusted_project_id: str | None = None,
+    ) -> PreparedAgent:
+        """Prepare the platform-managed Hosted Agent runtime without custom providers."""
+        self._validate_model_policy(settings)
+        deployment_scope = self._resolve_deployment_scope(
+            settings,
+            trusted_tenant_id=trusted_tenant_id,
+            trusted_project_id=trusted_project_id,
+        )
+        prepared_manifest = (
+            bind_deployment_scope(self.manifest, deployment_scope)
+            if deployment_scope is not None
+            else self.manifest
+        )
+        if _requires_toolbox(prepared_manifest) and settings.toolbox_endpoint is None:
+            raise ConfigurationError(
+                "Manifest requires a configured Foundry Toolbox endpoint",
+                context={"agent": self.manifest.id},
+            )
+        return PreparedAgent(
+            manifest=prepared_manifest,
+            capabilities=capabilities_for_manifest(prepared_manifest, settings),
+            registrations=(),
         )
 
     def bootstrap_runtime(

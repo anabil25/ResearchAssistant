@@ -9,16 +9,12 @@ from agent_framework import Workflow, WorkflowBuilder, WorkflowContext, executor
 from azure.ai.projects import AIProjectClient
 from pydantic import ValidationError
 
-from .approvals import ApprovalConsumptionAdapter
 from .capabilities import (
-    CapabilityExecutor,
     CapabilityHandler,
     CapabilityHandlerResolver,
     CapabilityPolicy,
-    CapabilityRegistry,
     InvocationContext,
     ProviderInstanceAttestation,
-    ToolRegistration,
 )
 from .catalog import capabilities_for_manifest
 from .contracts import (
@@ -26,7 +22,6 @@ from .contracts import (
     CoordinatorRequest,
     CoordinatorResponse,
     DatasetRequest,
-    DeploymentScope,
     GrantRequest,
     InstitutionRequest,
     LiteratureRequest,
@@ -42,18 +37,14 @@ from .contracts import (
     SpecialistRequestPayload,
     SpecialistResult,
     bind_contracts,
-    bind_deployment_scope,
-    canonical_digest,
 )
 from .credentials import get_credential
 from .errors import (
-    ConfigurationError,
     ContractError,
     HarnessError,
     InvocationError,
     error_from_exception,
 )
-from .idempotency import IdempotencyStore
 from .invocation import RetryingResponsesInvoker
 from .profiles import get_manifest
 from .settings import HarnessSettings
@@ -147,50 +138,16 @@ class CoordinatorRouter:
 
 
 def build_coordinator_workflow(
-    registration: ToolRegistration,
     *,
+    invoker: SpecialistInvoker,
     router: CoordinatorRouter | None = None,
     specialist_policy: SpecialistPolicy | None = None,
-    idempotency_store: IdempotencyStore | None = None,
-    approval_adapter: ApprovalConsumptionAdapter | None = None,
-    release_id: str | None = None,
-    allow_test_idempotency_store: bool = False,
-    allow_test_approval_adapter: bool = False,
 ) -> Workflow:
     coordinator = get_manifest("coordinator")
     effective_policy = specialist_policy or coordinator.specialist_policy
     if effective_policy is None:
         raise ContractError("Coordinator manifest requires a specialist policy")
-    binding_scope = (
-        registration.binding.tenant_scope,
-        registration.binding.project_scope,
-    )
-    if None not in binding_scope:
-        coordinator = bind_deployment_scope(
-            coordinator,
-            DeploymentScope(
-                tenant_id=cast(str, binding_scope[0]),
-                project_id=cast(str, binding_scope[1]),
-            ),
-        )
-    if not registration.runtime_attested or coordinator.capability_bindings != (registration.binding,):
-        raise ConfigurationError(
-            "Coordinator workflow requires its exact runtime-attested registration",
-            context={"agent": coordinator.id},
-        )
     effective_router = router or CoordinatorRouter(specialist_policy=effective_policy)
-    delegate = capabilities_for_manifest(coordinator)[0]
-    registry = CapabilityRegistry()
-    registry.add_descriptor(delegate)
-    registry.register_tool(registration)
-    capability_executor = CapabilityExecutor(
-        registry,
-        idempotency_store=idempotency_store,
-        approval_adapter=approval_adapter,
-        release_id=release_id,
-        allow_test_idempotency_store=allow_test_idempotency_store,
-        allow_test_approval_adapter=allow_test_approval_adapter,
-    )
 
     @executor(id="validate_request")
     async def validate_request(
@@ -224,21 +181,7 @@ def build_coordinator_workflow(
 
         async def invoke_one(request: SpecialistRequest) -> SpecialistResult:
             async with semaphore:
-                result = await capability_executor.invoke_operation(
-                    registration.tool_name,
-                    {"request": request},
-                    InvocationContext(
-                        tenant_id=request.request.tenant_id,
-                        project_id=request.request.project_id,
-                        principal_id=request.request.principal_id,
-                        scopes=frozenset({"research.specialist.invoke"}),
-                        destination=request.target_agent,
-                        idempotency_key=request.request_id,
-                        operation_fingerprint=canonical_digest(request.model_dump(mode="json")),
-                        deadline_monotonic=(time.monotonic() + effective_policy.deadline_seconds),
-                    ),
-                )
-                return SpecialistResult.model_validate(result["value"])
+                return await invoker(request)
 
         async with asyncio.timeout(effective_policy.deadline_seconds):
             results = tuple(await asyncio.gather(*(invoke_one(item) for item in requests)))

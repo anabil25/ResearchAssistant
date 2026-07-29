@@ -10,20 +10,34 @@ if [ -z "$subscription" ] || [ -z "$location" ]; then
 fi
 
 account_type="$(az account show --query user.type --output tsv)"
-account_name="$(az account show --query user.name --output tsv)"
 if [ "$account_type" = "user" ]; then
-  principal_id="$(az ad signed-in-user show --query id --output tsv)"
   principal_type="User"
 else
-  principal_id="$(az ad sp show --id "$account_name" --query id --output tsv)"
   principal_type="ServicePrincipal"
 fi
+access_token="$(az account get-access-token --resource https://management.azure.com/ --query accessToken --output tsv)"
+principal_id="$(python3 - "$access_token" <<'PY'
+import base64
+import json
+import sys
+
+payload = sys.argv[1].split('.')[1]
+payload += '=' * (-len(payload) % 4)
+print(json.loads(base64.urlsafe_b64decode(payload)).get('oid', ''))
+PY
+)"
 if [ -z "$principal_id" ]; then
   echo "The active Azure principal object id could not be resolved." >&2
   exit 1
 fi
 azd env set AZURE_PRINCIPAL_ID "$principal_id"
 azd env set AZURE_PRINCIPAL_TYPE "$principal_type"
+tenant_id="$(az account show --query tenantId --output tsv)"
+if [ -z "$tenant_id" ]; then
+  echo "The active Azure tenant id could not be resolved." >&2
+  exit 1
+fi
+azd env set AZURE_TENANT_ID "$tenant_id"
 
 display_location="$(az account list-locations \
   --query "[?name=='$location'].displayName | [0]" \

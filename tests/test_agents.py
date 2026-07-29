@@ -154,13 +154,14 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
     )
 
 
-def test_accelerator_private_data_and_ci_principal_contracts() -> None:
+def test_accelerator_public_poc_data_and_ci_principal_contracts() -> None:
     storage = (ROOT / "infra" / "modules" / "storage.bicep").read_text(encoding="utf-8")
     cosmos = (ROOT / "infra" / "modules" / "cosmos.bicep").read_text(encoding="utf-8")
     search = (ROOT / "infra" / "modules" / "search.bicep").read_text(encoding="utf-8")
 
-    assert "publicNetworkAccess: 'Disabled'" in storage
-    assert "publicNetworkAccess: 'Disabled'" in cosmos
+    assert "publicNetworkAccess: 'Enabled'" in storage
+    assert "publicNetworkAccess: 'Enabled'" in cosmos
+    assert "defaultAction: 'Allow'" in storage
     assert "param principalType string = 'User'" in storage
     assert "param principalType string = 'User'" in search
     assert "principalType: principalType" in storage
@@ -179,8 +180,14 @@ def test_preprovision_checks_requested_model_capacity() -> None:
     assert "needed=\"$capacity\"" in posix
     assert "azd env set AZURE_PRINCIPAL_ID" in powershell
     assert "azd env set AZURE_PRINCIPAL_TYPE" in powershell
+    assert "azd env set AZURE_TENANT_ID" in powershell
     assert "azd env set AZURE_PRINCIPAL_ID" in posix
     assert "azd env set AZURE_PRINCIPAL_TYPE" in posix
+    assert "azd env set AZURE_TENANT_ID" in posix
+    assert "account get-access-token" in powershell
+    assert "account get-access-token" in posix
+    assert "az ad signed-in-user show" not in powershell
+    assert "az ad signed-in-user show" not in posix
 
 
 def test_accelerator_uses_one_environment_scoped_durable_task_hub() -> None:

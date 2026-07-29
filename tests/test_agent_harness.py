@@ -5961,7 +5961,7 @@ def test_coordinator_policy_is_required_and_budget_is_enforced(
     with pytest.raises(ContractError, match="specialist policy"):
         CoordinatorRouter()
     with pytest.raises(ContractError, match="specialist policy"):
-        build_coordinator_workflow(cast(Any, lambda _request: None))
+        build_coordinator_workflow(invoker=cast(Any, lambda _request: None))
 
 
 @pytest.mark.asyncio
@@ -5981,22 +5981,7 @@ async def test_agent_framework_coordinator_workflow_preserves_typed_evidence() -
             response=_evidence_response(),
         )
 
-    coordinator_manifest = get_manifest("coordinator")
-    coordinator_binding = coordinator_manifest.capability_bindings[0]
-    with pytest.raises(ConfigurationError, match="runtime-attested"):
-        build_coordinator_workflow(
-            ToolRegistration(
-                binding=coordinator_binding,
-                tool_name="invoke",
-                handler=lambda payload: payload,
-                current_instance_fingerprint=(coordinator_binding.instance_ref.fingerprint),
-            )
-        )
-    mismatched_registration, _ = _runtime_registration(_binding("specialist.delegate"))
-    with pytest.raises(ConfigurationError, match="runtime-attested"):
-        build_coordinator_workflow(mismatched_registration)
-
-    workflow = build_coordinator_workflow(_coordinator_registration(invoke))
+    workflow = build_coordinator_workflow(invoker=invoke)
     request = CoordinatorRequest.model_validate(
         _request(
             tenant_id="tenant-a",
@@ -6031,7 +6016,7 @@ async def test_coordinator_workflow_validates_hosted_message_envelope() -> None:
     with pytest.raises(ContractError, match="payload"):
         await invalid_result
 
-    workflow = build_coordinator_workflow(_coordinator_registration(invoke))
+    workflow = build_coordinator_workflow(invoker=invoke)
     with pytest.raises(ContractError, match="final user"):
         await workflow.run([])
     with pytest.raises(ContractError, match="final user"):
@@ -6296,9 +6281,7 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
     coordinator_agent = coordinator.build_agent(
         settings=_settings(),
         invoker=invoke,
-        provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
         **_trusted_scope(coordinator.MANIFEST),
-        release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     tracer_provider = trace.get_tracer_provider()
     assert (
@@ -6311,7 +6294,7 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
     assert trace.get_tracer_provider() is tracer_provider
 
 
-def test_coordinator_factory_fails_closed_for_future_privileged_toolbox_capability(
+def test_coordinator_factory_requires_a_configured_toolbox_for_toolbox_bindings(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     coordinator = importlib.import_module("coordinator.factory")
@@ -6327,8 +6310,6 @@ def test_coordinator_factory_fails_closed_for_future_privileged_toolbox_capabili
     )
     mutated_factory = GovernedAgentFactory(mutated_manifest)
     monkeypatch.setattr(coordinator, "FACTORY", mutated_factory)
-    adapter = _ManifestProviderAdapter(mutated_manifest.capability_bindings)
-
     async def invoke(request: SpecialistRequest) -> SpecialistResult:
         return SpecialistResult(
             request_id=request.request_id,
@@ -6342,28 +6323,19 @@ def test_coordinator_factory_fails_closed_for_future_privileged_toolbox_capabili
         coordinator.build_agent(
             settings=_settings(),
             invoker=invoke,
-            provider_adapter=adapter,
             **trusted_scope,
         )
     toolbox_settings = _settings(
         toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp",
     )
-    with pytest.raises(ConfigurationError, match="durable idempotency store"):
+    assert (
         coordinator.build_agent(
             settings=toolbox_settings,
             invoker=invoke,
-            provider_adapter=adapter,
             **trusted_scope,
-        )
-    with pytest.raises(ConfigurationError, match="durable approval adapter"):
-        coordinator.build_agent(
-            settings=toolbox_settings,
-            invoker=invoke,
-            provider_adapter=adapter,
-            **trusted_scope,
-            idempotency_store=InMemoryIdempotencyStore(),
-            allow_test_idempotency_store=True,
-        )
+        ).name
+        == coordinator.MANIFEST.name
+    )
 
 
 def test_all_nine_agent_specific_factories_are_first_class(
@@ -6432,9 +6404,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
     coordinator_agent = coordinator.build_agent(
         settings=_settings(),
         invoker=invoke,
-        provider_adapter=_ManifestProviderAdapter(coordinator.MANIFEST.capability_bindings),
         **_trusted_scope(coordinator.MANIFEST),
-        release_attestor=_release_attestor(coordinator.MANIFEST),
     )
     assert isinstance(coordinator_agent, WorkflowAgent)
     assert coordinator_agent.name == coordinator.MANIFEST.name

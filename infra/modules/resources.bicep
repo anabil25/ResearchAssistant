@@ -249,17 +249,6 @@ module cosmos 'cosmos.bicep' = {
   }
 }
 
-module appPrivateNetwork 'app-private-network.bicep' = if (includeAcr) {
-  name: 'research-app-private-network'
-  params: {
-    name: take(resourceToken, 8)
-    location: location
-    tags: tags
-    storageAccountId: storage.outputs.accountId
-    cosmosAccountId: cosmos.outputs.accountId
-  }
-}
-
 module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault) {
   name: 'research-attestation-keyvault'
   params: {
@@ -348,7 +337,6 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     embeddingDeploymentName: embeddingDeploymentName
     durableTaskEndpoint: durableTask.outputs.endpoint
     durableTaskHubName: durableTask.outputs.taskHubName
-    infrastructureSubnetId: appPrivateNetwork!.outputs.containerAppsSubnetId
     workspaceTenantId: subscription().tenantId
     workspaceProjectId: foundryAccount::project.name
     connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors'
@@ -370,7 +358,6 @@ module apiManagement 'api-management.bicep' = if (includeAcr) {
     tags: tags
     publisherName: apimPublisherName
     publisherEmail: apimPublisherEmail
-    subnetResourceId: appPrivateNetwork!.outputs.apiManagementSubnetId
     connectorBackendUrl: containerApps!.outputs.connectorAdapterUrl
     tenantId: subscription().tenantId
     apiPrincipalId: identities.outputs.apiPrincipalId

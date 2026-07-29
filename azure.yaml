@@ -38,19 +38,19 @@ services:
         project: .
         host: containerapp
         language: python
-        image: research-assistant-api
         docker:
             path: ./services/api/Dockerfile
             context: .
+            image: research-assistant-api
             remoteBuild: true
     connector-adapter:
         project: .
         host: containerapp
         language: python
-        image: research-assistant-connector-adapter
         docker:
             path: ./services/connector_adapter/Dockerfile
             context: .
+            image: research-assistant-connector-adapter
             remoteBuild: true
     dataset-agent:
         project: ./agents
@@ -405,21 +405,14 @@ services:
         project: .
         host: containerapp
         language: python
-        image: research-assistant-worker
         docker:
             path: ./services/worker/Dockerfile
             context: .
+            image: research-assistant-worker
             remoteBuild: true
 infra:
-    provider: microsoft.foundry
+    provider: bicep
 hooks:
-    predeploy:
-        windows:
-            shell: pwsh
-            run: ./scripts/predeploy.ps1
-        posix:
-            shell: sh
-            run: ./scripts/predeploy.sh
     postdeploy:
         windows:
             shell: pwsh
@@ -434,6 +427,13 @@ hooks:
         posix:
             shell: sh
             run: ./scripts/postprovision.sh
+    predeploy:
+        windows:
+            shell: pwsh
+            run: ./scripts/predeploy.ps1
+        posix:
+            shell: sh
+            run: ./scripts/predeploy.sh
     preprovision:
         windows:
             shell: pwsh

@@ -101,10 +101,11 @@ flowchart LR
 
 ### Runtime governance boundary
 
-- Hosted startup fails before constructing or serving an agent unless an
-  application-owned durable release attestor confirms the immutable release,
-  schemas, source tree, model/provider pins, and every objective hard gate.
-  Evaluator scores are advisory and never substitute for these gates.
+- Production release promotion requires an application-owned durable release
+  attestor to confirm the immutable release, schemas, source tree, model and
+  provider pins, and every objective hard gate. Evaluator scores are advisory
+  and never substitute for these gates. Foundry Hosted Agent startup uses the
+  platform-managed identity, lifecycle, and Toolbox connections directly.
 - Consequential capabilities claim durable idempotency first, atomically
   consume an exact-bound one-time `approval_decision_id`, persist the receipt,
   and only then resolve the runtime handler. Client booleans are never
