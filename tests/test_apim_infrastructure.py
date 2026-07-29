@@ -272,3 +272,4 @@ def test_main_bicep_defaults_entra_and_keyvault_params_off_for_backward_compatib
     assert "param entraApiClientId string = ''" in main
     assert "param includeAttestationKeyVault bool = false" in main
     assert "param attestationSigningSecretsProvisioned bool = false" in main
+    assert "param enableApimMcpTools bool = false" in main

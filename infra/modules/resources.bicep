@@ -57,6 +57,9 @@ param includeAcr bool = false
 @maxValue(333398872)
 param connectorAdapterMaxRequestBodyBytes int = 5657944
 
+@description('Enable APIM MCP tool resources. Disabled by default because preview APIs can return transient 502 during provisioning.')
+param enableApimMcpTools bool = false
+
 @description('Object id of the developer running azd. When set, grants project data-plane roles. Empty disables the role assignments so headless / CI runs do not fail.')
 param principalId string = ''
 
@@ -363,6 +366,7 @@ module apiManagement 'api-management.bicep' = if (includeAcr) {
     apiPrincipalId: identities.outputs.apiPrincipalId
     foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
+    enableMcpTools: enableApimMcpTools
   }
 }
 
