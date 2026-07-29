@@ -807,6 +807,54 @@ def test_connector_toolboxes_reuse_valid_existing_definitions(
     assert not any(command[1:4] == ["ai", "toolbox", "create"] for command in commands)
 
 
+def test_connector_toolboxes_retry_when_foundry_project_is_not_ready(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "AZURE_AI_PROJECT_ID": "/subscriptions/test/projects/research",
+        "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example",
+        "AZURE_CONNECTOR_MCP_URL": "https://gateway.example/mcp",
+    }
+    created: set[str] = set()
+    project_ready = False
+    sleeps: list[int] = []
+
+    def fake_run(command: list[str], **_kwargs: object) -> Completed:
+        nonlocal project_ready
+        if command[1:3] == ["cloud", "show"]:
+            return Completed("https://management.azure.com/")
+        if command[1:3] == ["rest", "--method"]:
+            return Completed()
+        if command[1:4] == ["ai", "toolbox", "show"]:
+            toolbox_name = command[4]
+            if not project_ready:
+                project_ready = True
+                return Completed("Project not found", returncode=1)
+            if toolbox_name not in created:
+                return Completed(returncode=1)
+            return Completed(
+                json.dumps(
+                    {"endpoint": f"https://foundry.example/toolboxes/{toolbox_name}/mcp"}
+                )
+            )
+        if command[1:4] == ["ai", "toolbox", "create"]:
+            created.add(command[4])
+            return Completed()
+        if command[1:3] == ["env", "set"]:
+            return Completed()
+        raise AssertionError(f"Unexpected command: {command}")
+
+    monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
+    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
+    monkeypatch.setattr(postprovision, "TOOLBOX_PROJECT_RETRY_DELAYS", (0, 2))
+    monkeypatch.setattr("scripts.postprovision.time.sleep", sleeps.append)
+
+    endpoints = postprovision.configure_connector_toolboxes()
+
+    assert len(endpoints) == 4
+    assert sleeps == [2]
+
+
 def test_connector_toolboxes_reject_non_https_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

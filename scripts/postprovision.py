@@ -32,8 +32,13 @@ from scripts.azd_env import sync_canonical_azd_outputs
 
 ROOT = Path(__file__).resolve().parents[1]
 RETRY_DELAYS = (0, 30, 60, 90, 120)
+TOOLBOX_PROJECT_RETRY_DELAYS = (0, 15, 30, 60, 90, 120)
 AZ_CLI = "az.cmd" if os.name == "nt" else "az"
 AZD_CLI = "azd.exe" if os.name == "nt" else "azd"
+
+
+class ToolboxProjectUnavailable(RuntimeError):
+    pass
 
 
 def required_env(name: str) -> str:
@@ -415,6 +420,110 @@ def connector_connection_payload(
     }
 
 
+def _toolbox_command_result(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+    )
+
+
+def _toolbox_error_text(result: subprocess.CompletedProcess[str]) -> str:
+    return "\n".join(
+        value.strip()
+        for value in (
+            getattr(result, "stdout", ""),
+            getattr(result, "stderr", ""),
+        )
+        if isinstance(value, str) and value.strip()
+    )
+
+
+def _raise_for_toolbox_failure(
+    result: subprocess.CompletedProcess[str],
+    *,
+    toolbox_name: str,
+) -> None:
+    details = _toolbox_error_text(result)
+    if "project not found" in details.lower():
+        raise ToolboxProjectUnavailable(
+            f"Foundry project is not ready for Toolbox {toolbox_name}"
+        )
+    raise RuntimeError(
+        f"Toolbox {toolbox_name} command failed: {details or 'no diagnostic output'}"
+    )
+
+
+def _toolbox_endpoint(
+    *,
+    toolbox_name: str,
+    definition: Path,
+    project_endpoint: str,
+) -> str:
+    show_command = [
+        AZD_CLI,
+        "ai",
+        "toolbox",
+        "show",
+        toolbox_name,
+        "--project-endpoint",
+        project_endpoint,
+        "--output",
+        "json",
+    ]
+    shown = _toolbox_command_result(show_command)
+    if shown.returncode != 0:
+        if "project not found" in _toolbox_error_text(shown).lower():
+            _raise_for_toolbox_failure(shown, toolbox_name=toolbox_name)
+        created = _toolbox_command_result(
+            [
+                AZD_CLI,
+                "ai",
+                "toolbox",
+                "create",
+                toolbox_name,
+                "--from-file",
+                str(definition),
+                "--project-endpoint",
+                project_endpoint,
+            ]
+        )
+        if created.returncode != 0:
+            _raise_for_toolbox_failure(created, toolbox_name=toolbox_name)
+        shown = _toolbox_command_result(show_command)
+        if shown.returncode != 0:
+            _raise_for_toolbox_failure(shown, toolbox_name=toolbox_name)
+    payload = json.loads(shown.stdout)
+    endpoint = payload.get("endpoint")
+    if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
+        raise RuntimeError(f"Toolbox {toolbox_name} did not return an HTTPS endpoint")
+    return endpoint
+
+
+def with_toolbox_project_retry[T](
+    toolbox_name: str,
+    operation: Callable[[], T],
+) -> T:
+    last_error: ToolboxProjectUnavailable | None = None
+    for attempt, delay in enumerate(TOOLBOX_PROJECT_RETRY_DELAYS, start=1):
+        if delay:
+            print(
+                f"Waiting {delay}s for Foundry project Toolbox readiness "
+                f"({attempt}/{len(TOOLBOX_PROJECT_RETRY_DELAYS)})."
+            )
+            time.sleep(delay)
+        try:
+            return operation()
+        except ToolboxProjectUnavailable as exc:
+            last_error = exc
+    raise RuntimeError(
+        f"Foundry project did not become ready for Toolbox {toolbox_name} "
+        f"after {sum(TOOLBOX_PROJECT_RETRY_DELAYS)}s"
+    ) from last_error
+
+
 def configure_connector_toolboxes() -> dict[str, str]:
     project_id = required_env("AZURE_AI_PROJECT_ID")
     project_endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
@@ -482,52 +591,14 @@ def configure_connector_toolboxes() -> dict[str, str]:
     }
     endpoints: dict[str, str] = {}
     for toolbox_name, (definition, environment_name) in definitions.items():
-        show_command = [
-            AZD_CLI,
-            "ai",
-            "toolbox",
-            "show",
+        endpoint = with_toolbox_project_retry(
             toolbox_name,
-            "--project-endpoint",
-            project_endpoint,
-            "--output",
-            "json",
-        ]
-        shown = subprocess.run(
-            show_command,
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
+            lambda toolbox_name=toolbox_name, definition=definition: _toolbox_endpoint(
+                toolbox_name=toolbox_name,
+                definition=definition,
+                project_endpoint=project_endpoint,
+            ),
         )
-        if shown.returncode != 0:
-            subprocess.run(
-                [
-                    AZD_CLI,
-                    "ai",
-                    "toolbox",
-                    "create",
-                    toolbox_name,
-                    "--from-file",
-                    str(definition),
-                    "--project-endpoint",
-                    project_endpoint,
-                ],
-                check=True,
-            )
-            shown = subprocess.run(
-                show_command,
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            )
-        payload = json.loads(shown.stdout)
-        endpoint = payload.get("endpoint")
-        if not isinstance(endpoint, str) or not endpoint.startswith("https://"):
-            raise RuntimeError(
-                f"Toolbox {toolbox_name} did not return an HTTPS endpoint"
-            )
         subprocess.run(
             [AZD_CLI, "env", "set", environment_name, endpoint],
             check=True,
