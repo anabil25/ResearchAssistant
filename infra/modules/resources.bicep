@@ -57,7 +57,7 @@ param includeAcr bool = false
 @maxValue(333398872)
 param connectorAdapterMaxRequestBodyBytes int = 5657944
 
-@description('Object id of the developer running azd. When set, grants Cognitive Services User on the project. Empty disables the role assignment so headless / CI runs do not fail.')
+@description('Object id of the developer running azd. When set, grants project data-plane roles. Empty disables the role assignments so headless / CI runs do not fail.')
 param principalId string = ''
 
 @description('Principal type used in the developer role assignment.')
@@ -418,6 +418,16 @@ resource developerCognitiveServicesUser 'Microsoft.Authorization/roleAssignments
     principalId: principalId
     principalType: principalType
     roleDefinitionId: cognitiveServicesUserRoleId
+  }
+}
+
+resource developerFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
+  name: guid(foundryAccount::project.id, principalId, foundryUserRoleId)
+  scope: foundryAccount::project
+  properties: {
+    principalId: principalId
+    principalType: principalType
+    roleDefinitionId: foundryUserRoleId
   }
 }
 

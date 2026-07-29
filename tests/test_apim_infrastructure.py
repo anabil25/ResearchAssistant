@@ -47,6 +47,16 @@ def test_apim_uses_the_public_network_in_the_poc_profile() -> None:
     assert "infrastructureSubnetId" not in container_apps
 
 
+def test_foundry_project_assigns_deployer_data_plane_roles() -> None:
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert "resource developerFoundryUser" in resources
+    assert "name: guid(foundryAccount::project.id, principalId, foundryUserRoleId)" in resources
+    assert "roleDefinitionId: foundryUserRoleId" in resources
+
+
 def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> None:
     container_apps = (
         ROOT / "infra" / "modules" / "container-apps.bicep"
