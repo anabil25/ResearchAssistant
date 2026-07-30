@@ -86,6 +86,9 @@ param enableEntraAuth bool = false
 @maxValue(333398872)
 param connectorAdapterMaxRequestBodyBytes int = 5657944
 
+@description('Enable APIM MCP tool resources. Disabled by default because preview APIs can return transient 502 during provisioning.')
+param enableApimMcpTools bool = false
+
 // Resources
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' = {
@@ -113,6 +116,7 @@ module resources 'modules/resources.bicep' = {
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
+    enableApimMcpTools: enableApimMcpTools
   }
 }
 

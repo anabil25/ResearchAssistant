@@ -199,6 +199,9 @@ def test_bicep_model_parameters_match_azure_manifest() -> None:
     parameters = json.loads((ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8"))
 
     assert parameters["parameters"]["deployments"]["value"] == (manifest["services"]["ai-project"]["deployments"])
+    assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "rg-${AZURE_ENV_NAME}"
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${AZURE_ENV_NAME}"
 
 
 def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
@@ -211,14 +214,14 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
     assert "keyVault" not in resources
 
 
-def test_accelerator_public_poc_data_and_ci_principal_contracts() -> None:
+def test_accelerator_private_data_and_ci_principal_contracts() -> None:
     storage = (ROOT / "infra" / "modules" / "storage.bicep").read_text(encoding="utf-8")
     cosmos = (ROOT / "infra" / "modules" / "cosmos.bicep").read_text(encoding="utf-8")
     search = (ROOT / "infra" / "modules" / "search.bicep").read_text(encoding="utf-8")
 
-    assert "publicNetworkAccess: 'Enabled'" in storage
-    assert "publicNetworkAccess: 'Enabled'" in cosmos
-    assert "defaultAction: 'Allow'" in storage
+    assert "publicNetworkAccess: 'Disabled'" in storage
+    assert "publicNetworkAccess: 'Disabled'" in cosmos
+    assert "defaultAction: 'Deny'" in storage
     assert "param principalType string = 'User'" in storage
     assert "param principalType string = 'User'" in search
     assert "principalType: principalType" in storage
@@ -253,6 +256,29 @@ def test_accelerator_uses_one_environment_scoped_durable_task_hub() -> None:
     assert "resource legacyTaskHub" not in module
     assert "name: 'research'" in module
     assert "output taskHubName string = taskHub.name" in module
+
+
+def test_azd_up_deploys_every_service_sequentially() -> None:
+    """One-click `azd up` must deploy services one per step.
+
+    azd deploys in parallel by default, but the Foundry agent extension
+    read-modify-writes azure.yaml per agent; concurrent agents truncate it and
+    the deploy fails with "unable to parse azure.yaml file. File is empty."
+    azd rewrites a plain ``azd: deploy api`` step into ``{args: [...]}``, so
+    accept either spelling.
+    """
+    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
+
+    steps = []
+    for step in manifest["workflows"]["up"]["steps"]:
+        command = step["azd"]
+        steps.append(command.split() if isinstance(command, str) else command["args"])
+
+    assert steps[0] == ["provision"]
+    deployed = [service for verb, service in steps[1:] if verb == "deploy"]
+    assert "--all" not in deployed
+    assert len(deployed) == len(set(deployed))
+    assert set(deployed) == set(manifest["services"])
 
 
 def test_coordinator_specialist_invocation_retries_transient_shapes(

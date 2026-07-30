@@ -171,6 +171,7 @@ def test_postprovision_waits_for_each_container_app_acr_role(
     values = {
         "AZURE_RESOURCE_GROUP": "rg-test",
         "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/test/acr",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "acrtest.azurecr.io",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
         "SERVICE_WORKER_NAME": "worker",
@@ -183,6 +184,8 @@ def test_postprovision_waits_for_each_container_app_acr_role(
             self.stdout = stdout
 
     def fake_run(command: list[str], **_kwargs: object) -> Completed:
+        if command[1:3] == ["containerapp", "show"]:
+            return Completed("system\n")
         if command[1:4] == ["containerapp", "identity", "show"]:
             app_name = command[command.index("--name") + 1]
             return Completed(f"principal-{app_name}\n")

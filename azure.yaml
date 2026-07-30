@@ -441,3 +441,65 @@ hooks:
         posix:
             shell: sh
             run: ./scripts/preprovision.sh
+workflows:
+    up:
+        steps:
+            - azd:
+                args:
+                    - provision
+            - azd:
+                args:
+                    - deploy
+                    - ai-project
+            - azd:
+                args:
+                    - deploy
+                    - connector-adapter
+            - azd:
+                args:
+                    - deploy
+                    - api
+            - azd:
+                args:
+                    - deploy
+                    - worker
+            - azd:
+                args:
+                    - deploy
+                    - web
+            - azd:
+                args:
+                    - deploy
+                    - research-coordinator
+            - azd:
+                args:
+                    - deploy
+                    - literature-agent
+            - azd:
+                args:
+                    - deploy
+                    - literature-online-agent
+            - azd:
+                args:
+                    - deploy
+                    - grant-agent
+            - azd:
+                args:
+                    - deploy
+                    - grant-online-agent
+            - azd:
+                args:
+                    - deploy
+                    - matching-agent
+            - azd:
+                args:
+                    - deploy
+                    - matching-online-agent
+            - azd:
+                args:
+                    - deploy
+                    - dataset-agent
+            - azd:
+                args:
+                    - deploy
+                    - institution-agent

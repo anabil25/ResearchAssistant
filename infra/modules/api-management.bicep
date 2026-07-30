@@ -10,6 +10,7 @@ param tenantId string
 param apiPrincipalId string
 param foundryProjectPrincipalId string
 param logAnalyticsWorkspaceId string
+param enableMcpTools bool = false
 
 var connectorOpenApi = loadTextContent('../../packages/contracts/connector-adapter-openapi.json')
 var connectorMcpDefinitions = loadJsonContent('../../infra/connector-mcp-catalog.json')
@@ -183,7 +184,7 @@ resource connectorMcp 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' 
   ]
 }
 
-resource literatureTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = {
+resource literatureTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
   parent: connectorMcp
   name: 'searchLiteratureMetadata'
   properties: {
@@ -198,7 +199,7 @@ resource literatureTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-p
   }
 }
 
-resource grantTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = {
+resource grantTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
   parent: connectorMcp
   name: 'searchGrantOpportunities'
   properties: {
@@ -213,7 +214,7 @@ resource grantTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-previe
   }
 }
 
-resource matchingTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = {
+resource matchingTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
   parent: connectorMcp
   name: 'searchMatchingMetadata'
   properties: {

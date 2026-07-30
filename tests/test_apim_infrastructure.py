@@ -115,16 +115,56 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "research-connectors/v1'" not in module
 
 
-def test_apim_uses_the_public_network_in_the_poc_profile() -> None:
+def test_data_services_use_the_minimal_private_network() -> None:
     resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
         encoding="utf-8"
     )
     container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
         encoding="utf-8"
     )
+    private_network = (ROOT / "infra" / "modules" / "app-private-network.bicep").read_text(
+        encoding="utf-8"
+    )
 
-    assert "app-private-network.bicep" not in resources
-    assert "infrastructureSubnetId" not in container_apps
+    assert "app-private-network.bicep" in resources
+    assert "infrastructureSubnetId: infrastructureSubnetId" in container_apps
+    assert "10.70.0.0/27" in private_network
+    assert "10.70.0.32/28" in private_network
+    assert "Microsoft.App/environments" in private_network
+    assert "privatelink.blob." in private_network
+    assert "privatelink.documents.azure.com" in private_network
+    assert private_network.count("Microsoft.Network/privateEndpoints@") == 2
+    assert "api-management" not in private_network
+
+
+def test_every_container_app_binds_acr_pull_to_a_preexisting_identity() -> None:
+    """Registry RBAC must exist before Container App creation."""
+    container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert container_apps.count("server: acr.properties.loginServer") == 4
+    app_blocks = {
+        name: container_apps.split(f"resource {name} ", 1)[1].split("\nresource ", 1)[0]
+        for name in ("connectorAdapter", "api", "web", "worker")
+    }
+    for name in ("connectorAdapter", "api", "web"):
+        assert "identity: apiIdentityResourceId" in app_blocks[name]
+    assert "identity: workerIdentityResourceId" in app_blocks["worker"]
+    assert "principalId: apiIdentityPrincipalId" in container_apps
+    assert "principalId: workerIdentityPrincipalId" in container_apps
+    assert container_apps.count("apiIdentityAcrPull") == 4
+    assert container_apps.count("workerIdentityAcrPull") == 2
+
+
+def test_foundry_project_assigns_deployer_data_plane_roles() -> None:
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert "resource developerFoundryUser" in resources
+    assert "name: guid(foundryAccount::project.id, principalId, foundryUserRoleId)" in resources
+    assert "roleDefinitionId: foundryUserRoleId" in resources
 
 
 def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> None:
@@ -304,3 +344,4 @@ def test_main_bicep_defaults_entra_params_off_for_backward_compatibility() -> No
     assert "param enableEntraAuth bool = false" in main
     assert "param entraTenantId string = ''" in main
     assert "param entraApiClientId string = ''" in main
+    assert "param enableApimMcpTools bool = false" in main

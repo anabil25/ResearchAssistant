@@ -34,5 +34,3 @@ def test_settings_construct_in_any_environment(environment: str) -> None:
 def test_gateway_enforcement_is_independent_of_environment(environment: str) -> None:
     assert Settings(environment=environment, entra_auth_enforced=True).entra_auth_enforced is True
     assert Settings(environment=environment, entra_auth_enforced=False).entra_auth_enforced is False
-
-

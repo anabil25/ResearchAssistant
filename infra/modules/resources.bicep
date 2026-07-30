@@ -60,7 +60,10 @@ param includeAcr bool = false
 @maxValue(333398872)
 param connectorAdapterMaxRequestBodyBytes int = 5657944
 
-@description('Object id of the developer running azd. When set, grants Cognitive Services User on the project. Empty disables the role assignment so headless / CI runs do not fail.')
+@description('Enable APIM MCP tool resources. Disabled by default because preview APIs can return transient 502 during provisioning.')
+param enableApimMcpTools bool = false
+
+@description('Object id of the developer running azd. When set, grants project data-plane roles. Empty disables the role assignments so headless / CI runs do not fail.')
 param principalId string = ''
 
 @description('Principal type used in the developer role assignment.')
@@ -275,6 +278,17 @@ module cosmos 'cosmos.bicep' = {
   }
 }
 
+module privateNetwork 'app-private-network.bicep' = if (includeAcr) {
+  name: 'app-private-network'
+  params: {
+    name: resourceToken
+    location: location
+    tags: tags
+    storageAccountId: storage.outputs.accountId
+    cosmosAccountId: cosmos.outputs.accountId
+  }
+}
+
 module documentIntelligence 'document-intelligence.bicep' = {
   name: 'document-intelligence'
   params: {
@@ -336,6 +350,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.workspaceName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    infrastructureSubnetId: privateNetwork!.outputs.containerAppsSubnetId
     foundryProjectEndpoint: 'https://${foundryAccount.name}.services.ai.azure.com/api/projects/${foundryAccount::project.name}'
     openAIEndpoint: 'https://${foundryAccount.name}.openai.azure.com/'
     apiIdentityResourceId: identities.outputs.apiResourceId
@@ -344,6 +359,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     workerIdentityResourceId: identities.outputs.workerResourceId
     workerIdentityClientId: identities.outputs.workerClientId
+    workerIdentityPrincipalId: identities.outputs.workerPrincipalId
     acrResourceId: acr!.outputs.resourceId
     searchEndpoint: search.outputs.endpoint
     searchIndexName: search.outputs.indexName
@@ -387,6 +403,7 @@ module apiManagement 'api-management.bicep' = if (includeAcr) {
     apiPrincipalId: identities.outputs.apiPrincipalId
     foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
+    enableMcpTools: enableApimMcpTools
   }
 }
 
@@ -442,6 +459,16 @@ resource developerCognitiveServicesUser 'Microsoft.Authorization/roleAssignments
     principalId: principalId
     principalType: principalType
     roleDefinitionId: cognitiveServicesUserRoleId
+  }
+}
+
+resource developerFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
+  name: guid(foundryAccount::project.id, principalId, foundryUserRoleId)
+  scope: foundryAccount::project
+  properties: {
+    principalId: principalId
+    principalType: principalType
+    roleDefinitionId: foundryUserRoleId
   }
 }
 

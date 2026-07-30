@@ -5,6 +5,7 @@ param location string
 param tags object = {}
 param logAnalyticsWorkspaceName string
 param appInsightsConnectionString string
+param infrastructureSubnetId string
 param foundryProjectEndpoint string
 param openAIEndpoint string
 param apiIdentityResourceId string
@@ -13,6 +14,7 @@ param apiIdentityPrincipalId string
 param foundryProjectPrincipalId string
 param workerIdentityResourceId string
 param workerIdentityClientId string
+param workerIdentityPrincipalId string
 param acrResourceId string
 param searchEndpoint string
 param searchIndexName string
@@ -70,6 +72,9 @@ resource environment 'Microsoft.App/managedEnvironments@2026-01-01' = {
   location: location
   tags: tags
   properties: {
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {
@@ -97,6 +102,12 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: apiIdentityResourceId
+        }
+      ]
       ingress: {
         allowInsecure: false
         external: true
@@ -210,6 +221,9 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
+  dependsOn: [
+    apiIdentityAcrPull
+  ]
 }
 
 resource api 'Microsoft.App/containerApps@2026-01-01' = {
@@ -228,6 +242,12 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: apiIdentityResourceId
+        }
+      ]
       ingress: {
         allowInsecure: false
         external: false
@@ -417,6 +437,9 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
+  dependsOn: [
+    apiIdentityAcrPull
+  ]
 }
 
 // Azure Container Apps built-in authentication (EasyAuth). When enabled,
@@ -464,12 +487,21 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
     'azd-service-name': 'web'
   })
   identity: {
-    type: 'SystemAssigned'
+    type: 'SystemAssigned,UserAssigned'
+    userAssignedIdentities: {
+      '${apiIdentityResourceId}': {}
+    }
   }
   properties: {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: apiIdentityResourceId
+        }
+      ]
       ingress: {
         allowInsecure: false
         external: true
@@ -547,6 +579,9 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
+  dependsOn: [
+    apiIdentityAcrPull
+  ]
 }
 
 resource worker 'Microsoft.App/containerApps@2026-01-01' = {
@@ -565,6 +600,12 @@ resource worker 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: workerIdentityResourceId
+        }
+      ]
     }
     template: {
       containers: [
@@ -653,43 +694,26 @@ resource worker 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
+  dependsOn: [
+    workerIdentityAcrPull
+  ]
 }
 
-resource webAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, web.name, acrPullRoleId)
+resource apiIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, apiIdentityPrincipalId, acrPullRoleId)
   scope: acr
   properties: {
-    principalId: web.identity.principalId
+    principalId: apiIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: acrPullRoleId
   }
 }
 
-resource apiAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, api.name, acrPullRoleId)
+resource workerIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, workerIdentityPrincipalId, acrPullRoleId)
   scope: acr
   properties: {
-    principalId: api.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: acrPullRoleId
-  }
-}
-
-resource workerAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, worker.name, acrPullRoleId)
-  scope: acr
-  properties: {
-    principalId: worker.identity.principalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: acrPullRoleId
-  }
-}
-
-resource connectorAdapterAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, connectorAdapter.name, acrPullRoleId)
-  scope: acr
-  properties: {
-    principalId: connectorAdapter.identity.principalId
+    principalId: workerIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: acrPullRoleId
   }

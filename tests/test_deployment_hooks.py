@@ -221,6 +221,8 @@ def test_configure_agent_rbac_entrypoint_syncs_agents_and_grants_coordinator_rol
     ]
     assert sync_calls == ["sync"]
     assert len(env_sets) == len(agent_rbac.AGENT_NAMES) * 4
+    # Every hosted agent reads its own model deployment at startup, so each
+    # instance identity needs the grant -- not just the coordinator's.
     assert role_commands == [
         [
             agent_rbac.AZ_CLI,
@@ -238,8 +240,11 @@ def test_configure_agent_rbac_entrypoint_syncs_agents_and_grants_coordinator_rol
             "--output",
             "none",
         ]
+        for _ in agent_rbac.AGENT_NAMES
     ]
-    assert "Granted Foundry User to research-coordinator" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    for agent_name in agent_rbac.AGENT_NAMES:
+        assert f"Granted Foundry User to {agent_name}" in output
 
 
 def test_postprovision_required_env_accepts_values_and_rejects_missing(
@@ -591,65 +596,13 @@ def test_blob_archival_uploads_only_files_with_deterministic_metadata(
     )
 
 
-def test_container_registry_configuration_rejects_duplicate_app_targets(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "AZURE_RESOURCE_GROUP": "rg-research",
-        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
-        "SERVICE_WEB_NAME": "shared",
-        "SERVICE_API_NAME": "shared",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
-    }
-    monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
-
-    with pytest.raises(RuntimeError, match="Expected distinct"):
-        postprovision.configure_container_registries()
-
-
-def test_container_registry_configuration_sets_identity_for_every_app(
-    monkeypatch: pytest.MonkeyPatch,
-    capsys: pytest.CaptureFixture[str],
-) -> None:
-    values = {
-        "AZURE_RESOURCE_GROUP": "rg-research",
-        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
-        "SERVICE_WEB_NAME": "web",
-        "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
-    }
-    commands: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> Completed:
-        commands.append(command)
-        return Completed()
-
-    monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
-    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
-
-    postprovision.configure_container_registries()
-
-    assert [command[command.index("--name") + 1] for command in commands] == [
-        "web",
-        "api",
-        "worker",
-        "adapter",
-    ]
-    assert all(
-        command[command.index("--identity") + 1] == "system"
-        for command in commands
-    )
-    assert capsys.readouterr().out.count("Configured identity-based ACR pull") == 4
-
-
-def test_acr_role_wait_rejects_container_app_without_identity(
+def test_acr_role_wait_rejects_container_app_without_registry_identity(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
         "AZURE_RESOURCE_GROUP": "rg-research",
         "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/test/acr",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
         "SERVICE_WORKER_NAME": "worker",
@@ -661,7 +614,7 @@ def test_acr_role_wait_rejects_container_app_without_identity(
         lambda *_args, **_kwargs: Completed(" \n"),
     )
 
-    with pytest.raises(RuntimeError, match="Container App web has no system identity"):
+    with pytest.raises(RuntimeError, match="Container App web has no ACR identity"):
         postprovision.wait_for_acr_pull_roles()
 
 
@@ -672,6 +625,7 @@ def test_acr_role_wait_retries_until_assignment_is_visible(
     values = {
         "AZURE_RESOURCE_GROUP": "rg-research",
         "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/test/acr",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
         "SERVICE_WORKER_NAME": "worker",
@@ -682,8 +636,11 @@ def test_acr_role_wait_retries_until_assignment_is_visible(
 
     def fake_run(command: list[str], **_kwargs: object) -> Completed:
         app_name = command[command.index("--name") + 1] if "--name" in command else ""
-        if command[1:4] == ["containerapp", "identity", "show"]:
-            return Completed(f"principal-{app_name}")
+        if command[1:3] == ["containerapp", "show"]:
+            return Completed(f"/subscriptions/test/identities/{app_name}")
+        if command[1:3] == ["identity", "show"]:
+            identity_name = command[command.index("--ids") + 1].rsplit("/", 1)[-1]
+            return Completed(f"principal-{identity_name}")
         principal = command[command.index("--assignee-object-id") + 1]
         role_attempts[principal] = role_attempts.get(principal, 0) + 1
         role = "" if role_attempts[principal] == 1 else "AcrPull"
@@ -711,6 +668,7 @@ def test_acr_role_wait_fails_after_fifth_check(
     values = {
         "AZURE_RESOURCE_GROUP": "rg-research",
         "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/test/acr",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
         "SERVICE_WORKER_NAME": "worker",
@@ -720,6 +678,8 @@ def test_acr_role_wait_fails_after_fifth_check(
 
     def fake_run(command: list[str], **_kwargs: object) -> Completed:
         nonlocal checks
+        if command[1:3] == ["containerapp", "show"]:
+            return Completed("system")
         if command[1:4] == ["containerapp", "identity", "show"]:
             return Completed("principal-web")
         checks += 1
@@ -741,6 +701,7 @@ def test_acr_role_wait_continues_to_later_apps_if_retry_iterator_is_exhausted(
     values = {
         "AZURE_RESOURCE_GROUP": "rg-research",
         "AZURE_CONTAINER_REGISTRY_RESOURCE_ID": "/subscriptions/test/acr",
+        "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
         "SERVICE_WORKER_NAME": "worker",
@@ -749,10 +710,12 @@ def test_acr_role_wait_continues_to_later_apps_if_retry_iterator_is_exhausted(
     identities: list[str] = []
 
     def fake_run(command: list[str], **_kwargs: object) -> Completed:
+        if command[1:3] == ["containerapp", "show"]:
+            app_name = command[command.index("--name") + 1]
+            identities.append(app_name)
+            return Completed("system")
         assert command[1:4] == ["containerapp", "identity", "show"]
-        app_name = command[command.index("--name") + 1]
-        identities.append(app_name)
-        return Completed(f"principal-{app_name}")
+        return Completed("principal")
 
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
     monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
@@ -929,6 +892,11 @@ def test_connector_toolboxes_retry_when_foundry_project_is_not_ready(
     assert sleeps == [2]
 
 
+def test_toolbox_project_retry_budget_covers_fresh_foundry_provisioning() -> None:
+    assert sum(postprovision.TOOLBOX_PROJECT_RETRY_DELAYS) >= 900
+    assert postprovision.TOOLBOX_PROJECT_RETRY_DELAYS[-1] >= 300
+
+
 def test_connector_toolboxes_reject_non_https_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -993,6 +961,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     credential = object()
     documents = [{"id": "one"}, {"id": "two"}]
     values = {
+        "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example/projects/project-name",
         "AZURE_SEARCH_ENDPOINT": "https://search.example",
         "AZURE_SEARCH_INDEX_NAME": "research-index",
         "AZURE_TENANT_ID": "tenant-id",
@@ -1038,9 +1007,6 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     def wait_for_roles() -> None:
         calls.append("acr-roles")
 
-    def configure_registries() -> None:
-        calls.append("registries")
-
     monkeypatch.setattr(postprovision, "sync_canonical_azd_outputs", sync_outputs)
     monkeypatch.setattr(postprovision, "DefaultAzureCredential", create_credential)
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
@@ -1077,11 +1043,6 @@ def test_postprovision_main_orchestrates_in_dependency_order(
         "wait_for_acr_pull_roles",
         wait_for_roles,
     )
-    monkeypatch.setattr(
-        postprovision,
-        "configure_container_registries",
-        configure_registries,
-    )
 
     postprovision.main()
 
@@ -1103,7 +1064,6 @@ def test_postprovision_main_orchestrates_in_dependency_order(
         "toolboxes",
         "provider-apis",
         "acr-roles",
-        "registries",
     ]
     assert "Provisioned 2 evidence records into research-index." in capsys.readouterr().out
 
