@@ -81,6 +81,14 @@ resource agentStudioBundles 'Microsoft.Storage/storageAccounts/blobServices/cont
   }
 }
 
+resource functionPackages 'Microsoft.Storage/storageAccounts/blobServices/containers@2026-04-01' = {
+  parent: blobService
+  name: 'connector-function-packages'
+  properties: {
+    publicAccess: 'None'
+  }
+}
+
 resource apiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(account.id, apiPrincipalId, blobDataContributorRoleId)
   scope: account
@@ -117,3 +125,4 @@ output blobEndpoint string = account.properties.primaryEndpoints.blob
 output sourcesContainer string = sources.name
 output artifactsContainer string = artifacts.name
 output agentStudioBundlesContainer string = agentStudioBundles.name
+output functionPackagesContainer string = functionPackages.name

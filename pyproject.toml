@@ -11,6 +11,7 @@ members = [
     "packages/research_connectors",
     "services/api",
     "services/connector_adapter",
+    "services/connector_functions",
     "services/worker",
 ]
 

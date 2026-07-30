@@ -76,9 +76,9 @@ class HttpConnectorGateway:
         if self._token is not None:
             headers["Authorization"] = f"Bearer {await self._token()}"
         try:
-            response = await self._client.post(
+            response = await self._client.get(
                 f"v1/connectors/{normalized_source.value}/search",
-                json={
+                params={
                     "query": query,
                     "limit": limit,
                 },

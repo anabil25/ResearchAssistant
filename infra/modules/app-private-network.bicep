@@ -8,7 +8,10 @@ param cosmosAccountId string
 
 var containerAppsSubnetName = 'snet-container-apps'
 var privateEndpointSubnetName = 'snet-private-endpoints'
+var functionsSubnetName = 'snet-connector-functions'
 var blobPrivateDnsZoneName = 'privatelink.blob.${environment().suffixes.storage}'
+var queuePrivateDnsZoneName = 'privatelink.queue.${environment().suffixes.storage}'
+var tablePrivateDnsZoneName = 'privatelink.table.${environment().suffixes.storage}'
 // Azure clouds currently expose no Cosmos DB suffix through environment().
 #disable-next-line no-hardcoded-env-urls
 var cosmosPrivateDnsZoneName = 'privatelink.documents.azure.com'
@@ -45,6 +48,20 @@ resource vnet 'Microsoft.Network/virtualNetworks@2024-05-01' = {
           privateEndpointNetworkPolicies: 'Disabled'
         }
       }
+      {
+        name: functionsSubnetName
+        properties: {
+          addressPrefix: '10.70.0.64/27'
+          delegations: [
+            {
+              name: 'Microsoft.App/environments'
+              properties: {
+                serviceName: 'Microsoft.App/environments'
+              }
+            }
+          ]
+        }
+      }
     ]
   }
 }
@@ -57,6 +74,11 @@ resource containerAppsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-
 resource privateEndpointSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
   parent: vnet
   name: privateEndpointSubnetName
+}
+
+resource functionsSubnet 'Microsoft.Network/virtualNetworks/subnets@2024-05-01' existing = {
+  parent: vnet
+  name: functionsSubnetName
 }
 
 resource blobPrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
@@ -115,6 +137,124 @@ resource blobDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGrou
   }
   dependsOn: [
     blobDnsLink
+  ]
+}
+
+resource queuePrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: queuePrivateDnsZoneName
+  location: 'global'
+  tags: tags
+}
+
+resource queueDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: queuePrivateDns
+  name: 'link-${name}'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource storageQueuePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-queue-${name}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'queue'
+        properties: {
+          privateLinkServiceId: storageAccountId
+          groupIds: [
+            'queue'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource queueDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: storageQueuePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'queue'
+        properties: {
+          privateDnsZoneId: queuePrivateDns.id
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    queueDnsLink
+  ]
+}
+
+resource tablePrivateDns 'Microsoft.Network/privateDnsZones@2024-06-01' = {
+  name: tablePrivateDnsZoneName
+  location: 'global'
+  tags: tags
+}
+
+resource tableDnsLink 'Microsoft.Network/privateDnsZones/virtualNetworkLinks@2024-06-01' = {
+  parent: tablePrivateDns
+  name: 'link-${name}'
+  location: 'global'
+  tags: tags
+  properties: {
+    registrationEnabled: false
+    virtualNetwork: {
+      id: vnet.id
+    }
+  }
+}
+
+resource storageTablePrivateEndpoint 'Microsoft.Network/privateEndpoints@2024-05-01' = {
+  name: 'pe-table-${name}'
+  location: location
+  tags: tags
+  properties: {
+    subnet: {
+      id: privateEndpointSubnet.id
+    }
+    privateLinkServiceConnections: [
+      {
+        name: 'table'
+        properties: {
+          privateLinkServiceId: storageAccountId
+          groupIds: [
+            'table'
+          ]
+        }
+      }
+    ]
+  }
+}
+
+resource tableDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2024-05-01' = {
+  parent: storageTablePrivateEndpoint
+  name: 'default'
+  properties: {
+    privateDnsZoneConfigs: [
+      {
+        name: 'table'
+        properties: {
+          privateDnsZoneId: tablePrivateDns.id
+        }
+      }
+    ]
+  }
+  dependsOn: [
+    tableDnsLink
   ]
 }
 
@@ -178,6 +318,9 @@ resource cosmosDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGr
 }
 
 output containerAppsSubnetId string = containerAppsSubnet.id
+output functionsSubnetId string = functionsSubnet.id
 output vnetId string = vnet.id
 output blobPrivateEndpointId string = storageBlobPrivateEndpoint.id
+output queuePrivateEndpointId string = storageQueuePrivateEndpoint.id
+output tablePrivateEndpointId string = storageTablePrivateEndpoint.id
 output cosmosPrivateEndpointId string = cosmosSqlPrivateEndpoint.id
