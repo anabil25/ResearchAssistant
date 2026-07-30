@@ -248,11 +248,23 @@
     }
     .arch-overview .arch-sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
     .arch-mermaid {
-      max-width: 980px; margin: 0 auto;
-      background: var(--card); border: 1px solid var(--line);
-      border-radius: 16px; padding: 28px 24px; overflow-x: auto;
+      max-width: 1080px; margin: 0 auto;
+      border: 1px solid var(--line);
+      border-radius: 16px; padding: 30px 26px; overflow-x: auto;
       box-shadow: var(--shadow); display: flex; justify-content: center; align-items: center;
       min-height: 180px;
+      /* Diagram uses a light Mermaid palette, so pin a light backdrop in both schemes. */
+      background: #f7fafd;
+    }
+    .arch-mermaid svg { max-width: 100%; height: auto; }
+    .arch-legend {
+      max-width: 1080px; margin: 14px auto 0; display: flex; flex-wrap: wrap;
+      gap: 8px 18px; justify-content: center; font-size: 12.5px; color: var(--muted);
+    }
+    .arch-legend span { display: inline-flex; align-items: center; gap: 7px; }
+    .arch-legend i {
+      width: 11px; height: 11px; border-radius: 3px; display: inline-block;
+      border: 1px solid rgba(0,0,0,.18);
     }
 
     /* anchor link on headings */
@@ -366,6 +378,13 @@
       <div class="arch-mermaid" id="archDiagram">
         <div class="loading"><span class="spinner"></span> Rendering diagram…</div>
       </div>
+      <div class="arch-legend">
+        <span><i style="background:#dbeafe"></i> Application tier</span>
+        <span><i style="background:#ede9fe"></i> Agent tier</span>
+        <span><i style="background:#dcfce7"></i> Data &amp; AI services</span>
+        <span><i style="background:#ffedd5"></i> External sources</span>
+        <span><i style="background:#e5e7eb"></i> Observability</span>
+      </div>
     </section>
 
     <div class="doc-header" id="docHeader"></div>
@@ -410,36 +429,66 @@
                     subtitle: 'Components, data flows & cross-component contracts — the source of truth.' },
   };
   const ARCH_MERMAID_SRC = `
-flowchart LR
-    Researcher([Researcher])
+flowchart TB
+    Researcher(["Researcher"])
 
-    subgraph ACA [Azure Container Apps]
-        Web[Next.js Workbench]
-        API[FastAPI Research API]
+    subgraph L1 ["APPLICATION &nbsp;·&nbsp; Azure Container Apps (VNet-integrated)"]
+        direction LR
+        Web["Next.js Workbench<br/><i>6 studios · Library · Runs &amp; Approvals</i>"]
+        API["FastAPI Research API<br/><i>tenant authz · citations · scoring · approval gates</i>"]
     end
 
-    subgraph FA [Azure AI Foundry · Hosted Agents]
-        Coord[research-coordinator]
-        Spec[5 specialist agents\nliterature · grant · matching\ndataset · institution]
-        Online[3 online agents\nliterature-online · grant-online\nmatching-online]
+    subgraph L2 ["REASONING &nbsp;·&nbsp; Foundry Hosted Agents (direct-code, 1 identity each)"]
+        direction LR
+        Coord["research-coordinator<br/><i>routes bounded tasks</i>"]
+        Offline["5 offline specialists<br/><i>literature · grant · matching<br/>dataset · institution</i>"]
+        Online["3 online specialists<br/><i>literature · grant · matching</i>"]
     end
 
-    subgraph Data [Azure Data & AI Services]
-        Search[(AI Search)]
-        Cosmos[(Cosmos DB)]
-        DocI[Document Intelligence]
-        Blob[(Blob Storage)]
-        Models[(Foundry Models\ngpt-5.4-mini · gpt-5.6-sol)]
+    subgraph L3 ["KNOWLEDGE &amp; DURABLE STATE"]
+        direction LR
+        Search[("Azure AI Search<br/><i>tenant-filtered index</i>")]
+        Cosmos[("Cosmos DB<br/><i>projects · runs · approvals</i>")]
+        Blob[("Blob Storage<br/><i>private endpoint</i>")]
+        DocI["Document Intelligence<br/><i>prebuilt-layout</i>"]
     end
 
-    Obs[App Insights]
+    Models[("Foundry model deployments<br/><i>gpt-5.6-sol · gpt-5.4-mini · embeddings</i>")]
+    Sources["Public research connectors<br/><i>PubMed · Crossref · OpenAlex · arXiv<br/>ClinicalTrials · Grants.gov · ORCID · ROR</i>"]
+    Obs["Application Insights"]
 
-    Researcher --> Web --> API
-    API --> Coord
-    Coord --> Spec & Online
-    API --> Search & Cosmos & DocI & Blob
-    Spec --> Models
-    Web & API -.->|OpenTelemetry| Obs
+    Researcher --> Web
+    Web -->|"internal only"| API
+    API -->|"bounded task"| Coord
+    Coord --> Offline
+    Coord --> Online
+    Offline --> Models
+    Online --> Models
+    Online -.->|"opt-in · off by default"| Sources
+    API --> Search
+    API --> Cosmos
+    API --> Blob
+    API --> DocI
+    Web -.-> Obs
+    API -.->|"OpenTelemetry"| Obs
+
+    classDef app     fill:#dbeafe,stroke:#2563eb,stroke-width:1.2px,color:#12243d
+    classDef agent   fill:#ede9fe,stroke:#7c3aed,stroke-width:1.2px,color:#2b1a4d
+    classDef data    fill:#dcfce7,stroke:#16a34a,stroke-width:1.2px,color:#0f2e1c
+    classDef ext     fill:#ffedd5,stroke:#ea8a1f,stroke-width:1.2px,color:#3d2a0d
+    classDef obs     fill:#e5e7eb,stroke:#6b7280,stroke-width:1.2px,color:#1f2937
+    classDef person  fill:#ffffff,stroke:#0f172a,stroke-width:1.6px,color:#0f172a
+
+    class Researcher person
+    class Web,API app
+    class Coord,Offline,Online agent
+    class Search,Cosmos,Blob,DocI,Models data
+    class Sources ext
+    class Obs obs
+
+    style L1 fill:#f3f8ff,stroke:#bfdbfe,stroke-width:1px,color:#1e3a5f
+    style L2 fill:#f8f5ff,stroke:#ddd0fb,stroke-width:1px,color:#3b2764
+    style L3 fill:#f4fdf7,stroke:#c3ebd2,stroke-width:1px,color:#14532d
 `;
   const $  = (s, r = document) => r.querySelector(s);
   const el = {
@@ -450,9 +499,11 @@ flowchart LR
   let observer = null;
 
   mermaid.initialize({ startOnLoad: false, theme: 'base', securityLevel: 'loose',
+    flowchart: { htmlLabels: true, curve: 'basis', nodeSpacing: 46, rankSpacing: 58, padding: 14 },
     themeVariables: {
       primaryColor: '#eaf3fd', primaryBorderColor: '#0a6ed1', primaryTextColor: '#0d1b2a',
-      lineColor: '#5c6b7a', fontFamily: 'Inter, sans-serif',
+      lineColor: '#7b8794', fontFamily: 'Inter, sans-serif', fontSize: '14px',
+      clusterBkg: '#f7fafd', clusterBorder: '#d7e3ef',
     },
   });
 
