@@ -295,8 +295,9 @@ def upload_source_artifacts(credential: TokenCredential) -> bool:
     return True
 
 
-def configure_container_registries() -> None:
+def wait_for_acr_pull_roles() -> None:
     resource_group = required_env("AZURE_RESOURCE_GROUP")
+    acr_id = required_env("AZURE_CONTAINER_REGISTRY_RESOURCE_ID")
     registry = required_env("AZURE_CONTAINER_REGISTRY_ENDPOINT")
     targets = [
         required_env("SERVICE_WEB_NAME"),
@@ -304,57 +305,21 @@ def configure_container_registries() -> None:
         required_env("SERVICE_WORKER_NAME"),
         required_env("SERVICE_CONNECTOR_ADAPTER_NAME"),
     ]
-    if len(set(targets)) != 4:
-        raise RuntimeError(
-            "Expected distinct web, api, worker, and connector adapter "
-            f"Container Apps; found {targets}"
-        )
-
     for app_name in targets:
-        subprocess.run(
+        registry_identity = subprocess.run(
             [
                 AZ_CLI,
                 "containerapp",
-                "registry",
-                "set",
-                "--resource-group",
-                resource_group,
-                "--name",
-                app_name,
-                "--server",
-                registry,
-                "--identity",
-                "system",
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
-        print(f"Configured identity-based ACR pull for {app_name}.")
-
-
-def wait_for_acr_pull_roles() -> None:
-    resource_group = required_env("AZURE_RESOURCE_GROUP")
-    acr_id = required_env("AZURE_CONTAINER_REGISTRY_RESOURCE_ID")
-    targets = [
-        required_env("SERVICE_WEB_NAME"),
-        required_env("SERVICE_API_NAME"),
-        required_env("SERVICE_WORKER_NAME"),
-        required_env("SERVICE_CONNECTOR_ADAPTER_NAME"),
-    ]
-    for app_name in targets:
-        principal = subprocess.run(
-            [
-                AZ_CLI,
-                "containerapp",
-                "identity",
                 "show",
                 "--resource-group",
                 resource_group,
                 "--name",
                 app_name,
                 "--query",
-                "principalId",
+                (
+                    "properties.configuration.registries"
+                    f"[?server=='{registry}'].identity | [0]"
+                ),
                 "--output",
                 "tsv",
             ],
@@ -363,8 +328,52 @@ def wait_for_acr_pull_roles() -> None:
             text=True,
             encoding="utf-8",
         ).stdout.strip()
+        if not registry_identity:
+            raise RuntimeError(f"Container App {app_name} has no ACR identity")
+
+        if registry_identity == "system":
+            principal = subprocess.run(
+                [
+                    AZ_CLI,
+                    "containerapp",
+                    "identity",
+                    "show",
+                    "--resource-group",
+                    resource_group,
+                    "--name",
+                    app_name,
+                    "--query",
+                    "principalId",
+                    "--output",
+                    "tsv",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+        else:
+            principal = subprocess.run(
+                [
+                    AZ_CLI,
+                    "identity",
+                    "show",
+                    "--ids",
+                    registry_identity,
+                    "--query",
+                    "principalId",
+                    "--output",
+                    "tsv",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
         if not principal:
-            raise RuntimeError(f"Container App {app_name} has no system identity")
+            raise RuntimeError(
+                f"Container App {app_name} ACR identity has no principal"
+            )
 
         for attempt in range(1, 6):
             role = subprocess.run(
@@ -677,7 +686,6 @@ def main() -> None:
     configure_connector_adapter_identity()
     configure_connector_toolboxes()
     wait_for_acr_pull_roles()
-    configure_container_registries()
     print(f"Provisioned {len(documents)} evidence records into {index_name}.")
 
 
