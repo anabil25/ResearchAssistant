@@ -12,8 +12,8 @@ compliance, or scientific validity.
 - Dedicated Entra identities for every Foundry Hosted Agent.
 - Keys/local authentication disabled for Foundry, Search, Cosmos, and Document
   Intelligence.
-- Resource-scoped RBAC for Search, Storage, Cosmos, Durable Task,
-  models, agent invocation, and Azure Monitor ingestion.
+- Resource-scoped RBAC for Search, Storage, Cosmos, models, agent invocation,
+  and Azure Monitor ingestion.
 - Source ACL filtering before model context.
 - Tenant context derived from the authenticated platform principal (or the
   explicit local demo identity), never trusted from the request body.
@@ -31,14 +31,21 @@ compliance, or scientific validity.
   metadata-only.
 - No external write, grant submission, or paid compute tool in an agent.
 - Human approval records actor, timestamp, rationale, exact action,
-  destination, and idempotency key, then resumes the same durable instance.
-- Blob versioning/soft delete and durable run state.
+  destination, and idempotency key, then completes or blocks persisted run
+  state directly in the API.
+- Blob versioning/soft delete and persisted run state.
 - Prompt/content telemetry recording disabled by default.
 - CSP, security headers, internal API ingress, non-root containers, health
   probes, dependency locking, and automated audits.
 - Runtime uploads are MIME-allowlisted, bounded to 20 MB, checksummed, stored
   through managed identity and a Blob private endpoint, structurally extracted,
   and indexed only after deterministic metadata/ACL assignment.
+
+Library ingestion currently runs as a process-local API background task. It is
+not durable across API restarts and provides no automatic retry or recovery.
+Interrupted ingestion must be retried manually; production use that requires
+guaranteed execution must add an approved durable queue or orchestration
+service.
 
 ## Production requirements
 
@@ -58,9 +65,11 @@ participant data:
 7. Run red-team and evaluation suites against representative institutional
    content, including indirect prompt injection and cross-tenant access tests.
 8. Set budgets, concurrency, token, document-size, and external-compute limits.
-9. Establish human owners for policy sources, retraction/correction review,
+9. Add a durable background execution service before relying on automatic
+  ingestion retry, restart recovery, or guaranteed completion.
+10. Establish human owners for policy sources, retraction/correction review,
    grant facts, and generated artifacts.
-10. Complete the institution's accessibility conformance assessment. Automated
+11. Complete the institution's accessibility conformance assessment. Automated
     axe checks are evidence, not a WCAG conformance claim.
 
 The included deployment intentionally uses a demo identity because the sample

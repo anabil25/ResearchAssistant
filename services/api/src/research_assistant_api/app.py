@@ -252,6 +252,12 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     API process from starting, which would break unrelated features (and
     local/dev environments that don't configure Cosmos) in one stroke.
     """
+    local_mock_without_cosmos = settings.execution_mode == "mock" and not settings.cosmos_endpoint
+    if local_mock_without_cosmos:
+        logger.info(
+            "Agent Studio durable persistence is disabled in the local mock runtime; "
+            "the deployed API reaches Azure Cosmos DB through its private VNet endpoint."
+        )
     capability_discovery_source = build_capability_discovery_source(settings)
     application.state.agent_studio_capability_discovery_source = capability_discovery_source
     # A single, startup-time discovery pass scoped to this deployment's one
@@ -306,7 +312,8 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     try:
         store = build_agent_studio_store(settings)
     except AgentStudioStoreError as exc:
-        logger.warning("Agent Studio metadata store unavailable: %s", exc)
+        if not local_mock_without_cosmos:
+            logger.warning("Agent Studio metadata store unavailable: %s", exc)
         application.state.agent_studio_store = None
         application.state.agent_studio_release_service = None
         application.state.agent_studio_deployment_service = None
@@ -354,14 +361,16 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:
-        logger.warning("Agent Studio memory store unavailable: %s", exc)
+        if not local_mock_without_cosmos:
+            logger.warning("Agent Studio memory store unavailable: %s", exc)
         application.state.agent_studio_memory_service = None
     else:
         application.state.agent_studio_memory_service = MemoryService(memory_store)
     try:
         audit_store = build_audit_store(settings)
     except AuditStoreUnavailableError as exc:
-        logger.warning("Agent Studio audit store unavailable: %s", exc)
+        if not local_mock_without_cosmos:
+            logger.warning("Agent Studio audit store unavailable: %s", exc)
         application.state.agent_studio_audit_service = None
     else:
         # Wired into every consequential platform mutation route (draft,

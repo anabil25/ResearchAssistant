@@ -318,7 +318,7 @@ def test_connector_mcp_tools_are_reconciled_sequentially_and_verified(
                 "displayName": tool["displayName"],
                 "description": tool["description"],
                 "operationId": (
-                    "https://management.azure.com/subscriptions/subscription-id/"
+                    "/subscriptions/subscription-id/"
                     "resourceGroups/resource-group/providers/Microsoft.ApiManagement/"
                     "service/apim-name/apis/research-connectors-v1/operations/"
                     f"{tool['operationId']}"
@@ -371,7 +371,7 @@ def test_connector_mcp_tool_write_retries_only_transient_failures(
     else:
         assert configure_connector_mcp_tools(object()) == {"research-pubmed-mcp-v1": 1}
         assert calls == 3
-        assert sleeps == [10]
+        assert sleeps == [5]
 
 
 def test_toolbox_version_payloads_match_the_governed_connector_catalog() -> None:

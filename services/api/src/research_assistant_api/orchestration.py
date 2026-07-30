@@ -1,17 +1,33 @@
 from __future__ import annotations
 
 import logging
-from typing import Any
+from typing import Any, Protocol
 
 from research_assistant_worker.ingestion import extract_source, index_extracted_source
-
-from research_assistant_api.workspace import WorkspaceStore
 
 logger = logging.getLogger(__name__)
 
 
+class IngestionStore(Protocol):
+    def complete_ingestion(
+        self,
+        item_id: str,
+        run_id: str,
+        *,
+        evidence_count: int,
+        needs_review: bool,
+    ) -> object | None: ...
+
+    def fail_ingestion(
+        self,
+        item_id: str,
+        run_id: str,
+        reason: str,
+    ) -> object | None: ...
+
+
 def execute_library_ingestion(
-    store: WorkspaceStore,
+    store: IngestionStore,
     payload: dict[str, Any],
 ) -> None:
     try:

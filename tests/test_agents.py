@@ -259,15 +259,59 @@ def test_preprovision_checks_requested_model_capacity() -> None:
     assert "az ad signed-in-user show" not in posix
 
 
-def test_accelerator_does_not_provision_durable_task() -> None:
+def test_accelerator_does_not_provision_durable_task_or_worker() -> None:
     assert not (ROOT / "infra" / "modules" / "durable-task.bicep").exists()
+    assert not (ROOT / "services" / "worker" / "Dockerfile").exists()
     resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(encoding="utf-8")
     containers = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
         encoding="utf-8"
     )
+    identities = (ROOT / "infra" / "modules" / "identity.bicep").read_text(
+        encoding="utf-8"
+    )
+    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
     assert "Microsoft.DurableTask" not in resources
     assert "durableTask" not in resources
     assert "DURABLE_TASK_SCHEDULER_CONNECTION_STRING" not in containers
+    assert "worker" not in manifest["services"]
+    assert "resource worker " not in containers
+    assert "workerIdentity" not in resources
+    assert "workerIdentity" not in containers
+    assert "workerIdentity" not in identities
+
+
+def test_api_identity_owns_in_process_ingestion_dependencies() -> None:
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(encoding="utf-8")
+    containers = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
+        encoding="utf-8"
+    )
+    storage = (ROOT / "infra" / "modules" / "storage.bicep").read_text(encoding="utf-8")
+    search = (ROOT / "infra" / "modules" / "search.bicep").read_text(encoding="utf-8")
+    cosmos = (ROOT / "infra" / "modules" / "cosmos.bicep").read_text(encoding="utf-8")
+    document_intelligence = (
+        ROOT / "infra" / "modules" / "document-intelligence.bicep"
+    ).read_text(encoding="utf-8")
+
+    assert "resource apiModelUser" in resources
+    assert "principalId: identities.outputs.apiPrincipalId" in resources
+    assert "principalId: apiPrincipalId" in storage
+    assert "roleDefinitionId: blobDataContributorRoleId" in storage
+    assert "principalId: apiPrincipalId" in search
+    assert "roleDefinitionId: searchIndexDataContributorRoleId" in search
+    assert "principalId: apiPrincipalId" in cosmos
+    assert "roleDefinitionId: dataContributorRoleDefinitionId" in cosmos
+    assert "principalId: apiPrincipalId" in document_intelligence
+    assert "roleDefinitionId: cognitiveServicesUserRoleId" in document_intelligence
+    for setting in (
+        "AZURE_OPENAI_ENDPOINT",
+        "AZURE_AI_EMBEDDING_DEPLOYMENT_NAME",
+        "AZURE_SEARCH_ENDPOINT",
+        "AZURE_SEARCH_INDEX_NAME",
+        "AZURE_COSMOS_ENDPOINT",
+        "AZURE_STORAGE_BLOB_ENDPOINT",
+        "AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT",
+    ):
+        assert setting in containers
 
 
 def test_azd_up_deploys_every_service_in_parallel_without_manifest_writes() -> None:

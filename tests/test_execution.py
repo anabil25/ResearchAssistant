@@ -61,7 +61,7 @@ def test_execute_library_ingestion_completes_without_scheduler(
         },
     )
 
-    execution.execute_library_ingestion(  # type: ignore[arg-type]
+    execution.execute_library_ingestion(
         store,
         {"source_id": "source-1", "run_id": "run-1", "query": "index"},
     )
@@ -87,7 +87,7 @@ def test_execute_library_ingestion_records_failure(
 
     monkeypatch.setattr(execution, "extract_source", fail_extract)
 
-    execution.execute_library_ingestion(  # type: ignore[arg-type]
+    execution.execute_library_ingestion(
         store,
         {"source_id": "source-1", "run_id": "run-1", "query": "index"},
     )

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -124,8 +125,15 @@ def _arm_json_request(
     url: str,
     resource_manager_endpoint: str,
     payload: dict[str, Any] | None = None,
+    if_match: bool = False,
 ) -> dict[str, Any]:
     token = _bearer_token(credential, f"{resource_manager_endpoint}/.default")
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Content-Type": "application/json",
+    }
+    if if_match:
+        headers["If-Match"] = "*"
     request = Request(
         url,
         data=(
@@ -133,17 +141,17 @@ def _arm_json_request(
             if payload is not None
             else b""
         ),
-        headers={
-            "Authorization": f"Bearer {token}",
-            "Content-Type": "application/json",
-        },
+        headers=headers,
         method=method,
     )
     try:
         with urlopen(request, timeout=30) as response:
             raw_body = response.read()
     except HTTPError as exc:
-        raise RuntimeError(f"ARM request failed with HTTP {exc.code}: {method} {url}") from exc
+        detail = exc.read().decode("utf-8", errors="replace")[:600]
+        raise RuntimeError(
+            f"ARM request failed with HTTP {exc.code}: {method} {url}: {detail}"
+        ) from exc
     except (URLError, OSError) as exc:
         raise RuntimeError(f"ARM request failed: {method} {url}") from exc
     if not raw_body:
@@ -197,15 +205,56 @@ def connector_mcp_tool_catalog() -> tuple[dict[str, str], ...]:
         identities.add(identity)
         tools.append(tool)
     expected = {
-        (connector.apim_mcp_api_id, operation.mcp_tool_name, operation.id)
+        (connector.apim_mcp_api_id, operation.id, operation.mcp_tool_name, operation.id)
         for connector in connector_definitions()
         for operation in connector.operations
         if operation.operation_class != "delete"
     }
-    actual = {(tool["apiId"], tool["name"], tool["operationId"]) for tool in tools}
+    actual = {(tool["apiId"], tool["name"], tool["displayName"], tool["operationId"]) for tool in tools}
     if actual != expected:
         raise RuntimeError("Connector MCP tool catalog does not match the governed connector catalog")
     return tuple(tools)
+
+
+def _retryable_arm_error(error: RuntimeError) -> bool:
+    match = re.search(r"HTTP (\d{3})", str(error))
+    if match is None:
+        return False
+    status = int(match.group(1))
+    return status in {409, 429} or status >= 500
+
+
+def _upsert_connector_mcp_tool(
+    credential: TokenCredential,
+    *,
+    url: str,
+    resource_manager_endpoint: str,
+    payload: dict[str, Any],
+    label: str,
+) -> None:
+    last_error: RuntimeError | None = None
+    for attempt, delay in enumerate(APIM_TOOL_RETRY_DELAYS, start=1):
+        if delay:
+            print(
+                f"{label}: waiting {delay}s after a transient APIM failure "
+                f"({attempt}/{len(APIM_TOOL_RETRY_DELAYS)})."
+            )
+            time.sleep(delay)
+        try:
+            _arm_json_request(
+                credential,
+                method="PUT",
+                url=url,
+                resource_manager_endpoint=resource_manager_endpoint,
+                payload=payload,
+                if_match=True,
+            )
+            return
+        except RuntimeError as exc:
+            if not _retryable_arm_error(exc):
+                raise
+            last_error = exc
+    raise RuntimeError(f"{label} failed after bounded APIM retries") from last_error
 
 
 def configure_connector_mcp_tools(
@@ -214,19 +263,19 @@ def configure_connector_mcp_tools(
     """Upsert preview APIM tool children sequentially and verify inventory."""
     effective_credential = credential or DefaultAzureCredential()
     resource_manager_endpoint = _resource_manager_endpoint()
-    service_base = (
-        f"{resource_manager_endpoint}/subscriptions/{required_env('AZURE_SUBSCRIPTION_ID')}"
+    service_resource_id = (
+        f"/subscriptions/{required_env('AZURE_SUBSCRIPTION_ID')}"
         f"/resourceGroups/{required_env('AZURE_RESOURCE_GROUP')}"
         "/providers/Microsoft.ApiManagement/service/"
         f"{required_env('AZURE_API_MANAGEMENT_NAME')}"
     )
+    service_base = f"{resource_manager_endpoint}{service_resource_id}"
     tools = connector_mcp_tool_catalog()
     expected: dict[str, set[str]] = {}
     for tool in tools:
         expected.setdefault(tool["apiId"], set()).add(tool["name"])
-        _arm_json_request(
+        _upsert_connector_mcp_tool(
             effective_credential,
-            method="PUT",
             url=(
                 f"{service_base}/apis/{tool['apiId']}/tools/{tool['name']}"
                 f"?api-version={APIM_MCP_API_VERSION}"
@@ -237,11 +286,12 @@ def configure_connector_mcp_tools(
                     "displayName": tool["displayName"],
                     "description": tool["description"],
                     "operationId": (
-                        f"{service_base}/apis/{CONNECTOR_API_ID}/operations/"
+                        f"{service_resource_id}/apis/{CONNECTOR_API_ID}/operations/"
                         f"{tool['operationId']}"
                     ),
                 }
             },
+            label=f"APIM MCP tool {tool['apiId']}/{tool['name']}",
         )
 
     last_missing: dict[str, list[str]] = {}

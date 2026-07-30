@@ -23,7 +23,7 @@ from azure.identity import (
 )
 from azure.search.documents import SearchClient
 from azure.storage.blob import BlobClient, BlobServiceClient, ContentSettings
-from openai import APIError, AzureOpenAI
+from openai import AzureOpenAI
 from research_assistant_core.chunking import chunk_text
 from research_assistant_core.security import scan_untrusted_content
 
@@ -454,7 +454,19 @@ def index_extracted_source(payload: dict[str, Any]) -> dict[str, Any]:
                 raise RuntimeError(f"Search activation failed for chunks: {failures}")
         indexed_count = sum(1 for chunk in chunks if not scan_untrusted_content(str(chunk["content"])))
         quarantined_count = len(chunks) - indexed_count
-    except (APIError, HttpResponseError, RuntimeError, ValueError):
+        _update_library(
+            payload,
+            status="needs_review" if quarantined_count else "ready",
+            evidence_count=indexed_count,
+        )
+        _update_run(
+            payload,
+            status="completed",
+            progress=100,
+            current_stage="Indexed and ready",
+            completed=True,
+        )
+    except Exception:
         cleanup = [{"id": chunk_id} for chunk_id in staged_ids]
         try:
             for cleanup_batch in _search_batches(cleanup):
@@ -462,18 +474,6 @@ def index_extracted_source(payload: dict[str, Any]) -> dict[str, Any]:
         except HttpResponseError as cleanup_exc:
             raise RuntimeError("Search generation cleanup failed after ingestion failure") from cleanup_exc
         raise
-    _update_library(
-        payload,
-        status="needs_review" if quarantined_count else "ready",
-        evidence_count=indexed_count,
-    )
-    _update_run(
-        payload,
-        status="completed",
-        progress=100,
-        current_stage="Indexed and ready",
-        completed=True,
-    )
     return {
         "query": payload["query"],
         "evidence_manifest_uri": str(manifest_uri),

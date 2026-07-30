@@ -15,6 +15,7 @@ on incidental coverage from unrelated route tests.
 from __future__ import annotations
 
 import importlib
+import logging
 
 import pytest
 from fastapi import FastAPI
@@ -38,6 +39,45 @@ from research_assistant_api.config import Settings
 # ``app_module.build_agent_studio_store`` (a module-level import inside
 # ``app.py``) and ``app_module._init_agent_studio`` are reachable/patchable.
 app_module = importlib.import_module("research_assistant_api.app")
+
+
+@pytest.mark.asyncio
+async def test_init_agent_studio_treats_private_cosmos_as_expected_in_local_mock(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application = FastAPI()
+
+    with caplog.at_level(logging.INFO, logger=app_module.__name__):
+        await app_module._init_agent_studio(
+            application,
+            Settings(execution_mode="mock", cosmos_endpoint=None),
+        )
+
+    messages = [record.getMessage() for record in caplog.records]
+    assert not [record for record in caplog.records if record.levelno >= logging.WARNING]
+    assert messages.count(
+        "Agent Studio durable persistence is disabled in the local mock runtime; "
+        "the deployed API reaches Azure Cosmos DB through its private VNet endpoint."
+    ) == 1
+
+
+@pytest.mark.asyncio
+async def test_init_agent_studio_warns_when_hosted_runtime_lacks_cosmos(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    application = FastAPI()
+
+    with caplog.at_level(logging.WARNING, logger=app_module.__name__):
+        await app_module._init_agent_studio(
+            application,
+            Settings(execution_mode="hosted", cosmos_endpoint=None),
+        )
+
+    warnings = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert len(warnings) == 3
+    assert any(message.startswith("Agent Studio metadata store unavailable:") for message in warnings)
+    assert any(message.startswith("Agent Studio memory store unavailable:") for message in warnings)
+    assert any(message.startswith("Agent Studio audit store unavailable:") for message in warnings)
 
 
 @pytest.mark.asyncio

@@ -8,12 +8,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "pubmedSearch",
         "operationId": "pubmedSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "pubmedLookup",
         "operationId": "pubmedLookup"
       }
     ]
@@ -27,12 +27,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "europePmcSearch",
         "operationId": "europePmcSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "europePmcLookup",
         "operationId": "europePmcLookup"
       }
     ]
@@ -46,12 +46,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "crossrefSearch",
         "operationId": "crossrefSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "crossrefLookup",
         "operationId": "crossrefLookup"
       }
     ]
@@ -65,12 +65,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "openalexSearch",
         "operationId": "openalexSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "openalexLookup",
         "operationId": "openalexLookup"
       }
     ]
@@ -84,12 +84,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "arxivSearch",
         "operationId": "arxivSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "arxivLookup",
         "operationId": "arxivLookup"
       }
     ]
@@ -103,12 +103,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "clinicalTrialsSearch",
         "operationId": "clinicalTrialsSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "clinicalTrialsLookup",
         "operationId": "clinicalTrialsLookup"
       }
     ]
@@ -122,7 +122,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "grantsGovSearch",
         "operationId": "grantsGovSearch"
       }
     ]
@@ -136,7 +136,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "nihReporterSearch",
         "operationId": "nihReporterSearch"
       }
     ]
@@ -150,12 +150,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "dataciteSearch",
         "operationId": "dataciteSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "dataciteLookup",
         "operationId": "dataciteLookup"
       }
     ]
@@ -169,7 +169,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "orcidSearch",
         "operationId": "orcidSearch"
       }
     ]
@@ -183,12 +183,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "rorSearch",
         "operationId": "rorSearch"
       },
       {
         "displayName": "lookup",
-        "name": "lookup",
+        "name": "rorLookup",
         "operationId": "rorLookup"
       }
     ]
@@ -202,7 +202,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "search",
+        "name": "semanticScholarSearch",
         "operationId": "semanticScholarSearch"
       }
     ]

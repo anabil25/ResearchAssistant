@@ -1175,6 +1175,70 @@ def test_indexing_reports_cleanup_failure_after_activation_failure(
     assert deleted == [[{"id": "chunk-1"}, {"id": "chunk-2"}]]
 
 
+def test_indexing_removes_activated_chunks_when_terminal_state_update_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest_blob = FakeBlob(json.dumps(_manifest()).encode())
+    monkeypatch.setattr(ingestion, "_blob_from_uri", lambda *_args: manifest_blob)
+    monkeypatch.setattr(ingestion, "ingestion_settings", settings)
+    monkeypatch.setattr(ingestion, "credential", lambda: object())
+
+    class FakeEmbeddings:
+        def create(self, **_kwargs: Any) -> SimpleNamespace:
+            return SimpleNamespace(
+                data=[
+                    SimpleNamespace(embedding=[0.1, 0.2]),
+                    SimpleNamespace(embedding=[0.3, 0.4]),
+                ]
+            )
+
+    class FakeAzureOpenAI:
+        def __init__(self, **_kwargs: Any) -> None:
+            self.embeddings = FakeEmbeddings()
+
+    deleted: list[list[dict[str, Any]]] = []
+
+    class FakeSearch:
+        def __init__(self, **_kwargs: Any) -> None:
+            pass
+
+        def upload_documents(self, *, documents: list[dict[str, Any]]) -> list[SimpleNamespace]:
+            return [SimpleNamespace(key=document["id"], succeeded=True) for document in documents]
+
+        def merge_documents(self, *, documents: list[dict[str, Any]]) -> list[SimpleNamespace]:
+            return [SimpleNamespace(key=document["id"], succeeded=True) for document in documents]
+
+        def delete_documents(self, *, documents: list[dict[str, Any]]) -> list[SimpleNamespace]:
+            deleted.append(documents)
+            return [SimpleNamespace(key=document["id"], succeeded=True) for document in documents]
+
+    monkeypatch.setattr(ingestion, "AzureOpenAI", FakeAzureOpenAI)
+    monkeypatch.setattr(
+        ingestion,
+        "get_bearer_token_provider",
+        lambda *_args, **_kwargs: lambda: "token",
+    )
+    monkeypatch.setattr(ingestion, "SearchClient", FakeSearch)
+    monkeypatch.setattr(
+        ingestion,
+        "_update_library",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(RuntimeError("Cosmos unavailable")),
+    )
+    monkeypatch.setattr(ingestion, "_update_run", lambda *_args, **_kwargs: None)
+
+    with pytest.raises(RuntimeError, match="Cosmos unavailable"):
+        ingestion.index_extracted_source(
+            _payload(
+                extracted_manifest_uri=(
+                    "https://storage.example.test/sources/demo/demo-project/"
+                    "source-abc123abc123/extracted-manifest.json"
+                )
+            )
+        )
+
+    assert deleted == [[{"id": "chunk-1"}, {"id": "chunk-2"}]]
+
+
 def test_run_and_library_state_wrappers_delegate_to_update_helpers(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
