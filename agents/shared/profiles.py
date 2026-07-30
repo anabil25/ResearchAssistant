@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from research_assistant_core.connector_catalog import connector_definitions
+from .connector_catalog import connector_definitions
 
 from .capabilities import (
     PROVIDER_CONTRACT_SCHEMA_DIGEST,
