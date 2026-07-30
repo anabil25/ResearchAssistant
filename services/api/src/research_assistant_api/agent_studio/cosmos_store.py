@@ -39,7 +39,7 @@ from azure.core import MatchConditions
 from azure.core.credentials import TokenCredential
 from azure.cosmos import CosmosClient
 from azure.cosmos.exceptions import CosmosBatchOperationError, CosmosHttpResponseError, CosmosResourceNotFoundError
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.agent_studio.models import (
     AgentDraft,
@@ -1414,12 +1414,6 @@ class CosmosAgentStudioStore(AgentStudioStore):
         return super().list_test_runs(scope, logical_agent_id, version_id=version_id)
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_agent_studio_store(settings: Settings) -> AgentStudioStore:
     """Production factory.
 
@@ -1435,7 +1429,7 @@ def build_agent_studio_store(settings: Settings) -> AgentStudioStore:
     return CosmosAgentStudioStore(
         settings.cosmos_endpoint,
         settings.agent_studio_cosmos_database,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
         settings.agent_studio_metadata_container,
     )
 

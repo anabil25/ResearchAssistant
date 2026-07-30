@@ -54,8 +54,9 @@ from typing import Any, Protocol, TypeGuard
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ClientAuthenticationError
-from azure.identity.aio import ManagedIdentityCredential, get_bearer_token_provider
+from azure.identity.aio import get_bearer_token_provider
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+from research_assistant_core.azure_auth import async_azure_credential
 
 from research_assistant_api.agent_studio.models import (
     CapabilityDescriptor,
@@ -70,8 +71,6 @@ from research_assistant_api.agent_studio.models import (
 from research_assistant_api.agent_studio.schema_ref_resolver import compute_schema_digest
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
-from collections.abc import Mapping
-from typing import Any, Protocol
 
 #: Default discovery timeout budget when a caller does not specify one.
 DEFAULT_DISCOVERY_TIMEOUT_SECONDS = 10.0
@@ -1536,7 +1535,7 @@ def build_capability_discovery_source(settings: Settings) -> CapabilityDiscovery
         return NullCapabilityDiscoverySource()
     credential: AsyncTokenCredential | None = None
     if settings.agent_studio_capability_provider_token_scope:
-        credential = ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
+        credential = async_azure_credential(settings.managed_identity_client_id)
     return HttpCapabilityDiscoverySource(
         settings.agent_studio_capability_provider_url,
         credential=credential,

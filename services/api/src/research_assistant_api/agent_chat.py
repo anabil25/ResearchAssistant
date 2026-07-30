@@ -39,9 +39,9 @@ from uuid import uuid4
 
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
+from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.models import Capability
 from starlette.concurrency import run_in_threadpool
 
@@ -179,9 +179,7 @@ class AgentChatGateway:
         self._credential = credential or self._build_credential()
 
     def _build_credential(self) -> TokenCredential:
-        if self._settings.managed_identity_client_id:
-            return ManagedIdentityCredential(client_id=self._settings.managed_identity_client_id)
-        return DefaultAzureCredential()
+        return azure_credential(self._settings.managed_identity_client_id)
 
     def _project(self) -> AIProjectClient:
         endpoint = self._settings.foundry_project_endpoint
@@ -207,7 +205,7 @@ class AgentChatGateway:
             conversation = project.get_openai_client(agent_name=agent_name).conversations.create(
                 extra_headers=headers,
             )
-        except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 502 below
+        except Exception as exc:
             raise HostedAgentInvocationError(f"Could not open a session for Hosted Agent {agent_name}.") from exc
         session_id = getattr(session, "agent_session_id", None) or getattr(session, "id", None)
         conversation_id = getattr(conversation, "id", None)
@@ -263,7 +261,7 @@ class AgentChatGateway:
                 path=path,
                 headers={"x-ms-user-identity": user_identity},
             )
-        except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 502 below
+        except Exception as exc:
             raise HostedAgentInvocationError(f"Could not upload {path} to the Hosted Agent session.") from exc
 
 

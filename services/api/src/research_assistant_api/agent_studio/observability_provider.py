@@ -26,8 +26,8 @@ from datetime import datetime, timedelta
 from typing import Any, Protocol
 
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.monitor.query import LogsQueryClient, LogsQueryStatus
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.agent_studio.models import (
     DeploymentObservabilitySummary,
@@ -221,16 +221,10 @@ class AppInsightsObservabilityProvider:
         )
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_observability_provider(settings: Settings) -> ObservabilityProvider:
     if not settings.agent_studio_app_insights_resource_id:
         return UnavailableObservabilityProvider()
     return AppInsightsObservabilityProvider(
         settings.agent_studio_app_insights_resource_id,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
     )

@@ -4,8 +4,9 @@ from typing import Protocol
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.identity.aio import ManagedIdentityCredential, get_bearer_token_provider
+from azure.identity.aio import get_bearer_token_provider
 from pydantic import ValidationError
+from research_assistant_core.azure_auth import async_azure_credential
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
     PublicConnectorSource,
@@ -121,7 +122,7 @@ def build_connector_gateway(settings: Settings) -> ConnectorGateway:
         return DisabledConnectorGateway()
     credential: AsyncTokenCredential | None = None
     if settings.connector_gateway_token_scope:
-        credential = ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
+        credential = async_azure_credential(settings.managed_identity_client_id)
     return HttpConnectorGateway(
         settings.connector_gateway_url,
         credential=credential,

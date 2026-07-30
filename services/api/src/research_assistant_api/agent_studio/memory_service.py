@@ -17,6 +17,8 @@ from datetime import timedelta
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import uuid4
 
+from research_assistant_core.azure_auth import azure_credential
+
 from research_assistant_api.agent_studio.models import (
     AgentManifest,
     MemoryAuditAction,
@@ -337,13 +339,7 @@ def build_memory_store(settings: Settings) -> MemoryStore:
         raise MemoryStoreUnavailableError(
             "No Azure Cosmos DB endpoint is configured; Agent Studio memory persistence is unavailable."
         )
-    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
-
-    credential = (
-        ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
-        if settings.managed_identity_client_id
-        else DefaultAzureCredential()
-    )
+    credential = azure_credential(settings.managed_identity_client_id)
     return CosmosMemoryStore(
         settings.cosmos_endpoint,
         settings.agent_studio_cosmos_database,

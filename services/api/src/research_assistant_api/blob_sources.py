@@ -7,8 +7,8 @@ from pathlib import PurePath
 from typing import Protocol
 
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.config import Settings
 
@@ -106,17 +106,11 @@ def _safe_filename(value: str) -> str:
     return sanitized[:120] or "source.bin"
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_source_blob_store(settings: Settings) -> SourceBlobStore:
     if not settings.storage_blob_endpoint:
         return InMemorySourceBlobStore()
     return AzureSourceBlobStore(
         settings.storage_blob_endpoint,
         settings.storage_source_container,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
     )

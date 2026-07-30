@@ -7,8 +7,8 @@ from typing import Any
 
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from openai import APIStatusError
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.config import Settings
 
@@ -92,9 +92,7 @@ class HostedAgentGateway:
         self._credential = credential or self._build_credential()
 
     def _build_credential(self) -> TokenCredential:
-        if self._settings.managed_identity_client_id:
-            return ManagedIdentityCredential(client_id=self._settings.managed_identity_client_id)
-        return DefaultAzureCredential()
+        return azure_credential(self._settings.managed_identity_client_id)
 
     def invoke(
         self,

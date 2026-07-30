@@ -12,7 +12,7 @@ from typing import Any, Protocol
 
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.agent_studio.models import FoundryAgentInventoryItem, FoundryAgentType
 from research_assistant_api.config import Settings
@@ -113,17 +113,11 @@ class UnavailableFoundryAgentInventory:
         )
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_foundry_agent_inventory(settings: Settings) -> FoundryAgentInventory:
     """Build the configured project inventory or an explicit unavailable port."""
     if not settings.foundry_project_endpoint:
         return UnavailableFoundryAgentInventory()
     return AIProjectFoundryAgentInventory(
         settings.foundry_project_endpoint,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
     )

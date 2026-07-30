@@ -16,14 +16,11 @@ from azure.ai.documentintelligence.models import DocumentContentFormat
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import HttpResponseError
 from azure.cosmos import CosmosClient
-from azure.identity import (
-    DefaultAzureCredential,
-    ManagedIdentityCredential,
-    get_bearer_token_provider,
-)
+from azure.identity import get_bearer_token_provider
 from azure.search.documents import SearchClient
 from azure.storage.blob import BlobClient, BlobServiceClient, ContentSettings
 from openai import AzureOpenAI
+from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.chunking import chunk_text
 from research_assistant_core.security import scan_untrusted_content
 
@@ -83,10 +80,7 @@ def ingestion_settings() -> IngestionSettings:
 
 @lru_cache(maxsize=1)
 def credential() -> TokenCredential:
-    client_id = os.getenv("AZURE_CLIENT_ID")
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
+    return azure_credential()
 
 
 def _update_run(

@@ -11,7 +11,7 @@ from azure.core.exceptions import ServiceRequestError, ServiceResponseError
 from azure.cosmos import CosmosClient
 from azure.cosmos.container import ContainerProxy
 from azure.cosmos.exceptions import CosmosHttpResponseError, CosmosResourceNotFoundError
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.models import Capability, RunStatus
 
 from research_assistant_api.config import Settings
@@ -1324,15 +1324,10 @@ def build_workspace_store(settings: Settings) -> WorkspaceStore:
             tenant_id=settings.workspace_tenant_id,
             project_id=settings.workspace_project_id,
         )
-    credential: TokenCredential
-    if settings.managed_identity_client_id:
-        credential = ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
-    else:
-        credential = DefaultAzureCredential()
     return CosmosWorkspaceStore(
         settings.cosmos_endpoint,
         settings.cosmos_database,
-        credential,
+        azure_credential(settings.managed_identity_client_id),
         tenant_id=settings.workspace_tenant_id,
         project_id=settings.workspace_project_id,
     )
@@ -1341,15 +1336,10 @@ def build_workspace_store(settings: Settings) -> WorkspaceStore:
 def build_workspace_project_provider(settings: Settings) -> WorkspaceProjectProvider:
     if not settings.cosmos_endpoint:
         return InMemoryWorkspaceProjectProvider(settings)
-    credential: TokenCredential
-    if settings.managed_identity_client_id:
-        credential = ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
-    else:
-        credential = DefaultAzureCredential()
     return CosmosWorkspaceProjectProvider(
         settings.cosmos_endpoint,
         settings.cosmos_database,
-        credential,
+        azure_credential(settings.managed_identity_client_id),
         tenant_id=settings.workspace_tenant_id,
         template_project_id=settings.workspace_project_id,
     )

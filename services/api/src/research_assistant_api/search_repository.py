@@ -4,8 +4,8 @@ from collections.abc import Sequence
 from typing import Any
 
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.search.documents import SearchClient
+from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.fixtures import SAMPLE_EVIDENCE
 from research_assistant_core.models import EvidenceChunk, SourceKind
 from research_assistant_core.repositories import (
@@ -184,19 +184,13 @@ class AzureSearchEvidenceRepository:
         return self._chunk(dict(document)) if document is not None else None
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_research_service(settings: Settings) -> ResearchService:
     repository: EvidenceRepository
     if settings.search_endpoint:
         repository = AzureSearchEvidenceRepository(
             settings.search_endpoint,
             settings.search_index_name,
-            _credential(settings.managed_identity_client_id),
+            azure_credential(settings.managed_identity_client_id),
         )
     else:
         repository = InMemoryEvidenceRepository(SAMPLE_EVIDENCE)

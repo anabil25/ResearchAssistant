@@ -21,6 +21,8 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Any, Protocol
 
+from research_assistant_core.azure_auth import azure_credential
+
 from research_assistant_api.agent_studio.models import AuditEvent, AuditEventKind
 from research_assistant_api.agent_studio.scope import ScopeContext, compute_scope_key
 from research_assistant_api.config import Settings
@@ -162,13 +164,7 @@ def build_audit_store(settings: Settings) -> AuditStore:
         raise AuditStoreUnavailableError(
             "No Azure Cosmos DB endpoint is configured; Agent Studio audit persistence is unavailable."
         )
-    from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
-
-    credential = (
-        ManagedIdentityCredential(client_id=settings.managed_identity_client_id)
-        if settings.managed_identity_client_id
-        else DefaultAzureCredential()
-    )
+    credential = azure_credential(settings.managed_identity_client_id)
     return CosmosAuditStore(
         settings.cosmos_endpoint,
         settings.agent_studio_cosmos_database,

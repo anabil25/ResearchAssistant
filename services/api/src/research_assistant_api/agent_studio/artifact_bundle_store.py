@@ -40,8 +40,8 @@ from typing import TYPE_CHECKING, Protocol
 
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import ResourceExistsError, ResourceNotFoundError
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from azure.storage.blob import BlobServiceClient, ContentSettings
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.agent_studio.scope import ScopeContext
 from research_assistant_api.config import Settings
@@ -310,12 +310,6 @@ class AzureArtifactBundleStore:
         return content
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_artifact_bundle_store(settings: Settings) -> ArtifactBundleStore:
     """Production factory: never returns an in-memory store.
 
@@ -328,5 +322,5 @@ def build_artifact_bundle_store(settings: Settings) -> ArtifactBundleStore:
     return AzureArtifactBundleStore(
         settings.storage_blob_endpoint,
         settings.agent_studio_bundle_container,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
     )

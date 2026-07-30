@@ -13,7 +13,7 @@ from typing import Any, Protocol
 
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_api.agent_studio.models import AgentVersion, RuntimeTarget
 from research_assistant_api.agent_studio.prompt_agent_compiler import (
@@ -109,17 +109,11 @@ class UnavailablePromptAgentPublisher:
         )
 
 
-def _credential(client_id: str | None) -> TokenCredential:
-    if client_id:
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
 def build_prompt_agent_publisher(settings: Settings) -> PromptAgentPublisher:
     """Build a publisher for the configured project or an explicit unavailable port."""
     if not settings.foundry_project_endpoint:
         return UnavailablePromptAgentPublisher()
     return AIProjectPromptAgentPublisher(
         settings.foundry_project_endpoint,
-        _credential(settings.managed_identity_client_id),
+        azure_credential(settings.managed_identity_client_id),
     )

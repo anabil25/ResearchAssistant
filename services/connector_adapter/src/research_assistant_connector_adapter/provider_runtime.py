@@ -7,12 +7,12 @@ import os
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import partial
 from time import sleep
 from typing import Any
 from uuid import uuid4
 
 import httpx
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
 from fastapi import HTTPException, Request
 from research_assistant_connectors.providers import (
     ApprovalConsumptionRequest,
@@ -36,6 +36,7 @@ from research_assistant_connectors.providers.config import (
     SearchConfig,
     WebhookConfig,
 )
+from research_assistant_core.azure_auth import azure_credential
 
 from research_assistant_connector_adapter.provider_api import ProviderService
 
@@ -336,12 +337,7 @@ def build_provider_runtime(
         )
     deadline_seconds = _deadline_seconds(values)
     if credential_factory is None:
-        client_id = _optional(values, "AZURE_CLIENT_ID")
-        credential_factory = (
-            (lambda: ManagedIdentityCredential(client_id=client_id))
-            if client_id
-            else DefaultAzureCredential
-        )
+        credential_factory = partial(azure_credential, _optional(values, "AZURE_CLIENT_ID"))
     credential = credential_factory()
     provider_transport = transport or httpx.Client(follow_redirects=False)
 
