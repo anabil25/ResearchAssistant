@@ -201,6 +201,29 @@ def test_accelerator_uses_one_environment_scoped_durable_task_hub() -> None:
     assert "output taskHubName string = taskHub.name" in module
 
 
+def test_azd_up_deploys_every_service_sequentially() -> None:
+    """One-click `azd up` must deploy services one per step.
+
+    azd deploys in parallel by default, but the Foundry agent extension
+    read-modify-writes azure.yaml per agent; concurrent agents truncate it and
+    the deploy fails with "unable to parse azure.yaml file. File is empty."
+    azd rewrites a plain ``azd: deploy api`` step into ``{args: [...]}``, so
+    accept either spelling.
+    """
+    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
+
+    steps = []
+    for step in manifest["workflows"]["up"]["steps"]:
+        command = step["azd"]
+        steps.append(command.split() if isinstance(command, str) else command["args"])
+
+    assert steps[0] == ["provision"]
+    deployed = [service for verb, service in steps[1:] if verb == "deploy"]
+    assert "--all" not in deployed
+    assert len(deployed) == len(set(deployed))
+    assert set(deployed) == set(manifest["services"])
+
+
 def test_coordinator_specialist_invocation_retries_transient_shapes(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
