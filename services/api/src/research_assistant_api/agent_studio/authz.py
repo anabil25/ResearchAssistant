@@ -194,8 +194,7 @@ class DemoSandboxMembershipPolicy:
     policy *only* for a principal whose ``IdentityContext.source`` is
     already confirmed to be ``DEMO_SANDBOX_SOURCE``, which is itself only
     ever constructible when ``Settings.allow_demo_identity`` is enabled --
-    and that field defaults to ``False`` and is refused outside
-    ``DEMO_IDENTITY_SAFE_ENVIRONMENTS`` (see ``config.py``). This class does
+    and that field defaults to ``False``. This class does
     not re-check either of those preconditions so it can be exercised as a
     pure, isolated decision in unit tests.
     """
