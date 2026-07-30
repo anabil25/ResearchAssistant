@@ -561,6 +561,12 @@ class TestAttachments:
         assert envelope["query"] == "compare these"
         assert envelope["sensitivity"] == "internal"
         assert envelope["session_id"] == thread["id"]
+        # Agents reject any scope but the one they are deployed against, so the
+        # envelope must carry the deployment scope rather than the workspace project.
+        settings = client.app.state.settings
+        assert envelope["tenant_id"] == settings.workspace_tenant_id
+        assert envelope["project_id"] == settings.workspace_project_id
+        assert envelope["project_id"] != "project-1"
         assert set(envelope) >= {
             "query",
             "tenant_id",
