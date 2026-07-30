@@ -6,7 +6,14 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    create_model,
+    field_validator,
+    model_validator,
+)
 
 from .capabilities import CapabilityBinding, template_instance_fingerprint
 from .errors import ContractError
@@ -47,6 +54,21 @@ class Claim(BaseModel):
             raise ValueError("supported and conflicting claims require at least one evidence_id")
         if self.support == SupportStatus.UNSUPPORTED and self.evidence_ids:
             raise ValueError("unsupported claims cannot cite evidence")
+        return self
+
+
+class LenientClaim(Claim):
+    """Parse-stage claim that tolerates model output violating the evidence invariant.
+
+    Generated output is schema-conformant but cannot be constrained by the model
+    provider across fields, so a model may emit ``supported`` with no evidence.
+    Enforcing the invariant at parse time aborts the whole response; instead this
+    twin lets the payload land so ``resolve_authorized_evidence`` can downgrade the
+    claim to ``unsupported``. The strict invariant is re-applied afterwards.
+    """
+
+    @model_validator(mode="after")
+    def evidence_matches_support(self) -> LenientClaim:
         return self
 
 
@@ -229,9 +251,22 @@ class DatasetRequest(ResearchRequest):
         return self
 
 
+class ComputedOutput(BaseModel):
+    """Named dataset result value.
+
+    Modelled as a list of named entries rather than an open map because strict
+    structured output schemas reject objects with free-form keys.
+    """
+
+    model_config = ConfigDict(frozen=True)
+
+    name: str = Field(min_length=1, max_length=256)
+    value: str = Field(default="", max_length=8_000)
+
+
 class DatasetResponse(ResearchResponse):
     code: str | None = None
-    computed_outputs: dict[str, str | int | float | bool | None] = {}
+    computed_outputs: tuple[ComputedOutput, ...] = ()
 
 
 class InstitutionRequest(ResearchRequest):
@@ -417,6 +452,30 @@ class SpecialistResult(BaseModel):
 
 class CoordinatorResponse(ResearchResponse):
     specialist_results: tuple[SpecialistResult, ...] = ()
+
+
+_LENIENT_OUTPUT_MODELS: dict[type[ResearchResponse], type[ResearchResponse]] = {}
+
+
+def lenient_output_model(model: type[ResearchResponse]) -> type[ResearchResponse]:
+    """Return the parse-stage twin of a response contract.
+
+    The twin keeps the exact field shape of the governance contract -- so the
+    generated JSON schema and the model's instructions are unchanged -- but
+    relaxes the cross-field claim invariant that generation cannot guarantee.
+    Callers must re-validate against the strict contract after normalization.
+    """
+
+    cached = _LENIENT_OUTPUT_MODELS.get(model)
+    if cached is not None:
+        return cached
+    twin = create_model(
+        model.__name__,
+        __base__=model,
+        claims=(tuple[LenientClaim, ...], ()),
+    )
+    _LENIENT_OUTPUT_MODELS[model] = twin
+    return twin
 
 
 def resolve_authorized_evidence(

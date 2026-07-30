@@ -633,6 +633,9 @@ _REPLY_SECTIONS: tuple[tuple[str, str], ...] = (
 
 def _bullet(value: object) -> str:
     if isinstance(value, dict):
+        name = value.get("name")
+        if name and "value" in value:
+            return f"**{name}**: {value.get('value')}"
         label = value.get("text") or value.get("title") or value.get("id")
         if label:
             return str(label)

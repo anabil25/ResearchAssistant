@@ -75,6 +75,7 @@ from shared.contracts import (
     CoordinatorRequest,
     CoordinatorResponse,
     DatasetRequest,
+    DatasetResponse,
     DeploymentScope,
     EvidenceRef,
     GrantResponse,
@@ -86,6 +87,7 @@ from shared.contracts import (
     ObjectiveGate,
     PublicGrantRequest,
     PublicLiteratureRequest,
+    PublicLiteratureResponse,
     PublicMatchingRequest,
     ResearchResponse,
     RuntimeRequirements,
@@ -97,6 +99,7 @@ from shared.contracts import (
     bind_contracts,
     bind_deployment_scope,
     canonical_digest,
+    lenient_output_model,
     resolve_authorized_evidence,
 )
 from shared.errors import (
@@ -542,6 +545,50 @@ def test_contracts_reject_false_support_and_unresolved_citations() -> None:
     nested = resolved_coordinator.specialist_results[0].response
     assert nested is not None
     assert nested.claims[0].support == SupportStatus.UNSUPPORTED
+
+
+def test_lenient_twin_downgrades_unevidenced_claims_instead_of_failing() -> None:
+    """Generation cannot enforce cross-field invariants, so parsing must not abort.
+
+    A model may emit a schema-conformant claim marked ``supported`` with no evidence.
+    Enforcing the strict claim invariant at parse time discards the entire response;
+    the twin lets it land so the claim is downgraded rather than lost.
+    """
+
+    twin = lenient_output_model(PublicLiteratureResponse)
+    assert twin.__name__ == PublicLiteratureResponse.__name__
+    assert issubclass(twin, PublicLiteratureResponse)
+
+    unevidenced = {
+        "summary": "answer",
+        "claims": [{"text": "claim", "support": "supported", "evidence_ids": []}],
+    }
+    with pytest.raises(ValidationError, match="supported and conflicting claims require"):
+        PublicLiteratureResponse.model_validate(unevidenced)
+
+    enforced = PublicLiteratureResponse.model_validate(
+        resolve_authorized_evidence(twin.model_validate(unevidenced), ()).model_dump(),
+    )
+    assert enforced.claims[0].support == SupportStatus.UNSUPPORTED
+    assert enforced.claims[0].evidence_ids == ()
+    assert type(enforced.claims[0]) is Claim
+
+    # The twin relaxes only the claim invariant; it must not become a way to smuggle
+    # unknown fields past the contract.
+    with pytest.raises(ValidationError):
+        twin.model_validate({"summary": "answer", "unexpected": "value"})
+
+
+def test_dataset_outputs_avoid_free_form_maps() -> None:
+    """Strict structured output schemas reject objects with arbitrary keys."""
+
+    schema = lenient_output_model(DatasetResponse).model_json_schema()
+    computed = schema["$defs"]["ComputedOutput"]
+    assert computed["properties"].keys() == {"name", "value"}
+    response = DatasetResponse.model_validate(
+        {"summary": "done", "computed_outputs": [{"name": "rows", "value": "12"}]}
+    )
+    assert response.computed_outputs[0].name == "rows"
 
 
 def test_public_and_specialist_contracts_are_strict() -> None:
@@ -4727,7 +4774,12 @@ def test_governed_factory_builds_typed_hosted_agent(
     )
     assert agent.name == "literature-agent"
     assert agent.default_options["store"] is False
-    assert agent.default_options["response_format"] is LiteratureResponse
+    response_format = agent.default_options["response_format"]
+    # The provider is handed the parse-stage twin so schema-conformant output is never
+    # rejected before `resolve_authorized_evidence` can downgrade an unevidenced claim,
+    # but it must still carry the literature contract's shape.
+    assert response_format is lenient_output_model(LiteratureResponse)
+    assert issubclass(response_format, LiteratureResponse)
     assert agent.context_providers == []
     assert factory.capabilities() == ()
     constructed: list[dict[str, Any]] = []

@@ -25,6 +25,7 @@ from .contracts import (
     MemoryScope,
     bind_contracts,
     bind_deployment_scope,
+    lenient_output_model,
 )
 from .credentials import get_credential
 from .errors import ConfigurationError, HarnessError
@@ -88,7 +89,7 @@ class GovernedAgentFactory:
             tools=tools_for_profile(prepared.manifest, client, effective_settings),
             default_options={
                 "store": False,
-                "response_format": contracts.output_model,
+                "response_format": lenient_output_model(contracts.output_model),
             },
             middleware=middleware_for_manifest(
                 prepared.manifest,
@@ -163,7 +164,7 @@ class GovernedAgentFactory:
             tools=tools_for_profile(prepared.manifest, client, effective_settings),
             default_options={
                 "store": False,
-                "response_format": contracts.output_model,
+                "response_format": lenient_output_model(contracts.output_model),
             },
             middleware=middleware_for_manifest(
                 prepared.manifest,

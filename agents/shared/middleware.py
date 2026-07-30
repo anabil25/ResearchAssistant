@@ -38,6 +38,7 @@ from .contracts import (
     ResearchResponse,
     bind_contracts,
     canonical_digest,
+    lenient_output_model,
     resolve_authorized_evidence,
 )
 from .errors import (
@@ -237,17 +238,21 @@ class ContractMiddleware(AgentMiddleware):
         tool_evidence: list[EvidenceRef],
     ) -> AgentResponse[Any]:
         raw = response.value
+        lenient_model = lenient_output_model(self._contracts.output_model)
         if raw is None:
-            raw = self._contracts.output_model.model_validate_json(response.text)
-        typed = self._contracts.output_model.model_validate(raw)
+            raw = lenient_model.model_validate_json(response.text)
+        parsed = lenient_model.model_validate(
+            raw.model_dump() if isinstance(raw, BaseModel) else raw,
+        )
         authorized_evidence = self._merge_authorized_evidence(
             request_evidence,
             tool_evidence,
-            typed,
+            parsed,
         )
-        normalized = resolve_authorized_evidence(
-            typed,
-            authorized_evidence,
+        # ``resolve_authorized_evidence`` downgrades any claim that is not backed by
+        # authorized evidence, which is what restores the strict claim invariant.
+        normalized = self._contracts.output_model.model_validate(
+            resolve_authorized_evidence(parsed, authorized_evidence).model_dump(),
         )
         messages = list(response.messages)
         replacement = Message(
