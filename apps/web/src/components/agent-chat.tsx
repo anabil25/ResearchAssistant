@@ -552,6 +552,7 @@ export function AgentChat({
           <button
             type="submit"
             className="primary-button agent-chat-send"
+            aria-label="Send"
             disabled={!thread || sending || uploading || draft.trim().length === 0}
           >
             {sending ? (

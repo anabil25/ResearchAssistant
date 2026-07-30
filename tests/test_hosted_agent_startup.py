@@ -50,7 +50,18 @@ def test_coordinator_starts_without_custom_provider_or_release_attestation() -> 
     assert ResponsesHostServer(agent, configure_observability=None) is not None
 
 
+@pytest.mark.parametrize(
+    ("profile_id", "agent_name"),
+    [
+        ("literature", "literature-agent"),
+        ("grant", "grant-agent"),
+        ("matching", "matching-agent"),
+        ("dataset", "dataset-agent"),
+    ],
+)
 def test_toolbox_agent_starts_without_custom_provider_or_release_attestation(
+    profile_id: str,
+    agent_name: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     toolbox = SimpleNamespace()
@@ -61,15 +72,22 @@ def test_toolbox_agent_starts_without_custom_provider_or_release_attestation(
         "shared.factory.Agent",
         lambda **kwargs: constructed.append(kwargs) or SimpleNamespace(**kwargs),
     )
+    factory = get_factory(profile_id)
+    settings = _settings(toolbox_endpoint="https://toolbox.example/mcp").model_copy(
+        update={
+            "model_deployment_name": factory.manifest.model_policy.deployment_name,
+            "model_deployment_version": factory.manifest.model_policy.pinned_model_version,
+        }
+    )
 
-    agent = get_factory("dataset").build_hosted(
+    agent = factory.build_hosted(
         client=object(),
-        settings=_settings(toolbox_endpoint="https://toolbox.example/mcp"),
+        settings=settings,
         trusted_tenant_id="tenant-a",
         trusted_project_id="project-a",
     )
 
-    assert agent.name == "dataset-agent"
+    assert agent.name == agent_name
     assert constructed[0]["tools"] is toolbox
 
 

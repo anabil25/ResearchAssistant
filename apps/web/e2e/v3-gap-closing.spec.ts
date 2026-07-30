@@ -34,292 +34,6 @@ async function runStudioAndCapturePayload(
   };
 }
 
-test.describe("Literature Studio interactions", () => {
-  test("Screen/Extract/Synthesize/Audit tabs show distinct content and criteria are editable", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: /literature review synthesis/i })
-      .click();
-
-    await page.getByRole("textbox", { name: "Add inclusion criterion" }).fill("Custom criterion");
-    await page
-      .getByRole("button", { name: "Add inclusion criterion" })
-      .click();
-    await expect(page.getByText("Custom criterion")).toBeVisible();
-
-    const payload = await runStudioAndCapturePayload(
-      page,
-      "literature",
-      "Search & screen evidence",
-    );
-    expect(payload.inputs.inclusion_criteria).toContain("Custom criterion");
-
-    await expect(page.locator(".screening-record").first()).toBeVisible();
-    await page.getByRole("button", { name: "Extract", exact: true }).click();
-    await expect(page.locator(".extraction-row").first()).toBeVisible();
-    await page.getByRole("button", { name: "Synthesize" }).click();
-    await expect(page.locator(".synthesis-card")).toBeVisible();
-    await page.getByRole("button", { name: "Audit" }).click();
-    await expect(page.getByText("Claim & citation audit")).toBeVisible();
-  });
-
-  test("screening decisions change included/excluded counts and the extraction tab", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: /literature review synthesis/i })
-      .click();
-    await runStudioAndCapturePayload(
-      page,
-      "literature",
-      "Search & screen evidence",
-    );
-
-    const firstRecord = page.locator(".screening-record").first();
-    await firstRecord.getByRole("button", { name: "Exclude" }).click();
-    await expect(page.locator(".metric-line")).toContainText("1 excluded");
-  });
-
-  test("extraction cells are editable and export the current version as a CSV download", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: /literature review synthesis/i })
-      .click();
-    await runStudioAndCapturePayload(
-      page,
-      "literature",
-      "Search & screen evidence",
-    );
-
-    await page.getByRole("button", { name: "Extract", exact: true }).click();
-    const methodField = page.locator(".extraction-row").first().locator(
-      "input",
-    ).first();
-    await methodField.fill("Revised method for this run");
-    await expect(methodField).toHaveValue("Revised method for this run");
-
-    const downloadPromise = page.waitForEvent("download");
-    await page.getByRole("button", { name: "Export CSV" }).click();
-    const download = await downloadPromise;
-    expect(download.suggestedFilename()).toMatch(/^extraction-matrix-.*\.csv$/);
-    await expect(page.getByRole("status")).toContainText(/exported \d+ extraction row/i);
-  });
-});
-
-test.describe("Grant Studio interactions", () => {
-  test("section tabs, red-team, source discovery, and connector draft dialog work", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: "Grant Studio", exact: true })
-      .first()
-      .click();
-
-    await page.getByRole("button", { name: "Significance" }).click();
-    await expect(
-      page.getByText(/not yet drafted for this section/i),
-    ).toBeVisible();
-    await page.getByRole("button", { name: "Specific aims", exact: true }).click();
-
-    const buildPayload = await runStudioAndCapturePayload(
-      page,
-      "grant",
-      "Parse notice & build package",
-    );
-    expect(buildPayload.inputs.red_team_pass).toBe(false);
-
-    const redTeamPayload = await runStudioAndCapturePayload(
-      page,
-      "grant",
-      "Red-team draft",
-    );
-    expect(redTeamPayload.inputs.red_team_pass).toBe(true);
-
-    await page
-      .getByRole("button", { name: "Request a new connector" })
-      .click();
-    const dialog = page.getByRole("dialog", {
-      name: /request a new connector/i,
-    });
-    await expect(
-      dialog.getByText(/records a draft request only/i),
-    ).toBeVisible();
-    await dialog.getByLabel("Connector name").fill("NSF Awards");
-    await dialog.getByLabel("Base URL").fill("https://api.nsf.gov");
-    await dialog
-      .getByLabel("Authoritative API documentation")
-      .fill("https://api.nsf.gov/docs");
-    await dialog
-      .getByLabel("Terms, license, and robots policy")
-      .fill("https://api.nsf.gov/terms");
-    await dialog
-      .getByLabel("Allowed hosts and path prefixes")
-      .fill("api.nsf.gov/v1/");
-    await dialog.getByLabel("Authentication").selectOption("None");
-    await dialog
-      .getByLabel("Sample query and normalized fields")
-      .fill("award search -> id,title,url");
-    await dialog
-      .getByLabel("Justification")
-      .fill("Needed for federal award discovery.");
-    await dialog.getByLabel(/confirmed this use is permitted/i).check();
-    await dialog.getByLabel(/generated code requires tests/i).check();
-    await dialog.getByRole("button", { name: "Save draft request" }).click();
-    await expect(page.getByText("Draft — needs review")).toBeVisible();
-  });
-
-  test("discovery filters governed connectors and requirement rows open source evidence", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: "Grant Studio", exact: true })
-      .first()
-      .click();
-
-    const discoveryPanel = page.getByLabel("Opportunity discovery");
-    await expect(discoveryPanel.getByText("Grants.gov")).toBeVisible();
-    await discoveryPanel
-      .getByLabel("Search funding opportunities")
-      .fill("no such opportunity anywhere");
-    await expect(
-      discoveryPanel.getByText(/no net-new opportunities match this query/i),
-    ).toBeVisible();
-    await discoveryPanel.getByLabel("Search funding opportunities").fill("");
-    await discoveryPanel
-      .getByRole("button", { name: "Use as opportunity source" })
-      .first()
-      .click();
-    await expect(page.getByLabel("Opportunity ID")).toHaveValue(/-LEAD-/);
-
-    await runStudioAndCapturePayload(
-      page,
-      "grant",
-      "Parse notice & build package",
-    );
-    await page
-      .getByRole("button", { name: /two-page project summary/i })
-      .click();
-    const requirementDialog = page.getByRole("dialog", {
-      name: /two-page project summary/i,
-    });
-    await expect(requirementDialog).toBeVisible();
-    await requirementDialog.getByLabel("Close requirement detail").click();
-    await expect(requirementDialog).not.toBeVisible();
-  });
-});
-
-test.describe("Matching Explorer source selection", () => {
-  test("controls public/institutional sources, keeps Work IQ disabled, and sends selected sources", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: "Matching Explorer", exact: true })
-      .first()
-      .click();
-
-    const workIqToggle = page.getByRole("checkbox", {
-      name: /work iq collaboration signals/i,
-    });
-    await expect(workIqToggle).toBeDisabled();
-    await expect(workIqToggle).not.toBeChecked();
-
-    await page
-      .getByRole("checkbox", { name: "Institutional directory" })
-      .uncheck();
-
-    const payload = await runStudioAndCapturePayload(
-      page,
-      "matching",
-      "Build verified shortlist",
-    );
-    expect(payload.inputs.sources).not.toContain("institutional");
-  });
-});
-
-test.describe("Matching Explorer interactions", () => {
-  test("record types and hard filters are sent, and shortlist compare is transparent", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: "Matching Explorer", exact: true })
-      .first()
-      .click();
-
-    await page.getByRole("checkbox", { name: "Templates" }).check();
-    await page
-      .getByRole("checkbox", { name: "Current institutional record" })
-      .uncheck();
-
-    const payload = await runStudioAndCapturePayload(
-      page,
-      "matching",
-      "Build verified shortlist",
-    );
-    expect(payload.inputs.record_kinds).toContain("template");
-    expect(payload.inputs.hard_filters).not.toContain(
-      "current_institutional_record",
-    );
-
-    const firstCard = page.locator(".match-card").first();
-    await firstCard.getByRole("button", { name: /add .* to shortlist/i }).click();
-    await expect(page.getByText(/^Shortlist \(1\)$/)).toBeVisible();
-    await page.getByRole("button", { name: "Compare shortlisted" }).click();
-    await expect(page.getByText("Top evidence factors")).toBeVisible();
-  });
-});
-
-test.describe("Dataset Lab interactions", () => {
-  test("uploads a real bounded CSV file but keeps compute explicitly unavailable", async ({
-    page,
-  }) => {
-    await waitForWorkspace(page);
-    await page
-      .getByRole("button", { name: "Dataset Lab", exact: true })
-      .first()
-      .click();
-
-    const runButton = page.getByRole("button", {
-      name: "Analyze with Foundry Code Interpreter",
-    });
-    await expect(runButton).toBeDisabled();
-
-    await page.getByLabel("Upload a dataset file").setInputFiles({
-      name: "pilot.csv",
-      mimeType: "text/csv",
-      buffer: Buffer.from("id,outcome\n1,improved\n2,stable\n"),
-    });
-    await expect(page.getByText("pilot.csv")).toBeVisible();
-
-    const uploadResponsePromise = page.waitForResponse(
-      (response) =>
-        response.request().method() === "POST" &&
-        response.url().includes("/api/library/upload"),
-    );
-    await page.getByRole("button", { name: "Upload to Library" }).click();
-    expect((await uploadResponsePromise).status()).toBe(200);
-    await expect(runButton).toBeDisabled();
-    await expect(
-      page.getByText(
-        /Dataset compute is unavailable until a trusted server-side approval service is configured/,
-      ),
-    ).toBeVisible();
-    await expect(
-      page.getByText(
-        /I approve sending this bounded dataset to the Foundry Dataset Agent/,
-      ),
-    ).toHaveCount(0);
-  });
-});
-
 test.describe("Institutional Q&A interactions", () => {
   test("shows the Work IQ plugin coming-soon page without retired controls", async ({
     page,
@@ -337,8 +51,6 @@ test.describe("Institutional Q&A interactions", () => {
     await expect(
       page.getByRole("button", { name: "Resolve policy answer" }),
     ).toHaveCount(0);
-    await expect(page.getByLabel("Search workspace")).toHaveCount(0);
-    await expect(page.getByLabel(/pending approvals/i)).toHaveCount(0);
   });
 });
 
@@ -435,7 +147,7 @@ test.describe("Workflow Automation interactions", () => {
 });
 
 test.describe("Library and Settings interactions", () => {
-  test("a library row opens a detail dialog", async ({ page }) => {
+  test("[pw.library-detail] a ready library row opens a detail dialog [pw.library.item.open:ready]", async ({ page }) => {
     await waitForWorkspace(page);
     await page.getByRole("button", { name: /^Library \d+$/ }).click();
     await page.locator(".library-row:not(.library-head)").first().click();
@@ -445,7 +157,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(dialog).not.toBeVisible();
   });
 
-  test("Settings exposes a truthful integration readiness section", async ({
+  test("[pw.integration-readiness] Settings exposes a truthful integration readiness section [pw.settings.integrations.readiness:deployment-managed]", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -461,7 +173,7 @@ test.describe("Library and Settings interactions", () => {
     await expect(page.getByText(/project-scoped, not per-user/i)).toBeVisible();
   });
 
-  test("Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion", async ({
+  test("[pw.connector-versions] Connectors tab shows a truthful, clearly disabled APIM/MCP/Toolbox version state with no fake promotion [pw.settings.connectors.versions:unconfigured]", async ({
     page,
   }) => {
     await waitForWorkspace(page);

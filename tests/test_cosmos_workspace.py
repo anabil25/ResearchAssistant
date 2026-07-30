@@ -17,6 +17,7 @@ from research_assistant_api.identity import IdentityContext
 from research_assistant_api.workspace import (
     ApprovalDecision,
     ApprovalState,
+    ChatThread,
     ConnectorUpdate,
     DatasetApprovalDecisionRequest,
     DatasetApprovalDenialReason,
@@ -25,6 +26,7 @@ from research_assistant_api.workspace import (
     RunStage,
     RunSummary,
     WorkspaceStore,
+    utc_now,
 )
 from research_assistant_core.models import Capability, RunStatus
 
@@ -192,6 +194,22 @@ def test_cosmos_workspace_seeds_and_reloads_operational_state(
             source="test",
         ),
     )
+    now = utc_now()
+    first.save_chat_thread(
+        ChatThread(
+            id="chat-persisted",
+            project_id=first.project_id,
+            tenant_id=first.tenant_id,
+            capability=Capability.LITERATURE,
+            agent_name="literature-agent",
+            owner_principal_id="researcher-1",
+            conversation_id="conversation-persisted",
+            session_id="session-persisted",
+            delegated_user_identity="ra:persisted-user",
+            created_at=now,
+            updated_at=now,
+        )
+    )
 
     second = cosmos_workspace.CosmosWorkspaceStore(
         "https://cosmos.example.test",
@@ -205,6 +223,14 @@ def test_cosmos_workspace_seeds_and_reloads_operational_state(
     approval = next(item for item in second.approvals() if item.id == "approval-grant-export")
     assert approval.state == ApprovalState.APPROVED
     assert approval.approver_id == "reviewer-1"
+    chat_thread = second.chat_thread(
+        "chat-persisted",
+        owner_principal_id="researcher-1",
+    )
+    assert chat_thread is not None
+    assert chat_thread.conversation_id == "conversation-persisted"
+    assert chat_thread.session_id == "session-persisted"
+    assert chat_thread.delegated_user_identity == "ra:persisted-user"
     grant_run = second.run("run-grant-001")
     assert grant_run is not None
     assert grant_run.status.value == "completed"

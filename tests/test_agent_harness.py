@@ -4613,6 +4613,12 @@ def test_release_attestation_is_exact_objective_and_fail_closed() -> None:
 
 def test_capability_catalog_has_deterministic_risk_boundaries() -> None:
     toolbox = _settings(toolbox_endpoint="https://toolbox.example/toolboxes/research/mcp")
+    for profile_id in ("literature", "grant", "matching"):
+        file_analysis = capabilities_for_manifest(get_manifest(profile_id), toolbox)
+        assert file_analysis[0].operation == OperationClass.READ
+        assert file_analysis[0].approval == ApprovalMode.NEVER
+        assert file_analysis[0].allowed_destinations == ("toolbox.example",)
+        assert file_analysis[0].side_effect_destinations == ()
     dataset = capabilities_for_manifest(get_manifest("dataset"), toolbox)
     assert dataset[0].operation == OperationClass.PRIVILEGED
     assert dataset[0].approval == ApprovalMode.REQUIRED

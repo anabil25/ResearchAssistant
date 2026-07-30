@@ -7418,6 +7418,16 @@ button.library-row {
     max-width: 100%;
   }
 
+  .agent-chat-composer-row textarea {
+    min-height: 56px;
+  }
+
+  .agent-chat-attach,
+  .agent-chat-send {
+    min-width: 44px;
+    min-height: 44px;
+  }
+
   .agent-chat-send span {
     display: none;
   }

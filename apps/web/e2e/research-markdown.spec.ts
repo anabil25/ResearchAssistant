@@ -2,7 +2,7 @@ import AxeBuilder from "@axe-core/playwright";
 
 import { expect, test } from "./fixtures";
 
-test("[pw.literature-run] renders structured agent Markdown without executable or exfiltration sinks", async ({
+test("renders structured agent Markdown without executable or exfiltration sinks", async ({
   page,
 }) => {
   const content = [
@@ -31,60 +31,40 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
     "```",
   ].join("\n");
   await page.route(
-    "**/api/backend/api/studios/literature/run",
+    "**/api/backend/api/agent-chat/threads/*",
     async (route) => {
+      if (route.request().method() !== "GET") {
+        await route.continue();
+        return;
+      }
+      const threadId = new URL(route.request().url()).pathname.split("/").at(-1);
       await route.fulfill({
         contentType: "application/json",
         body: JSON.stringify({
-          run: {
-            id: "run-markdown-security",
-            durable_instance_id: "research-run-markdown-security",
-            capability: "literature",
-            title: "Markdown security fixture",
-            status: "completed",
-            current_stage: "Audit claims",
-            progress: 100,
-            started_at: "2026-07-22T12:00:00Z",
-            owner: "Playwright",
-          },
-          protocol: {
-            research_question: "Test untrusted Markdown",
-            date_from: 2020,
-            date_to: 2026,
-            sources: ["PubMed"],
-            inclusion_criteria: ["Primary study"],
-            exclusion_criteria: ["No evidence"],
-          },
-          search_queries: ["Test untrusted Markdown"],
-          candidate_count: 0,
-          screening: [],
-          extraction_matrix: [],
-          synthesis: ["Only stored evidence can be verified."],
-          citations: [
+          id: threadId,
+          capability: "literature",
+          agent_name: "literature-agent",
+          created_at: "2026-07-22T12:00:00Z",
+          updated_at: "2026-07-22T12:01:00Z",
+          attachments: [],
+          messages: [
             {
-              id: "citation-1",
-              source_id: "source-1",
-              chunk_id: "chunk-1",
-              title: "Verified source",
-              canonical_url: "https://evidence.example/source-1",
-              identifier: "doi:10.0000/example",
-              page_start: 4,
-              page_end: 5,
-              section: "Methods",
-              quote: "The verified passage.",
-              checksum: "sha256:test",
-              license: "CC BY 4.0",
-              retrieved_at: "2026-07-22T12:00:00Z",
+              id: "message-user",
+              role: "user",
+              content: "Render the supplied analysis.",
+              created_at: "2026-07-22T12:00:30Z",
+              agent_name: null,
+              attachments: [],
+            },
+            {
+              id: "message-assistant",
+              role: "assistant",
+              content,
+              created_at: "2026-07-22T12:01:00Z",
+              agent_name: "literature-agent",
+              attachments: [],
             },
           ],
-          insight: {
-            agent_name: "literature-agent",
-            content,
-            evidence_state: "model_analysis",
-            referenced_source_ids: ["source-1"],
-            unresolved_source_ids: ["invented-source"],
-            online_research_used: false,
-          },
         }),
       });
     },
@@ -98,9 +78,10 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
   await page
     .getByRole("button", { name: /literature review synthesis/i })
     .click();
-  await page.getByRole("button", { name: "Search & screen evidence" }).click();
+  await page.getByRole("textbox", { name: "Message" }).fill("Render the supplied analysis.");
+  await page.getByRole("button", { name: "Send" }).click();
 
-  const markdown = page.getByRole("region", { name: "Hosted Agent analysis" });
+  const markdown = page.getByRole("region", { name: "literature-agent response" });
   await expect(
     markdown.getByRole("heading", { name: "Findings" }),
   ).toBeVisible();
@@ -111,7 +92,7 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
   ).toHaveCount(0);
   await expect(
     markdown.getByRole("link", { name: /Verified source/ }),
-  ).toHaveCount(1);
+  ).toHaveCount(0);
   const hashLink = markdown.getByRole("link", {
     name: "Jump to Findings (opens in a new tab)",
   });
@@ -128,7 +109,6 @@ test("[pw.literature-run] renders structured agent Markdown without executable o
     markdown.getByText("Broken destination [blocked]"),
   ).toBeVisible();
   await expect(markdown.getByText("[code block truncated]")).toBeVisible();
-  await expect(markdown.getByText("invented-source")).toBeVisible();
 
   const accessibility = await new AxeBuilder({ page })
     .include(".research-markdown")

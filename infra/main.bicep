@@ -43,6 +43,9 @@ param resourceGroupName string
 @description('Azure region for Azure AI Search. Defaults to the primary location.')
 param searchLocation string = location
 
+@description('Azure region for the application VNet and Container Apps. Central US uses East US 2 because new managed environments are currently capacity constrained there.')
+param applicationLocation string = location == 'centralus' ? 'eastus2' : location
+
 @description('Tags applied to all resources.')
 param tags object = {}
 
@@ -95,6 +98,7 @@ module resources 'modules/resources.bicep' = {
   params: {
     location: location
     searchLocation: searchLocation
+    applicationLocation: applicationLocation
     tags: tags
     resourceTokenSalt: resourceTokenSalt
     foundryProjectName: foundryProjectName

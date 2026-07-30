@@ -30,7 +30,7 @@ async function selectWorkspaceRoute(page: Page, route: string) {
   }, route);
 }
 
-test("[pw.literature-run] captures core and critical states [pw.literature.protocol.run:loading][pw.literature.protocol.run:error][pw.literature.screen.tab:empty]", async ({
+test("captures core routes and critical chat states", async ({
   page,
   releaseDiagnostics,
 }, testInfo) => {
@@ -57,7 +57,7 @@ test("[pw.literature-run] captures core and critical states [pw.literature.proto
     "data-workspace-ready",
     "true",
   );
-  await expect(page.getByText("No screening run yet")).toBeVisible();
+  await expect(page.getByText(/you do not need to configure a workflow/i)).toBeVisible();
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[0]);
 
   let releaseFailure: (() => void) | undefined;
@@ -65,14 +65,14 @@ test("[pw.literature-run] captures core and critical states [pw.literature.proto
     releaseFailure = resolve;
   });
   await page.route(
-    "**/api/backend/api/studios/literature/run",
+    "**/api/backend/api/agent-chat/threads/*/messages",
     async (route) => {
       await failureReleased;
       await route.fulfill({
         status: 503,
         contentType: "application/json",
         body: JSON.stringify({
-          detail: "The bounded literature service is unavailable.",
+          detail: "The selected Foundry agent is unavailable.",
         }),
       });
     },
@@ -81,20 +81,17 @@ test("[pw.literature-run] captures core and critical states [pw.literature.proto
     /status of 503 \(Service Unavailable\)/,
   );
 
-  const runButton = page.getByRole("button", {
-    name: "Search & screen evidence",
-  });
-  await runButton.click();
-  await expect(
-    page.getByRole("button", { name: "Running workflow..." }),
-  ).toBeDisabled();
+  const composer = page.getByRole("textbox", { name: "Message" });
+  await composer.fill("Compare the strongest evidence.");
+  await page.getByRole("button", { name: "Send" }).click();
+  await expect(page.getByText(/is working/i)).toBeVisible();
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[1]);
 
   releaseFailure?.();
   await expect(page.locator(".error-banner[role='alert']")).toContainText(
-    "The bounded literature service is unavailable.",
+    "The selected Foundry agent is unavailable.",
   );
-  await expect(runButton).toBeEnabled();
+  await expect(composer).toHaveValue("Compare the strongest evidence.");
   await expectAccessible(page);
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[2]);
 

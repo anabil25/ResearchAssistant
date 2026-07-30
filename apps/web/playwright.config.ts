@@ -461,7 +461,7 @@ export default defineConfig({
     },
     {
       name: tabletProjectName,
-      testMatch: /visual-coverage\.spec\.ts/,
+      testMatch: /(visual-coverage|agent-chat)\.spec\.ts/,
       use: {
         ...devices["Desktop Chrome"],
         viewport: { width: 834, height: 1112 },
@@ -469,7 +469,7 @@ export default defineConfig({
     },
     {
       name: mobileProjectName,
-      testMatch: /visual-coverage\.spec\.ts/,
+      testMatch: /(visual-coverage|agent-chat)\.spec\.ts/,
       use: {
         ...devices["Pixel 5"],
         viewport: { width: 390, height: 844 },

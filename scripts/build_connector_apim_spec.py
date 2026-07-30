@@ -164,17 +164,6 @@ def connector_apim_openapi() -> dict[str, Any]:
                         "required": True,
                         "schema": {"type": "string", "minLength": 2, "maxLength": 500},
                     },
-                    {
-                        "name": "limit",
-                        "in": "query",
-                        "required": False,
-                        "schema": {
-                            "type": "integer",
-                            "minimum": 1,
-                            "maximum": 10,
-                            "default": 5,
-                        },
-                    },
                 ]
             elif operation.mcp_tool_name == "lookup":
                 path = f"/v1/connectors/{connector.id}/lookup"

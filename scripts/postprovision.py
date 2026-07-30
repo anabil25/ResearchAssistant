@@ -1223,30 +1223,38 @@ def configure_agent_memory(credential: TokenCredential | None = None) -> str:
         f"{project_endpoint.rstrip('/')}/memory_stores"
         f"?api-version={FOUNDRY_MEMORY_API_VERSION}"
     )
-    _toolbox_json_request(
-        effective_credential,
-        method="POST",
-        url=url,
-        payload={
-            "name": MEMORY_STORE_NAME,
-            "description": "Shared research memory for user profile, chat summary, and procedural recall.",
-            "definition": {
-                "kind": "default",
-                "chat_model": chat_deployment,
-                "embedding_model": embedding_deployment,
-                "options": {
-                    "chat_summary_enabled": True,
-                    "user_profile_enabled": True,
-                    "procedural_memory_enabled": True,
-                    "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
-                    "user_profile_details": (
-                        "Store research interests and workflow preferences only. "
-                        "Never store credentials, precise location, financial, or health data."
-                    ),
+    try:
+        _toolbox_json_request(
+            effective_credential,
+            method="POST",
+            url=url,
+            payload={
+                "name": MEMORY_STORE_NAME,
+                "description": "Shared research memory for user profile, chat summary, and procedural recall.",
+                "definition": {
+                    "kind": "default",
+                    "chat_model": chat_deployment,
+                    "embedding_model": embedding_deployment,
+                    "options": {
+                        "chat_summary_enabled": True,
+                        "user_profile_enabled": True,
+                        "procedural_memory_enabled": True,
+                        "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
+                        "user_profile_details": (
+                            "Store research interests and workflow preferences only. "
+                            "Never store credentials, precise location, financial, or health data."
+                        ),
+                    },
                 },
             },
-        },
-    )
+        )
+    except RuntimeError as exc:
+        duplicate = (
+            "HTTP 400" in str(exc)
+            and f"Memory Store with Name {MEMORY_STORE_NAME} already exists" in str(exc)
+        )
+        if not duplicate:
+            raise
     subprocess.run([AZD_CLI, "env", "set", "MEMORY_STORE_NAME", MEMORY_STORE_NAME], check=True)
     print(f"Memory store {MEMORY_STORE_NAME} is configured.")
     return MEMORY_STORE_NAME

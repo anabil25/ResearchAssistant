@@ -3,12 +3,6 @@ import type { Page, TestInfo } from "@playwright/test";
 
 import { expect, test } from "./fixtures";
 
-type StudioRequestPayload = {
-  objective: string;
-  online_research: boolean;
-  inputs: Record<string, unknown>;
-};
-
 const HANDHELD = { width: 390, height: 844 };
 
 async function openWorkbenchShell(page: Page, view?: string) {
@@ -126,29 +120,6 @@ async function stubRunAndApprovalEndpoints(
     });
   });
 }
-
-async function submitStudioAndReadPayload(
-  page: Page,
-  capability: string,
-  buttonName: string,
-) {
-  const requestPromise = page.waitForRequest(
-    (request) =>
-      request.method() === "POST" &&
-      request.url().includes(`/api/studios/${capability}/run`),
-  );
-  const responsePromise = page.waitForResponse(
-    (response) =>
-      response.request().method() === "POST" &&
-      response.url().includes(`/api/studios/${capability}/run`),
-  );
-  await page.getByRole("button", { name: buttonName }).click();
-  const request = await requestPromise;
-  const response = await responsePromise;
-  expect(response.status()).toBe(200);
-  return request.postDataJSON() as StudioRequestPayload;
-}
-
 
 test.describe("settings administration coverage", () => {
   test.describe("[pw.connector-filter] connector search and category filters", () => {
@@ -485,405 +456,59 @@ test.describe("settings administration coverage", () => {
 
 });
 
-test.describe("studio payload coverage", () => {
-  test.describe("[pw.dataset-assets] dataset asset selection", () => {
-    test("[pw.dataset-assets] switching assets requires re-approval and changes the submitted asset payload [pw.dataset.upload:rejected][pw.dataset.asset.select:ready][pw.dataset.asset.select:selected][pw.dataset.asset.select:rejected]", async ({
-      page,
-    }, testInfo) => {
-      await openWorkbenchShell(page, "dataset");
-      const runButton = page.getByRole("button", {
-        name: "Analyze with Foundry Code Interpreter",
-      });
-      const approvalCheckbox = page.getByRole("checkbox", {
-        name: /I approve sending this bounded dataset/,
-      });
+test.describe("[pw.library-filter] library search and type filters", () => {
+  test("[pw.library-filter] search text and type pills filter real library records and show a no-results state [pw.library.search-filter:ready][pw.library.search-filter:filtered][pw.library.search-filter:empty]", async ({
+    page,
+  }, testInfo) => {
+    await openWorkbenchShell(page, "library");
+    const rows = page.locator(".library-table .library-row:not(.library-head)");
+    const totalCount = await rows.count();
+    expect(totalCount).toBeGreaterThan(0);
 
-      await expect(
-        page.locator(".asset-picker button", { hasText: "pilot-outcomes.csv" }),
-      ).toHaveAttribute("data-active", "true");
-      await expect(runButton).toBeDisabled();
-      await approvalCheckbox.check();
-      await expect(runButton).toBeEnabled();
+    const search = page.getByPlaceholder("Search title, source, or tag");
+    await search.fill("zzzznonexistentzzzz");
+    await expect(page.getByText("No sources match this view")).toBeVisible();
+    await recordWorkbenchShot(page, testInfo, "library-filter-empty");
 
-      const samplePayload = await submitStudioAndReadPayload(
-        page,
-        "dataset",
-        "Analyze with Foundry Code Interpreter",
-      );
-      expect(samplePayload.inputs.filename).toBe("pilot-outcomes.csv");
-      expect(samplePayload.inputs.estimated_bytes).toBe(4_000_000);
+    await search.fill("");
+    await expect(rows).toHaveCount(totalCount);
 
-      await page
-        .locator(".asset-picker button", { hasText: "clinical-events-archive.parquet" })
-        .click();
-      await expect(approvalCheckbox).not.toBeChecked();
-      await expect(runButton).toBeDisabled();
-      await recordWorkbenchShot(page, testInfo, "dataset-assets-large-requires-reapproval");
-      await approvalCheckbox.check();
+    const firstKindPill = page
+      .locator('.filter-pills[aria-label="Filter library by type"] button')
+      .nth(1);
+    const kindName = (await firstKindPill.innerText()).trim();
+    await firstKindPill.click();
+    await expect(firstKindPill).toHaveAttribute("data-active", "true");
+    const filteredCount = await rows.count();
+    expect(filteredCount).toBeGreaterThan(0);
+    expect(filteredCount).toBeLessThanOrEqual(totalCount);
+    await recordWorkbenchShot(page, testInfo, `library-filter-${kindName.toLowerCase()}`);
 
-      const largePayload = await submitStudioAndReadPayload(
-        page,
-        "dataset",
-        "Analyze with Foundry Code Interpreter",
-      );
-      expect(largePayload.inputs.filename).toBe("clinical-events-archive.parquet");
-      expect(largePayload.inputs.estimated_bytes).toBe(1_200_000_000_000);
-
-      await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
-        name: "notes.txt",
-        mimeType: "text/plain",
-        buffer: Buffer.from("plain text is not a supported dataset"),
-      });
-      await expect(page.locator(".error-banner[role='alert']")).toContainText(
-        "Only .csv or .json files are supported here.",
-      );
-      await recordWorkbenchShot(page, testInfo, "dataset-assets-rejected-file-type");
-
-      await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
-        name: "cohort.csv",
-        mimeType: "text/csv",
-        buffer: Buffer.from("id,outcome\n1,improved\n2,stable\n"),
-      });
-      await expect(
-        page.locator(".asset-upload-tile", { hasText: "cohort.csv" }),
-      ).toHaveAttribute("data-active", "true");
-      await expect(
-        page.locator(".asset-upload-tile", { hasText: "cohort.csv" }),
-      ).toHaveAttribute("data-read-status", "ready");
-      await expect(approvalCheckbox).not.toBeChecked();
-      await approvalCheckbox.check();
-      const uploadPayload = await submitStudioAndReadPayload(
-        page,
-        "dataset",
-        "Analyze with Foundry Code Interpreter",
-      );
-      expect(uploadPayload.inputs.filename).toBe("cohort.csv");
-      expect(uploadPayload.inputs.csv_text).toContain("id,outcome");
-    });
+    await page
+      .locator('.filter-pills[aria-label="Filter library by type"] button')
+      .first()
+      .click();
+    await expect(rows).toHaveCount(totalCount);
   });
 
-  test.describe("[pw.matching-need] matching need query", () => {
-    test("[pw.matching-need] editing the expertise/need field changes the submitted objective [pw.matching.need.query:ready][pw.matching.need.query:success]", async ({
-      page,
-    }) => {
-      await openWorkbenchShell(page, "matching");
-      const field = page.getByRole("textbox", {
-        name: "Expertise, method, or need",
-      });
-      await expect(field).toHaveValue(
-        "Find genomics and reproducibility collaborators with computational methods experience.",
-      );
-      await field.fill("Need a biostatistics collaborator for survival analysis.");
+  test("[pw.library-filter] search box supports real keyboard typing [pw.library.search-filter:keyboard]", async ({
+    page,
+  }) => {
+    await openWorkbenchShell(page, "library");
+    const rows = page.locator(".library-table .library-row:not(.library-head)");
+    const totalCount = await rows.count();
+    expect(totalCount).toBeGreaterThan(0);
 
-      const payload = await submitStudioAndReadPayload(
-        page,
-        "matching",
-        "Build verified shortlist",
-      );
-      expect(payload.objective).toBe(
-        "Need a biostatistics collaborator for survival analysis.",
-      );
-    });
-
-    test("[pw.matching-need] the need field supports real keyboard typing [pw.matching.need.query:keyboard]", async ({
-      page,
-    }) => {
-      await openWorkbenchShell(page, "matching");
-      const field = page.getByRole("textbox", {
-        name: "Expertise, method, or need",
-      });
-      await field.fill("");
-      await field.focus();
-      await page.keyboard.type("Keyboard-typed matching need.");
-      await expect(field).toHaveValue("Keyboard-typed matching need.");
-      await expectAccessibleExperience(page);
-    });
+    const search = page.getByPlaceholder("Search title, source, or tag");
+    await search.focus();
+    await page.keyboard.type("zzzznonexistentzzzz");
+    await expect(page.getByText("No sources match this view")).toBeVisible();
+    await expectAccessibleExperience(page);
   });
-
-  test.describe("[pw.library-filter] library search and type filters", () => {
-    test("[pw.library-filter] search text and type pills filter real library records and show a no-results state [pw.library.search-filter:ready][pw.library.search-filter:filtered][pw.library.search-filter:empty]", async ({
-      page,
-    }, testInfo) => {
-      await openWorkbenchShell(page, "library");
-      const rows = page.locator(".library-table .library-row:not(.library-head)");
-      const totalCount = await rows.count();
-      expect(totalCount).toBeGreaterThan(0);
-
-      const search = page.getByPlaceholder("Search title, source, or tag");
-      await search.fill("zzzznonexistentzzzz");
-      await expect(page.getByText("No sources match this view")).toBeVisible();
-      await recordWorkbenchShot(page, testInfo, "library-filter-empty");
-
-      await search.fill("");
-      await expect(rows).toHaveCount(totalCount);
-
-      const firstKindPill = page
-        .locator('.filter-pills[aria-label="Filter library by type"] button')
-        .nth(1);
-      const kindName = (await firstKindPill.innerText()).trim();
-      await firstKindPill.click();
-      await expect(firstKindPill).toHaveAttribute("data-active", "true");
-      const filteredCount = await rows.count();
-      expect(filteredCount).toBeGreaterThan(0);
-      expect(filteredCount).toBeLessThanOrEqual(totalCount);
-      await recordWorkbenchShot(page, testInfo, `library-filter-${kindName.toLowerCase()}`);
-
-      await page
-        .locator('.filter-pills[aria-label="Filter library by type"] button')
-        .first()
-        .click();
-      await expect(rows).toHaveCount(totalCount);
-    });
-
-    test("[pw.library-filter] search box supports real keyboard typing [pw.library.search-filter:keyboard]", async ({
-      page,
-    }) => {
-      await openWorkbenchShell(page, "library");
-      const rows = page.locator(".library-table .library-row:not(.library-head)");
-      const totalCount = await rows.count();
-      expect(totalCount).toBeGreaterThan(0);
-
-      const search = page.getByPlaceholder("Search title, source, or tag");
-      await search.focus();
-      await page.keyboard.type("zzzznonexistentzzzz");
-      await expect(page.getByText("No sources match this view")).toBeVisible();
-      await expectAccessibleExperience(page);
-    });
-  });
-
-  test.describe("[pw.literature-online] literature online research toggle", () => {
-    test("[pw.literature-online] toggles online research, always shows the acknowledgement note, and sends the acknowledgement fields only when enabled [pw.literature.protocol.online:off][pw.literature.protocol.online:acknowledgement][pw.literature.protocol.online:on]", async ({
-      page,
-    }) => {
-      await openWorkbenchShell(page, "literature");
-      const toggle = page.getByRole("checkbox", { name: "Current public research" });
-      await expect(toggle).not.toBeChecked();
-      await expect(
-        page.getByText("Off by default. Public protocol text only."),
-      ).toBeVisible();
-
-      const offPayload = await submitStudioAndReadPayload(
-        page,
-        "literature",
-        "Search & screen evidence",
-      );
-      expect(offPayload.online_research).toBe(false);
-      expect(offPayload.inputs.public_search_query).toBeUndefined();
-      expect(offPayload.inputs.public_research_acknowledged).toBeUndefined();
-
-      await toggle.check();
-      await expect(toggle).toBeChecked();
-      const onPayload = await submitStudioAndReadPayload(
-        page,
-        "literature",
-        "Search & screen evidence",
-      );
-      expect(onPayload.online_research).toBe(true);
-      expect(onPayload.inputs.public_research_acknowledged).toBe(true);
-    });
-  });
-
-  test.describe("[pw.dataset-upload] dataset CSV read readiness", () => {
-    test("[pw.dataset.upload:reading] shows a reading status and blocks analysis until the deferred read resolves", async ({
-      page,
-    }, testInfo) => {
-      await page.addInitScript(() => {
-        const OriginalFileReader = window.FileReader;
-        class DeferredFileReader extends OriginalFileReader {
-          override readAsText(...args: Parameters<FileReader["readAsText"]>) {
-            window.setTimeout(() => {
-              OriginalFileReader.prototype.readAsText.apply(this, args);
-            }, 1500);
-          }
-        }
-        window.FileReader = DeferredFileReader;
-      });
-      await openWorkbenchShell(page, "dataset");
-
-      const approvalCheckbox = page.getByRole("checkbox", {
-        name: /I approve sending this bounded dataset/,
-      });
-      const runButton = page.getByRole("button", {
-        name: "Analyze with Foundry Code Interpreter",
-      });
-      await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
-        name: "deferred.csv",
-        mimeType: "text/csv",
-        buffer: Buffer.from("id,outcome\n1,improved\n"),
-      });
-
-      const tile = page.locator(".asset-upload-tile", { hasText: "deferred.csv" });
-      await expect(tile).toHaveAttribute("data-read-status", "reading");
-      await expect(tile).toContainText("Reading CSV…");
-      await approvalCheckbox.check();
-      await expect(runButton).toBeDisabled();
-      await recordWorkbenchShot(page, testInfo, "dataset-upload-reading");
-      await expectAccessibleExperience(page);
-
-      await expect(tile).toHaveAttribute("data-read-status", "ready");
-      await expect(runButton).toBeEnabled();
-    });
-
-    test("[pw.dataset.upload:error] surfaces a read error and keeps analysis blocked", async ({
-      page,
-    }, testInfo) => {
-      await page.addInitScript(() => {
-        class FailingFileReader extends window.FileReader {
-          override readAsText() {
-            window.setTimeout(() => {
-              this.dispatchEvent(new ProgressEvent("error"));
-            }, 10);
-          }
-        }
-        window.FileReader = FailingFileReader;
-      });
-      await openWorkbenchShell(page, "dataset");
-
-      const approvalCheckbox = page.getByRole("checkbox", {
-        name: /I approve sending this bounded dataset/,
-      });
-      const runButton = page.getByRole("button", {
-        name: "Analyze with Foundry Code Interpreter",
-      });
-      await page.setInputFiles('input[aria-label="Upload a dataset file"]', {
-        name: "broken.csv",
-        mimeType: "text/csv",
-        buffer: Buffer.from("id,outcome\n1,improved\n"),
-      });
-
-      const tile = page.locator(".asset-upload-tile", { hasText: "broken.csv" });
-      await expect(tile).toHaveAttribute("data-read-status", "error");
-      await expect(
-        page.getByText(/this csv file could not be read/i),
-      ).toBeVisible();
-      await recordWorkbenchShot(page, testInfo, "dataset-upload-error");
-      await expectAccessibleExperience(page);
-
-      await approvalCheckbox.check();
-      await expect(runButton).toBeDisabled();
-    });
-  });
-
-  test.describe("[pw.grant-fit] grant core project facts checkbox", () => {
-    test("[pw.grant-fit] checking core project facts changes the submitted project_facts payload [pw.grant.facts.confirm:unchecked][pw.grant.facts.confirm:checked]", async ({
-      page,
-    }) => {
-      await openWorkbenchShell(page, "grant");
-      const checkbox = page.getByRole("checkbox", {
-        name: "Core project facts verified",
-      });
-      await expect(checkbox).not.toBeChecked();
-
-      const uncheckedPayload = await submitStudioAndReadPayload(
-        page,
-        "grant",
-        "Parse notice & build package",
-      );
-      expect(uncheckedPayload.inputs.project_facts).toEqual([]);
-
-      await checkbox.check();
-      await expect(checkbox).toBeChecked();
-      const checkedPayload = await submitStudioAndReadPayload(
-        page,
-        "grant",
-        "Parse notice & build package",
-      );
-      expect(checkedPayload.inputs.project_facts).toEqual([
-        "Research office sponsor confirmed",
-        "PI role confirmed",
-      ]);
-    });
-  });
-
 });
 
+
 test.describe("shell interaction coverage", () => {
-  test.describe("[pw.run-evidence] inline run evidence", () => {
-    test("[pw.run-evidence] renders run provenance and resolved sources beside the artifact, and the removed evidence rail leaves no trace [pw.studio.run-evidence:ready]", async ({
-      page,
-    }, testInfo) => {
-      await openWorkbenchShell(page, "literature");
-      // The persistent rail and its trigger are gone at every width; nothing
-      // should be re-introducing them on the studio route.
-      await expect(page.locator(".evidence-panel")).toHaveCount(0);
-      await expect(page.locator(".evidence-toggle")).toHaveCount(0);
-      await expect(page.getByLabel("Open evidence inspector")).toHaveCount(0);
-      await expect(page.locator(".run-evidence")).toHaveCount(0);
-
-      await submitStudioAndReadPayload(
-        page,
-        "literature",
-        "Search & screen evidence",
-      );
-
-      const evidence = page.locator(".run-evidence");
-      await expect(evidence).toBeVisible();
-      await expect(
-        evidence.getByText("Run resolved", { exact: true }),
-      ).toBeVisible();
-      await expect(evidence.locator(".evidence-run-card strong")).not.toBeEmpty();
-      // Durable instance id is the provenance claim that makes the artifact
-      // traceable back to a real orchestration, so assert it is real text.
-      await expect(evidence.locator(".evidence-run-card small")).not.toBeEmpty();
-      await expect(evidence.locator(".evidence-progress strong")).toContainText(
-        "%",
-      );
-
-      const sources = evidence.locator(".evidence-source-list article");
-      const sourceCount = await sources.count();
-      expect(sourceCount).toBeGreaterThan(0);
-      // The heading count must equal the rendered rows -- the deleted rail
-      // shipped a hardcoded "6" over a 7-item list, and that class of drift
-      // is exactly what this pins.
-      await expect(
-        evidence
-          .locator(".evidence-section-heading", { hasText: "Resolved sources" })
-          .locator("em"),
-      ).toHaveText(String(sourceCount));
-      await expect(sources.first().locator("code")).not.toBeEmpty();
-
-      await recordWorkbenchShot(page, testInfo, "run-evidence-resolved");
-      await expectAccessibleExperience(page);
-    });
-
-    test("[pw.run-evidence] states plainly that no stored citations backed the artifact when the run resolves without any [pw.studio.run-evidence:empty]", async ({
-      page,
-    }, testInfo) => {
-      // Rewrite the real backend response rather than hand-rolling a payload,
-      // so this stays bound to the actual studio result contract.
-      await page.route("**/api/studios/literature/run", async (route) => {
-        const response = await route.fetch();
-        const body = await response.json();
-        body.citations = [];
-        if (body.insight) {
-          body.insight.referenced_source_ids = [];
-        }
-        await route.fulfill({ response, json: body });
-      });
-
-      await openWorkbenchShell(page, "literature");
-      await submitStudioAndReadPayload(
-        page,
-        "literature",
-        "Search & screen evidence",
-      );
-
-      const evidence = page.locator(".run-evidence");
-      await expect(evidence).toBeVisible();
-      await expect(evidence.locator(".evidence-source-list")).toHaveCount(0);
-      await expect(evidence.locator(".evidence-empty")).toHaveText(
-        "No stored citations were used by this artifact.",
-      );
-      await expect(
-        evidence
-          .locator(".evidence-section-heading", { hasText: "Resolved sources" })
-          .locator("em"),
-      ).toHaveText("0");
-
-      await recordWorkbenchShot(page, testInfo, "run-evidence-empty");
-    });
-  });
-
   test.describe("[pw.keyboard-shell] shell keyboard interactions", () => {
     test("[pw.keyboard-shell] Escape closes the mobile navigation, moves focus into the drawer on open, and restores focus to the trigger on close [pw.shell.navigation.close-mobile:ready][pw.shell.navigation.close-mobile:keyboard][pw.shell.navigation.close-mobile:mobile]", async ({
       page,

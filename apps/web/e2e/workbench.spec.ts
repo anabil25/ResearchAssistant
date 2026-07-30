@@ -21,12 +21,7 @@ const studioViews = [
   "Institutional Q&A",
   "Workflow Automation",
 ] as const;
-const artifactViews = [
-  { studio: "Grant Studio", surface: "Requirement matrix" },
-  { studio: "Matching Explorer", surface: "Match criteria" },
-  { studio: "Dataset Lab", surface: "Schema & quality" },
-  { studio: "Workflow Automation", surface: "Evidence review graph" },
-] as const;
+const chatStudioViews = studioViews.slice(0, 4);
 
 function shellRoot(page: Page) {
   return page.locator(".workbench-shell");
@@ -98,27 +93,20 @@ async function openMobileNavigation(page: Page, mode: TriggerMode = "pointer") {
   await triggerControl(page, page.getByLabel("Open navigation"), mode);
 }
 
-async function invokeStudioRun(
-  page: Page,
-  studio: string,
-  commandLabel: string,
-  mode: TriggerMode = "pointer",
-) {
+async function sendChatTurn(page: Page, message: string) {
   const responseWaiter = page.waitForResponse(
     (response) =>
       response.request().method() === "POST" &&
-      response.url().includes(`/api/studios/${studio}/run`),
+      /\/api\/backend\/api\/agent-chat\/threads\/[^/]+\/messages$/.test(
+        new URL(response.url()).pathname,
+      ),
   );
-
-  await triggerControl(
-    page,
-    page.getByRole("button", { name: commandLabel }),
-    mode,
-  );
-
+  await page.getByRole("textbox", { name: "Message" }).fill(message);
+  await page.getByRole("button", { name: "Send" }).click();
   const response = await responseWaiter;
   const body = await response.text();
   expect(response.status(), body).toBe(200);
+  await expect(page.getByText("Local mock runtime").last()).toBeVisible();
 }
 
 async function findSubMinimumText(page: Page) {
@@ -288,7 +276,7 @@ test.describe("workbench shell coverage", () => {
     await expect(page.getByText("Governance is product state")).toBeVisible();
   });
 
-  test("[pw.literature-open] [pw.literature-protocol] keyboard opens the literature protocol workspace [pw.overview.start-literature:ready][pw.overview.start-literature:keyboard][pw.literature.protocol.question:ready][pw.literature.protocol.sources:ready]", async ({
+  test("[pw.literature-open] keyboard opens the literature chat workspace [pw.overview.start-literature:ready][pw.overview.start-literature:keyboard]", async ({
     page,
   }) => {
     await loadWorkbench(page);
@@ -299,14 +287,11 @@ test.describe("workbench shell coverage", () => {
     );
 
     await expect(levelOneHeading(page, "Literature Studio")).toBeVisible();
-    await expect(page.getByLabel("Research question")).toHaveValue(
-      /auditable retrieval/i,
-    );
-    await expect(page.getByText("Scholarly sources")).toBeVisible();
-    await expect(page.getByText("No screening run yet")).toBeVisible();
+    await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    await expect(page.getByText(/you do not need to configure a workflow/i)).toBeVisible();
   });
 
-  test("[pw.literature-open] pointer click opens the literature protocol workspace at mobile viewport [pw.overview.start-literature:selected][pw.overview.start-literature:mobile]", async ({
+  test("[pw.literature-open] pointer click opens the literature chat workspace at mobile viewport [pw.overview.start-literature:selected][pw.overview.start-literature:mobile]", async ({
     page,
   }) => {
     await switchToMobile(page);
@@ -376,18 +361,23 @@ test.describe("workbench shell coverage", () => {
 });
 
 test.describe("studio and operations coverage", () => {
-  test("[pw.distinct-studios] every studio exposes a distinct workflow and artifact surface [pw.overview.open-studio-card:selected]", async ({
+  test("[pw.distinct-studios] every research studio exposes its intended interaction surface [pw.overview.open-studio-card:selected]", async ({
     page,
   }) => {
     await loadWorkbench(page);
 
-    for (const { studio, surface } of artifactViews) {
+    for (const studio of chatStudioViews) {
       await test.step(`verify ${studio}`, async () => {
         await studioCard(page, studio).click();
         await expect(levelOneHeading(page, studio)).toBeVisible();
-        await expect(page.getByText(surface).first()).toBeVisible();
+        await expect(page.getByRole("textbox", { name: "Message" })).toBeEnabled();
+        await expect(page.locator(".agent-chat-picker select")).toBeVisible();
       });
     }
+    await studioCard(page, "Institutional Q&A").click();
+    await expect(page.getByText("Plugin coming soon")).toBeVisible();
+    await studioCard(page, "Workflow Automation").click();
+    await expect(page.getByText("Evidence review graph")).toBeVisible();
   });
 
   test("[pw.distinct-studios] keyboard activation and mobile viewport open a studio card [pw.overview.open-studio-card:keyboard][pw.overview.open-studio-card:mobile]", async ({
@@ -409,7 +399,7 @@ test.describe("studio and operations coverage", () => {
     });
   });
 
-  test("[pw.literature-run] [pw.literature-screen] [pw.literature-extract] literature workflow returns screening, extraction, and resolved evidence [pw.literature.protocol.run:ready][pw.literature.protocol.run:keyboard][pw.literature.protocol.run:success][pw.literature.screen.tab:ready][pw.literature.extract.tab:ready]", async ({
+  test("the Literature Studio replaces the protocol wizard with one conversational turn", async ({
     page,
   }) => {
     await loadWorkbench(page);
@@ -417,25 +407,10 @@ test.describe("studio and operations coverage", () => {
       .getByRole("button", { name: /literature review synthesis/i })
       .click();
 
-    await test.step("run the literature protocol", async () => {
-      await invokeStudioRun(
-        page,
-        "literature",
-        "Search & screen evidence",
-        "keyboard",
-      );
-      await expect(page.locator(".screening-record")).not.toHaveCount(0);
-    });
-
-    await test.step("inspect extraction and evidence", async () => {
-      await page.getByRole("button", { name: "Extract", exact: true }).click();
-      await expect(page.getByText("Extraction matrix").first()).toBeVisible();
-      await expect(page.locator(".extraction-row")).not.toHaveCount(0);
-      await expect(page.locator(".evidence-source-list article")).not.toHaveCount(
-        0,
-      );
-      await expect(page.getByText(/research-run-/).first()).toBeVisible();
-    });
+    await sendChatTurn(page, "Compare the authorized evidence I attached.");
+    await expect(page.locator(".agent-chat-message.agent-chat-user")).toHaveCount(1);
+    await expect(page.locator(".agent-chat-message.agent-chat-assistant")).toHaveCount(1);
+    await expect(page.locator(".screening-record")).toHaveCount(0);
   });
 
   test("[pw.operational-surfaces] [pw.run-detail] [pw.connector-test] Library, Runs, and connector settings contain operational data [pw.runs.select:ready][pw.runs.select:selected][pw.settings.connectors.test:ready][pw.overview.open-library:ready][pw.overview.open-library:selected]", async ({
@@ -598,7 +573,7 @@ test.describe("visual coverage capture", () => {
       fullPage?: boolean;
     }> = [
       {
-        name: "02-literature-protocol-v3-m1.png",
+        name: "02-literature-chat-v3-m1.png",
         prepare: async () => {
           await page
             .getByRole("button", { name: /literature review synthesis/i })
@@ -606,58 +581,30 @@ test.describe("visual coverage capture", () => {
         },
       },
       {
-        name: "03-literature-results-v3-m1.png",
+        name: "03-literature-chat-response-v3-m1.png",
         prepare: async () => {
-          await invokeStudioRun(page, "literature", "Search & screen evidence");
-          await expect(page.locator(".screening-record")).not.toHaveCount(0);
-          await expect(
-            page.getByRole("button", { name: "Search & screen evidence" }),
-          ).toBeEnabled();
+          await sendChatTurn(page, "Summarize the strongest evidence.");
         },
       },
       {
         name: "04-grant-studio-v3-m1.png",
         prepare: async () => {
           await studioCard(page, "Grant Studio").click();
-          await page
-            .getByRole("button", { name: "Parse notice & build package" })
-            .click();
-          await expect(page.locator(".requirement-done")).not.toHaveCount(0);
+          await sendChatTurn(page, "Build a requirement matrix for this notice.");
         },
       },
       {
         name: "05-matching-explorer-v3-m1.png",
         prepare: async () => {
           await studioCard(page, "Matching Explorer").click();
-          await page
-            .getByRole("button", { name: "Build verified shortlist" })
-            .click();
-          await expect(page.locator(".match-card")).not.toHaveCount(0);
-          await expect(
-            page.getByRole("button", { name: "Build verified shortlist" }),
-          ).toBeEnabled();
+          await sendChatTurn(page, "Build a verified shortlist.");
         },
       },
       {
         name: "06-dataset-lab-v3-m1.png",
         prepare: async () => {
           await studioCard(page, "Dataset Lab").click();
-          await page
-            .getByLabel(
-              /I approve sending this bounded dataset to the Foundry Dataset Agent/,
-            )
-            .check();
-          await page
-            .getByRole("button", {
-              name: "Analyze with Foundry Code Interpreter",
-            })
-            .click();
-          await expect(page.locator(".schema-row")).not.toHaveCount(0);
-          await expect(
-            page.getByRole("button", {
-              name: "Analyze with Foundry Code Interpreter",
-            }),
-          ).toBeEnabled();
+          await sendChatTurn(page, "Profile the uploaded dataset.");
         },
       },
       {

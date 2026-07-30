@@ -14,6 +14,7 @@ if (-not (Test-Path $python)) {
 
 & $python -m pip install --disable-pip-version-check --quiet --upgrade pip
 & $python -m pip install --disable-pip-version-check --quiet -r "$PSScriptRoot\requirements-provision.txt"
+& $python -m pip install --disable-pip-version-check --quiet -e "$repoRoot\packages\research_core"
 Push-Location $repoRoot
 & $python -m scripts.postprovision
 $exitCode = $LASTEXITCODE

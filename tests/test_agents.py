@@ -52,13 +52,6 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
         if has_toolbox_binding:
             with pytest.raises(ConfigurationError, match="Toolbox endpoint"):
                 tools_for_profile(profile)
-        elif profile.runtime_requirements.session_files:
-            # Reading chat attachments out of the agent's own sandbox is a
-            # local, in-process read, so it needs no Toolbox endpoint.
-            assert [tool.name for tool in tools_for_profile(profile)] == [
-                "list_session_files",
-                "read_session_file",
-            ]
         else:
             assert tools_for_profile(profile) == []
     assert len({profile.output_contract for profile in profiles}) == len(profiles)
@@ -109,9 +102,12 @@ def test_azure_manifest_uses_current_hosted_agent_contract(
             None,
         )
         for name, config in agent_services.items()
-        if name.endswith("-online-agent") or name == "dataset-agent"
+        if any(item["name"] == "TOOLBOX_ENDPOINT" for item in config["environmentVariables"])
     }
     assert toolbox_variables == {
+        "literature-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
+        "grant-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
+        "matching-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "literature-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "grant-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "matching-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
@@ -216,7 +212,7 @@ def test_bicep_model_parameters_match_azure_manifest(
         azure_manifest["services"]["ai-project"]["deployments"]
     )
     assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
-    assert parameters["parameters"]["resourceGroupName"]["value"] == "rg-${AZURE_ENV_NAME}"
+    assert "resourceGroupName" not in parameters["parameters"]
     assert parameters["parameters"]["foundryProjectName"]["value"] == "${AZURE_ENV_NAME}"
 
 
@@ -224,8 +220,17 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
     parameters = json.loads((ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8"))
     container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(encoding="utf-8")
     resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(encoding="utf-8")
+    main = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
 
     assert "searchLocation" not in parameters["parameters"]
+    assert "applicationLocation" not in parameters["parameters"]
+    assert "param applicationLocation string = location == 'centralus' ? 'eastus2' : location" in main
+    assert "location: applicationLocation" in resources
+    guardrail = resources.split("resource agenticGuardrail ", maxsplit=1)[1].split(
+        "module acr ",
+        maxsplit=1,
+    )[0]
+    assert "foundryAccount::project" in guardrail.split("dependsOn:", maxsplit=1)[1]
     assert "-v2" not in container_apps
     assert "keyVault" not in resources
 
@@ -762,16 +767,16 @@ def test_missing_toolbox_never_falls_back_to_web_search() -> None:
             with pytest.raises(ConfigurationError, match="Toolbox"):
                 tools_for_profile(profile, FakeClient())
         else:
-            # Session-file readers are local tools; nothing here may silently
-            # become a web search when the Toolbox is absent.
-            assert all(
-                tool.name in {"list_session_files", "read_session_file"}
-                for tool in tools_for_profile(profile, FakeClient())
-            )
+            assert tools_for_profile(profile, FakeClient()) == []
 
 
 def test_toolbox_bindings_match_deployed_operation_names() -> None:
-    expected = {"dataset": {"code_interpreter"}}
+    expected = {
+        "literature": {"code_interpreter"},
+        "grant": {"code_interpreter"},
+        "matching": {"code_interpreter"},
+        "dataset": {"code_interpreter"},
+    }
     for profile_id, agent_id in {
         "literature_online": "literature",
         "grant_online": "grant",

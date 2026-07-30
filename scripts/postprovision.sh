@@ -12,4 +12,5 @@ fi
 
 "$python" -m pip install --disable-pip-version-check --quiet --upgrade pip
 "$python" -m pip install --disable-pip-version-check --quiet -r "$script_dir/requirements-provision.txt"
+"$python" -m pip install --disable-pip-version-check --quiet -e "$repo_root/packages/research_core"
 (cd "$repo_root" && "$python" -m scripts.postprovision)

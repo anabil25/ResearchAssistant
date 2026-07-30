@@ -10,15 +10,17 @@ from __future__ import annotations
 import base64
 import json
 from collections.abc import Iterator
+from types import SimpleNamespace
 
 import pytest
 from fastapi.testclient import TestClient
 from research_assistant_api.agent_chat import (
+    AgentChatGateway,
     LocalAgentChatGateway,
     ThreadHandle,
     _safe_upload_path,
     build_agent_chat_gateway,
-    isolation_key_for,
+    delegated_user_identity_for,
 )
 from research_assistant_api.app import app
 from research_assistant_api.config import Settings
@@ -43,10 +45,10 @@ class _RecordingGateway:
         self.send_error: Exception | None = None
         self.upload_error: Exception | None = None
 
-    def open_thread(self, agent_name: str, *, isolation_key: str) -> ThreadHandle:
+    def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle:
         if self.open_error:
             raise self.open_error
-        self.opened.append((agent_name, isolation_key))
+        self.opened.append((agent_name, user_identity))
         index = len(self.opened)
         return ThreadHandle(conversation_id=f"conv-{index}", session_id=f"sess-{index}")
 
@@ -56,6 +58,7 @@ class _RecordingGateway:
         agent_name: str,
         conversation_id: str,
         session_id: str,
+        user_identity: str,
         text: str,
     ) -> HostedAgentReply:
         if self.send_error:
@@ -65,6 +68,7 @@ class _RecordingGateway:
                 "agent_name": agent_name,
                 "conversation_id": conversation_id,
                 "session_id": session_id,
+                "user_identity": user_identity,
                 "text": text,
             }
         )
@@ -74,13 +78,22 @@ class _RecordingGateway:
             response_id=f"resp-{len(self.sent)}",
         )
 
-    def upload(self, *, agent_name: str, session_id: str, path: str, content: bytes) -> None:
+    def upload(
+        self,
+        *,
+        agent_name: str,
+        session_id: str,
+        user_identity: str,
+        path: str,
+        content: bytes,
+    ) -> None:
         if self.upload_error:
             raise self.upload_error
         self.uploaded.append(
             {
                 "agent_name": agent_name,
                 "session_id": session_id,
+                "user_identity": user_identity,
                 "path": path,
                 "size": len(content),
             }
@@ -179,16 +192,16 @@ class TestThreadCreation:
         assert "conv-1" not in serialized
         assert "sess-1" not in serialized
 
-    def test_session_is_partitioned_by_tenant_project_and_user(
+    def test_delegated_identity_is_opaque_and_server_derived(
         self, client: TestClient, gateway: _RecordingGateway
     ) -> None:
         open_thread(client)
-        _, isolation_key = gateway.opened[0]
-        parts = isolation_key.split(":")
-        assert len(parts) == 3
-        assert all(parts)
+        _, user_identity = gateway.opened[0]
+        assert user_identity.startswith("ra:")
+        assert len(user_identity) == 67
+        assert "local-user" not in user_identity
 
-    def test_two_users_never_share_an_isolation_key(
+    def test_two_users_never_share_a_delegated_identity(
         self, enforced_client: TestClient, gateway: _RecordingGateway
     ) -> None:
         for user in ("user-a", "user-b"):
@@ -280,7 +293,7 @@ class TestThreadOwnership:
                 owner_principal_id="user-a",
                 conversation_id="conv-1",
                 session_id="sess-1",
-                isolation_key="demo:project-1:user-a",
+                delegated_user_identity="ra:user-a",
                 created_at=now,
                 updated_at=now,
             )
@@ -300,7 +313,7 @@ class TestThreadOwnership:
             owner_principal_id="user-a",
             conversation_id="conv-1",
             session_id="sess-1",
-            isolation_key="demo:project-1:user-a",
+            delegated_user_identity="ra:user-a",
             created_at=now,
             updated_at=now,
         )
@@ -426,6 +439,7 @@ class TestAttachments:
             {
                 "agent_name": "dataset-agent",
                 "session_id": "sess-1",
+                "user_identity": gateway.opened[0][1],
                 "path": "outcomes.csv",
                 "size": 8,
             }
@@ -554,6 +568,134 @@ class TestAttachments:
 
 
 class TestGatewaySelection:
+    def test_thread_creation_delegates_the_user_to_session_and_conversation(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[tuple[str, dict[str, object]]] = []
+
+        class Agents:
+            def create_session(self, **kwargs: object) -> SimpleNamespace:
+                calls.append(("session", kwargs))
+                return SimpleNamespace(agent_session_id="session-1")
+
+        class Conversations:
+            def create(self, **kwargs: object) -> SimpleNamespace:
+                calls.append(("conversation", kwargs))
+                return SimpleNamespace(id="conversation-1")
+
+        project = SimpleNamespace(
+            agents=Agents(),
+            get_openai_client=lambda **_kwargs: SimpleNamespace(conversations=Conversations()),
+        )
+        gateway = AgentChatGateway(
+            Settings(foundry_project_endpoint="https://foundry.example.test"),
+            credential=object(),
+        )
+        monkeypatch.setattr(gateway, "_project", lambda: project)
+
+        handle = gateway.open_thread("literature-agent", user_identity="ra:user-1")
+
+        assert handle == ThreadHandle(
+            conversation_id="conversation-1",
+            session_id="session-1",
+        )
+        assert calls == [
+            (
+                "session",
+                {
+                    "agent_name": "literature-agent",
+                    "body": {},
+                    "headers": {"x-ms-user-identity": "ra:user-1"},
+                },
+            ),
+            (
+                "conversation",
+                {"extra_headers": {"x-ms-user-identity": "ra:user-1"}},
+            ),
+        ]
+
+    def test_response_turn_delegates_the_same_user_identity(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        captured: dict[str, object] = {}
+        client = object()
+        project = SimpleNamespace(get_openai_client=lambda **_kwargs: client)
+        gateway = AgentChatGateway(
+            Settings(foundry_project_endpoint="https://foundry.example.test"),
+            credential=object(),
+        )
+        monkeypatch.setattr(gateway, "_project", lambda: project)
+
+        def create_response(
+            selected_client: object,
+            target: str,
+            payload: dict[str, object],
+        ) -> SimpleNamespace:
+            captured.update(client=selected_client, target=target, payload=payload)
+            return SimpleNamespace(output_text="delegated reply", id="response-1")
+
+        monkeypatch.setattr(
+            "research_assistant_api.agent_chat.create_response_with_retries",
+            create_response,
+        )
+
+        gateway.send(
+            agent_name="literature-agent",
+            conversation_id="conversation-1",
+            session_id="session-1",
+            user_identity="ra:user-1",
+            text="hello",
+        )
+
+        assert captured == {
+            "client": client,
+            "target": "literature-agent",
+            "payload": {
+                "input": "hello",
+                "extra_body": {
+                    "conversation": "conversation-1",
+                    "agent_session_id": "session-1",
+                },
+                "extra_headers": {"x-ms-user-identity": "ra:user-1"},
+            },
+        }
+
+    def test_session_upload_uses_the_pinned_sdk_signature(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        calls: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+        class Agents:
+            def upload_session_file(self, *args: object, **kwargs: object) -> None:
+                calls.append((args, kwargs))
+
+        gateway = AgentChatGateway(
+            Settings(foundry_project_endpoint="https://foundry.example.test"),
+            credential=object(),
+        )
+        monkeypatch.setattr(gateway, "_project", lambda: type("Project", (), {"agents": Agents()})())
+
+        gateway.upload(
+            agent_name="dataset-agent",
+            session_id="session-1",
+            user_identity="ra:user-1",
+            path="outcomes.csv",
+            content=b"a,b\n1,2\n",
+        )
+
+        assert calls == [
+            (
+                ("dataset-agent", "session-1", b"a,b\n1,2\n"),
+                {
+                    "path": "outcomes.csv",
+                    "headers": {"x-ms-user-identity": "ra:user-1"},
+                },
+            )
+        ]
+
     def test_hosted_mode_with_an_endpoint_builds_the_real_gateway(self) -> None:
         gateway = build_agent_chat_gateway(
             Settings(
@@ -574,11 +716,12 @@ class TestGatewaySelection:
 
     def test_the_local_stub_never_passes_itself_off_as_agent_output(self) -> None:
         stub = LocalAgentChatGateway()
-        handle = stub.open_thread("literature-agent", isolation_key="t:p:u")
+        handle = stub.open_thread("literature-agent", user_identity="ra:user")
         reply = stub.send(
             agent_name="literature-agent",
             conversation_id=handle.conversation_id,
             session_id=handle.session_id,
+            user_identity="ra:user",
             text="hello",
         )
         assert "Local mock runtime" in reply.content
@@ -586,8 +729,8 @@ class TestGatewaySelection:
 
     def test_the_local_stub_issues_distinct_sandboxes_per_thread(self) -> None:
         stub = LocalAgentChatGateway()
-        first = stub.open_thread("grant-agent", isolation_key="t:p:u")
-        second = stub.open_thread("grant-agent", isolation_key="t:p:u")
+        first = stub.open_thread("grant-agent", user_identity="ra:user")
+        second = stub.open_thread("grant-agent", user_identity="ra:user")
         assert first.session_id != second.session_id
         assert first.conversation_id != second.conversation_id
 
@@ -604,7 +747,7 @@ class TestUnconfiguredDeployment:
         assert "not configured" in response.json()["detail"]
 
 
-def test_isolation_key_includes_tenant_project_and_user() -> None:
+def test_delegated_user_identity_is_stable_and_opaque() -> None:
     identity = IdentityContext(
         user_id="user-1",
         display_name="Ada",
@@ -613,4 +756,9 @@ def test_isolation_key_includes_tenant_project_and_user() -> None:
         source="gateway",
     )
     store = WorkspaceStore(project_id="project-1", tenant_id="tenant-1")
-    assert isolation_key_for(identity, store) == "tenant-1:project-1:user-1"
+    first = delegated_user_identity_for(identity, store)
+    second = delegated_user_identity_for(identity, store)
+    assert first == second
+    assert first.startswith("ra:")
+    assert len(first) == 67
+    assert all(character in "0123456789abcdef" for character in first.removeprefix("ra:"))

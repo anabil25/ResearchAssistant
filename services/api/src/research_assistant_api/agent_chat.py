@@ -17,7 +17,7 @@ https://learn.microsoft.com/azure/foundry/agents/how-to/manage-hosted-sessions):
 Three boundaries are deliberate and load-bearing:
 
 1. The browser only ever holds an opaque ``thread_id``. The conversation id,
-   session id, and isolation key stay server-side, so a caller cannot bind
+    session id, and delegated user identity stay server-side, so a caller cannot bind
    themselves to somebody else's sandbox by guessing an identifier.
 2. ``agent_name`` is validated against the capability's deployed agents. A
    client cannot name an arbitrary agent and have this service invoke it.
@@ -32,6 +32,7 @@ from __future__ import annotations
 import logging
 from dataclasses import dataclass
 from datetime import datetime
+from hashlib import sha256
 from typing import Annotated, Protocol, cast
 from uuid import uuid4
 
@@ -146,7 +147,7 @@ class ThreadHandle:
 
 
 class ChatGateway(Protocol):
-    def open_thread(self, agent_name: str, *, isolation_key: str) -> ThreadHandle: ...
+    def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle: ...
 
     def send(
         self,
@@ -154,10 +155,19 @@ class ChatGateway(Protocol):
         agent_name: str,
         conversation_id: str,
         session_id: str,
+        user_identity: str,
         text: str,
     ) -> HostedAgentReply: ...
 
-    def upload(self, *, agent_name: str, session_id: str, path: str, content: bytes) -> None: ...
+    def upload(
+        self,
+        *,
+        agent_name: str,
+        session_id: str,
+        user_identity: str,
+        path: str,
+        content: bytes,
+    ) -> None: ...
 
 
 class AgentChatGateway:
@@ -178,7 +188,7 @@ class AgentChatGateway:
             raise HostedAgentConfigurationError("FOUNDRY_PROJECT_ENDPOINT is required in hosted execution mode")
         return AIProjectClient(endpoint=endpoint, credential=self._credential, allow_preview=True)
 
-    def open_thread(self, agent_name: str, *, isolation_key: str) -> ThreadHandle:
+    def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle:
         """Provision a sandbox and a conversation, in that order.
 
         The session is created ahead of the first turn so the caller can attach
@@ -186,13 +196,16 @@ class AgentChatGateway:
         forward on every later turn.
         """
         project = self._project()
+        headers = {"x-ms-user-identity": user_identity}
         try:
             session = project.agents.create_session(
                 agent_name=agent_name,
                 body={},
-                isolation_key=isolation_key,
+                headers=headers,
             )
-            conversation = project.get_openai_client(agent_name=agent_name).conversations.create()
+            conversation = project.get_openai_client(agent_name=agent_name).conversations.create(
+                extra_headers=headers,
+            )
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 502 below
             raise HostedAgentInvocationError(f"Could not open a session for Hosted Agent {agent_name}.") from exc
         session_id = getattr(session, "agent_session_id", None) or getattr(session, "id", None)
@@ -209,6 +222,7 @@ class AgentChatGateway:
         agent_name: str,
         conversation_id: str,
         session_id: str,
+        user_identity: str,
         text: str,
     ) -> HostedAgentReply:
         client = self._project().get_openai_client(agent_name=agent_name)
@@ -221,6 +235,7 @@ class AgentChatGateway:
                     "conversation": conversation_id,
                     "agent_session_id": session_id,
                 },
+                "extra_headers": {"x-ms-user-identity": user_identity},
             },
         )
         return HostedAgentReply(
@@ -234,16 +249,18 @@ class AgentChatGateway:
         *,
         agent_name: str,
         session_id: str,
+        user_identity: str,
         path: str,
         content: bytes,
     ) -> None:
         project = self._project()
         try:
             project.agents.upload_session_file(
-                agent_name=agent_name,
-                session_id=session_id,
-                content_or_file_path=content,
+                agent_name,
+                session_id,
+                content,
                 path=path,
+                headers={"x-ms-user-identity": user_identity},
             )
         except Exception as exc:  # noqa: BLE001 - surfaced to the caller as 502 below
             raise HostedAgentInvocationError(f"Could not upload {path} to the Hosted Agent session.") from exc
@@ -259,7 +276,7 @@ class LocalAgentChatGateway:
     mistaken for agent output.
     """
 
-    def open_thread(self, agent_name: str, *, isolation_key: str) -> ThreadHandle:
+    def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle:
         token = uuid4().hex[:12]
         return ThreadHandle(conversation_id=f"local-conv-{token}", session_id=f"local-session-{token}")
 
@@ -269,6 +286,7 @@ class LocalAgentChatGateway:
         agent_name: str,
         conversation_id: str,
         session_id: str,
+        user_identity: str,
         text: str,
     ) -> HostedAgentReply:
         return HostedAgentReply(
@@ -280,7 +298,15 @@ class LocalAgentChatGateway:
             response_id=f"local-response-{uuid4().hex[:12]}",
         )
 
-    def upload(self, *, agent_name: str, session_id: str, path: str, content: bytes) -> None:
+    def upload(
+        self,
+        *,
+        agent_name: str,
+        session_id: str,
+        user_identity: str,
+        path: str,
+        content: bytes,
+    ) -> None:
         logger.info("Local mock runtime accepted attachment %s (%s bytes)", path, len(content))
 
 
@@ -331,14 +357,10 @@ def _gateway(request: Request) -> ChatGateway:
     return cast(ChatGateway, gateway)
 
 
-def isolation_key_for(identity: IdentityContext, store: WorkspaceStore) -> str:
-    """Partition sandboxes per user *and* per project.
-
-    Foundry treats this value as a routing partition, not an authorization
-    check, so it is paired with the owner check in ``_load_thread`` rather than
-    relied on alone.
-    """
-    return f"{identity.tenant_id}:{store.project_id}:{identity.user_id}"
+def delegated_user_identity_for(identity: IdentityContext, store: WorkspaceStore) -> str:
+    """Derive a stable opaque identity from authenticated server-side state."""
+    subject = f"{identity.tenant_id}\0{store.project_id}\0{identity.user_id}"
+    return f"ra:{sha256(subject.encode('utf-8')).hexdigest()}"
 
 
 def _load_thread(store: WorkspaceStore, thread_id: str, identity: IdentityContext) -> ChatThread:
@@ -416,12 +438,12 @@ async def open_chat_thread(payload: ChatThreadCreate, request: Request) -> ChatT
     capability = _require_chat_capability(payload.capability)
     _validate_agent(capability, payload.agent_name)
     gateway = _gateway(request)
-    isolation_key = isolation_key_for(identity, store)
+    delegated_user_identity = delegated_user_identity_for(identity, store)
     try:
         handle = await run_in_threadpool(
             gateway.open_thread,
             payload.agent_name,
-            isolation_key=isolation_key,
+            user_identity=delegated_user_identity,
         )
     except (
         HostedAgentConfigurationError,
@@ -440,7 +462,7 @@ async def open_chat_thread(payload: ChatThreadCreate, request: Request) -> ChatT
             owner_principal_id=identity.user_id,
             conversation_id=handle.conversation_id,
             session_id=handle.session_id,
-            isolation_key=isolation_key,
+            delegated_user_identity=delegated_user_identity,
             created_at=now,
             updated_at=now,
         )
@@ -479,6 +501,7 @@ async def upload_chat_file(
             gateway.upload,
             agent_name=thread.agent_name,
             session_id=thread.session_id,
+            user_identity=thread.delegated_user_identity,
             path=path,
             content=content,
         )
@@ -522,6 +545,7 @@ async def send_chat_message(
             agent_name=thread.agent_name,
             conversation_id=thread.conversation_id,
             session_id=thread.session_id,
+            user_identity=thread.delegated_user_identity,
             text=_compose_turn(payload.text, pending),
         )
     except (
@@ -590,6 +614,6 @@ __all__ = [
     "ChatThreadView",
     "LocalAgentChatGateway",
     "build_agent_chat_gateway",
-    "isolation_key_for",
+    "delegated_user_identity_for",
     "router",
 ]

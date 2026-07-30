@@ -109,17 +109,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -199,17 +188,6 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
             }
           }
         ],
@@ -291,17 +269,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -381,17 +348,6 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
             }
           }
         ],
@@ -473,17 +429,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -524,17 +469,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -574,17 +508,6 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
             }
           }
         ],
@@ -666,17 +589,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -716,17 +628,6 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
             }
           }
         ],
@@ -808,17 +709,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -899,17 +789,6 @@
               "minLength": 2,
               "type": "string"
             }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
-            }
           }
         ],
         "responses": {
@@ -949,17 +828,6 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "limit",
-            "required": false,
-            "schema": {
-              "default": 5,
-              "maximum": 10,
-              "minimum": 1,
-              "type": "integer"
             }
           }
         ],

@@ -35,6 +35,9 @@ param location string = resourceGroup().location
 @description('Azure region for Azure AI Search.')
 param searchLocation string = location
 
+@description('Azure region for the application VNet and Container Apps.')
+param applicationLocation string = location
+
 @description('Tags applied to all resources.')
 param tags object = {}
 
@@ -81,6 +84,9 @@ param enableEntraAuth bool = false
 var resourceToken = empty(resourceTokenSalt)
   ? uniqueString(subscription().id, resourceGroup().id, location)
   : uniqueString(subscription().id, resourceGroup().id, location, resourceTokenSalt)
+var applicationResourceToken = empty(resourceTokenSalt)
+  ? uniqueString(subscription().id, resourceGroup().id, applicationLocation)
+  : uniqueString(subscription().id, resourceGroup().id, applicationLocation, resourceTokenSalt)
 
 var abbrs = loadJsonContent('../abbreviations.json')
 
@@ -201,6 +207,9 @@ resource agenticGuardrail 'Microsoft.CognitiveServices/accounts/raiPolicies@2026
       { name: 'Protected Material Code', enabled: true, blocking: true, source: 'Completion' }
     ]
   }
+  dependsOn: [
+    foundryAccount::project
+  ]
 }
 
 module acr 'acr.bicep' = if (includeAcr) {
@@ -270,8 +279,8 @@ module cosmos 'cosmos.bicep' = {
 module privateNetwork 'app-private-network.bicep' = if (includeAcr) {
   name: 'app-private-network'
   params: {
-    name: resourceToken
-    location: location
+    name: applicationResourceToken
+    location: applicationLocation
     tags: tags
     storageAccountId: storage.outputs.accountId
     cosmosAccountId: cosmos.outputs.accountId
@@ -295,6 +304,29 @@ resource apiFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
     principalId: identities.outputs.apiPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: foundryUserRoleId
+  }
+}
+
+module apiUserIdentityImpersonationRole 'foundry-user-identity-role.bicep' = {
+  name: 'foundry-user-identity-${resourceToken}'
+  scope: subscription()
+  params: {
+    roleName: 'Foundry Agent User Identity Impersonation - ${foundryAccount.name}'
+    assignableScope: foundryAccount.id
+  }
+}
+
+resource apiUserIdentityImpersonation 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(
+    foundryAccount.id,
+    'id-api-${resourceToken}',
+    'foundry-agent-user-identity-impersonation'
+  )
+  scope: foundryAccount
+  properties: {
+    principalId: identities.outputs.apiPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: apiUserIdentityImpersonationRole.outputs.roleDefinitionId
   }
 }
 
@@ -323,8 +355,8 @@ resource apiModelUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
 module containerApps 'container-apps.bicep' = if (includeAcr) {
   name: 'research-container-apps'
   params: {
-    name: take(resourceToken, 8)
-    location: location
+    name: take(applicationResourceToken, 8)
+    location: applicationLocation
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.workspaceName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString

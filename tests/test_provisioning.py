@@ -17,6 +17,7 @@ from scripts.postprovision import (
     RETRY_DELAYS,
     _reconcile_toolbox,
     apim_mcp_subscription_key,
+    configure_agent_memory,
     configure_connector_connections,
     configure_connector_mcp_tools,
     connector_connection_payload,
@@ -41,6 +42,27 @@ def _connector_mcp_urls() -> str:
             for connector in connector_definitions()
         ]
     )
+
+
+def test_api_can_delegate_only_the_authenticated_user_identity_to_foundry() -> None:
+    root = Path(__file__).parents[1]
+    role = (root / "infra" / "modules" / "foundry-user-identity-role.bicep").read_text(
+        encoding="utf-8"
+    )
+    resources = (root / "infra" / "modules" / "resources.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert role.count(
+        "Microsoft.CognitiveServices/accounts/AIServices/agents/endpoints/"
+        "UserIdentityImpersonation/action"
+    ) == 1
+    assert "actions: []" in role
+    assert "notDataActions: []" in role
+    assert "assignableScopes" in role
+    assert "scope: foundryAccount" in resources
+    assert "principalId: identities.outputs.apiPrincipalId" in resources
+    assert "roleDefinitionId: apiUserIdentityImpersonationRole.outputs.roleDefinitionId" in resources
 
 
 def test_sample_corpus_is_ready_for_search_indexing() -> None:
@@ -325,6 +347,49 @@ def test_connector_mcp_tools_are_reconciled_sequentially_and_verified(
                 ),
             }
         }
+
+
+def test_agent_memory_reuses_the_existing_named_store(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AZURE_AI_CHAT_DEPLOYMENT_NAME", "chat")
+    monkeypatch.setenv("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME", "embedding")
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test/api/projects/p")
+    monkeypatch.setattr(
+        "scripts.postprovision._toolbox_json_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError(
+                "Foundry Toolbox request failed with HTTP 400: "
+                "Memory Store with Name research_shared_memory already exists!"
+            )
+        ),
+    )
+    calls: list[list[str]] = []
+    monkeypatch.setattr(
+        "scripts.postprovision.subprocess.run",
+        lambda command, **_kwargs: calls.append(command),
+    )
+
+    assert configure_agent_memory(object()) == "research_shared_memory"
+    assert len(calls) == 1
+    assert calls[0][1:] == ["env", "set", "MEMORY_STORE_NAME", "research_shared_memory"]
+
+
+def test_agent_memory_does_not_hide_unrelated_bad_requests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setenv("AZURE_AI_CHAT_DEPLOYMENT_NAME", "chat")
+    monkeypatch.setenv("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME", "embedding")
+    monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://foundry.example.test/api/projects/p")
+    monkeypatch.setattr(
+        "scripts.postprovision._toolbox_json_request",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            RuntimeError("Foundry Toolbox request failed with HTTP 400: invalid model")
+        ),
+    )
+
+    with pytest.raises(RuntimeError, match="invalid model"):
+        configure_agent_memory(object())
 
 
 @pytest.mark.parametrize("status", [400, 502])

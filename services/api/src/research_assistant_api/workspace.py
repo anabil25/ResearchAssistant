@@ -462,7 +462,7 @@ class ChatThread(BaseModel):
     owner_principal_id: str
     conversation_id: str
     session_id: str
-    isolation_key: str
+    delegated_user_identity: str
     created_at: datetime
     updated_at: datetime
     messages: list[ChatMessage] = Field(default_factory=list)

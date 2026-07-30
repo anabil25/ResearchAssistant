@@ -674,12 +674,15 @@ test.describe("connector diagnostic probes", () => {
 });
 
 test.describe("settings readiness truth states", () => {
-  test("[pw.integration-readiness] shows consent, repository setup, and ready boundaries without overstating permissions [pw.settings.integrations.readiness:needs-consent][pw.settings.integrations.readiness:blocked][pw.settings.integrations.readiness:ready]", async ({
+  test("[pw.integration-readiness] shows deployment, consent, repository setup, and ready boundaries without overstating permissions [pw.settings.integrations.readiness:deployment-managed][pw.settings.integrations.readiness:needs-consent][pw.settings.integrations.readiness:blocked][pw.settings.integrations.readiness:ready]", async ({
     page,
   }, testInfo) => {
     await createLab(page);
     await switchToSettingsSection(page, "Readiness");
 
+    await expect(
+      page.locator('[data-readiness-state="deployment-managed"]'),
+    ).toHaveText("Deployment managed");
     await expect(
       page.locator('[data-readiness-state="needs-consent"]'),
     ).toHaveText("Needs tenant consent");

@@ -57,7 +57,7 @@ const STANDARD_STATES = [
 
 const NAVIGATION_STATES = ["ready", "keyboard", "selected", "mobile"] as const;
 
-export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
+const LEGACY_INTERACTION_MANIFEST: readonly InteractionContract[] = [
   {
     id: "shell.navigation.open-mobile",
     surface: "Shell",
@@ -882,6 +882,16 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     testIds: ["jest.runs-filter", "pw.runs-filter"],
   },
   {
+    id: "runs.surface.load",
+    surface: "Runs",
+    control: "Runs workspace loading boundary",
+    behavior: "Keeps the Runs surface stable while workspace data loads and reports request failures without crashing.",
+    baseline: "functional-covered",
+    milestone: "M9",
+    states: ["loading", "error"],
+    testIds: ["pw.operational-surfaces"],
+  },
+  {
     id: "runs.select",
     surface: "Runs",
     control: "Run rows",
@@ -1085,6 +1095,65 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
   },
 ] as const;
 
+const RETIRED_STUDIO_INTERACTIONS = new Set([
+  "studio.run-evidence",
+  ...LEGACY_INTERACTION_MANIFEST.filter((interaction) =>
+    ["Literature", "Grant", "Matching", "Dataset"].includes(
+      interaction.surface,
+    ),
+  ).map((interaction) => interaction.id),
+]);
+
+const CHAT_INTERACTIONS: readonly InteractionContract[] = [
+  {
+    id: "studio.chat.agent-picker",
+    surface: "Studio",
+    control: "Foundry agent picker",
+    behavior: "Selects an allowed deployed Foundry agent and starts a fresh isolated conversation.",
+    baseline: "functional-covered",
+    milestone: "M3",
+    states: ["ready", "selected"],
+    testIds: ["jest.agent-chat", "pw.agent-chat-agent"],
+  },
+  {
+    id: "studio.chat.composer",
+    surface: "Studio",
+    control: "Chat composer and send action",
+    behavior: "Accepts free-form requests, sends them to the selected agent, and restores failed turns for retry.",
+    baseline: "functional-covered",
+    milestone: "M3",
+    states: ["empty", "keyboard", "loading", "success", "error"],
+    testIds: ["jest.agent-chat", "pw.agent-chat-composer"],
+  },
+  {
+    id: "studio.chat.attachments",
+    surface: "Studio",
+    control: "Session file attachments",
+    behavior: "Uploads bounded files to the hosted-agent session and exposes upload readiness or failure before sending.",
+    baseline: "functional-covered",
+    milestone: "M3",
+    states: ["empty", "uploading", "ready", "error"],
+    testIds: ["jest.agent-chat", "pw.agent-chat-attachments"],
+  },
+  {
+    id: "studio.chat.thread",
+    surface: "Studio",
+    control: "Conversation transcript",
+    behavior: "Displays the durable user and assistant transcript while preserving Foundry conversation continuity across turns.",
+    baseline: "functional-covered",
+    milestone: "M3",
+    states: ["empty", "conversation"],
+    testIds: ["jest.agent-chat", "pw.agent-chat-thread"],
+  },
+] as const;
+
+export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
+  ...LEGACY_INTERACTION_MANIFEST.filter(
+    (interaction) => !RETIRED_STUDIO_INTERACTIONS.has(interaction.id),
+  ),
+  ...CHAT_INTERACTIONS,
+];
+
 export const INTERACTION_GAPS = INTERACTION_MANIFEST.filter(
   (item) => item.baseline === "unwired" || item.baseline === "missing",
 );
@@ -1120,7 +1189,7 @@ export const CORE_SCREENSHOT_CONTRACTS = [
   {
     id: "visual.core.institutional",
     route: "/?view=institutional_qa",
-    heading: "Institutional Q&A",
+    heading: "Work IQ",
   },
   {
     id: "visual.core.workflow",
