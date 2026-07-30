@@ -208,6 +208,8 @@ def test_configure_agent_rbac_entrypoint_syncs_agents_and_grants_coordinator_rol
     ]
     assert sync_calls == ["sync"]
     assert len(env_sets) == len(agent_rbac.AGENT_NAMES) * 4
+    # Every hosted agent reads its own model deployment at startup, so each
+    # instance identity needs the grant -- not just the coordinator's.
     assert role_commands == [
         [
             agent_rbac.AZ_CLI,
@@ -225,8 +227,11 @@ def test_configure_agent_rbac_entrypoint_syncs_agents_and_grants_coordinator_rol
             "--output",
             "none",
         ]
+        for _ in agent_rbac.AGENT_NAMES
     ]
-    assert "Granted Foundry User to research-coordinator" in capsys.readouterr().out
+    output = capsys.readouterr().out
+    for agent_name in agent_rbac.AGENT_NAMES:
+        assert f"Granted Foundry User to {agent_name}" in output
 
 
 def test_postprovision_required_env_accepts_values_and_rejects_missing(

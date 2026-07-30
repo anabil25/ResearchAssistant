@@ -111,39 +111,44 @@ def sync_agent_environment_outputs() -> None:
 def main() -> None:
     sync_canonical_azd_outputs()
     sync_agent_environment_outputs()
-    coordinator = run_json(
-        [
-            "azd",
-            "ai",
-            "agent",
-            "show",
-            COORDINATOR,
-            "--output",
-            "json",
-            "--no-prompt",
-        ]
-    )
-    coordinator_id = agent_instance_principal_id(coordinator)
-    subprocess.run(
-        [
-            AZ_CLI,
-            "role",
-            "assignment",
-            "create",
-            "--assignee-object-id",
-            coordinator_id,
-            "--assignee-principal-type",
-            "ServicePrincipal",
-            "--role",
-            FOUNDRY_USER_ROLE_ID,
-            "--scope",
-            required_env("AZURE_AI_PROJECT_ID"),
-            "--output",
-            "none",
-        ],
-        check=True,
-    )
-    print(f"Granted Foundry User to {COORDINATOR} ({coordinator_id}).")
+    project_scope = required_env("AZURE_AI_PROJECT_ID")
+    # Every hosted agent resolves its own model deployment at startup
+    # (shared.factory._resolve_model_deployment_version), so each instance
+    # identity -- not just the coordinator's -- needs project data-plane read.
+    for agent_name in AGENT_NAMES:
+        agent = run_json(
+            [
+                "azd",
+                "ai",
+                "agent",
+                "show",
+                agent_name,
+                "--output",
+                "json",
+                "--no-prompt",
+            ]
+        )
+        principal_id = agent_instance_principal_id(agent)
+        subprocess.run(
+            [
+                AZ_CLI,
+                "role",
+                "assignment",
+                "create",
+                "--assignee-object-id",
+                principal_id,
+                "--assignee-principal-type",
+                "ServicePrincipal",
+                "--role",
+                FOUNDRY_USER_ROLE_ID,
+                "--scope",
+                project_scope,
+                "--output",
+                "none",
+            ],
+            check=True,
+        )
+        print(f"Granted Foundry User to {agent_name} ({principal_id}).")
 
 
 if __name__ == "__main__":
