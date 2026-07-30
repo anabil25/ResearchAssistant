@@ -47,6 +47,24 @@ def test_apim_uses_the_public_network_in_the_poc_profile() -> None:
     assert "infrastructureSubnetId" not in container_apps
 
 
+def test_every_container_app_binds_acr_pull_to_its_system_identity() -> None:
+    """Each app needs a registries entry or azd's real image push fails to pull.
+
+    ``identity: 'system'`` is the documented value for a system-assigned
+    identity, and it must match the principal the AcrPull assignment targets
+    (``<app>.identity.principalId`` resolves to the system principal even on
+    the apps that also carry a user-assigned identity).
+    """
+    container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert container_apps.count("identity: 'system'") == 4
+    assert container_apps.count("server: acr.properties.loginServer") == 4
+    for app in ("web", "api", "worker", "connectorAdapter"):
+        assert f"principalId: {app}.identity.principalId" in container_apps
+
+
 def test_foundry_project_assigns_deployer_data_plane_roles() -> None:
     resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
         encoding="utf-8"

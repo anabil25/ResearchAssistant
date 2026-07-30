@@ -136,6 +136,12 @@ resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ]
       ingress: {
         allowInsecure: false
         external: true
@@ -267,6 +273,12 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ]
       secrets: attestationSecretRefs
       ingress: {
         allowInsecure: false
@@ -527,6 +539,12 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ]
       ingress: {
         allowInsecure: false
         external: true
@@ -622,6 +640,12 @@ resource worker 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
+      registries: [
+        {
+          server: acr.properties.loginServer
+          identity: 'system'
+        }
+      ]
     }
     template: {
       containers: [
