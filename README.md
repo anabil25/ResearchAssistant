@@ -14,6 +14,10 @@ Foundry Hosted Agents across six research studios.
 > 📐 [ARCHITECTURE.md](ARCHITECTURE.md) is the source of truth for
 > components, data flows, and cross-component contracts. This README is the
 > deploy & run guide for a fresh clone.
+>
+> 🌐 Prefer a browsable version? Open the [project landing page](docs/index.html)
+> — this README and the architecture docs with a left-nav menu and interactive
+> diagram.
 
 ## What it is
 

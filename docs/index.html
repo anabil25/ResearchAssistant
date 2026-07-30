@@ -1,0 +1,633 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Research Assistant — Azure Solution Accelerator</title>
+  <meta name="description"
+    content="One-click (azd up) evidence-governed Research Assistant for higher education — Foundry agents, Azure AI Search, Container Apps, Document Intelligence." />
+  <!-- TODO: replace YOUR_GITHUB_USERNAME with your actual GitHub username in the <script> block below -->
+
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='22' fill='%230078d4'/%3E%3Cpath d='M20 70l20-46 12 28 8-16 22 34z' fill='white'/%3E%3C/svg%3E" />
+
+  <!-- Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet" />
+
+  <!-- Syntax highlighting -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css" id="hljs-light" />
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css" id="hljs-dark" disabled />
+  <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+
+  <style>
+    :root {
+      --azure: #0078d4;
+      --azure-600: #106ebe;
+      --azure-700: #005a9e;
+      --accent: #50b0ff;
+      --ink: #1b1f24;
+      --muted: #5c6b7a;
+      --line: #e6ebf1;
+      --bg: #ffffff;
+      --bg-soft: #f6f9fc;
+      --sidebar-bg: #0d1b2a;
+      --sidebar-fg: #c7d3e0;
+      --sidebar-active: #ffffff;
+      --card: #ffffff;
+      --code-bg: #f5f7fa;
+      --radius: 14px;
+      --shadow: 0 1px 2px rgba(16,30,54,.06), 0 8px 28px rgba(16,30,54,.08);
+      --sidebar-w: 300px;
+      --maxw: 1000px;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --ink: #e6edf3; --muted: #9aa8b6; --line: #223041;
+        --bg: #0b1119; --bg-soft: #0f1720; --card: #111a24;
+        --code-bg: #0d1520; --sidebar-bg: #070d15;
+      }
+    }
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      font-family: 'Inter', system-ui, -apple-system, Segoe UI, Roboto, sans-serif;
+      color: var(--ink); background: var(--bg); line-height: 1.65;
+      -webkit-font-smoothing: antialiased;
+    }
+    a { color: var(--azure); text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    code, pre, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+    /* ---------- Layout ---------- */
+    .layout { display: grid; grid-template-columns: var(--sidebar-w) 1fr; min-height: 100vh; }
+
+    /* ---------- Sidebar ---------- */
+    .sidebar {
+      background: var(--sidebar-bg); color: var(--sidebar-fg);
+      position: sticky; top: 0; height: 100vh;
+      overflow-y: auto; padding: 22px 18px 40px;
+      border-right: 1px solid rgba(255,255,255,.06);
+    }
+    .brand { display: flex; align-items: center; gap: 12px; padding: 6px 8px 18px; }
+    .brand .logo {
+      width: 40px; height: 40px; border-radius: 11px; flex: 0 0 auto;
+      background: linear-gradient(135deg, var(--azure), var(--accent));
+      display: grid; place-items: center;
+      box-shadow: 0 6px 18px rgba(0,120,212,.45);
+    }
+    .brand .logo svg { width: 22px; height: 22px; }
+    .brand .name { font-weight: 800; font-size: 15px; color: #fff; line-height: 1.25; letter-spacing: .2px; }
+    .brand .sub { font-size: 11.5px; color: #7f93a8; font-weight: 500; }
+
+    .doc-switch {
+      display: flex; gap: 6px; background: rgba(255,255,255,.05);
+      padding: 5px; border-radius: 11px; margin: 0 6px 18px;
+    }
+    .doc-switch button {
+      flex: 1; border: 0; background: transparent; color: var(--sidebar-fg);
+      font: inherit; font-size: 12.5px; font-weight: 600; padding: 8px 6px;
+      border-radius: 8px; cursor: pointer; transition: .15s;
+    }
+    .doc-switch button.active { background: var(--azure); color: #fff; box-shadow: 0 4px 12px rgba(0,120,212,.4); }
+    .doc-switch button:not(.active):hover { background: rgba(255,255,255,.08); color: #fff; }
+
+    .nav-label {
+      font-size: 10.5px; text-transform: uppercase; letter-spacing: .12em;
+      color: #67788c; font-weight: 700; padding: 6px 10px; margin-top: 6px;
+    }
+    nav.toc a {
+      display: block; color: var(--sidebar-fg); font-size: 13.5px;
+      padding: 7px 10px; border-radius: 8px;
+      border-left: 2px solid transparent; margin: 1px 0; transition: .12s; text-decoration: none;
+    }
+    nav.toc a:hover { background: rgba(255,255,255,.06); color: #fff; }
+    nav.toc a.lvl-3 { padding-left: 24px; font-size: 12.5px; color: #9fb0c2; }
+    nav.toc a.active { background: rgba(0,120,212,.16); color: var(--sidebar-active); border-left-color: var(--accent); font-weight: 600; }
+
+    .side-cta { margin: 20px 6px 0; display: flex; flex-direction: column; gap: 8px; }
+    .side-cta a {
+      text-align: center; font-size: 13px; font-weight: 600;
+      padding: 10px; border-radius: 10px; text-decoration: none;
+    }
+    .side-cta .gh { background: rgba(255,255,255,.08); color: #fff; border: 1px solid rgba(255,255,255,.12); }
+    .side-cta .gh:hover { background: rgba(255,255,255,.14); }
+
+    /* ---------- Main ---------- */
+    main { min-width: 0; }
+    .topbar {
+      display: none; align-items: center; gap: 12px; padding: 12px 18px;
+      position: sticky; top: 0; z-index: 40;
+      background: color-mix(in srgb, var(--bg) 88%, transparent);
+      backdrop-filter: blur(8px); border-bottom: 1px solid var(--line);
+    }
+    .hamburger {
+      border: 1px solid var(--line); background: var(--card); border-radius: 9px;
+      width: 40px; height: 40px; display: grid; place-items: center;
+      cursor: pointer; color: var(--ink);
+    }
+    .topbar .t-title { font-weight: 700; font-size: 14px; }
+
+    /* Hero */
+    .hero {
+      position: relative; overflow: hidden; color: #fff;
+      background: radial-gradient(1200px 500px at 15% -10%, #1e97ff 0%, transparent 55%),
+                  radial-gradient(900px 500px at 100% 0%, #6f4bff 0%, transparent 50%),
+                  linear-gradient(135deg, #063a6e 0%, #0d1b2a 100%);
+      padding: 64px clamp(24px, 6vw, 88px) 60px;
+    }
+    .hero .eyebrow {
+      display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 600;
+      letter-spacing: .04em; background: rgba(255,255,255,.12);
+      border: 1px solid rgba(255,255,255,.18); padding: 6px 13px;
+      border-radius: 999px; color: #dbe9ff;
+    }
+    .hero h1 {
+      font-size: clamp(28px, 4.4vw, 46px); line-height: 1.1;
+      font-weight: 800; margin: 18px 0 14px; letter-spacing: -.5px; max-width: 18ch;
+    }
+    .hero p.lead { font-size: clamp(15px, 1.6vw, 18.5px); color: #c9d8ea; max-width: 62ch; margin: 0 0 26px; }
+    .hero .cta { display: flex; flex-wrap: wrap; gap: 12px; }
+    .btn {
+      display: inline-flex; align-items: center; gap: 9px; font-weight: 600;
+      font-size: 14.5px; padding: 12px 20px; border-radius: 11px; cursor: pointer;
+      border: 1px solid transparent; text-decoration: none; transition: transform .12s, box-shadow .12s;
+    }
+    .btn:hover { transform: translateY(-1px); text-decoration: none; }
+    .btn-primary { background: linear-gradient(135deg, #2b95ff, #0a6ed1); color: #fff; box-shadow: 0 10px 24px rgba(11,110,209,.5); }
+    .btn-ghost { background: rgba(255,255,255,.08); color: #fff; border-color: rgba(255,255,255,.22); }
+    .btn-ghost:hover { background: rgba(255,255,255,.15); }
+
+    .hero-snippet {
+      margin-top: 30px; background: rgba(6,14,26,.55); border: 1px solid rgba(255,255,255,.14);
+      border-radius: 12px; padding: 14px 16px; max-width: 480px;
+      font-family: 'JetBrains Mono', monospace; font-size: 13.5px; color: #d7e6f7;
+    }
+    .hero-snippet .c { color: #7fd1ff; }
+    .hero-snippet .prompt { color: #6ee7a8; user-select: none; }
+
+    .chips { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 26px; }
+    .chip {
+      display: inline-flex; align-items: center; gap: 8px; font-size: 12.5px; font-weight: 500;
+      color: #d7e6f7; background: rgba(255,255,255,.07);
+      border: 1px solid rgba(255,255,255,.14); padding: 7px 13px; border-radius: 999px;
+    }
+    .chip b { color: #fff; font-weight: 700; }
+
+    /* Rendered markdown */
+    .content { padding: 40px clamp(24px, 6vw, 88px) 96px; }
+    .doc-header { display: none; padding: 30px clamp(24px, 6vw, 88px) 0; }
+    .doc-header h2 { font-size: 26px; margin: 0; }
+    .doc-header p { color: var(--muted); margin: 6px 0 0; }
+    .markdown-body { max-width: var(--maxw); }
+    .markdown-body h1 { font-size: 30px; margin: 8px 0 18px; letter-spacing: -.4px; }
+    .markdown-body h2 {
+      font-size: 23px; margin: 46px 0 14px; padding-top: 14px;
+      border-top: 1px solid var(--line); letter-spacing: -.3px; scroll-margin-top: 20px;
+    }
+    .markdown-body h2:first-of-type { border-top: 0; margin-top: 8px; }
+    .markdown-body h3 { font-size: 17.5px; margin: 30px 0 10px; scroll-margin-top: 20px; }
+    .markdown-body h4 { font-size: 15px; margin: 22px 0 8px; color: var(--muted); }
+    .markdown-body p, .markdown-body li { font-size: 15.5px; }
+    .markdown-body ul, .markdown-body ol { padding-left: 22px; }
+    .markdown-body li { margin: 5px 0; }
+    .markdown-body strong { color: var(--ink); font-weight: 700; }
+    .markdown-body a { font-weight: 500; }
+    .markdown-body hr { display: none; }
+    .markdown-body img { max-width: 100%; }
+
+    .markdown-body :not(pre) > code {
+      background: var(--code-bg); border: 1px solid var(--line);
+      padding: 1.5px 6px; border-radius: 6px; font-size: 13px; color: #b1361e;
+    }
+    @media (prefers-color-scheme: dark) {
+      .markdown-body :not(pre) > code { color: #ff9e80; }
+    }
+    .markdown-body pre {
+      background: var(--code-bg); border: 1px solid var(--line);
+      border-radius: 12px; padding: 16px 18px; overflow-x: auto;
+      font-size: 13.2px; line-height: 1.6; box-shadow: var(--shadow);
+    }
+    .markdown-body pre code { background: transparent; border: 0; padding: 0; font-size: 13.2px; }
+
+    .markdown-body table {
+      border-collapse: separate; border-spacing: 0; width: 100%; margin: 18px 0; font-size: 14px;
+      border: 1px solid var(--line); border-radius: 12px; overflow: hidden;
+      box-shadow: var(--shadow); display: block; overflow-x: auto;
+    }
+    .markdown-body thead th {
+      background: var(--bg-soft); text-align: left; font-weight: 700;
+      font-size: 12.5px; text-transform: uppercase; letter-spacing: .03em; color: var(--muted);
+    }
+    .markdown-body th, .markdown-body td { padding: 11px 14px; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .markdown-body tbody tr:last-child td { border-bottom: 0; }
+    .markdown-body tbody tr:hover td { background: color-mix(in srgb, var(--azure) 5%, transparent); }
+
+    .markdown-body blockquote {
+      margin: 18px 0; padding: 12px 18px;
+      border-left: 4px solid var(--azure);
+      background: color-mix(in srgb, var(--azure) 7%, transparent);
+      border-radius: 0 10px 10px 0; color: var(--ink);
+    }
+    .markdown-body blockquote p { margin: 4px 0; }
+
+    .mermaid {
+      display: flex; justify-content: center; background: var(--card);
+      border: 1px solid var(--line); border-radius: 14px; padding: 22px;
+      margin: 22px 0; box-shadow: var(--shadow); overflow-x: auto;
+    }
+
+    /* Architecture overview section */
+    .arch-overview {
+      padding: 0 clamp(24px, 6vw, 88px) 48px;
+      background: var(--bg-soft); border-bottom: 1px solid var(--line);
+    }
+    .arch-overview h2 {
+      font-size: 20px; font-weight: 700; margin: 0 0 5px;
+      padding-top: 36px; color: var(--ink); letter-spacing: -.2px;
+    }
+    .arch-overview .arch-sub { color: var(--muted); font-size: 14px; margin: 0 0 22px; }
+    .arch-mermaid {
+      max-width: 980px; margin: 0 auto;
+      background: var(--card); border: 1px solid var(--line);
+      border-radius: 16px; padding: 28px 24px; overflow-x: auto;
+      box-shadow: var(--shadow); display: flex; justify-content: center; align-items: center;
+      min-height: 180px;
+    }
+
+    /* anchor link on headings */
+    .anchor { opacity: 0; margin-left: 8px; font-weight: 400; color: var(--muted); text-decoration: none; font-size: .8em; }
+    h2:hover .anchor, h3:hover .anchor { opacity: 1; }
+
+    .loading { display: flex; align-items: center; gap: 12px; color: var(--muted); padding: 40px 0; font-size: 15px; }
+    .spinner { width: 20px; height: 20px; border: 3px solid var(--line); border-top-color: var(--azure); border-radius: 50%; animation: spin .8s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    footer.site {
+      border-top: 1px solid var(--line); padding: 28px clamp(24px,6vw,88px);
+      color: var(--muted); font-size: 13px;
+      display: flex; flex-wrap: wrap; gap: 10px; justify-content: space-between; align-items: center;
+    }
+
+    .backdrop { display: none; }
+
+    /* ---------- Responsive ---------- */
+    @media (max-width: 900px) {
+      .layout { grid-template-columns: 1fr; }
+      .sidebar {
+        position: fixed; z-index: 60; width: min(86vw, 340px);
+        transform: translateX(-105%); transition: transform .25s ease;
+        box-shadow: 0 20px 60px rgba(0,0,0,.45);
+      }
+      .sidebar.open { transform: translateX(0); }
+      .topbar { display: flex; }
+      .backdrop.show { display: block; position: fixed; inset: 0; background: rgba(3,8,15,.55); z-index: 55; }
+      .hero { padding: 44px 22px 40px; }
+    }
+  </style>
+</head>
+<body>
+<div class="layout">
+
+  <!-- ===== Sidebar ===== -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true">
+        <svg viewBox="0 0 100 100"><path d="M20 70l20-46 12 28 8-16 22 34z" fill="#fff"/></svg>
+      </span>
+      <span>
+        <div class="name">Research Assistant</div>
+        <div class="sub">Azure Solution Accelerator</div>
+      </span>
+    </div>
+
+    <div class="doc-switch" role="tablist">
+      <button data-doc="readme" class="active" role="tab">Deploy Guide</button>
+      <button data-doc="architecture" role="tab">Architecture</button>
+    </div>
+
+    <div class="nav-label">On this page</div>
+    <nav class="toc" id="toc" aria-label="Table of contents"></nav>
+
+    <div class="side-cta">
+      <a class="gh" id="githubLink" href="#" target="_blank" rel="noopener">★ View on GitHub</a>
+    </div>
+  </aside>
+
+  <div class="backdrop" id="backdrop"></div>
+
+  <!-- ===== Main ===== -->
+  <main>
+    <div class="topbar">
+      <button class="hamburger" id="hamburger" aria-label="Open menu">
+        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 6h18M3 12h18M3 18h18"/></svg>
+      </button>
+      <span class="t-title" id="topTitle">Deploy Guide</span>
+    </div>
+
+    <!-- Hero (README only) -->
+    <section class="hero" id="hero">
+      <span class="eyebrow">⚡ One-click <code style="color:#bfe0ff">azd up</code> &nbsp;·&nbsp; Azure AI Foundry</span>
+      <h1>Research Assistant on Azure</h1>
+      <p class="lead">
+        An evidence-governed research accelerator for higher education: researchers work in a Next.js workbench
+        that coordinates <b>nine Foundry Hosted Agents</b> across six studios —
+        Literature, Grant, Matching, Dataset Lab, Institutional Q&amp;A, and Workflow Automation —
+        with deterministic approval gates on every write.
+      </p>
+      <div class="cta">
+        <a class="btn btn-primary" id="getStarted" href="#">🚀 Get started — deploy</a>
+        <a class="btn btn-ghost" id="githubHeroLink" href="#" target="_blank" rel="noopener">
+          <svg width="18" height="18" viewBox="0 0 16 16" fill="currentColor"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
+          View source
+        </a>
+        <a class="btn btn-ghost" id="toArch" href="#">📐 Architecture</a>
+      </div>
+
+      <div class="hero-snippet">
+        <span class="prompt">$ </span><span class="c">git clone</span> https://github.com/YOUR_GITHUB_USERNAME/ResearchAssistant<br/>
+        <span class="prompt">$ </span><span class="c">cd</span> ResearchAssistant &amp;&amp; <span class="c">azd up</span>
+      </div>
+
+      <div class="chips">
+        <span class="chip">🤖 <b>9</b> Foundry agents</span>
+        <span class="chip">📚 <b>6</b> research studios</span>
+        <span class="chip">🔎 AI Search <b>+ Doc Intelligence</b></span>
+        <span class="chip">✋ <b>Approval gates</b> on writes</span>
+        <span class="chip">🌐 <b>12</b> public connectors</span>
+        <span class="chip">☁️ <b>Container Apps</b> + private endpoints</span>
+      </div>
+    </section>
+
+    <!-- Architecture overview — shown on README tab only -->
+    <section class="arch-overview" id="archOverview">
+      <h2>How it works</h2>
+      <p class="arch-sub">Nine Foundry Hosted Agents coordinate across six research studios, backed by Azure AI and data services.</p>
+      <div class="arch-mermaid" id="archDiagram">
+        <div class="loading"><span class="spinner"></span> Rendering diagram…</div>
+      </div>
+    </section>
+
+    <div class="doc-header" id="docHeader"></div>
+
+    <section class="content">
+      <div class="markdown-body" id="markdown">
+        <div class="loading"><span class="spinner"></span> Loading documentation…</div>
+      </div>
+    </section>
+
+    <footer class="site">
+      <span>© <span id="year"></span> Research Assistant — Azure Solution Accelerator.</span>
+      <span>Rendered live from <a id="footerLink" href="#" target="_blank" rel="noopener">the repository README</a>.</span>
+    </footer>
+  </main>
+</div>
+
+<script type="module">
+  import { marked } from 'https://cdn.jsdelivr.net/npm/marked@12/lib/marked.esm.js';
+  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+
+  // ── CONFIGURE YOUR REPO HERE ──────────────────────────────────────────────
+  // Replace YOUR_GITHUB_USERNAME with your actual GitHub username once you push.
+  const REPO   = 'YOUR_GITHUB_USERNAME/ResearchAssistant';
+  const BRANCH = 'main';
+  // ─────────────────────────────────────────────────────────────────────────
+
+  const RAW  = (f) => `https://raw.githubusercontent.com/${REPO}/${BRANCH}/${f}`;
+  const BLOB = (f) => `https://github.com/${REPO}/blob/${BRANCH}/${f}`;
+  const GH   = `https://github.com/${REPO}`;
+
+  // Wire up GitHub links once REPO is known
+  document.getElementById('githubLink').href     = GH;
+  document.getElementById('githubHeroLink').href = GH;
+  document.getElementById('footerLink').href     = `${GH}/blob/${BRANCH}/README.md`;
+  document.querySelector('.hero-snippet').innerHTML =
+    `<span class="prompt">$ </span><span class="c">git clone</span> ${GH}<br/>` +
+    `<span class="prompt">$ </span><span class="c">cd</span> ResearchAssistant &amp;&amp; <span class="c">azd up</span>`;
+
+  const DOCS = {
+    readme:       { file: 'README.md',       title: 'Deploy Guide',   hero: true },
+    architecture: { file: 'ARCHITECTURE.md', title: 'Architecture',   hero: false,
+                    subtitle: 'Components, data flows & cross-component contracts — the source of truth.' },
+  };
+  const ARCH_MERMAID_SRC = `
+flowchart LR
+    Researcher([Researcher])
+
+    subgraph ACA [Azure Container Apps]
+        Web[Next.js Workbench]
+        API[FastAPI Research API]
+    end
+
+    subgraph FA [Azure AI Foundry · Hosted Agents]
+        Coord[research-coordinator]
+        Spec[5 specialist agents\nliterature · grant · matching\ndataset · institution]
+        Online[3 online agents\nliterature-online · grant-online\nmatching-online]
+    end
+
+    subgraph Data [Azure Data & AI Services]
+        Search[(AI Search)]
+        Cosmos[(Cosmos DB)]
+        DocI[Document Intelligence]
+        Blob[(Blob Storage)]
+        Models[(Foundry Models\ngpt-5.4-mini · gpt-5.6-sol)]
+    end
+
+    Obs[App Insights]
+
+    Researcher --> Web --> API
+    API --> Coord
+    Coord --> Spec & Online
+    API --> Search & Cosmos & DocI & Blob
+    Spec --> Models
+    Web & API -.->|OpenTelemetry| Obs
+`;
+  const $  = (s, r = document) => r.querySelector(s);
+  const el = {
+    md: $('#markdown'), toc: $('#toc'), hero: $('#hero'), docHeader: $('#docHeader'),
+    topTitle: $('#topTitle'), sidebar: $('#sidebar'), backdrop: $('#backdrop'),
+  };
+  const cache = {};
+  let observer = null;
+
+  mermaid.initialize({ startOnLoad: false, theme: 'base', securityLevel: 'loose',
+    themeVariables: {
+      primaryColor: '#eaf3fd', primaryBorderColor: '#0a6ed1', primaryTextColor: '#0d1b2a',
+      lineColor: '#5c6b7a', fontFamily: 'Inter, sans-serif',
+    },
+  });
+
+  const slug = (t) => t.toLowerCase().trim()
+    .replace(/[^\w\s-]/g, '').replace(/\s+/g, '-').replace(/-+/g, '-');
+
+  function rewriteLinks(root) {
+    root.querySelectorAll('a[href]').forEach(a => {
+      const href = a.getAttribute('href');
+      if (!href) return;
+      if (href.startsWith('#')) return;
+      if (/^https?:|^mailto:/.test(href)) { a.target = '_blank'; a.rel = 'noopener'; return; }
+      const clean = href.replace(/^\.\//, '').replace(/^\//, '');
+      if (/^ARCHITECTURE\.md$/i.test(clean)) { a.setAttribute('href', '#architecture'); a.dataset.doc = 'architecture'; return; }
+      if (/^README\.md$/i.test(clean))       { a.setAttribute('href', '#readme');       a.dataset.doc = 'readme';       return; }
+      a.setAttribute('href', BLOB(clean)); a.target = '_blank'; a.rel = 'noopener';
+    });
+    root.querySelectorAll('img[src]').forEach(img => {
+      const src = img.getAttribute('src');
+      if (src && !/^https?:/.test(src)) img.setAttribute('src', RAW(src.replace(/^\.\//, '').replace(/^\//, '')));
+    });
+  }
+
+  async function renderMermaid(root) {
+    const blocks = [...root.querySelectorAll('code.language-mermaid')];
+    let i = 0;
+    for (const code of blocks) {
+      const pre = code.closest('pre') || code;
+      const div = document.createElement('div');
+      div.className = 'mermaid';
+      const id = 'mmd-' + (i++);
+      try {
+        const { svg } = await mermaid.render(id, code.textContent);
+        div.innerHTML = svg;
+      } catch (e) {
+        div.innerHTML = '<pre style="margin:0">' + code.textContent + '</pre>';
+      }
+      pre.replaceWith(div);
+    }
+  }
+
+  function buildToc(root) {
+    el.toc.innerHTML = '';
+    const heads = [...root.querySelectorAll('h2, h3')];
+    const seen  = {};
+    heads.forEach(h => {
+      let id = slug(h.textContent);
+      if (seen[id] != null) id = id + '-' + (++seen[id]); else seen[id] = 0;
+      h.id = id;
+      const anchor = document.createElement('a');
+      anchor.className = 'anchor'; anchor.href = '#' + id; anchor.textContent = '#';
+      anchor.setAttribute('aria-label', 'Link to section');
+      h.appendChild(anchor);
+      const link = document.createElement('a');
+      link.href = '#' + id;
+      link.textContent = h.textContent.replace(/#$/, '').trim();
+      link.className = h.tagName === 'H3' ? 'lvl-3' : 'lvl-2';
+      link.dataset.target = id;
+      link.addEventListener('click', () => { if (window.innerWidth <= 900) closeMenu(); });
+      el.toc.appendChild(link);
+    });
+    setupScrollSpy(heads);
+    return heads;
+  }
+
+  function setupScrollSpy(heads) {
+    if (observer) observer.disconnect();
+    const links = new Map([...el.toc.querySelectorAll('a')].map(a => [a.dataset.target, a]));
+    observer = new IntersectionObserver((entries) => {
+      entries.forEach(en => {
+        if (en.isIntersecting) {
+          links.forEach(l => l.classList.remove('active'));
+          const active = links.get(en.target.id);
+          if (active) { active.classList.add('active'); active.scrollIntoView({ block: 'nearest' }); }
+        }
+      });
+    }, { rootMargin: '0px 0px -75% 0px', threshold: 0 });
+    heads.forEach(h => observer.observe(h));
+  }
+
+  async function loadDoc(key) {
+    const meta = DOCS[key]; if (!meta) return;
+    document.querySelectorAll('.doc-switch button').forEach(b => b.classList.toggle('active', b.dataset.doc === key));
+    el.topTitle.textContent = meta.title;
+    el.hero.style.display = meta.hero ? '' : 'none';
+    const archOverview = document.getElementById('archOverview');
+    if (archOverview) archOverview.style.display = meta.hero ? '' : 'none';
+    if (meta.hero) {
+      el.docHeader.style.display = 'none';
+    } else {
+      el.docHeader.style.display = 'block';
+      el.docHeader.innerHTML = `<h2>${meta.title}</h2>` + (meta.subtitle ? `<p>${meta.subtitle}</p>` : '');
+    }
+    el.md.innerHTML = '<div class="loading"><span class="spinner"></span> Loading ' + meta.file + '…</div>';
+
+    try {
+      if (!cache[key]) {
+        const res = await fetch(RAW(meta.file), { cache: 'no-cache' });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        cache[key] = await res.text();
+      }
+      el.md.innerHTML = marked.parse(cache[key], { gfm: true, breaks: false });
+      if (meta.hero) {
+        const firstH1 = el.md.querySelector('h1');
+        if (firstH1) {
+          let n = firstH1;
+          const toRemove = [];
+          while (n && n.tagName !== 'H2') { toRemove.push(n); n = n.nextElementSibling; }
+          toRemove.forEach(x => x.remove());
+        }
+      }
+      rewriteLinks(el.md);
+      el.md.querySelectorAll('a[data-doc]').forEach(a =>
+        a.addEventListener('click', (e) => { e.preventDefault(); location.hash = a.dataset.doc; }));
+      await renderMermaid(el.md);
+      el.md.querySelectorAll('pre code:not(.language-mermaid)').forEach(b => { try { hljs.highlightElement(b); } catch(e){} });
+      buildToc(el.md);
+      wireGetStarted();
+      window.scrollTo({ top: 0 });
+    } catch (err) {
+      el.md.innerHTML =
+        `<div class="loading" style="color:#c0392b">⚠️ Couldn't load <code>${meta.file}</code> (${err.message}).` +
+        `&nbsp;<a href="${BLOB(meta.file)}" target="_blank" rel="noopener">Open it on GitHub »</a></div>`;
+      el.toc.innerHTML = '';
+    }
+  }
+
+  function wireGetStarted() {
+    const gs     = $('#getStarted');
+    const deploy = [...el.toc.querySelectorAll('a')].find(a => /deploy/i.test(a.textContent));
+    if (gs && deploy) gs.setAttribute('href', deploy.getAttribute('href'));
+  }
+
+  // ----- doc switching via hash -----
+  function routeFromHash() {
+    const h = (location.hash || '#readme').replace('#', '');
+    if (DOCS[h]) loadDoc(h);
+    else if (h) { const t = document.getElementById(h); if (t) t.scrollIntoView(); }
+  }
+  window.addEventListener('hashchange', routeFromHash);
+  document.querySelectorAll('.doc-switch button').forEach(b =>
+    b.addEventListener('click', () => { location.hash = b.dataset.doc; }));
+  $('#toArch').addEventListener('click', (e) => { e.preventDefault(); location.hash = 'architecture'; });
+
+  // ----- mobile menu -----
+  const openMenu  = () => { el.sidebar.classList.add('open');    el.backdrop.classList.add('show'); };
+  const closeMenu = () => { el.sidebar.classList.remove('open'); el.backdrop.classList.remove('show'); };
+  $('#hamburger').addEventListener('click', openMenu);
+  el.backdrop.addEventListener('click', closeMenu);
+
+  // ----- dark-mode aware code theme -----
+  const setHljsTheme = (dark) => { $('#hljs-light').disabled = dark; $('#hljs-dark').disabled = !dark; };
+  const mq = window.matchMedia('(prefers-color-scheme: dark)');
+  setHljsTheme(mq.matches);
+  mq.addEventListener('change', e => setHljsTheme(e.matches));
+
+  $('#year').textContent = new Date().getFullYear();
+
+  // Render the architecture overview diagram once on startup
+  (async () => {
+    const div = document.getElementById('archDiagram');
+    if (!div) return;
+    try {
+      const { svg } = await mermaid.render('arch-overview-mmd', ARCH_MERMAID_SRC);
+      div.innerHTML = svg;
+    } catch (e) {
+      div.innerHTML = '<pre style="margin:0;font-size:12px;white-space:pre-wrap">' + ARCH_MERMAID_SRC + '</pre>';
+    }
+  })();
+
+  // initial load
+  if (!location.hash || location.hash === '#') loadDoc('readme');
+  else routeFromHash();
+</script>
+</body>
+</html>
