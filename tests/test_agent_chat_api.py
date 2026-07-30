@@ -546,7 +546,45 @@ class TestAttachments:
         # The conversation already carries the announcement; repeating it would
         # push the agent to re-analyse work it has already done.
         assert "~/outcomes.csv" not in gateway.sent[1]["text"]
-        assert gateway.sent[1]["text"] == "now group it"
+        assert json.loads(gateway.sent[1]["text"])["query"] == "now group it"
+
+    def test_a_turn_is_sent_as_the_agents_typed_input_contract(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        """A bare chat string is rejected by the hosted contract middleware."""
+        thread = open_thread(client)
+        client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "compare these"},
+        )
+        envelope = json.loads(gateway.sent[0]["text"])
+        assert envelope["query"] == "compare these"
+        assert envelope["sensitivity"] == "internal"
+        assert envelope["session_id"] == thread["id"]
+        assert set(envelope) >= {
+            "query",
+            "tenant_id",
+            "project_id",
+            "principal_id",
+            "session_id",
+        }
+
+    def test_an_online_turn_authorizes_connectors_instead_of_sensitivity(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        thread = open_thread(
+            client,
+            capability="literature",
+            agent_name="literature-online-agent",
+        )
+        client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "find current work"},
+        )
+        envelope = json.loads(gateway.sent[0]["text"])
+        # Public contracts pin sensitivity themselves and forbid caller evidence.
+        assert "sensitivity" not in envelope
+        assert envelope["authorized_connector_ids"]
 
     def test_the_attachment_is_attributed_to_the_turn_that_announced_it(
         self, client: TestClient
