@@ -7,9 +7,10 @@ import binascii
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
-from time import monotonic
+from time import monotonic, time
 from typing import Any
 from urllib.parse import urljoin, urlsplit, urlunsplit
+from weakref import WeakKeyDictionary
 
 import httpx
 
@@ -87,6 +88,35 @@ def require_endpoint(value: str | None) -> str:
     return value.rstrip("/")
 
 
+# Tokens are cached here rather than via azure-identity so this package stays
+# decoupled from the Azure SDK; credentials are a duck-typed Protocol.
+_TOKEN_CACHE: WeakKeyDictionary[object, dict[str, tuple[str, float]]] = WeakKeyDictionary()
+_TOKEN_REFRESH_MARGIN_SECONDS = 300.0
+
+
+def _bearer_token(credential: TokenCredential, scope: str) -> str:
+    """Reuse a token until it nears expiry.
+
+    Developer-tool credentials such as ``AzureCliCredential`` shell out to a
+    subprocess on every ``get_token`` call and document that they do not cache,
+    so acquiring a token per request exhausts the CLI.
+    """
+    try:
+        by_scope = _TOKEN_CACHE.setdefault(credential, {})
+    except TypeError:
+        # Credentials that cannot be weak-referenced fall back to a direct acquire.
+        return credential.get_token(scope).token
+    cached = by_scope.get(scope)
+    if cached is not None and cached[1] - _TOKEN_REFRESH_MARGIN_SECONDS > time():
+        return cached[0]
+    token = credential.get_token(scope)
+    expires_on = getattr(token, "expires_on", None)
+    # Without a known expiry the token cannot be cached safely.
+    if token.token and expires_on is not None:
+        by_scope[scope] = (token.token, float(expires_on))
+    return token.token
+
+
 def auth_headers(
     auth: AuthConfig,
     context: InvocationContext,
@@ -107,10 +137,10 @@ def auth_headers(
     if auth.mode in {AuthMode.OAUTH, AuthMode.MANAGED_IDENTITY, AuthMode.GITHUB_APP}:
         if not isinstance(credential, TokenCredential) or not auth.token_scope:
             raise UnauthorizedError("A compatible token credential is required", provider_id=provider_id)
-        token = credential.get_token(auth.token_scope)
-        if not token.token:
+        token = _bearer_token(credential, auth.token_scope)
+        if not token:
             raise UnauthorizedError("The token credential returned an empty token", provider_id=provider_id)
-        return {"Authorization": f"Bearer {token.token}"}
+        return {"Authorization": f"Bearer {token}"}
     if auth.mode in {AuthMode.API_KEY, AuthMode.SHARED_KEY}:
         if not isinstance(credential, SecretCredential) or not auth.secret_name or not auth.header_name:
             raise UnauthorizedError("A compatible secret credential is required", provider_id=provider_id)

@@ -3353,6 +3353,13 @@
             "title": "Name",
             "type": "string"
           },
+          "operations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Operations",
+            "type": "array"
+          },
           "secret_status": {
             "title": "Secret Status",
             "type": "string"
@@ -4649,6 +4656,101 @@
           "new_logical_agent_id"
         ],
         "title": "ForkRequest",
+        "type": "object"
+      },
+      "FoundryAgentInventoryItem": {
+        "additionalProperties": false,
+        "description": "Display-safe metadata for an agent discovered in one Foundry project.",
+        "properties": {
+          "agent_type": {
+            "$ref": "#/components/schemas/FoundryAgentType"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 4000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "model": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Model"
+          },
+          "name": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Name",
+            "type": "string"
+          },
+          "status": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Status"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maxLength": 200,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "name",
+          "agent_type"
+        ],
+        "title": "FoundryAgentInventoryItem",
+        "type": "object"
+      },
+      "FoundryAgentType": {
+        "enum": [
+          "hosted",
+          "prompt",
+          "unknown"
+        ],
+        "title": "FoundryAgentType",
+        "type": "string"
+      },
+      "FoundryProjectContext": {
+        "additionalProperties": false,
+        "description": "The one configured Foundry project available to this Studio deployment.",
+        "properties": {
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id"
+        ],
+        "title": "FoundryProjectContext",
         "type": "object"
       },
       "GateEvidence": {
@@ -6072,6 +6174,67 @@
         "title": "OperationMaturity",
         "type": "string"
       },
+      "PersonalProjectCreate": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "maxLength": 1000,
+            "minLength": 3,
+            "title": "Description",
+            "type": "string"
+          },
+          "name": {
+            "maxLength": 120,
+            "minLength": 3,
+            "title": "Name",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "description"
+        ],
+        "title": "PersonalProjectCreate",
+        "type": "object"
+      },
+      "PersonalProjectUpdate": {
+        "additionalProperties": false,
+        "properties": {
+          "archive": {
+            "default": false,
+            "title": "Archive",
+            "type": "boolean"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "maxLength": 1000,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Description"
+          },
+          "name": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 3,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Name"
+          }
+        },
+        "title": "PersonalProjectUpdate",
+        "type": "object"
+      },
       "PlaygroundRunStatus": {
         "description": "Honest outcome of one playground/test-run attempt.\n\n``UNAVAILABLE`` is the explicit, non-fake state used when no\n``PlaygroundInvoker`` execution adapter is wired -- see\n``playground_invoker.py``. A run is never silently fabricated as\n``COMPLETED`` with an invented response.",
         "enum": [
@@ -6436,6 +6599,11 @@
             "title": "Id",
             "type": "string"
           },
+          "is_active": {
+            "default": false,
+            "title": "Is Active",
+            "type": "boolean"
+          },
           "name": {
             "title": "Name",
             "type": "string"
@@ -6488,6 +6656,52 @@
           "evidence_summary"
         ],
         "title": "PromotionRequest",
+        "type": "object"
+      },
+      "PromptAgentPublicationResponse": {
+        "additionalProperties": false,
+        "description": "Durably replayable result of publishing one Studio version to Foundry.",
+        "properties": {
+          "logical_agent_id": {
+            "title": "Logical Agent Id",
+            "type": "string"
+          },
+          "manifest_hash": {
+            "title": "Manifest Hash",
+            "type": "string"
+          },
+          "remote_agent_name": {
+            "title": "Remote Agent Name",
+            "type": "string"
+          },
+          "remote_status": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Remote Status"
+          },
+          "remote_version": {
+            "title": "Remote Version",
+            "type": "string"
+          },
+          "studio_version_id": {
+            "title": "Studio Version Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "logical_agent_id",
+          "studio_version_id",
+          "manifest_hash",
+          "remote_agent_name",
+          "remote_version"
+        ],
+        "title": "PromptAgentPublicationResponse",
         "type": "object"
       },
       "ProposalRiskCategory": {
@@ -6598,6 +6812,30 @@
           "verification"
         ],
         "title": "ProvenanceManifest",
+        "type": "object"
+      },
+      "PublishPromptAgentRequest": {
+        "additionalProperties": false,
+        "description": "Request a durable, idempotent Foundry prompt-agent publication.",
+        "properties": {
+          "idempotency_key": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Idempotency Key",
+            "type": "string"
+          },
+          "project_id": {
+            "maxLength": 200,
+            "minLength": 1,
+            "title": "Project Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "idempotency_key"
+        ],
+        "title": "PublishPromptAgentRequest",
         "type": "object"
       },
       "RankedEntity": {
@@ -11270,6 +11508,82 @@
         ]
       }
     },
+    "/api/agent-studio/foundry/agents": {
+      "get": {
+        "description": "List display-safe metadata for agents in this configured Foundry project.\n\nThe endpoint is deliberately limited to the single Foundry project this\ndeployment is configured to access. The caller's project membership is\nstill enforced, preventing a caller from using the shared project client\nas a cross-project inventory probe.",
+        "operationId": "list_foundry_agents_api_agent_studio_foundry_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "project_id",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "title": "Project Id"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/FoundryAgentInventoryItem"
+                  },
+                  "title": "Response List Foundry Agents Api Agent Studio Foundry Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Foundry Agents",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
+    "/api/agent-studio/foundry/context": {
+      "get": {
+        "description": "Return the configured Foundry scope; personal workspace state is irrelevant.",
+        "operationId": "get_foundry_project_context_api_agent_studio_foundry_context_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/FoundryProjectContext"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Get Foundry Project Context",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
     "/api/agent-studio/models": {
       "get": {
         "operationId": "list_deployed_models_api_agent_studio_models_get",
@@ -11866,6 +12180,59 @@
         ]
       }
     },
+    "/api/agent-studio/versions/{version_id}/publish-prompt": {
+      "post": {
+        "description": "Publish one gated user-owned Managed Foundry version exactly once.\n\nThe idempotency lease is marked irreversible immediately before the SDK\ncall. Any uncertain remote outcome therefore requires reconciliation\ninstead of creating a second Foundry agent version on retry.",
+        "operationId": "publish_prompt_agent_api_agent_studio_versions__version_id__publish_prompt_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "version_id",
+            "required": true,
+            "schema": {
+              "title": "Version Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PublishPromptAgentRequest"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PromptAgentPublicationResponse"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Publish Prompt Agent",
+        "tags": [
+          "agent-studio"
+        ]
+      }
+    },
     "/api/agents": {
       "get": {
         "operationId": "agents_api_agents_get",
@@ -12280,6 +12647,139 @@
           }
         },
         "summary": "Projects",
+        "tags": [
+          "projects"
+        ]
+      },
+      "post": {
+        "operationId": "create_project_api_projects_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalProjectCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Create Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/{project_id}": {
+      "patch": {
+        "operationId": "update_project_api_projects__project_id__patch",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PersonalProjectUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Project",
+        "tags": [
+          "projects"
+        ]
+      }
+    },
+    "/api/projects/{project_id}/activate": {
+      "post": {
+        "operationId": "activate_project_api_projects__project_id__activate_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "project_id",
+            "required": true,
+            "schema": {
+              "title": "Project Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ProjectSummary"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Activate Project",
         "tags": [
           "projects"
         ]

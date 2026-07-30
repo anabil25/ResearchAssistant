@@ -1,0 +1,79 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e3]:
+    - complementary "Project navigation" [ref=e4]:
+      - generic [ref=e5]:
+        - generic [ref=e10]:
+          - strong [ref=e11]: Research Assistant
+          - generic [ref=e12]: Microsoft Foundry workspace
+        - button "Agents" [ref=e13] [cursor=pointer]
+      - generic [ref=e18]:
+        - generic [ref=e19]:
+          - generic [ref=e20]: Active project
+          - combobox "Active project" [disabled] [ref=e21]:
+            - option "No personal project" [selected]
+        - generic [ref=e22]:
+          - button "Create project" [ref=e23] [cursor=pointer]
+          - button "Manage active project" [disabled] [ref=e25]
+      - generic [ref=e29]: Workspace
+      - navigation "Workspace navigation" [ref=e30]:
+        - button "Overview" [ref=e31] [cursor=pointer]
+        - button "Library 9" [ref=e36] [cursor=pointer]:
+          - generic [ref=e39]: Library
+          - emphasis [ref=e40]: "9"
+        - button "Runs & approvals" [ref=e41] [cursor=pointer]
+      - generic [ref=e47]: Studios
+      - navigation "Research studios" [ref=e48]:
+        - button "Literature Studio" [ref=e49] [cursor=pointer]
+        - button "Grant Studio" [ref=e53] [cursor=pointer]
+        - button "Matching Explorer" [ref=e58] [cursor=pointer]
+        - button "Dataset Lab" [ref=e65] [cursor=pointer]
+        - button "Institutional Q&A" [ref=e69] [cursor=pointer]
+        - button "Workflow Automation" [ref=e73] [cursor=pointer]
+      - button "Project Settings" [ref=e80] [cursor=pointer]
+    - generic [ref=e85]:
+      - banner [ref=e86]:
+        - generic [ref=e88]:
+          - generic [ref=e89]: Project workspace
+          - strong [ref=e90]: Prompt builder
+        - generic [ref=e91]:
+          - button "Search workspace" [ref=e92] [cursor=pointer]:
+            - generic [ref=e97]: Ctrl K
+          - button "0 pending approvals" [ref=e98] [cursor=pointer]
+          - button "Open project settings" [ref=e102] [cursor=pointer]
+      - status [ref=e357]: "Live workspace data is unavailable: An authenticated platform identity is required.. The product shell remains usable."
+      - generic [ref=e106]: Opened Prompt builder
+      - main [ref=e107]:
+        - generic [ref=e386]:
+          - generic [ref=e388]:
+            - generic [ref=e389]: Foundry prompt agent
+            - heading "Prompt builder" [level=1] [ref=e390]
+            - paragraph [ref=e391]: Create a governed draft from a project-deployed model and approved tool configuration.
+          - status [ref=e392]:
+            - generic [ref=e397]:
+              - strong [ref=e398]: Not authorized
+              - paragraph [ref=e399]: An authenticated platform identity is required.
+          - generic [ref=e400]:
+            - generic [ref=e401]:
+              - generic [ref=e402]: Agent ID
+              - textbox "Agent ID" [ref=e403]: agent-
+            - generic [ref=e404]:
+              - generic [ref=e405]: Display name
+              - textbox "Display name" [ref=e406]
+            - generic [ref=e407]:
+              - generic [ref=e408]: Description
+              - textbox "Description" [ref=e409]
+            - generic [ref=e410]:
+              - generic [ref=e411]: Instructions
+              - textbox "Instructions" [ref=e412]
+            - generic [ref=e413]:
+              - generic [ref=e414]: Project model
+              - combobox "Project model" [ref=e415]
+            - generic [ref=e416]:
+              - generic [ref=e417]: Approved tools
+              - generic [ref=e418]:
+                - checkbox "Approved tools Code Interpreter File Search and Azure AI Search require an approved project instance." [ref=e423]
+                - text: Code Interpreter
+              - generic [ref=e424]: File Search and Azure AI Search require an approved project instance.
+            - button "Save prompt draft" [disabled] [ref=e430]
+  - button "Open Next.js Dev Tools" [ref=e353] [cursor=pointer]
+  - alert [ref=e385]

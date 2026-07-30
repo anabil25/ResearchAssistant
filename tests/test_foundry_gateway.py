@@ -69,7 +69,7 @@ def test_gateway_requires_a_foundry_endpoint() -> None:
         gateway.invoke("Analyze", agent_name="dataset-agent")
 
 
-def test_gateway_forwards_request_tool_preference(
+def test_gateway_forwards_hosted_request_input(
     monkeypatch: Any,
 ) -> None:
     calls: list[dict[str, Any]] = []
@@ -100,12 +100,10 @@ def test_gateway_forwards_request_tool_preference(
     offline = gateway.invoke(
         "Analyze supplied evidence only.",
         agent_name="literature-agent",
-        allow_tools=False,
     )
     online = gateway.invoke(
         "Research current public guidance.",
         agent_name="literature-agent",
-        allow_tools=True,
     )
 
     assert offline.content == "Bounded analysis"
@@ -703,7 +701,7 @@ def test_dataset_api_uses_only_trusted_resolved_approval_context() -> None:
     approval_request = resolver.requests[0]
     assert approval_request.tenant_id == "demo"
     assert approval_request.project_id == "demo-project"
-    assert approval_request.actor_id == "demo-researcher"
+    assert approval_request.actor_id == "local-developer"
     assert approval_request.operation_id == "dataset.compute"
     envelope = json.loads(gateway.messages[0])
     assert envelope["approval_decision_id"] == "approval-server-1"

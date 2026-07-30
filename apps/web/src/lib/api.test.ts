@@ -1,10 +1,14 @@
 import {
+  activateProject,
+  createProject,
   decideApproval,
   getWorkspaceData,
   ingestLibraryItem,
+  listProjects,
   runStudio,
   testConnector,
   updateConnector,
+  updateProject,
   updateSettings,
   uploadLibraryItem,
 } from "./api";
@@ -72,6 +76,55 @@ describe("research API client", () => {
         return headers["Content-Type"] === "application/json";
       }),
     ).toBe(true);
+  });
+
+  it("scopes workspace reads and project lifecycle calls to the project contract", async () => {
+    const projectId = "project-0123456789abcdef0123456789abcdef";
+    const project = {
+      id: projectId,
+      name: "Cancer outcomes review",
+      description: "A private workspace for a bounded evidence review.",
+      active_runs: 0,
+      source_count: 0,
+      is_active: true,
+    };
+    Array.from({ length: 8 }, () => ({ project_name: "Research" })).forEach(
+      (payload) => fetchMock.mockResolvedValueOnce(jsonResponse(payload)),
+    );
+    fetchMock.mockResolvedValueOnce(jsonResponse([project]));
+    fetchMock.mockResolvedValueOnce(jsonResponse(project));
+    fetchMock.mockResolvedValueOnce(jsonResponse(project));
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ...project, is_active: false }));
+
+    await getWorkspaceData(projectId);
+    expect(
+      fetchMock.mock.calls.slice(0, 7).every(([, init]) => {
+        const headers = init?.headers as Record<string, string>;
+        return headers["X-Research-Project-ID"] === projectId;
+      }),
+    ).toBe(true);
+    expect(
+      (fetchMock.mock.calls[7][1]?.headers as Record<string, string>)[
+        "X-Research-Project-ID"
+      ],
+    ).toBeUndefined();
+
+    await listProjects();
+    await createProject({ name: project.name, description: project.description });
+    await activateProject(projectId);
+    await updateProject(projectId, { archive: true });
+
+    expect(fetchMock.mock.calls[8][0]).toBe("/api/backend/api/projects");
+    expect(fetchMock.mock.calls[9][1]?.body).toBe(
+      JSON.stringify({ name: project.name, description: project.description }),
+    );
+    expect(fetchMock.mock.calls[10][0]).toBe(
+      `/api/backend/api/projects/${projectId}/activate`,
+    );
+    expect(fetchMock.mock.calls[11][1]).toMatchObject({
+      method: "PATCH",
+      body: JSON.stringify({ archive: true }),
+    });
   });
 
   it("sends bounded studio, approval, connector, settings, and ingestion writes", async () => {

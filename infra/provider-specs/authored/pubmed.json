@@ -1,0 +1,969 @@
+{
+  "info": {
+    "description": "NCBI Entrez Programming Utilities for biomedical literature. Authored from https://www.ncbi.nlm.nih.gov/books/NBK25499/",
+    "title": "NCBI PubMed E-utilities",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/ecitmatch.cgi": {
+      "get": {
+        "operationId": "pubmedECitMatch",
+        "parameters": [
+          {
+            "description": "Only pubmed is supported.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only xml is supported.",
+            "in": "query",
+            "name": "rettype",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Pipe-delimited citation strings separated by carriage returns.",
+            "in": "query",
+            "name": "bdata",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Resolve citation strings to PubMed identifiers."
+      }
+    },
+    "/efetch.fcgi": {
+      "get": {
+        "operationId": "pubmedEFetch",
+        "parameters": [
+          {
+            "description": "Entrez database to fetch from.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-delimited UID list.",
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History web environment string from a previous call.",
+            "in": "query",
+            "name": "WebEnv",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History query key identifying the input UID set.",
+            "in": "query",
+            "name": "query_key",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Record format, for example text, xml, or asn.1.",
+            "in": "query",
+            "name": "retmode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Record view, for example abstract or medline.",
+            "in": "query",
+            "name": "rettype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Index of the first record returned.",
+            "in": "query",
+            "name": "retstart",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of records returned, maximum 10000.",
+            "in": "query",
+            "name": "retmax",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return formatted full records for UIDs or an Entrez History set."
+      }
+    },
+    "/egquery.fcgi": {
+      "get": {
+        "operationId": "pubmedEGQuery",
+        "parameters": [
+          {
+            "description": "Entrez text query.",
+            "in": "query",
+            "name": "term",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return record counts for a text query across every Entrez database."
+      }
+    },
+    "/einfo.fcgi": {
+      "get": {
+        "operationId": "pubmedEInfo",
+        "parameters": [
+          {
+            "description": "Entrez database to describe; omit to list all databases.",
+            "in": "query",
+            "name": "db",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to 2.0 for extended EInfo XML.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Output format: xml (default) or json.",
+            "in": "query",
+            "name": "retmode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List valid Entrez databases, or indexing fields and statistics for one database."
+      }
+    },
+    "/elink.fcgi": {
+      "get": {
+        "operationId": "pubmedELink",
+        "parameters": [
+          {
+            "description": "Entrez link name of the form dbfrom_db_subset.",
+            "in": "query",
+            "name": "linkname",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Destination Entrez database.",
+            "in": "query",
+            "name": "db",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Origin Entrez database.",
+            "in": "query",
+            "name": "dbfrom",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Link command mode, for example neighbor or prlinks.",
+            "in": "query",
+            "name": "cmd",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-delimited UID list from dbfrom.",
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History web environment string from a previous call.",
+            "in": "query",
+            "name": "WebEnv",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History query key identifying the input UID set.",
+            "in": "query",
+            "name": "query_key",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Output format: xml (default), json, or ref.",
+            "in": "query",
+            "name": "retmode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to acc to return accession.version for sequence databases.",
+            "in": "query",
+            "name": "idtype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez query applied after linking.",
+            "in": "query",
+            "name": "term",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Restrict LinkOut results to one provider abbreviation.",
+            "in": "query",
+            "name": "holding",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Date type used to limit results, for example mdat, pdat, or edat.",
+            "in": "query",
+            "name": "datetype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Limit to items dated within the last n days.",
+            "in": "query",
+            "name": "reldate",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Range start as YYYY/MM/DD, YYYY/MM, or YYYY; requires maxdate.",
+            "in": "query",
+            "name": "mindate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Range end as YYYY/MM/DD, YYYY/MM, or YYYY; requires mindate.",
+            "in": "query",
+            "name": "maxdate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return UIDs linked to an input UID set within or across Entrez databases."
+      }
+    },
+    "/epost.fcgi": {
+      "post": {
+        "operationId": "pubmedEPost",
+        "parameters": [
+          {
+            "description": "Entrez database containing the UIDs.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-delimited UID list, maximum 10000.",
+            "in": "query",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Existing web environment to append to.",
+            "in": "query",
+            "name": "WebEnv",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Upload UIDs to the transient Entrez History server and return a WebEnv and query key."
+      }
+    },
+    "/esearch.fcgi": {
+      "get": {
+        "operationId": "pubmedESearch",
+        "parameters": [
+          {
+            "description": "Entrez database to search.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez text query.",
+            "in": "query",
+            "name": "term",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to y to post results to the Entrez History server.",
+            "in": "query",
+            "name": "usehistory",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History web environment string from a previous call.",
+            "in": "query",
+            "name": "WebEnv",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History query key identifying the input UID set.",
+            "in": "query",
+            "name": "query_key",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Index of the first UID returned.",
+            "in": "query",
+            "name": "retstart",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of UIDs returned, maximum 10000.",
+            "in": "query",
+            "name": "retmax",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Retrieval type: uilist (default) or count.",
+            "in": "query",
+            "name": "rettype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Output format: xml (default) or json.",
+            "in": "query",
+            "name": "retmode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order, for example relevance or pub_date.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Limit the entire query to one Entrez field.",
+            "in": "query",
+            "name": "field",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to acc to return accession.version for sequence databases.",
+            "in": "query",
+            "name": "idtype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Date type used to limit results, for example mdat, pdat, or edat.",
+            "in": "query",
+            "name": "datetype",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Limit to items dated within the last n days.",
+            "in": "query",
+            "name": "reldate",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Range start as YYYY/MM/DD, YYYY/MM, or YYYY; requires maxdate.",
+            "in": "query",
+            "name": "mindate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Range end as YYYY/MM/DD, YYYY/MM, or YYYY; requires mindate.",
+            "in": "query",
+            "name": "maxdate",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search an Entrez database and return matching UIDs."
+      }
+    },
+    "/espell.fcgi": {
+      "get": {
+        "operationId": "pubmedESpell",
+        "parameters": [
+          {
+            "description": "Entrez database to check against.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez text query.",
+            "in": "query",
+            "name": "term",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return spelling suggestions for the terms in an Entrez query."
+      }
+    },
+    "/esummary.fcgi": {
+      "get": {
+        "operationId": "pubmedESummary",
+        "parameters": [
+          {
+            "description": "Entrez database to summarize.",
+            "in": "query",
+            "name": "db",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-delimited UID list.",
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History web environment string from a previous call.",
+            "in": "query",
+            "name": "WebEnv",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Entrez History query key identifying the input UID set.",
+            "in": "query",
+            "name": "query_key",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Index of the first summary returned.",
+            "in": "query",
+            "name": "retstart",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of summaries returned, maximum 10000.",
+            "in": "query",
+            "name": "retmax",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Output format: xml (default) or json.",
+            "in": "query",
+            "name": "retmode",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set to 2.0 for extended DocSum XML.",
+            "in": "query",
+            "name": "version",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Registered application name; required by NCBI usage policy.",
+            "in": "query",
+            "name": "tool",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email; required by NCBI usage policy.",
+            "in": "query",
+            "name": "email",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "NCBI API key raising the rate limit from 3 to 10 requests per second.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return document summaries for UIDs or an Entrez History set."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://eutils.ncbi.nlm.nih.gov/entrez/eutils"
+    }
+  ]
+}

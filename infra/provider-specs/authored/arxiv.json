@@ -1,0 +1,89 @@
+{
+  "info": {
+    "description": "Preprint metadata returned as an Atom 1.0 XML feed. Authored from https://info.arxiv.org/help/api/user-manual.html",
+    "title": "arXiv API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/api/query": {
+      "get": {
+        "operationId": "arxivQuery",
+        "parameters": [
+          {
+            "description": "Field-prefixed search expression, for example all:electron.",
+            "in": "query",
+            "name": "search_query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-delimited arXiv identifiers, optionally version-suffixed.",
+            "in": "query",
+            "name": "id_list",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Zero-based index of the first result.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of results to return; capped at 30000.",
+            "in": "query",
+            "name": "max_results",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Sort field: relevance, lastUpdatedDate, or submittedDate.",
+            "in": "query",
+            "name": "sortBy",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort direction: ascending or descending.",
+            "in": "query",
+            "name": "sortOrder",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search arXiv or resolve identifiers, returning an Atom 1.0 XML feed."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://export.arxiv.org"
+    }
+  ]
+}

@@ -49,6 +49,8 @@ export type WorkspaceViewId =
   | "library"
   | "runs"
   | "settings"
+  | "agents"
+  | "prompt-builder"
   | CapabilityId;
 
 export interface CapabilityCard {
@@ -220,6 +222,19 @@ export function Overview({
               web by default
             </span>
           </div>
+        </div>
+      </section>
+
+      <section className="trust-principle">
+        <span className="trust-mark">
+          <ShieldCheck size={21} />
+        </span>
+        <div>
+          <strong>Proof before prose</strong>
+          <p>
+            Claims become verified only after their source IDs resolve to
+            authorized stored passages.
+          </p>
         </div>
       </section>
 
@@ -1649,6 +1664,14 @@ export function SettingsView({ data, onRefresh }: SettingsViewProps) {
                       <div>
                         <strong>Capabilities</strong>
                         <span>{managedConnector.capabilities.join(" · ")}</span>
+                      </div>
+                      <div>
+                        <strong>Exposed tools</strong>
+                        <span>
+                          {managedConnector.operations?.length
+                            ? managedConnector.operations.join(" · ")
+                            : "No approved operations"}
+                        </span>
                       </div>
                       <div>
                         <strong>Data boundary</strong>

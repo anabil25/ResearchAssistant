@@ -55,6 +55,9 @@ class FakeContainer:
         # instead of applying the write, letting tests simulate a
         # concurrent writer winning the optimistic-concurrency race.
         self.fail_replace_status: int | None = None
+        self.on_replace: Callable[
+            [FakeContainer, str, dict[str, Any], str | None, Any], dict[str, Any]
+        ] | None = None
 
     def upsert_item(self, item: dict[str, Any]) -> dict[str, Any]:
         self.version += 1
@@ -71,6 +74,8 @@ class FakeContainer:
         etag: str | None,
         match_condition: Any,
     ) -> dict[str, Any]:
+        if self.on_replace is not None:
+            return self.on_replace(self, item, body, etag, match_condition)
         if self.fail_replace_status is not None:
             status = self.fail_replace_status
             self.fail_replace_status = None
@@ -111,8 +116,8 @@ class FakeDatabase:
 
 
 class FakeCosmosClient:
-    def __init__(self) -> None:
-        self.database = FakeDatabase()
+    def __init__(self, database: FakeDatabase | None = None) -> None:
+        self.database = database or FakeDatabase()
 
     def get_database_client(self, _name: str) -> FakeDatabase:
         return self.database

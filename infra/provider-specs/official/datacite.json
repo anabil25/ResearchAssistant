@@ -1,0 +1,3895 @@
+{
+  "info": {
+    "contact": {
+      "email": "support@datacite.org",
+      "name": "DataCite Support",
+      "url": "https://support.datacite.org"
+    },
+    "description": "The REST API is used for all API interactions with DataCite services.",
+    "license": {
+      "name": "MIT",
+      "url": "https://raw.githubusercontent.com/datacite/lupo/master/LICENSE"
+    },
+    "title": "REST API",
+    "version": "2.3.0"
+  },
+  "openapi": "3.0.0",
+  "paths": {
+    "/activities": {
+      "get": {
+        "operationId": "dataciteGetActivities",
+        "parameters": [
+          {
+            "description": "Find activity by an ID.",
+            "in": "query",
+            "name": "id",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Find activities by array of activity IDs.",
+            "in": "query",
+            "name": "ids",
+            "required": false,
+            "schema": {
+              "type": "array"
+            }
+          },
+          {
+            "description": "Search the index by keyword or query string syntax.",
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Use for [cursor-based pagination](https://support.datacite.org/docs/pagination#method-2-cursor).",
+            "in": "query",
+            "name": "page[cursor]",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Get a JSON API result of activities.",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/activities/{id}": {
+      "get": {
+        "operationId": "dataciteGetActivitiesId",
+        "parameters": [
+          {
+            "description": "Activity ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Get a JSON API result of a specific activity.",
+        "tags": [
+          "activities"
+        ]
+      }
+    },
+    "/client-prefixes": {
+      "get": {
+        "operationId": "dataciteGetClientPrefixes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite client (repository). Use commas to include multiple repositories.",
+            "example": "datacite.blog",
+            "in": "query",
+            "name": "client-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of client-prefixes.",
+        "tags": [
+          "client-prefixes"
+        ]
+      }
+    },
+    "/clients": {
+      "get": {
+        "operationId": "dataciteGetClients",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The year the client was created.",
+            "in": "query",
+            "name": "year",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite provider (Direct Member or Consortium Organization). Use commas to include multiple providers.",
+            "example": "cern",
+            "in": "query",
+            "name": "provider-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "software",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "repository-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "certificate",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of clients (repositories).",
+        "tags": [
+          "clients"
+        ]
+      }
+    },
+    "/clients/totals": {
+      "get": {
+        "operationId": "dataciteGetClientsTotals",
+        "parameters": [
+          {
+            "description": "Filter by a specific DataCite provider (Direct Member or Consortium Organization). Use commas to include multiple providers.",
+            "example": "cern",
+            "in": "query",
+            "name": "provider-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Authentication is required to retrieve draft records.",
+            "explode": false,
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return clients DOI production statistics.",
+        "tags": [
+          "clients"
+        ]
+      }
+    },
+    "/clients/{id}": {
+      "get": {
+        "operationId": "dataciteGetClientsId",
+        "parameters": [
+          {
+            "description": "DataCite Repository account ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a client.",
+        "tags": [
+          "clients"
+        ]
+      }
+    },
+    "/credentials/api-keys": {
+      "get": {
+        "operationId": "dataciteGetCredentialsApiKeys",
+        "parameters": [
+          {
+            "description": "Include revoked API keys in the response.",
+            "in": "query",
+            "name": "include_revoked",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of API keys for the authenticated repository account.",
+        "tags": [
+          "credentials"
+        ]
+      },
+      "post": {
+        "operationId": "datacitePostCredentialsApiKeys",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "attributes": {
+                        "properties": {
+                          "name": {
+                            "description": "The name of the API key.",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name"
+                        ],
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "apiKeys"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Create a new API key for the authenticated repository account.",
+        "tags": [
+          "credentials"
+        ]
+      }
+    },
+    "/dois": {
+      "get": {
+        "operationId": "dataciteGetDois",
+        "parameters": [
+          {
+            "description": "Search [DOI metadata fields](https://support.datacite.org/docs/api-queries#using-the-query-parameter) using OpenSearch query string syntax.",
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the DOI date created (yyyy). Use commas to filter by multiple years (yyyy,yyyy).",
+            "in": "query",
+            "name": "created",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the DOI date registered (yyyy). Use commas to filter by multiple years (yyyy,yyyy).",
+            "in": "query",
+            "name": "registered",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the DOI date published (yyyy). Use commas to filter by multiple years (yyyy,yyyy).",
+            "in": "query",
+            "name": "published",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite provider (Direct Member or Consortium Organization). Use commas to include multiple providers.",
+            "example": "cern",
+            "in": "query",
+            "name": "provider-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite client (repository). Use commas to include multiple repositories.",
+            "example": "datacite.blog",
+            "in": "query",
+            "name": "client-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite consortium.",
+            "example": "ardc",
+            "in": "query",
+            "name": "consortium-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by a specific prefix. Use commas to include multiple prefixes.",
+            "example": 10.5438,
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "client-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "explode": false,
+            "in": "query",
+            "name": "certificate",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Search creators.affiliation.affiliationIdentifier and contributors.affiliation.affiliationIdentifier for a ROR ID.",
+            "in": "query",
+            "name": "affiliation-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter DOIs by associated country inferred from ROR IDs in creators/contributors affiliations. Use comma-separated ISO 3166-1 alpha-2 country codes.",
+            "example": "US,GB",
+            "in": "query",
+            "name": "affiliation-country",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Search fundingReferences.funderIdentifier for a ROR ID. Results also include DOIs containing a Crossref Funder ID in fundingReferences.funderIdentifier corresponding to the ROR ID.",
+            "in": "query",
+            "name": "funded-by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "When the `funded-by=` parameter is set to a ROR ID and `include-funder-child-organizations=true`, the returned list of DOIs will be filtered to DataCite resources funded by the organization identified by the ROR ID as well as all of its child organizations. Child organizations include direct descendants as well as children of children.",
+            "in": "query",
+            "name": "include-funder-child-organizations",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Search fundingReferences.funderIdentifier for a Crossref Funder ID.",
+            "in": "query",
+            "name": "funder-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Search creators.nameIdentifiers.nameIdentifier for an ORCID iD.",
+            "in": "query",
+            "name": "user-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the resourceTypeGeneral. Use commas to include multiple values.",
+            "explode": false,
+            "in": "query",
+            "name": "resource-type-id",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Filter by the free text resourceType. Use commas to include multiple values.",
+            "in": "query",
+            "name": "resource-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the free text Subject. Use commas to include multiple terms.",
+            "in": "query",
+            "name": "subject",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "field-of-science",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "license",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "example": 4,
+            "in": "query",
+            "name": "schema-version",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by the [DOI state](https://support.datacite.org/docs/doi-states). Authentication is required to retrieve registered DOIs and draft records.",
+            "explode": false,
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "Set `affiliation=true` to see additional affiliation information such as the affiliation identifier.",
+            "in": "query",
+            "name": "affiliation",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Set `publisher=true` to see additional publisher information such as the publisher identifier.",
+            "in": "query",
+            "name": "publisher",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "link-check-status",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Search the citationCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-citations",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the referenceCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-references",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the partCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-parts",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the partOfCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-part-of",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the versionCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-versions",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the versionOfCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-version-of",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the viewCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-views",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Search the downloadCount field for integer values greater than or equal to the inputted value.",
+            "in": "query",
+            "name": "has-downloads",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Return DOIs where creators.nameIdentifiers.nameIdentifierScheme has at least one \"ORCID\" value.",
+            "in": "query",
+            "name": "has-person",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Return DOIs where either creators.affiliation.affiliationIdentifierScheme or contributors.affiliation.affiliationIdentifierScheme has at least one \"ROR\" value.",
+            "in": "query",
+            "name": "has-affiliation",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Return DOIs where either creators.nameIdentifiers.nameIdentifierScheme or contributors.nameIdentifiers.nameIdentifierScheme has at least one \"ROR\" value.",
+            "in": "query",
+            "name": "has-organization",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Return DOIs where fundingReferences.funderIdentifierType has at least one \"Crossref Funder ID\" value.",
+            "in": "query",
+            "name": "has-funder",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Retrieve a random sample of DOIs. When true, the `page[number]` parameter is ignored.",
+            "in": "query",
+            "name": "random",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sample-size",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sample-group",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Use for [cursor-based pagination](https://support.datacite.org/docs/pagination#method-2-cursor).",
+            "in": "query",
+            "name": "page[cursor]",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "include",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order:\n * `relevance` - Relevance score descending \n * `name` - DOI name alphabetical ascending \n * `-name` - DOI name alphabetical descending\n * `created` - Created date ascending\n * `-created` - Created date descending\n * `updated` - Updated date ascending\n * `-updated` - Updated date descending\n * `published` - Published date ascending\n * `-published` - Published date descending\n * `view-count` - viewCount ascending\n * `-view-count` - viewCount descending\n * `download-count` - downloadCount ascending\n * `-download-count` - downloadCount descending\n * `citation-count` - citationCount ascending\n * `-citation-count` - citationCount descending\n * `title` - first title alphabetical ascending\n * `-title` - first title alphabetical descending\n",
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Exclude facets from the response.",
+            "in": "query",
+            "name": "disable-facets",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "When set to `true`, will include the following in the response:\n * attributes:\n   * `prefix`\n   * `suffix`\n   * `viewsOverTime`\n   * `citationsOverTime`\n   * `references`\n   * `citations`\n   * `parts`\n   * `partOf`\n   * `versions`\n   * `versionOf`\n   * `xml`\n   * `alternateIdentifiers`\n* relationships:\n   * `provider`\n",
+            "in": "query",
+            "name": "detail",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Only return the attributes specified. For example, `fields[dois]=titles,subjects` will only return titles and subjects.",
+            "in": "query",
+            "name": "fields[dois]",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The [system used to create the DOI](https://support.datacite.org/docs/api-get-doi#source).",
+            "in": "query",
+            "name": "source",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of DOIs.",
+        "tags": [
+          "dois"
+        ]
+      },
+      "post": {
+        "operationId": "datacitePostDois",
+        "parameters": [
+          {
+            "description": "Set `affiliation=true` to see additional affiliation information such as the affiliation identifier.",
+            "in": "query",
+            "name": "affiliation",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Set `publisher=true` to see additional publisher information such as the publisher identifier.",
+            "in": "query",
+            "name": "publisher",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Represents a single DOI and provides access to metadata attributes. More information is available at https://schema.datacite.org.",
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "attributes": {
+                        "properties": {
+                          "alternateIdentifiers": {
+                            "description": "[DataCite Metadata Schema: AlternateIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/alternateidentifier/)",
+                            "items": {
+                              "properties": {
+                                "alternateIdentifier": {
+                                  "type": "object"
+                                },
+                                "alternateIdentifierType": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "citationCount": {
+                            "description": "Total citations, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "citationsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "year": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "container": {
+                            "properties": {
+                              "firstPage": {
+                                "type": "object"
+                              },
+                              "identifier": {
+                                "type": "object"
+                              },
+                              "identifierType": {
+                                "type": "object"
+                              },
+                              "issue": {
+                                "type": "object"
+                              },
+                              "lastPage": {
+                                "type": "object"
+                              },
+                              "title": {
+                                "type": "object"
+                              },
+                              "type": {
+                                "type": "object"
+                              },
+                              "volume": {
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "contentUrl": {
+                            "description": "An array of content URLs associated with the DOI.",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "contributors": {
+                            "description": "[DataCite Metadata Schema: Contributor](https://datacite-metadata-schema.readthedocs.io/en/4/properties/contributor/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "created": {
+                            "description": "The date the DOI record was created in the DataCite system.",
+                            "type": "string"
+                          },
+                          "creators": {
+                            "description": "[DataCite Metadata Schema: Creator](https://datacite-metadata-schema.readthedocs.io/en/4/properties/creator/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "dates": {
+                            "description": "[DataCite Metadata Schema: Date](https://datacite-metadata-schema.readthedocs.io/en/4/properties/date/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "descriptions": {
+                            "description": "[DataCite Metadata Schema: Description](https://datacite-metadata-schema.readthedocs.io/en/4/properties/description/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "doi": {
+                            "description": "The full DOI name.",
+                            "type": "string"
+                          },
+                          "downloadCount": {
+                            "description": "Total downloads, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "downloadsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "yearMonth": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "event": {
+                            "description": "Can be set to trigger a [DOI state change](https://support.datacite.org/docs/updating-metadata-with-the-rest-api#changing-the-doi-state). When not set, a [Draft record](https://support.datacite.org/docs/doi-states#draft-record) is created.\n  * `publish` - Create a DOI in [Findable state](https://support.datacite.org/docs/doi-states#findable-doi-name) (or change an existing Draft record/Registered DOI to Findable state).\n  * `register` - Create a DOI in [Registered state](https://support.datacite.org/docs/doi-states#registered-doi-name) (or change an existing Draft record to Registered state).\n  * `hide` - Change a DOI from Findable to Registered state.\n",
+                            "enum": [
+                              "publish",
+                              "register",
+                              "hide"
+                            ],
+                            "type": "string"
+                          },
+                          "formats": {
+                            "description": "[DataCite Metadata Schema: Format](https://datacite-metadata-schema.readthedocs.io/en/4/properties/format/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "fundingReferences": {
+                            "description": "[DataCite Metadata Schema: FundingReference](https://datacite-metadata-schema.readthedocs.io/en/4/properties/fundingreference/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "geoLocations": {
+                            "description": "[DataCite Metadata Schema: GeoLocation](https://datacite-metadata-schema.readthedocs.io/en/4/properties/geolocation/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "identifiers": {
+                            "description": "Equivalent to the [AlternateIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/alternateidentifier/) property in the DataCite Metadata Schema. For more information, see [What is the \"identifiers\" attribute in the REST API?](https://support.datacite.org/docs/what-is-the-identifiers-attribute-in-the-rest-api)",
+                            "items": {
+                              "properties": {
+                                "identifier": {
+                                  "type": "object"
+                                },
+                                "identifierType": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "isActive": {
+                            "description": "\"true\" if the DOI is in [Findable state](https://support.datacite.org/docs/doi-states#findable-doi-name). Otherwise, \"false\".",
+                            "type": "boolean"
+                          },
+                          "landingPage": {
+                            "description": "Data describing the landing page, used by link checking.",
+                            "properties": {
+                              "bodyhasPid": {
+                                "type": "boolean"
+                              },
+                              "checked": {
+                                "type": "string"
+                              },
+                              "citationDoi": {
+                                "type": "string"
+                              },
+                              "contentType": {
+                                "type": "string"
+                              },
+                              "dcIdentifier": {
+                                "type": "string"
+                              },
+                              "downloadLatency": {
+                                "type": "number"
+                              },
+                              "error": {
+                                "type": "string"
+                              },
+                              "hasSchemaOrg": {
+                                "type": "boolean"
+                              },
+                              "redirectCount": {
+                                "type": "number"
+                              },
+                              "redirectUrls": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "schemaOrgid": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "language": {
+                            "description": "[DataCite Metadata Schema: Language](https://datacite-metadata-schema.readthedocs.io/en/4/properties/language/)",
+                            "type": "string"
+                          },
+                          "metadataVersion": {
+                            "description": "The version of the stored DataCite metadata, incremented once per update.",
+                            "type": "number"
+                          },
+                          "partCount": {
+                            "description": "Total number of parts, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "partOfCount": {
+                            "description": "Total number of parents, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "prefix": {
+                            "description": "The DOI prefix.",
+                            "type": "string"
+                          },
+                          "publicationYear": {
+                            "description": "[DataCite Metadata Schema: PublicationYear](https://datacite-metadata-schema.readthedocs.io/en/4/properties/publicationyear/)",
+                            "type": "integer"
+                          },
+                          "publisher": {
+                            "type": "object"
+                          },
+                          "reason": {
+                            "description": "Legacy attribute for EZID compatibility.",
+                            "type": "string"
+                          },
+                          "referenceCount": {
+                            "description": "Total references, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "registered": {
+                            "description": "The date the DOI was registered in the global handle server.",
+                            "type": "string"
+                          },
+                          "relatedIdentifiers": {
+                            "description": "[DataCite Metadata Schema: RelatedIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/relatedidentifier/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "relatedItems": {
+                            "description": "[DataCite Metadata Schema: RelatedItem](https://datacite-metadata-schema.readthedocs.io/en/4/properties/relateditem/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "rightsList": {
+                            "description": "[DataCite Metadata Schema: Rights](https://datacite-metadata-schema.readthedocs.io/en/4/properties/rights/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "schemaVersion": {
+                            "description": "The DataCite Metadata Schema version of the stored DOI metadata represented as a URL. When creating or updating a DOI, `schemaVersion` is not necessary unless modifying the DataCite Metadata Schema version.",
+                            "type": "string"
+                          },
+                          "sizes": {
+                            "description": "[DataCite Metadata Schema: Size](https://datacite-metadata-schema.readthedocs.io/en/4/properties/size/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "source": {
+                            "type": "object"
+                          },
+                          "state": {
+                            "type": "object"
+                          },
+                          "subjects": {
+                            "description": "[DataCite Metadata Schema: Subject](https://datacite-metadata-schema.readthedocs.io/en/4/properties/subject/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "suffix": {
+                            "description": "The DOI suffix.",
+                            "type": "string"
+                          },
+                          "titles": {
+                            "description": "[DataCite Metadata Schema: Title](https://datacite-metadata-schema.readthedocs.io/en/4/properties/title/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "types": {
+                            "properties": {
+                              "bibtex": {
+                                "type": "object"
+                              },
+                              "citeproc": {
+                                "type": "object"
+                              },
+                              "resourceType": {
+                                "type": "object"
+                              },
+                              "resourceTypeGeneral": {
+                                "type": "object"
+                              },
+                              "ris": {
+                                "type": "object"
+                              },
+                              "schemaOrg": {
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "updated": {
+                            "description": "The date the DOI was last updated.",
+                            "type": "string"
+                          },
+                          "url": {
+                            "description": "The landing page URL of the DOI.",
+                            "type": "string"
+                          },
+                          "version": {
+                            "description": "[DataCite Metadata Schema: Version](https://datacite-metadata-schema.readthedocs.io/en/4/properties/version/)",
+                            "type": "string"
+                          },
+                          "versionCount": {
+                            "description": "Total number of versions, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "versionOfCount": {
+                            "description": "Total number to which this DOI is a version, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "viewCount": {
+                            "description": "Total views, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "viewsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "yearMonth": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "xml": {
+                            "description": "DataCite Metadata Schema XML encoded in Base64 format.",
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "relationships": {
+                        "properties": {
+                          "citations": {
+                            "description": "An array of citations as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "client": {
+                            "description": "The DataCite client (repository) associated with the DOI.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "media": {
+                            "description": "Legacy attribute for media support.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "partOf": {
+                            "description": "An array of parents as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "parts": {
+                            "description": "An array of parts as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "provider": {
+                            "description": "The DataCite provider (Direct Member or Consortium Organization) associated with the DOI.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "references": {
+                            "description": "An array of references as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "versionOf": {
+                            "description": "An array of objects to which this DOI is a version as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "versions": {
+                            "description": "An array of versions as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "dois"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Add a new DOI.",
+        "tags": [
+          "dois"
+        ]
+      }
+    },
+    "/dois/{id}": {
+      "get": {
+        "operationId": "dataciteGetDoisId",
+        "parameters": [
+          {
+            "description": "DOI",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set `affiliation=true` to see additional affiliation information such as the affiliation identifier.",
+            "in": "query",
+            "name": "affiliation",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Set `publisher=true` to see additional publisher information such as the publisher identifier.",
+            "in": "query",
+            "name": "publisher",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a DOI.",
+        "tags": [
+          "dois"
+        ]
+      },
+      "put": {
+        "description": "PUT requests to the /dois endpoint will update a DOI record if it already exists and create a new record if the DOI name is not already taken.",
+        "operationId": "datacitePutDoisId",
+        "parameters": [
+          {
+            "description": "The DOI to update.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Set `affiliation=true` to see additional affiliation information such as the affiliation identifier.",
+            "in": "query",
+            "name": "affiliation",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Set `publisher=true` to see additional publisher information such as the publisher identifier.",
+            "in": "query",
+            "name": "publisher",
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Represents a single DOI and provides access to metadata attributes. More information is available at https://schema.datacite.org.",
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "attributes": {
+                        "properties": {
+                          "alternateIdentifiers": {
+                            "description": "[DataCite Metadata Schema: AlternateIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/alternateidentifier/)",
+                            "items": {
+                              "properties": {
+                                "alternateIdentifier": {
+                                  "type": "object"
+                                },
+                                "alternateIdentifierType": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "citationCount": {
+                            "description": "Total citations, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "citationsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "year": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "container": {
+                            "properties": {
+                              "firstPage": {
+                                "type": "object"
+                              },
+                              "identifier": {
+                                "type": "object"
+                              },
+                              "identifierType": {
+                                "type": "object"
+                              },
+                              "issue": {
+                                "type": "object"
+                              },
+                              "lastPage": {
+                                "type": "object"
+                              },
+                              "title": {
+                                "type": "object"
+                              },
+                              "type": {
+                                "type": "object"
+                              },
+                              "volume": {
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "contentUrl": {
+                            "description": "An array of content URLs associated with the DOI.",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "contributors": {
+                            "description": "[DataCite Metadata Schema: Contributor](https://datacite-metadata-schema.readthedocs.io/en/4/properties/contributor/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "created": {
+                            "description": "The date the DOI record was created in the DataCite system.",
+                            "type": "string"
+                          },
+                          "creators": {
+                            "description": "[DataCite Metadata Schema: Creator](https://datacite-metadata-schema.readthedocs.io/en/4/properties/creator/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "dates": {
+                            "description": "[DataCite Metadata Schema: Date](https://datacite-metadata-schema.readthedocs.io/en/4/properties/date/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "descriptions": {
+                            "description": "[DataCite Metadata Schema: Description](https://datacite-metadata-schema.readthedocs.io/en/4/properties/description/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "doi": {
+                            "description": "The full DOI name.",
+                            "type": "string"
+                          },
+                          "downloadCount": {
+                            "description": "Total downloads, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "downloadsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "yearMonth": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "event": {
+                            "description": "Can be set to trigger a [DOI state change](https://support.datacite.org/docs/updating-metadata-with-the-rest-api#changing-the-doi-state). When not set, a [Draft record](https://support.datacite.org/docs/doi-states#draft-record) is created.\n  * `publish` - Create a DOI in [Findable state](https://support.datacite.org/docs/doi-states#findable-doi-name) (or change an existing Draft record/Registered DOI to Findable state).\n  * `register` - Create a DOI in [Registered state](https://support.datacite.org/docs/doi-states#registered-doi-name) (or change an existing Draft record to Registered state).\n  * `hide` - Change a DOI from Findable to Registered state.\n",
+                            "enum": [
+                              "publish",
+                              "register",
+                              "hide"
+                            ],
+                            "type": "string"
+                          },
+                          "formats": {
+                            "description": "[DataCite Metadata Schema: Format](https://datacite-metadata-schema.readthedocs.io/en/4/properties/format/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "fundingReferences": {
+                            "description": "[DataCite Metadata Schema: FundingReference](https://datacite-metadata-schema.readthedocs.io/en/4/properties/fundingreference/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "geoLocations": {
+                            "description": "[DataCite Metadata Schema: GeoLocation](https://datacite-metadata-schema.readthedocs.io/en/4/properties/geolocation/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "identifiers": {
+                            "description": "Equivalent to the [AlternateIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/alternateidentifier/) property in the DataCite Metadata Schema. For more information, see [What is the \"identifiers\" attribute in the REST API?](https://support.datacite.org/docs/what-is-the-identifiers-attribute-in-the-rest-api)",
+                            "items": {
+                              "properties": {
+                                "identifier": {
+                                  "type": "object"
+                                },
+                                "identifierType": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "isActive": {
+                            "description": "\"true\" if the DOI is in [Findable state](https://support.datacite.org/docs/doi-states#findable-doi-name). Otherwise, \"false\".",
+                            "type": "boolean"
+                          },
+                          "landingPage": {
+                            "description": "Data describing the landing page, used by link checking.",
+                            "properties": {
+                              "bodyhasPid": {
+                                "type": "boolean"
+                              },
+                              "checked": {
+                                "type": "string"
+                              },
+                              "citationDoi": {
+                                "type": "string"
+                              },
+                              "contentType": {
+                                "type": "string"
+                              },
+                              "dcIdentifier": {
+                                "type": "string"
+                              },
+                              "downloadLatency": {
+                                "type": "number"
+                              },
+                              "error": {
+                                "type": "string"
+                              },
+                              "hasSchemaOrg": {
+                                "type": "boolean"
+                              },
+                              "redirectCount": {
+                                "type": "number"
+                              },
+                              "redirectUrls": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "schemaOrgid": {
+                                "type": "string"
+                              },
+                              "url": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "language": {
+                            "description": "[DataCite Metadata Schema: Language](https://datacite-metadata-schema.readthedocs.io/en/4/properties/language/)",
+                            "type": "string"
+                          },
+                          "metadataVersion": {
+                            "description": "The version of the stored DataCite metadata, incremented once per update.",
+                            "type": "number"
+                          },
+                          "partCount": {
+                            "description": "Total number of parts, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "partOfCount": {
+                            "description": "Total number of parents, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "prefix": {
+                            "description": "The DOI prefix.",
+                            "type": "string"
+                          },
+                          "publicationYear": {
+                            "description": "[DataCite Metadata Schema: PublicationYear](https://datacite-metadata-schema.readthedocs.io/en/4/properties/publicationyear/)",
+                            "type": "integer"
+                          },
+                          "publisher": {
+                            "type": "object"
+                          },
+                          "reason": {
+                            "description": "Legacy attribute for EZID compatibility.",
+                            "type": "string"
+                          },
+                          "referenceCount": {
+                            "description": "Total references, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "registered": {
+                            "description": "The date the DOI was registered in the global handle server.",
+                            "type": "string"
+                          },
+                          "relatedIdentifiers": {
+                            "description": "[DataCite Metadata Schema: RelatedIdentifier](https://datacite-metadata-schema.readthedocs.io/en/4/properties/relatedidentifier/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "relatedItems": {
+                            "description": "[DataCite Metadata Schema: RelatedItem](https://datacite-metadata-schema.readthedocs.io/en/4/properties/relateditem/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "rightsList": {
+                            "description": "[DataCite Metadata Schema: Rights](https://datacite-metadata-schema.readthedocs.io/en/4/properties/rights/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "schemaVersion": {
+                            "description": "The DataCite Metadata Schema version of the stored DOI metadata represented as a URL. When creating or updating a DOI, `schemaVersion` is not necessary unless modifying the DataCite Metadata Schema version.",
+                            "type": "string"
+                          },
+                          "sizes": {
+                            "description": "[DataCite Metadata Schema: Size](https://datacite-metadata-schema.readthedocs.io/en/4/properties/size/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "source": {
+                            "type": "object"
+                          },
+                          "state": {
+                            "type": "object"
+                          },
+                          "subjects": {
+                            "description": "[DataCite Metadata Schema: Subject](https://datacite-metadata-schema.readthedocs.io/en/4/properties/subject/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "suffix": {
+                            "description": "The DOI suffix.",
+                            "type": "string"
+                          },
+                          "titles": {
+                            "description": "[DataCite Metadata Schema: Title](https://datacite-metadata-schema.readthedocs.io/en/4/properties/title/)",
+                            "items": {
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "types": {
+                            "properties": {
+                              "bibtex": {
+                                "type": "object"
+                              },
+                              "citeproc": {
+                                "type": "object"
+                              },
+                              "resourceType": {
+                                "type": "object"
+                              },
+                              "resourceTypeGeneral": {
+                                "type": "object"
+                              },
+                              "ris": {
+                                "type": "object"
+                              },
+                              "schemaOrg": {
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "updated": {
+                            "description": "The date the DOI was last updated.",
+                            "type": "string"
+                          },
+                          "url": {
+                            "description": "The landing page URL of the DOI.",
+                            "type": "string"
+                          },
+                          "version": {
+                            "description": "[DataCite Metadata Schema: Version](https://datacite-metadata-schema.readthedocs.io/en/4/properties/version/)",
+                            "type": "string"
+                          },
+                          "versionCount": {
+                            "description": "Total number of versions, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "versionOfCount": {
+                            "description": "Total number to which this DOI is a version, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "viewCount": {
+                            "description": "Total views, pulled from Event Data.",
+                            "type": "number"
+                          },
+                          "viewsOverTime": {
+                            "items": {
+                              "properties": {
+                                "total": {
+                                  "type": "object"
+                                },
+                                "yearMonth": {
+                                  "type": "object"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "xml": {
+                            "description": "DataCite Metadata Schema XML encoded in Base64 format.",
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "id": {
+                        "type": "string"
+                      },
+                      "relationships": {
+                        "properties": {
+                          "citations": {
+                            "description": "An array of citations as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "client": {
+                            "description": "The DataCite client (repository) associated with the DOI.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "media": {
+                            "description": "Legacy attribute for media support.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "partOf": {
+                            "description": "An array of parents as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "parts": {
+                            "description": "An array of parts as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "provider": {
+                            "description": "The DataCite provider (Direct Member or Consortium Organization) associated with the DOI.",
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "type": "object"
+                                  },
+                                  "type": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "references": {
+                            "description": "An array of references as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "versionOf": {
+                            "description": "An array of objects to which this DOI is a version as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "versions": {
+                            "description": "An array of versions as dictionaries.",
+                            "properties": {
+                              "data": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              }
+                            },
+                            "type": "object"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "dois"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "required": [
+                      "type"
+                    ],
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Update a DOI.",
+        "tags": [
+          "dois"
+        ]
+      }
+    },
+    "/dois/{id}/activities": {
+      "get": {
+        "operationId": "dataciteGetDoisIdActivities",
+        "parameters": [
+          {
+            "description": "DOI",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return activities for a specific DOI.",
+        "tags": [
+          "dois",
+          "activities"
+        ]
+      }
+    },
+    "/events": {
+      "get": {
+        "operationId": "dataciteGetEvents",
+        "parameters": [
+          {
+            "description": "Query for any event information.",
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The identifier for the event subject expressed as URL.",
+            "example": "https://doi.org/10.14454/g8e5-6293",
+            "in": "query",
+            "name": "subj-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The identifier for the event object expressed as URL.",
+            "example": "https://doi.org/10.14454/g8e5-6293",
+            "in": "query",
+            "name": "obj-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The subj-id or obj-id of the event expressed as DOI.",
+            "example": "10.14454/g8e5-629",
+            "in": "query",
+            "name": "doi",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The DOI prefix of the subj-id or obj-id of the event.",
+            "example": 10.14454,
+            "in": "query",
+            "name": "prefix",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The subj-id or obj-id of the event expressed as an ORCID iD.",
+            "example": "0000-0002-4684-9769",
+            "in": "query",
+            "name": "orcid",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The year and month in which the event occurred in the format YYYY-MM.",
+            "example": "2018-08",
+            "in": "query",
+            "name": "year-month",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The [source of the event](https://support.datacite.org/docs/eventdata-guide#source-id). Use commas to include multiple sources.",
+            "explode": false,
+            "in": "query",
+            "name": "source-id",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "description": "The relation type of the event. See [Linking events](https://support.datacite.org/docs/eventdata-guide#linking-events) and [Usage events](https://support.datacite.org/docs/eventdata-guide#usage-events) documentation for definitions. Use commas to include multiple relation types.",
+            "explode": false,
+            "in": "query",
+            "name": "relation-type-id",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          },
+          {
+            "in": "query",
+            "name": "subtype",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "citation-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "registrant-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "publication-year",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Use for [cursor-based pagination](https://support.datacite.org/docs/pagination#method-2-cursor).",
+            "in": "query",
+            "name": "page[cursor]",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort order. By default, all events are sorted in ascending chronological order (using the last updated timestamp).",
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of events.",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/events/{id}": {
+      "get": {
+        "operationId": "dataciteGetEventsId",
+        "parameters": [
+          {
+            "description": "Event",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return an event.",
+        "tags": [
+          "events"
+        ]
+      }
+    },
+    "/heartbeat": {
+      "get": {
+        "operationId": "dataciteGetHeartbeat",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return the current status of the REST API.",
+        "tags": [
+          "heartbeat"
+        ]
+      }
+    },
+    "/prefixes": {
+      "get": {
+        "operationId": "dataciteGetPrefixes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "year",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of prefixes.",
+        "tags": [
+          "prefixes"
+        ]
+      }
+    },
+    "/prefixes/totals": {
+      "get": {
+        "operationId": "dataciteGetPrefixesTotals",
+        "parameters": [
+          {
+            "description": "Filter by a specific DataCite client (repository). Use commas to include multiple repositories.",
+            "example": "datacite.blog",
+            "in": "query",
+            "name": "client-id",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return prefixes DOI production statistics.",
+        "tags": [
+          "prefixes"
+        ]
+      }
+    },
+    "/prefixes/{id}": {
+      "get": {
+        "operationId": "dataciteGetPrefixesId",
+        "parameters": [
+          {
+            "description": "Prefix",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a prefix.",
+        "tags": [
+          "prefixes"
+        ]
+      }
+    },
+    "/provider-prefixes": {
+      "get": {
+        "operationId": "dataciteGetProviderPrefixes",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "year",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite consortium.",
+            "example": "ardc",
+            "in": "query",
+            "name": "consortium-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite provider (Direct Member or Consortium Organization). Use commas to include multiple providers.",
+            "example": "cern",
+            "in": "query",
+            "name": "provider-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "prefix-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of provider-prefixes.",
+        "tags": [
+          "provider-prefixes"
+        ]
+      }
+    },
+    "/providers": {
+      "get": {
+        "operationId": "dataciteGetProviders",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "query",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The year the provider was created.",
+            "in": "query",
+            "name": "year",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Filter by a specific DataCite consortium.",
+            "example": "ardc",
+            "in": "query",
+            "name": "consortium-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "region",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "member-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "organization-type",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "focus-area",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "has-required-contacts",
+            "schema": {
+              "type": "boolean"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "in": "query",
+            "name": "sort",
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a list of providers (including members and consortium organizations).",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/providers/totals": {
+      "get": {
+        "operationId": "dataciteGetProvidersTotals",
+        "parameters": [
+          {
+            "description": "Authentication is required to retrieve draft records.",
+            "explode": false,
+            "in": "query",
+            "name": "state",
+            "schema": {
+              "type": "array"
+            },
+            "style": "form"
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return providers DOI production statistics.",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/providers/{id}": {
+      "get": {
+        "operationId": "dataciteGetProvidersId",
+        "parameters": [
+          {
+            "description": "DataCite Direct Member, Consortium Organization, or Consortium account ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a provider.",
+        "tags": [
+          "providers"
+        ]
+      }
+    },
+    "/reports": {
+      "get": {
+        "operationId": "dataciteGetReports",
+        "parameters": [
+          {
+            "description": "Name of the Platform the usage is being requested for. This can be omitted if the service provides usage for only one platform.",
+            "in": "query",
+            "name": "platform",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The long name of the report.",
+            "in": "query",
+            "name": "report-name",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The report ID or code or shortname. Typically this will be the same code provided in the Report parameter of the request.",
+            "in": "query",
+            "name": "report-id",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "The release or version of the report.",
+            "in": "query",
+            "name": "release",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Time the report was prepared. Format as defined by date-time - RFC3339",
+            "in": "query",
+            "name": "created",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Name of the organization producing the report.",
+            "in": "query",
+            "name": "created-by",
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[number]",
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Page size between 0 and 1,000 for [pagination](https://support.datacite.org/docs/pagination).",
+            "in": "query",
+            "name": "page[size]",
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "A JSON array of reports.",
+        "tags": [
+          "reports"
+        ]
+      },
+      "post": {
+        "operationId": "datacitePostReports",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Describes the formatting needs for the COUNTER Dataset Report. Response may include the Report_Header (optional), Report_Datasets (usage stats).",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "report-datasets": {
+                    "description": "Defines the output for the Report_Datasets being returned in a Dataset Report. Collection of datasets from the report.",
+                    "items": {
+                      "properties": {
+                        "data-type": {
+                          "description": "Nature of the dataset being reported.",
+                          "type": "string"
+                        },
+                        "dataset-contributors": {
+                          "description": "The identifier for contributor (i.e. creator) of the dataset.",
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "name",
+                                  "orcid",
+                                  "isni"
+                                ],
+                                "type": "string"
+                              },
+                              "value": {
+                                "description": "Value of the contributor identifier.",
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-dates": {
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "pub-date",
+                                  "first-accessed-online",
+                                  "proprietary"
+                                ],
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-id": {
+                          "description": "The identifier for the report dataset.",
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-title": {
+                          "description": "Name of the dataset being reported.",
+                          "type": "string"
+                        },
+                        "performance": {
+                          "items": {
+                            "properties": {
+                              "instance": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "period": {
+                                "properties": {
+                                  "begin-date": {
+                                    "type": "object"
+                                  },
+                                  "end-date": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "platform": {
+                          "description": "Name of the platform.",
+                          "type": "string"
+                        },
+                        "publisher": {
+                          "description": "Name of publisher of the dataset.",
+                          "type": "string"
+                        },
+                        "publisher-id": {
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "uri": {
+                          "type": "string"
+                        },
+                        "yop": {
+                          "description": "Year of publication in the format of 'yyyy'. Use '0001' for unknown and '9999' for articles in press.",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "report-header": {
+                    "properties": {
+                      "created": {
+                        "description": "Time the report was prepared. Format as defined by date-time - RFC3339",
+                        "format": "dateTime",
+                        "type": "string"
+                      },
+                      "created-by": {
+                        "description": "Name of the organization producing the report.",
+                        "type": "string"
+                      },
+                      "exceptions": {
+                        "items": {
+                          "properties": {
+                            "code": {
+                              "type": "number"
+                            },
+                            "data": {
+                              "type": "string"
+                            },
+                            "help-url": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "severity": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "release": {
+                        "description": "The release or version of the report.",
+                        "type": "string"
+                      },
+                      "report-attributes": {
+                        "description": "Zero or more additional attributes applied to the report. Attributes inform the level of detail in the report.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "report-filters": {
+                        "description": "Zero or more report filters used for this report. Typically reflect filters provided on the Request. Filters limit the data to be reported on.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "report-id": {
+                        "description": "The report ID or code or shortname. Typically this will be the same code provided in the Report parameter of the request.",
+                        "type": "string"
+                      },
+                      "report-name": {
+                        "description": "The long name of the report.",
+                        "type": "string"
+                      },
+                      "reporting-period": {
+                        "description": "Time the report was prepared.",
+                        "properties": {
+                          "begin-date": {
+                            "type": "string"
+                          },
+                          "end-date": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "report-id",
+                      "report-name",
+                      "release",
+                      "created-by",
+                      "reporting-period"
+                    ],
+                    "type": "object"
+                  },
+                  "report-subsets": {
+                    "items": {
+                      "properties": {
+                        "checksum": {
+                          "type": "string"
+                        },
+                        "gzip": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "report-datasets"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Add a new report.",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/reports/{id}": {
+      "get": {
+        "operationId": "dataciteGetReportsId",
+        "parameters": [
+          {
+            "description": "Report",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Return a report.",
+        "tags": [
+          "reports"
+        ]
+      },
+      "put": {
+        "operationId": "datacitePutReportsId",
+        "parameters": [
+          {
+            "description": "Report",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "description": "Describes the formatting needs for the COUNTER Dataset Report. Response may include the Report_Header (optional), Report_Datasets (usage stats).",
+                "properties": {
+                  "id": {
+                    "type": "string"
+                  },
+                  "report-datasets": {
+                    "description": "Defines the output for the Report_Datasets being returned in a Dataset Report. Collection of datasets from the report.",
+                    "items": {
+                      "properties": {
+                        "data-type": {
+                          "description": "Nature of the dataset being reported.",
+                          "type": "string"
+                        },
+                        "dataset-contributors": {
+                          "description": "The identifier for contributor (i.e. creator) of the dataset.",
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "name",
+                                  "orcid",
+                                  "isni"
+                                ],
+                                "type": "string"
+                              },
+                              "value": {
+                                "description": "Value of the contributor identifier.",
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-dates": {
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "enum": [
+                                  "pub-date",
+                                  "first-accessed-online",
+                                  "proprietary"
+                                ],
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-id": {
+                          "description": "The identifier for the report dataset.",
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "dataset-title": {
+                          "description": "Name of the dataset being reported.",
+                          "type": "string"
+                        },
+                        "performance": {
+                          "items": {
+                            "properties": {
+                              "instance": {
+                                "items": {
+                                  "type": "object"
+                                },
+                                "type": "array"
+                              },
+                              "period": {
+                                "properties": {
+                                  "begin-date": {
+                                    "type": "object"
+                                  },
+                                  "end-date": {
+                                    "type": "object"
+                                  }
+                                },
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "platform": {
+                          "description": "Name of the platform.",
+                          "type": "string"
+                        },
+                        "publisher": {
+                          "description": "Name of publisher of the dataset.",
+                          "type": "string"
+                        },
+                        "publisher-id": {
+                          "items": {
+                            "properties": {
+                              "type": {
+                                "type": "string"
+                              },
+                              "value": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "type": "array"
+                        },
+                        "uri": {
+                          "type": "string"
+                        },
+                        "yop": {
+                          "description": "Year of publication in the format of 'yyyy'. Use '0001' for unknown and '9999' for articles in press.",
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  },
+                  "report-header": {
+                    "properties": {
+                      "created": {
+                        "description": "Time the report was prepared. Format as defined by date-time - RFC3339",
+                        "format": "dateTime",
+                        "type": "string"
+                      },
+                      "created-by": {
+                        "description": "Name of the organization producing the report.",
+                        "type": "string"
+                      },
+                      "exceptions": {
+                        "items": {
+                          "properties": {
+                            "code": {
+                              "type": "number"
+                            },
+                            "data": {
+                              "type": "string"
+                            },
+                            "help-url": {
+                              "type": "string"
+                            },
+                            "message": {
+                              "type": "string"
+                            },
+                            "severity": {
+                              "type": "string"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "type": "array"
+                      },
+                      "release": {
+                        "description": "The release or version of the report.",
+                        "type": "string"
+                      },
+                      "report-attributes": {
+                        "description": "Zero or more additional attributes applied to the report. Attributes inform the level of detail in the report.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "report-filters": {
+                        "description": "Zero or more report filters used for this report. Typically reflect filters provided on the Request. Filters limit the data to be reported on.",
+                        "items": {
+                          "type": "string"
+                        },
+                        "type": "array"
+                      },
+                      "report-id": {
+                        "description": "The report ID or code or shortname. Typically this will be the same code provided in the Report parameter of the request.",
+                        "type": "string"
+                      },
+                      "report-name": {
+                        "description": "The long name of the report.",
+                        "type": "string"
+                      },
+                      "reporting-period": {
+                        "description": "Time the report was prepared.",
+                        "properties": {
+                          "begin-date": {
+                            "type": "string"
+                          },
+                          "end-date": {
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      }
+                    },
+                    "required": [
+                      "report-id",
+                      "report-name",
+                      "release",
+                      "created-by",
+                      "reporting-period"
+                    ],
+                    "type": "object"
+                  },
+                  "report-subsets": {
+                    "items": {
+                      "properties": {
+                        "checksum": {
+                          "type": "string"
+                        },
+                        "gzip": {
+                          "type": "string"
+                        }
+                      },
+                      "type": "object"
+                    },
+                    "type": "array"
+                  }
+                },
+                "required": [
+                  "report-datasets"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Update a report.",
+        "tags": [
+          "reports"
+        ]
+      }
+    },
+    "/repositories": {
+      "post": {
+        "operationId": "datacitePostRepositories",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "attributes": {
+                        "properties": {
+                          "alternateName": {
+                            "type": "string"
+                          },
+                          "certificate": {
+                            "items": {
+                              "enum": [
+                                "CLARIN",
+                                "CoreTrustSeal",
+                                "DIN 31644",
+                                "DINI",
+                                "DSA",
+                                "RatSWD",
+                                "WDS"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "clientType": {
+                            "enum": [
+                              "repository",
+                              "periodical",
+                              "igsnCatalog",
+                              "raidRegistry"
+                            ],
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "domains": {
+                            "type": "string"
+                          },
+                          "isActive": {
+                            "description": "Set to true if this account can register and update DOIs.",
+                            "type": "boolean"
+                          },
+                          "issn": {
+                            "description": "Will only be saved if the repository has clientType \"periodical\".",
+                            "properties": {
+                              "electronic": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              },
+                              "issnl": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              },
+                              "print": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "language": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "passwordInput": {
+                            "description": "Sets the password of the repository account.",
+                            "type": "string"
+                          },
+                          "repositoryType": {
+                            "items": {
+                              "enum": [
+                                "disciplinary",
+                                "governmental",
+                                "institutional",
+                                "multidisciplinary",
+                                "project-related",
+                                "other"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "serviceContact": {
+                            "properties": {
+                              "email": {
+                                "format": "email",
+                                "type": "string"
+                              },
+                              "familyName": {
+                                "type": "string"
+                              },
+                              "givenName": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "software": {
+                            "enum": [
+                              "Archipelago",
+                              "Cayuse",
+                              "CKAN",
+                              "CSTR & DOI Registration API",
+                              "Dataverse",
+                              "dLibra",
+                              "DSpace",
+                              "EPrints",
+                              "Ex Libris Esploro",
+                              "Fedora",
+                              "Invenio",
+                              "Islandora",
+                              "Medad",
+                              "MyCoRe",
+                              "Nesstar",
+                              "Omega-PSIR",
+                              "Omeka S",
+                              "Open Journal Systems (OJS)",
+                              "OPUS",
+                              "Pubman",
+                              "Pure",
+                              "Redivis",
+                              "RSpace",
+                              "Samvera",
+                              "SESAR",
+                              "Ubiquity",
+                              "Other"
+                            ],
+                            "type": "string"
+                          },
+                          "subjects": {
+                            "description": "Only permitted when repositoryType includes 'disciplinary'.",
+                            "items": {
+                              "properties": {
+                                "classificationCode": {
+                                  "type": "string"
+                                },
+                                "lang": {
+                                  "type": "string"
+                                },
+                                "schemeUri": {
+                                  "type": "string"
+                                },
+                                "subject": {
+                                  "type": "string"
+                                },
+                                "subjectScheme": {
+                                  "type": "string"
+                                },
+                                "valueUri": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "symbol": {
+                            "description": "Can only contain capital letters, numbers, and at most one hyphen. Must begin with provider ID followed by a period (\".\"). Minimum length is 5 characters and maximum length is 18 characters.",
+                            "pattern": "/\\A([A-Z]+\\.[A-Z0-9]+(-[A-Z0-9]+)?)\\Z/",
+                            "type": "string"
+                          },
+                          "systemEmail": {
+                            "format": "email",
+                            "type": "string"
+                          },
+                          "url": {
+                            "format": "url",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "symbol",
+                          "systemEmail",
+                          "clientType"
+                        ],
+                        "type": "object"
+                      },
+                      "relationships": {
+                        "properties": {
+                          "provider": {
+                            "properties": {
+                              "data": {
+                                "properties": {
+                                  "id": {
+                                    "description": "The symbol of the provider (DataCite Member or Consortium Organization) the repository belongs to.",
+                                    "type": "string"
+                                  },
+                                  "type": {
+                                    "enum": [
+                                      "providers"
+                                    ],
+                                    "type": "string"
+                                  }
+                                },
+                                "required": [
+                                  "id",
+                                  "type"
+                                ],
+                                "type": "object"
+                              }
+                            },
+                            "type": "object"
+                          }
+                        },
+                        "required": [
+                          "provider"
+                        ],
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "repositories"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Add a new repository.",
+        "tags": [
+          "repositories"
+        ]
+      }
+    },
+    "/repositories/{id}": {
+      "put": {
+        "operationId": "datacitePutRepositoriesId",
+        "parameters": [
+          {
+            "description": "DataCite Repository ID.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "data": {
+                    "properties": {
+                      "attributes": {
+                        "properties": {
+                          "alternateName": {
+                            "type": "string"
+                          },
+                          "certificate": {
+                            "items": {
+                              "enum": [
+                                "CLARIN",
+                                "CoreTrustSeal",
+                                "DIN 31644",
+                                "DINI",
+                                "DSA",
+                                "RatSWD",
+                                "WDS"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "clientType": {
+                            "enum": [
+                              "repository",
+                              "periodical",
+                              "igsnCatalog",
+                              "raidRegistry"
+                            ],
+                            "type": "string"
+                          },
+                          "description": {
+                            "type": "string"
+                          },
+                          "domains": {
+                            "type": "string"
+                          },
+                          "isActive": {
+                            "description": "Set to true if this account can register and update DOIs.",
+                            "type": "boolean"
+                          },
+                          "issn": {
+                            "description": "Will only be saved if the repository has clientType \"periodical\".",
+                            "properties": {
+                              "electronic": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              },
+                              "issnl": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              },
+                              "print": {
+                                "pattern": "\\A\\d{4}(-)?\\d{3}[0-9X]+\\z",
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "language": {
+                            "items": {
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "name": {
+                            "type": "string"
+                          },
+                          "passwordInput": {
+                            "description": "Sets the password of the repository account.",
+                            "type": "string"
+                          },
+                          "repositoryType": {
+                            "items": {
+                              "enum": [
+                                "disciplinary",
+                                "governmental",
+                                "institutional",
+                                "multidisciplinary",
+                                "project-related",
+                                "other"
+                              ],
+                              "type": "string"
+                            },
+                            "type": "array"
+                          },
+                          "serviceContact": {
+                            "properties": {
+                              "email": {
+                                "format": "email",
+                                "type": "string"
+                              },
+                              "familyName": {
+                                "type": "string"
+                              },
+                              "givenName": {
+                                "type": "string"
+                              }
+                            },
+                            "type": "object"
+                          },
+                          "software": {
+                            "enum": [
+                              "Archipelago",
+                              "Cayuse",
+                              "CKAN",
+                              "CSTR & DOI Registration API",
+                              "Dataverse",
+                              "dLibra",
+                              "DSpace",
+                              "EPrints",
+                              "Ex Libris Esploro",
+                              "Fedora",
+                              "Invenio",
+                              "Islandora",
+                              "Medad",
+                              "MyCoRe",
+                              "Nesstar",
+                              "Omega-PSIR",
+                              "Omeka S",
+                              "Open Journal Systems (OJS)",
+                              "OPUS",
+                              "Pubman",
+                              "Pure",
+                              "Redivis",
+                              "RSpace",
+                              "Samvera",
+                              "SESAR",
+                              "Ubiquity",
+                              "Other"
+                            ],
+                            "type": "string"
+                          },
+                          "subjects": {
+                            "description": "Only permitted when repositoryType includes 'disciplinary'.",
+                            "items": {
+                              "properties": {
+                                "classificationCode": {
+                                  "type": "string"
+                                },
+                                "lang": {
+                                  "type": "string"
+                                },
+                                "schemeUri": {
+                                  "type": "string"
+                                },
+                                "subject": {
+                                  "type": "string"
+                                },
+                                "subjectScheme": {
+                                  "type": "string"
+                                },
+                                "valueUri": {
+                                  "type": "string"
+                                }
+                              },
+                              "type": "object"
+                            },
+                            "type": "array"
+                          },
+                          "systemEmail": {
+                            "format": "email",
+                            "type": "string"
+                          },
+                          "url": {
+                            "format": "url",
+                            "type": "string"
+                          }
+                        },
+                        "required": [
+                          "name",
+                          "symbol",
+                          "systemEmail",
+                          "clientType"
+                        ],
+                        "type": "object"
+                      },
+                      "type": {
+                        "enum": [
+                          "repositories"
+                        ],
+                        "type": "string"
+                      }
+                    },
+                    "type": "object"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Update a repository.",
+        "tags": [
+          "repositories"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.datacite.org"
+    }
+  ],
+  "tags": [
+    {
+      "description": "Activities",
+      "name": "activities"
+    },
+    {
+      "description": "Client Prefixes",
+      "name": "client-prefixes"
+    },
+    {
+      "description": "Clients",
+      "name": "clients"
+    },
+    {
+      "description": "DOIs",
+      "name": "dois"
+    },
+    {
+      "description": "Events",
+      "name": "events"
+    },
+    {
+      "description": "Heartbeat",
+      "name": "heartbeat"
+    },
+    {
+      "description": "Prefixes",
+      "name": "prefixes"
+    },
+    {
+      "description": "Provider Prefixes",
+      "name": "provider-prefixes"
+    },
+    {
+      "description": "Providers",
+      "name": "providers"
+    },
+    {
+      "description": "Reports",
+      "name": "reports"
+    }
+  ]
+}

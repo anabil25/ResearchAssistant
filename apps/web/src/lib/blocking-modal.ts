@@ -14,7 +14,7 @@ import { useSyncExternalStore } from "react";
  *
  * - a `window` keydown listener implementing global shortcuts
  *   (`Ctrl`/`Cmd`+`K` opens the command palette, `Escape` closes the nav rail
- *   / evidence inspector / palette). A global shortcut that opens a *second*
+ *   / palette). A global shortcut that opens a *second*
  *   modal from underneath the first defeats the first dialog's focus trap
  *   entirely: focus lands in a palette that is not inside the trap, is not
  *   inerted, and whose own Escape handling would close the wrong thing.

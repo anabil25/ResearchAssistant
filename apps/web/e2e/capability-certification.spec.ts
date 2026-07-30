@@ -373,9 +373,9 @@ test.describe("Copilot connector authoring certification", () => {
     await expectAccessible(page);
     await capture(page, testInfo, "connector-management-desktop.png");
     await page.setViewportSize({ width: 390, height: 844 });
-    await expect(
-      page.getByLabel("Evidence and lineage inspector"),
-    ).not.toBeInViewport();
+    // The evidence rail used to sit off-viewport here. It no longer exists at
+    // any width -- run evidence is rendered inline with the artifact instead.
+    await expect(page.locator(".evidence-panel")).toHaveCount(0);
     await capture(page, testInfo, "connector-management-mobile.png");
   });
 });

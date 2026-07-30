@@ -49,6 +49,9 @@ param foundryProjectName string
 @description('Model deployments to provision on the Foundry account.')
 param deployments deploymentsType = []
 
+@description('Name of the agentic guardrail (RAI policy) applied to agents and the shared Toolbox.')
+param agenticGuardrailName string = 'research-agentic-guardrail'
+
 @description('Include an Azure Container Registry. Set true when any agent uses docker:.')
 param includeAcr bool = false
 
@@ -95,6 +98,9 @@ var embeddingDeployments = filter(
 var embeddingDeploymentName = length(embeddingDeployments) == 1
   ? embeddingDeployments[0].name
   : ''
+// The memory store needs a chat model alongside the embedding model.
+var chatDeployments = filter(deployments, deployment => !startsWith(deployment.model.name, 'text-embedding'))
+var chatDeploymentName = length(chatDeployments) > 0 ? chatDeployments[0].name : ''
 
 // Built-in role definition ids. See: https://learn.microsoft.com/azure/role-based-access-control/built-in-roles
 var cognitiveServicesUserRoleId = subscriptionResourceId(
@@ -172,6 +178,32 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
     // there is no implicit dependency Bicep can infer.
     dependsOn: [
       modelDeployments
+    ]
+  }
+}
+
+// Agentic guardrail. PostToolCall indirect-attack screening is the enforcement
+// point for the "retrieved content is untrusted" rule, because tool output is
+// where cross-prompt injection reaches the model.
+resource agenticGuardrail 'Microsoft.CognitiveServices/accounts/raiPolicies@2026-05-01' = {
+  parent: foundryAccount
+  name: agenticGuardrailName
+  properties: {
+    basePolicyName: 'Microsoft.DefaultV2'
+    mode: 'Blocking'
+    contentFilters: [
+      { name: 'Hate', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Prompt' }
+      { name: 'Hate', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Completion' }
+      { name: 'Sexual', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Prompt' }
+      { name: 'Sexual', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Completion' }
+      { name: 'Violence', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Prompt' }
+      { name: 'Violence', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Completion' }
+      { name: 'Selfharm', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Prompt' }
+      { name: 'Selfharm', enabled: true, blocking: true, severityThreshold: 'Medium', source: 'Completion' }
+      { name: 'Jailbreak', enabled: true, blocking: true, source: 'Prompt' }
+      { name: 'Indirect Attack', enabled: true, blocking: true, source: 'PostToolCall' }
+      { name: 'Protected Material Text', enabled: true, blocking: true, source: 'Completion' }
+      { name: 'Protected Material Code', enabled: true, blocking: true, source: 'Completion' }
     ]
   }
 }
@@ -269,6 +301,18 @@ resource apiFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   scope: foundryAccount::project
   properties: {
     principalId: identities.outputs.apiPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: foundryUserRoleId
+  }
+}
+
+// The memory store calls the chat and embedding deployments as the project
+// identity, so without this the store accepts writes but fails every search.
+resource projectFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundryAccount.id, foundryAccount::project.id, foundryUserRoleId)
+  scope: foundryAccount
+  properties: {
+    principalId: foundryAccount::project.identity.principalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: foundryUserRoleId
   }
@@ -418,6 +462,7 @@ output AZURE_AI_ACCOUNT_NAME string = foundryAccount.name
 output AZURE_AI_PROJECT_NAME string = foundryAccount::project.name
 output AZURE_OPENAI_ENDPOINT string = 'https://${foundryAccount.name}.openai.azure.com/'
 output AZURE_AI_EMBEDDING_DEPLOYMENT_NAME string = embeddingDeploymentName
+output AZURE_AI_CHAT_DEPLOYMENT_NAME string = chatDeploymentName
 output FOUNDRY_PROJECT_ENDPOINT string = 'https://${foundryAccount.name}.services.ai.azure.com/api/projects/${foundryAccount::project.name}'
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = includeAcr ? acr!.outputs.loginServer : ''
 output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = includeAcr ? acr!.outputs.resourceId : ''
@@ -458,4 +503,6 @@ output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.se
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
 output AZURE_CONNECTOR_MCP_URL string = includeAcr ? apiManagement!.outputs.connectorMcpUrl : ''
 output AZURE_CONNECTOR_MCP_URLS string = includeAcr ? string(apiManagement!.outputs.connectorMcpUrls) : '[]'
+output AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID string = includeAcr ? apiManagement!.outputs.connectorMcpSubscriptionId : ''
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''
+output AZURE_AGENTIC_GUARDRAIL_ID string = agenticGuardrail.id

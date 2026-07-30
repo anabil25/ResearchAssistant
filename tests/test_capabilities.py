@@ -1,7 +1,8 @@
 from __future__ import annotations
 
 import pytest
-from research_assistant_core import Capability, ResearchRequest, ResearchService
+from pydantic import ValidationError
+from research_assistant_core import Capability, HostedPublicAgentRequest, ResearchRequest, ResearchService
 
 
 @pytest.mark.parametrize(
@@ -63,3 +64,26 @@ def test_grant_draft_does_not_invent_project_facts() -> None:
     assert result.metadata["review_status"] == "needs_project_facts"
     assert any("No project-specific facts" in warning for warning in result.warnings)
     assert any(metric.label == "Unsupported facts added" and metric.value == "0" for metric in result.metrics)
+
+
+def test_hosted_public_agent_request_binds_a_unique_public_connector_set() -> None:
+    request = HostedPublicAgentRequest(
+        query="Compare current public guidance",
+        tenant_id="tenant-a",
+        project_id="project-a",
+        principal_id="user-a",
+        session_id="run-a",
+        authorized_connector_ids=("pubmed", "crossref"),
+    )
+
+    assert request.sensitivity == "public"
+    assert request.authorized_connector_ids == ("pubmed", "crossref")
+    with pytest.raises(ValidationError, match="unique"):
+        HostedPublicAgentRequest(
+            query="Compare current public guidance",
+            tenant_id="tenant-a",
+            project_id="project-a",
+            principal_id="user-a",
+            session_id="run-a",
+            authorized_connector_ids=("pubmed", "pubmed"),
+        )

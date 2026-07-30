@@ -1,0 +1,198 @@
+- generic [active] [ref=f3e1]:
+  - generic [ref=f3e3]:
+    - complementary "Project navigation" [ref=f3e4]:
+      - generic [ref=f3e10]:
+        - strong [ref=f3e11]: Research Assistant
+        - generic [ref=f3e12]: Microsoft Foundry workspace
+      - generic [ref=f3e13]:
+        - combobox "Active project" [disabled] [ref=f3e14]:
+          - option "No personal project" [selected]
+        - button "Create project" [ref=f3e15] [cursor=pointer]
+        - button "Manage active project" [disabled] [ref=f3e17]
+      - generic [ref=f3e21]: Workspace
+      - navigation "Workspace navigation" [ref=f3e22]:
+        - button "Overview" [ref=f3e23] [cursor=pointer]
+        - button "Library 9" [ref=f3e28] [cursor=pointer]:
+          - generic [ref=f3e31]: Library
+          - emphasis [ref=f3e32]: "9"
+        - button "Runs & approvals" [ref=f3e33] [cursor=pointer]
+      - generic [ref=f3e39]: Studios
+      - navigation "Research studios" [ref=f3e40]:
+        - button "Literature Studio" [ref=f3e41] [cursor=pointer]
+        - button "Grant Studio" [ref=f3e45] [cursor=pointer]
+        - button "Matching Explorer" [ref=f3e50] [cursor=pointer]
+        - button "Dataset Lab" [ref=f3e57] [cursor=pointer]
+        - button "Institutional Q&A" [ref=f3e61] [cursor=pointer]
+      - navigation "Project utilities" [ref=f3e66]:
+        - button "Workflow Automation" [ref=f3e67] [cursor=pointer]
+        - button "Agents" [ref=f3e73] [cursor=pointer]
+        - button "Project Settings" [ref=f3e78] [cursor=pointer]
+    - generic [ref=f3e83]:
+      - banner [ref=f3e84]:
+        - generic [ref=f3e86]:
+          - generic [ref=f3e87]: Project workspace
+          - strong [ref=f3e88]: Research command center
+        - generic [ref=f3e89]:
+          - button "Search workspace" [ref=f3e90] [cursor=pointer]:
+            - generic [ref=f3e95]: Ctrl K
+          - button "0 pending approvals" [ref=f3e96] [cursor=pointer]
+          - button "Open project settings" [ref=f3e100] [cursor=pointer]
+      - generic [ref=f3e104]: Opened Research command center
+      - main [ref=f3e105]:
+        - generic [ref=f3e106]:
+          - generic [ref=f3e107]:
+            - generic [ref=f3e108]:
+              - generic [ref=f3e109]: Research command center
+              - heading [level=1] [ref=f3e110]:
+                - text: Move from question to
+                - emphasis [ref=f3e111]: defensible evidence.
+              - paragraph [ref=f3e112]: Six purpose-built studios combine Microsoft Foundry Hosted Agents with deterministic retrieval, policy, calculations, provenance, and human approval.
+              - generic [ref=f3e113]:
+                - button "Start a literature review" [ref=f3e114] [cursor=pointer]
+                - button "Explore evidence library" [ref=f3e117] [cursor=pointer]
+            - generic [ref=f3e121]:
+              - generic [ref=f3e122]:
+                - generic [ref=f3e123]: Evidence control plane
+                - emphasis [ref=f3e127]: Healthy
+              - generic [ref=f3e128]:
+                - generic [ref=f3e135]: Search
+                - generic [ref=f3e136]: Foundry
+                - generic [ref=f3e137]: Approval
+              - generic [ref=f3e138]:
+                - generic [ref=f3e139]:
+                  - strong [ref=f3e140]: 100%
+                  - text: claim coverage gate
+                - generic [ref=f3e141]:
+                  - strong [ref=f3e142]: "Off"
+                  - text: web by default
+          - generic [ref=f3e148]:
+            - strong [ref=f3e149]: Proof before prose
+            - paragraph [ref=f3e150]: Claims become verified only after their source IDs resolve to authorized stored passages.
+          - region "Workspace metrics" [ref=f3e151]:
+            - article [ref=f3e152]:
+              - generic [ref=f3e156]:
+                - strong [ref=f3e157]: "9"
+                - generic [ref=f3e158]: Governed library items
+              - generic [ref=f3e159]: Checksum, license & ACL
+            - article [ref=f3e160]:
+              - generic [ref=f3e165]:
+                - strong [ref=f3e166]: "2"
+                - generic [ref=f3e167]: Active durable runs
+              - generic [ref=f3e168]: Resumable & auditable
+            - article [ref=f3e169]:
+              - generic [ref=f3e174]:
+                - strong [ref=f3e175]: "2"
+                - generic [ref=f3e176]: Actions awaiting approval
+              - generic [ref=f3e177]: Exact action + destination
+            - article [ref=f3e178]:
+              - generic [ref=f3e185]:
+                - strong [ref=f3e186]: 12/12
+                - generic [ref=f3e187]: Research connectors ready
+              - generic [ref=f3e188]: Public metadata only
+          - generic [ref=f3e189]:
+            - generic [ref=f3e190]:
+              - generic [ref=f3e191]:
+                - generic [ref=f3e192]: Purpose-built workspaces
+                - heading "Choose the artifact, not a generic chatbot" [level=2] [ref=f3e193]
+              - paragraph [ref=f3e194]: Each studio has a different contract, evidence boundary, workflow, and release gate.
+            - generic [ref=f3e195]:
+              - button "Literature review synthesis" [ref=f3e196] [cursor=pointer]:
+                - generic [ref=f3e197]: "01"
+                - generic [ref=f3e201]:
+                  - generic [ref=f3e202]: Evidence review
+                  - strong [ref=f3e203]: Literature review synthesis
+                  - generic [ref=f3e204]: Protocol-led search, screening, extraction, synthesis, and claim audit.
+                - generic [ref=f3e205]:
+                  - generic [ref=f3e206]: Protocol
+                  - generic [ref=f3e207]: Screen
+                  - generic [ref=f3e208]: Extract
+                  - generic [ref=f3e209]: Audit
+                - generic [ref=f3e210]: Review + extraction matrix
+              - button "Grant application studio" [ref=f3e215] [cursor=pointer]:
+                - generic [ref=f3e216]: "02"
+                - generic [ref=f3e221]:
+                  - generic [ref=f3e222]: Application lifecycle
+                  - strong [ref=f3e223]: Grant application studio
+                  - generic [ref=f3e224]: Requirement matrix, project facts, section drafting, compliance, and red team.
+                - generic [ref=f3e225]:
+                  - generic [ref=f3e226]: Notice
+                  - generic [ref=f3e227]: Facts
+                  - generic [ref=f3e228]: Draft
+                  - generic [ref=f3e229]: Review
+                - generic [ref=f3e230]: Review-ready package
+              - button "PI and resource matching" [ref=f3e235] [cursor=pointer]:
+                - generic [ref=f3e236]: "03"
+                - generic [ref=f3e243]:
+                  - generic [ref=f3e244]: Discovery
+                  - strong [ref=f3e245]: PI and resource matching
+                  - generic [ref=f3e246]: Hard filters, entity resolution, weighted evidence, and confirmed shortlist.
+                - generic [ref=f3e247]:
+                  - generic [ref=f3e248]: Criteria
+                  - generic [ref=f3e249]: Resolve
+                  - generic [ref=f3e250]: Score
+                  - generic [ref=f3e251]: Confirm
+                - generic [ref=f3e252]: Verified shortlist
+              - button "Dataset and notebook summary" [ref=f3e257] [cursor=pointer]:
+                - generic [ref=f3e258]: "04"
+                - generic [ref=f3e262]:
+                  - generic [ref=f3e263]: Data analysis
+                  - strong [ref=f3e264]: Dataset and notebook summary
+                  - generic [ref=f3e265]: Schema and quality profile, analysis plan, deterministic metrics, approved compute.
+                - generic [ref=f3e266]:
+                  - generic [ref=f3e267]: Validate
+                  - generic [ref=f3e268]: Profile
+                  - generic [ref=f3e269]: Compute
+                  - generic [ref=f3e270]: Interpret
+                - generic [ref=f3e271]: Profile + analysis plan
+              - button "Institution-grounded Q&A" [ref=f3e276] [cursor=pointer]:
+                - generic [ref=f3e277]: "05"
+                - generic [ref=f3e281]:
+                  - generic [ref=f3e282]: Policy guidance
+                  - strong [ref=f3e283]: Institution-grounded Q&A
+                  - generic [ref=f3e284]: Identity-scoped retrieval, version resolution, conflict detection, answer or abstain.
+                - generic [ref=f3e285]:
+                  - generic [ref=f3e286]: Authorize
+                  - generic [ref=f3e287]: Version
+                  - generic [ref=f3e288]: Conflict
+                  - generic [ref=f3e289]: Answer
+                - generic [ref=f3e290]: Version-aware answer
+              - button "Research workflow orchestration" [ref=f3e295] [cursor=pointer]:
+                - generic [ref=f3e296]: "06"
+                - generic [ref=f3e302]:
+                  - generic [ref=f3e303]: Automation
+                  - strong [ref=f3e304]: Research workflow orchestration
+                  - generic [ref=f3e305]: Templates, typed DAG steps, triggers, retries, approvals, and durable history.
+                - generic [ref=f3e306]:
+                  - generic [ref=f3e307]: Trigger
+                  - generic [ref=f3e308]: Graph
+                  - generic [ref=f3e309]: Dry run
+                  - generic [ref=f3e310]: Activate
+                - generic [ref=f3e311]: Versioned workflow
+          - generic [ref=f3e316]:
+            - article [ref=f3e317]:
+              - generic [ref=f3e318]:
+                - generic [ref=f3e319]:
+                  - generic [ref=f3e320]: Live workspace
+                  - heading "Work in motion" [level=2] [ref=f3e321]
+                - button "View all runs" [ref=f3e322] [cursor=pointer]
+              - generic [ref=f3e326]: Loading durable runs…
+            - article [ref=f3e327]:
+              - generic [ref=f3e328]: Release confidence
+              - heading "Governance is product state" [level=2] [ref=f3e329]
+              - generic [ref=f3e330]:
+                - strong [ref=f3e331]: "96"
+                - generic [ref=f3e332]: /100
+                - generic [ref=f3e333]: Current demo evaluation
+              - generic [ref=f3e334]:
+                - generic [ref=f3e335]: Citation resolution
+                - strong [ref=f3e336]: Passed
+              - generic [ref=f3e337]:
+                - generic [ref=f3e338]: Tenant & ACL boundary
+                - strong [ref=f3e339]: Passed
+              - generic [ref=f3e340]:
+                - generic [ref=f3e341]: Unsupported claims
+                - strong [ref=f3e342]: "0"
+              - generic [ref=f3e343]:
+                - generic [ref=f3e344]: Online research
+                - strong [ref=f3e345]: Opt-in
+  - button "Open Next.js Dev Tools" [ref=f3e351] [cursor=pointer]

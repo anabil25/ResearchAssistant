@@ -54,7 +54,7 @@ from typing import Any, Protocol, TypeGuard
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
 from azure.core.exceptions import ClientAuthenticationError
-from azure.identity.aio import ManagedIdentityCredential
+from azure.identity.aio import ManagedIdentityCredential, get_bearer_token_provider
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 from research_assistant_api.agent_studio.models import (
@@ -1046,6 +1046,11 @@ class HttpCapabilityDiscoverySource:
     ) -> None:
         self._credential = credential
         self._token_scope = token_scope
+        self._token = (
+            get_bearer_token_provider(credential, token_scope)
+            if credential is not None and token_scope
+            else None
+        )
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=f"{base_url.rstrip('/')}/",
@@ -1061,9 +1066,8 @@ class HttpCapabilityDiscoverySource:
         self._deadline_seconds = deadline_seconds
 
     async def _headers(self) -> dict[str, str]:
-        if self._credential and self._token_scope:
-            token = await self._credential.get_token(self._token_scope)
-            return {"Authorization": f"Bearer {token.token}"}
+        if self._token is not None:
+            return {"Authorization": f"Bearer {await self._token()}"}
         return {}
 
     async def _get_json(self, path: str, headers: dict[str, str]) -> Any:
@@ -1119,8 +1123,8 @@ class HttpCapabilityDiscoverySource:
             )
 
     async def _discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
-        headers = await self._headers()
         try:
+            headers = await self._headers()
             catalog = await self._get_json("v1/providers", headers)
         except (
             httpx.HTTPError,

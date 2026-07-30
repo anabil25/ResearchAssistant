@@ -799,74 +799,89 @@ test.describe("studio payload coverage", () => {
 });
 
 test.describe("shell interaction coverage", () => {
-  test.describe("[pw.evidence-inspector] evidence inspector", () => {
-    test("[pw.evidence-inspector] is a permanently visible sidebar at desktop width with no toggle control [pw.shell.evidence.open-close:ready]", async ({
+  test.describe("[pw.run-evidence] inline run evidence", () => {
+    test("[pw.run-evidence] renders run provenance and resolved sources beside the artifact, and the removed evidence rail leaves no trace [pw.studio.run-evidence:ready]", async ({
       page,
     }, testInfo) => {
-      await openWorkbenchShell(page);
-      await expect(page.locator(".evidence-panel")).toBeVisible();
-      await expect(page.getByText("Proof before prose")).toBeVisible();
-      await expect(page.getByLabel("Open evidence inspector")).toBeHidden();
-      await recordWorkbenchShot(page, testInfo, "evidence-inspector-desktop-permanent");
-    });
+      await openWorkbenchShell(page, "literature");
+      // The persistent rail and its trigger are gone at every width; nothing
+      // should be re-introducing them on the studio route.
+      await expect(page.locator(".evidence-panel")).toHaveCount(0);
+      await expect(page.locator(".evidence-toggle")).toHaveCount(0);
+      await expect(page.getByLabel("Open evidence inspector")).toHaveCount(0);
+      await expect(page.locator(".run-evidence")).toHaveCount(0);
 
-    test("[pw.evidence-inspector] opens/closes via trigger, close button, scrim, and Escape at tablet width; shows empty then resolved state [pw.shell.evidence.open-close:open][pw.shell.evidence.open-close:empty][pw.shell.evidence.open-close:resolved][pw.shell.evidence.open-close:keyboard]", async ({
-      page,
-    }, testInfo) => {
-      await page.setViewportSize(MIDSCREEN);
-      await openWorkbenchShell(page);
-      const panel = page.locator(".evidence-panel");
-      await expect(panel).toHaveAttribute("data-open", "false");
-
-      await page.getByLabel("Open evidence inspector").click();
-      await expect(panel).toHaveAttribute("data-open", "true");
-      await expect(page.getByText("Proof before prose")).toBeVisible();
-      await expect(page.getByText("Active controls")).toBeVisible();
-      await expect(
-        panel
-          .locator(".evidence-section-heading", { hasText: "Active controls" })
-          .locator("em"),
-      ).toHaveText("6");
-      await recordWorkbenchShot(page, testInfo, "evidence-inspector-empty");
-      await expectAccessibleExperience(page);
-
-      await page.locator(".evidence-close").click();
-      await expect(panel).toHaveAttribute("data-open", "false");
-
-      await page.getByLabel("Open evidence inspector").click();
-      await expect(panel).toHaveAttribute("data-open", "true");
-      await page.locator(".evidence-scrim").click();
-      await expect(panel).toHaveAttribute("data-open", "false");
-
-      await page.getByLabel("Open evidence inspector").click();
-      await page.keyboard.press("Escape");
-      await expect(panel).toHaveAttribute("data-open", "false");
-
-      await page
-        .getByRole("button", { name: /literature review synthesis/i })
-        .click();
       await submitStudioAndReadPayload(
         page,
         "literature",
         "Search & screen evidence",
       );
-      await page.getByLabel("Open evidence inspector").click();
-      await expect(page.getByText("Run resolved")).toBeVisible();
-      await expect(page.getByText("Resolved sources")).toBeVisible();
-      await recordWorkbenchShot(page, testInfo, "evidence-inspector-resolved");
+
+      const evidence = page.locator(".run-evidence");
+      await expect(evidence).toBeVisible();
+      await expect(
+        evidence.getByText("Run resolved", { exact: true }),
+      ).toBeVisible();
+      await expect(evidence.locator(".evidence-run-card strong")).not.toBeEmpty();
+      // Durable instance id is the provenance claim that makes the artifact
+      // traceable back to a real orchestration, so assert it is real text.
+      await expect(evidence.locator(".evidence-run-card small")).not.toBeEmpty();
+      await expect(evidence.locator(".evidence-progress strong")).toContainText(
+        "%",
+      );
+
+      const sources = evidence.locator(".evidence-source-list article");
+      const sourceCount = await sources.count();
+      expect(sourceCount).toBeGreaterThan(0);
+      // The heading count must equal the rendered rows -- the deleted rail
+      // shipped a hardcoded "6" over a 7-item list, and that class of drift
+      // is exactly what this pins.
+      await expect(
+        evidence
+          .locator(".evidence-section-heading", { hasText: "Resolved sources" })
+          .locator("em"),
+      ).toHaveText(String(sourceCount));
+      await expect(sources.first().locator("code")).not.toBeEmpty();
+
+      await recordWorkbenchShot(page, testInfo, "run-evidence-resolved");
+      await expectAccessibleExperience(page);
     });
 
-    test("[pw.evidence-inspector] opens at mobile viewport [pw.shell.evidence.open-close:mobile]", async ({
+    test("[pw.run-evidence] states plainly that no stored citations backed the artifact when the run resolves without any [pw.studio.run-evidence:empty]", async ({
       page,
     }, testInfo) => {
-      await page.setViewportSize(HANDHELD);
-      await openWorkbenchShell(page);
-      await page.getByLabel("Open evidence inspector").click();
-      await expect(page.locator(".evidence-panel")).toHaveAttribute(
-        "data-open",
-        "true",
+      // Rewrite the real backend response rather than hand-rolling a payload,
+      // so this stays bound to the actual studio result contract.
+      await page.route("**/api/studios/literature/run", async (route) => {
+        const response = await route.fetch();
+        const body = await response.json();
+        body.citations = [];
+        if (body.insight) {
+          body.insight.referenced_source_ids = [];
+        }
+        await route.fulfill({ response, json: body });
+      });
+
+      await openWorkbenchShell(page, "literature");
+      await submitStudioAndReadPayload(
+        page,
+        "literature",
+        "Search & screen evidence",
       );
-      await recordWorkbenchShot(page, testInfo, "evidence-inspector-mobile");
+
+      const evidence = page.locator(".run-evidence");
+      await expect(evidence).toBeVisible();
+      await expect(evidence.locator(".evidence-source-list")).toHaveCount(0);
+      await expect(evidence.locator(".evidence-empty")).toHaveText(
+        "No stored citations were used by this artifact.",
+      );
+      await expect(
+        evidence
+          .locator(".evidence-section-heading", { hasText: "Resolved sources" })
+          .locator("em"),
+      ).toHaveText("0");
+
+      await recordWorkbenchShot(page, testInfo, "run-evidence-empty");
     });
   });
 

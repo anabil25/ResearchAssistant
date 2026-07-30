@@ -86,6 +86,7 @@ describe("backend proxy route", () => {
       expect(init?.headers).toEqual({
         "Content-Type": "application/json",
         "X-MS-CLIENT-PRINCIPAL": "principal-token",
+        "X-Research-Project-ID": "project-0123456789abcdef0123456789abcdef",
         "X-Request-ID": "client-request-id",
       });
 
@@ -106,6 +107,7 @@ describe("backend proxy route", () => {
           "Content-Type": "application/json",
           Cookie: "session=secret",
           "X-MS-CLIENT-PRINCIPAL": "principal-token",
+          "X-Research-Project-ID": "project-0123456789abcdef0123456789abcdef",
           "X-Request-ID": "client-request-id",
         },
       }),

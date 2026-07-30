@@ -1,0 +1,2791 @@
+{
+  "info": {
+    "description": "Open catalog of scholarly works, authors, sources, and institutions. Authored from https://developers.openalex.org/api-reference/introduction",
+    "title": "OpenAlex API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/authors": {
+      "get": {
+        "operationId": "openalexListAuthors",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex researcher profiles."
+      }
+    },
+    "/authors/{id}": {
+      "get": {
+        "operationId": "openalexGetAuthor",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from researcher profiles."
+      }
+    },
+    "/autocomplete": {
+      "get": {
+        "operationId": "openalexAutocomplete",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete across all OpenAlex entity types."
+      }
+    },
+    "/autocomplete/authors": {
+      "get": {
+        "operationId": "openalexAutocompleteAuthors",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex researcher profiles by partial name."
+      }
+    },
+    "/autocomplete/concepts": {
+      "get": {
+        "operationId": "openalexAutocompleteConcepts",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex legacy research concepts by partial name."
+      }
+    },
+    "/autocomplete/domains": {
+      "get": {
+        "operationId": "openalexAutocompleteDomains",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex topic domains by partial name."
+      }
+    },
+    "/autocomplete/fields": {
+      "get": {
+        "operationId": "openalexAutocompleteFields",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex topic fields by partial name."
+      }
+    },
+    "/autocomplete/funders": {
+      "get": {
+        "operationId": "openalexAutocompleteFunders",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex funding agencies by partial name."
+      }
+    },
+    "/autocomplete/institutions": {
+      "get": {
+        "operationId": "openalexAutocompleteInstitutions",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex universities and research organizations by partial name."
+      }
+    },
+    "/autocomplete/keywords": {
+      "get": {
+        "operationId": "openalexAutocompleteKeywords",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex keywords by partial name."
+      }
+    },
+    "/autocomplete/publishers": {
+      "get": {
+        "operationId": "openalexAutocompletePublishers",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex publishing organizations by partial name."
+      }
+    },
+    "/autocomplete/sources": {
+      "get": {
+        "operationId": "openalexAutocompleteSources",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex journals, repositories, and conferences by partial name."
+      }
+    },
+    "/autocomplete/subfields": {
+      "get": {
+        "operationId": "openalexAutocompleteSubfields",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex topic subfields by partial name."
+      }
+    },
+    "/autocomplete/topics": {
+      "get": {
+        "operationId": "openalexAutocompleteTopics",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex research topics by partial name."
+      }
+    },
+    "/autocomplete/works": {
+      "get": {
+        "operationId": "openalexAutocompleteWorks",
+        "parameters": [
+          {
+            "description": "Partial entity name to complete.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Autocomplete OpenAlex scholarly documents by partial name."
+      }
+    },
+    "/concepts": {
+      "get": {
+        "operationId": "openalexListConcepts",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex legacy research concepts."
+      }
+    },
+    "/concepts/{id}": {
+      "get": {
+        "operationId": "openalexGetConcept",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from legacy research concepts."
+      }
+    },
+    "/domains": {
+      "get": {
+        "operationId": "openalexListDomains",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex topic domains."
+      }
+    },
+    "/domains/{id}": {
+      "get": {
+        "operationId": "openalexGetDomain",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from topic domains."
+      }
+    },
+    "/fields": {
+      "get": {
+        "operationId": "openalexListFields",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex topic fields."
+      }
+    },
+    "/fields/{id}": {
+      "get": {
+        "operationId": "openalexGetField",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from topic fields."
+      }
+    },
+    "/funders": {
+      "get": {
+        "operationId": "openalexListFunders",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex funding agencies."
+      }
+    },
+    "/funders/{id}": {
+      "get": {
+        "operationId": "openalexGetFunder",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from funding agencies."
+      }
+    },
+    "/institutions": {
+      "get": {
+        "operationId": "openalexListInstitutions",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex universities and research organizations."
+      }
+    },
+    "/institutions/{id}": {
+      "get": {
+        "operationId": "openalexGetInstitution",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from universities and research organizations."
+      }
+    },
+    "/keywords": {
+      "get": {
+        "operationId": "openalexListKeywords",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex keywords."
+      }
+    },
+    "/keywords/{id}": {
+      "get": {
+        "operationId": "openalexGetKeyword",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from keywords."
+      }
+    },
+    "/publishers": {
+      "get": {
+        "operationId": "openalexListPublishers",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex publishing organizations."
+      }
+    },
+    "/publishers/{id}": {
+      "get": {
+        "operationId": "openalexGetPublisher",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from publishing organizations."
+      }
+    },
+    "/sources": {
+      "get": {
+        "operationId": "openalexListSources",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex journals, repositories, and conferences."
+      }
+    },
+    "/sources/{id}": {
+      "get": {
+        "operationId": "openalexGetSource",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from journals, repositories, and conferences."
+      }
+    },
+    "/subfields": {
+      "get": {
+        "operationId": "openalexListSubfields",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex topic subfields."
+      }
+    },
+    "/subfields/{id}": {
+      "get": {
+        "operationId": "openalexGetSubfield",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from topic subfields."
+      }
+    },
+    "/text": {
+      "get": {
+        "operationId": "openalexText",
+        "parameters": [
+          {
+            "description": "Title text to analyze.",
+            "in": "query",
+            "name": "title",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Abstract text to analyze.",
+            "in": "query",
+            "name": "abstract",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full text to analyze.",
+            "in": "query",
+            "name": "fulltext",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Infer topics, keywords, and concepts from supplied text."
+      }
+    },
+    "/topics": {
+      "get": {
+        "operationId": "openalexListTopics",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex research topics."
+      }
+    },
+    "/topics/{id}": {
+      "get": {
+        "operationId": "openalexGetTopic",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from research topics."
+      }
+    },
+    "/works": {
+      "get": {
+        "operationId": "openalexListWorks",
+        "parameters": [
+          {
+            "description": "Filter expression using field:value; comma is AND, pipe is OR.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Full-text search across titles, abstracts, and other text fields.",
+            "in": "query",
+            "name": "search",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Sort field; prefix with '-' for descending order.",
+            "in": "query",
+            "name": "sort",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Page number; basic paging caps at 10000 results.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Results per page between 1 and 100.",
+            "in": "query",
+            "name": "per_page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Deep-paging cursor; start with '*' and follow meta.next_cursor.",
+            "in": "query",
+            "name": "cursor",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Return a random sample of N results; cannot combine with sort or page.",
+            "in": "query",
+            "name": "sample",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Aggregate results by a field and return counts.",
+            "in": "query",
+            "name": "group_by",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List and filter OpenAlex scholarly documents."
+      }
+    },
+    "/works/{id}": {
+      "get": {
+        "operationId": "openalexGetWork",
+        "parameters": [
+          {
+            "description": "OpenAlex ID or a supported external identifier.",
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated allowlist of fields to return.",
+            "in": "query",
+            "name": "select",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Contact email that routes the request to the polite pool.",
+            "in": "query",
+            "name": "mailto",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OpenAlex API key, when one has been issued.",
+            "in": "query",
+            "name": "api_key",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve a single OpenAlex entity from scholarly documents."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.openalex.org"
+    }
+  ]
+}

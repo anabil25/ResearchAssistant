@@ -13,6 +13,7 @@ from xml.etree.ElementTree import ParseError
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from research_assistant_core.connector_catalog import connector_definitions
 from research_assistant_connector_adapter.app import (
     DEFAULT_MAX_REQUEST_BODY_BYTES,
     REQUEST_BODY_LIMIT_ENV,
@@ -28,6 +29,7 @@ ROOT = Path(__file__).resolve().parents[1]
 
 class FakeRegistry:
     calls: ClassVar[list[tuple[str, str, int]]] = []
+    lookup_calls: ClassVar[list[tuple[str, str]]] = []
     closed: ClassVar[int] = 0
 
     def search(self, source: str, query: str, *, limit: int) -> ConnectorResult:
@@ -40,6 +42,16 @@ class FakeRegistry:
             retrieved_from=f"https://provider.example/{source}",
         )
 
+    def lookup(self, source: str, identifier: str) -> ConnectorResult:
+        self.lookup_calls.append((source, identifier))
+        return ConnectorResult(
+            source=source,
+            query=identifier,
+            records=[{"pmid": identifier, "title": "Bounded metadata"}],
+            terms_url=f"https://terms.example/{source}",
+            retrieved_from=f"https://provider.example/{source}",
+        )
+
     def close(self) -> None:
         type(self).closed += 1
 
@@ -47,6 +59,7 @@ class FakeRegistry:
 @pytest.fixture
 def client() -> Iterator[TestClient]:
     FakeRegistry.calls = []
+    FakeRegistry.lookup_calls = []
     FakeRegistry.closed = 0
     app.state.registry_factory = FakeRegistry
     app.state.gateway_validator = None
@@ -69,6 +82,10 @@ def test_adapter_exposes_narrow_stable_openapi_operations(client: TestClient) ->
         "searchLiteratureMetadata",
         "searchGrantOpportunities",
         "searchMatchingMetadata",
+    } | {
+        operation.id
+        for connector in connector_definitions()
+        for operation in connector.operations
     }
     committed = json.loads(
         (
@@ -96,6 +113,81 @@ def test_literature_search_returns_typed_metadata_and_closes_client(
     assert response.json()["notice"].startswith("Metadata only")
     assert FakeRegistry.calls == [("pubmed", "auditable synthesis", 2)]
     assert FakeRegistry.closed == 1
+
+
+def test_connector_specific_search_binds_source_server_side(client: TestClient) -> None:
+    response = client.post(
+        "/v1/connectors/pubmed/search",
+        json={"query": "auditable synthesis", "limit": 2},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "pubmed"
+    assert FakeRegistry.calls == [("pubmed", "auditable synthesis", 2)]
+
+
+def test_connector_specific_lookup_binds_pubmed_identifier_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/pubmed/records/123")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "pubmed"
+    assert FakeRegistry.lookup_calls == [("pubmed", "123")]
+
+
+def test_connector_specific_lookup_binds_crossref_doi_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/crossref/works/10.1%2Fexample")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "crossref"
+    assert FakeRegistry.lookup_calls == [("crossref", "10.1/example")]
+
+
+def test_connector_specific_lookup_binds_datacite_doi_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/datacite/dois/10.1%2Fexample")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "datacite"
+    assert FakeRegistry.lookup_calls == [("datacite", "10.1/example")]
+
+
+def test_connector_specific_lookup_binds_openalex_work_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/openalex/works/W123")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "openalex"
+    assert FakeRegistry.lookup_calls == [("openalex", "W123")]
+
+
+def test_connector_specific_lookup_binds_ror_organization_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/ror/organizations/00tjv0s33")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "ror"
+    assert FakeRegistry.lookup_calls == [("ror", "00tjv0s33")]
+
+
+def test_connector_specific_lookup_binds_europe_pmc_article_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/europe_pmc/articles/MED/123")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "europe_pmc"
+    assert FakeRegistry.lookup_calls == [("europe_pmc", "MED:123")]
+
+
+def test_connector_specific_lookup_binds_clinical_trials_nct_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/clinical_trials/studies/NCT00000001")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "clinical_trials"
+    assert FakeRegistry.lookup_calls == [("clinical_trials", "NCT00000001")]
+
+
+def test_connector_specific_lookup_binds_arxiv_identifier_server_side(client: TestClient) -> None:
+    response = client.get("/v1/connectors/arxiv/records/2601.00001")
+
+    assert response.status_code == 200
+    assert response.json()["source"] == "arxiv"
+    assert FakeRegistry.lookup_calls == [("arxiv", "2601.00001")]
 
 
 def test_capability_routes_reject_cross_boundary_sources_and_extra_fields(

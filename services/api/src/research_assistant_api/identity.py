@@ -10,6 +10,10 @@ from fastapi import HTTPException, Request, status
 from research_assistant_api.config import Settings
 
 
+PLATFORM_OWNER_GROUPS = frozenset({"research-admins", "agent-studio-admins"})
+LOCAL_DEVELOPMENT_SOURCE = "demo-sandbox"
+
+
 @dataclass(frozen=True, slots=True)
 class IdentityContext:
     user_id: str
@@ -39,6 +43,20 @@ class IdentityContext:
     #: possibly-truncated list. See ``research_assistant_api.agent_studio
     #: .authz`` for the consumer of this flag.
     groups_overage: bool = False
+
+
+def is_platform_owner(identity: IdentityContext) -> bool:
+    return bool(PLATFORM_OWNER_GROUPS.intersection(identity.groups))
+
+
+def local_developer_identity(settings: Settings) -> IdentityContext:
+    return IdentityContext(
+        user_id="demo-researcher",
+        display_name="Anonymous researcher",
+        tenant_id=settings.workspace_tenant_id,
+        groups=("researchers", "research-admins", "grant-reviewers"),
+        source=LOCAL_DEVELOPMENT_SOURCE,
+    )
 
 
 def _decode_client_principal(value: str) -> dict[str, Any] | None:
@@ -86,7 +104,7 @@ def _has_group_overage(payload: dict[str, Any]) -> bool:
 def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
     """Resolve the caller's identity from platform-injected or demo signals.
 
-    ``trust_platform_identity_headers`` gates trusting the
+    ``entra_auth_enforced`` gates trusting the
     ``x-ms-client-principal`` header that Azure Container Apps' built-in
     authentication (EasyAuth / ``Microsoft.App/containerApps/authConfigs``)
     injects *after* it has independently validated the incoming
@@ -108,7 +126,7 @@ def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
     wiring was forgotten.
     """
     encoded = request.headers.get("x-ms-client-principal")
-    if settings.trust_platform_identity_headers and encoded and (payload := _decode_client_principal(encoded)):
+    if settings.entra_auth_enforced and encoded and (payload := _decode_client_principal(encoded)):
         claims = _claim_values(payload)
         tenant = next(
             iter(claims.get("tid", []) or claims.get("http://schemas.microsoft.com/identity/claims/tenantid", [])),
@@ -132,21 +150,8 @@ def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
                 roles=tuple(claims.get("roles", [])),
             )
 
-    if settings.allow_demo_identity:
-        return IdentityContext(
-            user_id="demo-researcher",
-            display_name="Dr. Maya Chen",
-            tenant_id=settings.workspace_tenant_id,
-            # Least privilege: the demo/local-dev sandbox identity must not
-            # carry platform-owner/admin rights by default. It intentionally
-            # excludes "research-admins" (an Agent Studio
-            # ``PLATFORM_OWNER_GROUPS`` member) so an unauthenticated demo
-            # session can never trivially satisfy platform-owner checks;
-            # "grant-reviewers" is retained only because an unrelated
-            # legacy grant-review feature requires it for local testability.
-            groups=("researchers", "grant-reviewers"),
-            source="demo-sandbox",
-        )
+    if not settings.entra_auth_enforced:
+        return local_developer_identity(settings)
 
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
@@ -178,9 +183,9 @@ def project_group_name(project_id: str) -> str:
 
 
 #: The interactive local/dev "demo sandbox" identity source (only ever issued
-#: when ``Settings.allow_demo_identity`` is explicitly enabled). It never
+#: when ``Settings.entra_auth_enforced`` is false). It never
 #: carries real Entra group claims and exists purely to exercise the API
 #: without a real identity provider, so it is exempt from project-membership
 #: group-claim checks. See ``research_assistant_api.agent_studio.authz`` for
 #: the actual membership-resolution policy this identity is exempted from.
-DEMO_SANDBOX_SOURCE = "demo-sandbox"
+DEMO_SANDBOX_SOURCE = LOCAL_DEVELOPMENT_SOURCE

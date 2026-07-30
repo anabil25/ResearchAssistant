@@ -139,14 +139,16 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     testIds: ["pw.approval-notification"],
   },
   {
-    id: "shell.evidence.open-close",
-    surface: "Shell",
-    control: "Evidence inspector",
-    behavior: "Opens and closes by trigger, close button, scrim, and Escape with focus restoration.",
+    id: "studio.run-evidence",
+    surface: "Studio",
+    control: "Inline run evidence",
+    behavior: "Renders run provenance, resolved sources, and the hosted-agent boundary beside the artifact once a run resolves.",
     baseline: "functional-uncovered",
     milestone: "M1",
-    states: ["ready", "open", "empty", "resolved", "keyboard", "mobile"],
-    testIds: ["pw.evidence-inspector"],
+    // Purely presentational -- no focusable control, no viewport-dependent
+    // DOM -- so "keyboard" and "mobile" would be unprovable claims.
+    states: ["ready", "empty"],
+    testIds: ["pw.run-evidence", "jest.run-evidence"],
   },
   {
     id: "overview.start-literature",
@@ -1271,6 +1273,9 @@ const SURFACE_ROUTES: Readonly<Record<string, string>> = {
   Runs: "/?view=runs",
   Settings: "/?view=settings",
   Shell: "/",
+  // Rendered by all six studios, but only proven at the literature route --
+  // claiming six routes here would assert coverage no test provides.
+  Studio: "/?view=literature",
   Workflow: "/?view=orchestration",
 };
 
@@ -1294,6 +1299,7 @@ const SURFACE_SCREENSHOTS: Readonly<Record<string, readonly string[]>> = {
   Runs: ["visual.core.runs"],
   Settings: ["visual.core.settings"],
   Shell: ["visual.core.overview"],
+  Studio: ["visual.core.literature"],
   Workflow: ["visual.core.workflow"],
 };
 
@@ -1357,10 +1363,6 @@ function classifyState(name: string): CoverageStateKind {
  * from intuition. Against the configured viewport widths (desktop 1440,
  * tablet 834, mobile 390):
  *
- *  - `@media (max-width: 1180px)` restyles `.evidence-panel`,
- *    `.evidence-close`, `.evidence-toggle` and `.evidence-scrim` -- the
- *    evidence inspector stops being a docked column and becomes a scrimmed
- *    overlay. Applies to tablet and mobile.
  *  - `@media (max-width: 900px)` restyles `.project-rail`,
  *    `.mobile-menu-button`, `.mobile-scrim` and `.topbar`/`.search-button`
  *    -- the navigation rail becomes a drawer opened by a button that does
@@ -1387,7 +1389,6 @@ const VIEWPORT_SENSITIVE_INTERACTION_IDS: ReadonlySet<string> = new Set([
   "shell.navigation.primary-routes",
   "shell.navigation.open-mobile",
   "shell.navigation.close-mobile",
-  "shell.evidence.open-close",
   "shell.search.open",
   "shell.search.close",
   "shell.search.query",

@@ -1,0 +1,98 @@
+{
+  "info": {
+    "description": "arXiv OAI-PMH 2.0 metadata harvesting interface. Authored from https://info.arxiv.org/help/api/user-manual.html",
+    "title": "arXiv API (oai)",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/oai": {
+      "get": {
+        "operationId": "arxivOaiRequest",
+        "parameters": [
+          {
+            "description": "OAI-PMH verb: Identify, ListMetadataFormats, ListSets, ListIdentifiers, ListRecords, or GetRecord.",
+            "in": "query",
+            "name": "verb",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "OAI identifier, required for GetRecord, for example oai:arXiv.org:0804.2273.",
+            "in": "query",
+            "name": "identifier",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Metadata format: oai_dc, arXiv, or arXivRaw.",
+            "in": "query",
+            "name": "metadataPrefix",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Lower-bound UTC datestamp as YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.",
+            "in": "query",
+            "name": "from",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Upper-bound UTC datestamp as YYYY-MM-DD or YYYY-MM-DDThh:mm:ssZ.",
+            "in": "query",
+            "name": "until",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "setSpec for selective harvesting, for example physics:hep-th.",
+            "in": "query",
+            "name": "set",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Flow-control token from a previous response; exclusive of other arguments.",
+            "in": "query",
+            "name": "resumptionToken",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Issue an OAI-PMH 2.0 request; the verb selects the harvesting operation."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://oaipmh.arxiv.org"
+    }
+  ]
+}

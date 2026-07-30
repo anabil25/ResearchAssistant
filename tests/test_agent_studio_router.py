@@ -38,6 +38,19 @@ from research_assistant_api.agent_studio.evaluation_runner import (
     InMemoryEvaluationRunner,
     UnavailableEvaluationRunner,
 )
+from research_assistant_api.agent_studio.foundry_agent_inventory import (
+    FoundryAgentInventory,
+    FoundryAgentInventoryError,
+    FoundryAgentInventoryItem,
+    FoundryAgentType,
+    UnavailableFoundryAgentInventory,
+)
+from research_assistant_api.agent_studio.foundry_prompt_publisher import (
+    PromptAgentPublication,
+    PromptAgentPublicationError,
+    PromptAgentPublisher,
+    UnavailablePromptAgentPublisher,
+)
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import InMemoryMemoryStore, MemoryService
 from research_assistant_api.agent_studio.model_discovery import (
@@ -50,6 +63,7 @@ from research_assistant_api.agent_studio.models import (
     AgentManifest,
     AgentOwnerKind,
     AgentRole,
+    AgentVersion,
     ApprovalKind,
     AuditEventKind,
     CapabilityInstance,
@@ -246,6 +260,8 @@ def _build_app(
     evaluation_runner: EvaluationRunner | None = None,
     playground_invoker: PlaygroundInvoker | None = None,
     observability_provider: ObservabilityProvider | None = None,
+    foundry_agent_inventory: FoundryAgentInventory | None = None,
+    prompt_agent_publisher: PromptAgentPublisher | None = None,
 ) -> FastAPI:
     app = FastAPI()
     app.include_router(agent_studio_router)
@@ -253,6 +269,10 @@ def _build_app(
     app.state.agent_studio_store = store
     app.state.agent_studio_registry = registry
     app.state.agent_studio_model_discovery = model_discovery
+    app.state.agent_studio_foundry_agent_inventory = (
+        foundry_agent_inventory or UnavailableFoundryAgentInventory()
+    )
+    app.state.agent_studio_prompt_agent_publisher = prompt_agent_publisher or UnavailablePromptAgentPublisher()
     app.state.agent_studio_release_service = release_service
     app.state.agent_studio_deployment_service = deployment_service
     app.state.agent_studio_memory_service = memory_service
@@ -285,8 +305,7 @@ def _build_app(
 @pytest.fixture
 def settings() -> Settings:
     return Settings(
-        trust_platform_identity_headers=True,
-        allow_demo_identity=True,
+        entra_auth_enforced=True,
         workspace_tenant_id="demo",
     )
 
@@ -294,8 +313,7 @@ def settings() -> Settings:
 @pytest.fixture
 def locked_settings() -> Settings:
     return Settings(
-        trust_platform_identity_headers=False,
-        allow_demo_identity=False,
+        entra_auth_enforced=True,
         workspace_tenant_id="demo",
     )
 
@@ -945,6 +963,211 @@ def test_router_requires_authentication_when_demo_identity_is_disabled(
     response = unauthenticated_client.get("/api/agent-studio/capabilities/descriptors")
     assert response.status_code == 401
     assert "authenticated platform identity" in response.json()["detail"]
+
+
+def test_foundry_agent_inventory_is_project_scoped_and_display_safe(
+    settings: Settings,
+    store: AgentStudioStore,
+    registry: CapabilityRegistry,
+    model_discovery: InMemoryModelDiscovery,
+    deployment_service: DeploymentService,
+    memory_service: MemoryService,
+    builder_service: BuilderService,
+    audit_service: AuditService,
+) -> None:
+    configured_settings = settings.model_copy(update={"workspace_project_id": DEFAULT_PROJECT_ID})
+
+    class StaticInventory:
+        def list_agents(self) -> tuple[FoundryAgentInventoryItem, ...]:
+            return (
+                FoundryAgentInventoryItem(
+                    name="prompt-helper",
+                    agent_type=FoundryAgentType.PROMPT,
+                    description="Summarizes approved research documents.",
+                    version="3",
+                    status="active",
+                    model="gpt-5.4-mini",
+                ),
+            )
+
+    app = _build_app(
+        configured_settings,
+        store=store,
+        registry=registry,
+        model_discovery=model_discovery,
+        release_service=ReleaseService(store, registry, model_discovery=model_discovery),
+        deployment_service=deployment_service,
+        memory_service=memory_service,
+        builder_service=builder_service,
+        audit_service=audit_service,
+        foundry_agent_inventory=StaticInventory(),
+    )
+    with TestClient(app) as client:
+        context = client.get(
+            "/api/agent-studio/foundry/context",
+            headers=USER_HEADERS,
+        )
+        assert context.status_code == 200, context.text
+        assert context.json() == {"project_id": DEFAULT_PROJECT_ID}
+
+        response = client.get(
+            "/api/agent-studio/foundry/agents",
+            headers=USER_HEADERS,
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == [
+            {
+                "name": "prompt-helper",
+                "agent_type": "prompt",
+                "description": "Summarizes approved research documents.",
+                "version": "3",
+                "status": "active",
+                "model": "gpt-5.4-mini",
+            }
+        ]
+
+        mismatch = client.get(
+            "/api/agent-studio/foundry/agents",
+            params={"project_id": OTHER_PROJECT_ID},
+            headers=_project_headers(
+                tenant_id="demo",
+                user_id="user-1",
+                project_ids=(DEFAULT_PROJECT_ID, OTHER_PROJECT_ID),
+            ),
+        )
+        assert mismatch.status_code == 422
+
+
+def test_foundry_agent_inventory_returns_unavailable_when_port_cannot_list(
+    client: TestClient,
+) -> None:
+    class RaisingInventory:
+        def list_agents(self) -> tuple[FoundryAgentInventoryItem, ...]:
+            raise FoundryAgentInventoryError("Foundry access is unavailable.")
+
+    cast(Any, client).app.state.agent_studio_foundry_agent_inventory = RaisingInventory()
+    client.app.state.settings = cast(Settings, client.app.state.settings).model_copy(
+        update={"workspace_project_id": DEFAULT_PROJECT_ID}
+    )
+    response = client.get(
+        "/api/agent-studio/foundry/agents",
+        params={"project_id": DEFAULT_PROJECT_ID},
+        headers=USER_HEADERS,
+    )
+
+    assert response.status_code == 503
+    assert response.json()["detail"] == "Foundry access is unavailable."
+
+
+def _configure_prompt_publication_model(client: TestClient) -> None:
+    application = cast(Any, client).app
+    model_discovery = InMemoryModelDiscovery(
+        (
+            ModelDeploymentRef(
+                deployment_name="gpt-4o-prod",
+                model_name="gpt-4o",
+                model_format="OpenAI",
+                capacity=2,
+            ),
+        )
+    )
+    application.state.agent_studio_model_discovery = model_discovery
+    application.state.agent_studio_release_service = ReleaseService(
+        application.state.agent_studio_store,
+        application.state.agent_studio_registry,
+        model_discovery=model_discovery,
+    )
+    application.state.agent_studio_deployment_service = DeploymentService(
+        application.state.agent_studio_store,
+        capability_registry=application.state.agent_studio_registry,
+        model_discovery=model_discovery,
+    )
+
+
+def test_publish_prompt_agent_is_gated_owner_only_and_idempotent(client: TestClient) -> None:
+    _configure_prompt_publication_model(client)
+    _create_agent(client, logical_agent_id="agent-prompt-publish")
+    draft = _get_draft(client, "agent-prompt-publish")
+    draft["manifest"]["instructions"] = "Use approved sources only."
+    draft["manifest"]["model_deployment"] = {
+        "deployment_name": "gpt-4o-prod",
+        "model_name": "gpt-4o",
+        "model_format": "OpenAI",
+        "capacity": 2,
+    }
+    _update_manifest(client, "agent-prompt-publish", draft["manifest"])
+    version = _cut_gated_version(client, "agent-prompt-publish")
+
+    class RecordingPublisher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def publish(self, published_version: AgentVersion) -> PromptAgentPublication:
+            self.calls += 1
+            return PromptAgentPublication(
+                logical_agent_id=published_version.logical_agent_id,
+                studio_version_id=published_version.id,
+                manifest_hash=published_version.manifest_hash,
+                remote_agent_name=published_version.logical_agent_id,
+                remote_version="4",
+                remote_status="active",
+            )
+
+    publisher = RecordingPublisher()
+    cast(Any, client).app.state.agent_studio_prompt_agent_publisher = publisher
+    body = {"project_id": DEFAULT_PROJECT_ID, "idempotency_key": "publish-once"}
+    first = client.post(
+        f"/api/agent-studio/versions/{version['id']}/publish-prompt",
+        json=body,
+        headers=USER_HEADERS,
+    )
+    second = client.post(
+        f"/api/agent-studio/versions/{version['id']}/publish-prompt",
+        json=body,
+        headers=USER_HEADERS,
+    )
+
+    assert first.status_code == 200, first.text
+    assert second.status_code == 200, second.text
+    assert first.json() == second.json()
+    assert first.json()["remote_version"] == "4"
+    assert publisher.calls == 1
+
+
+def test_publish_prompt_agent_requires_reconciliation_after_unknown_remote_outcome(client: TestClient) -> None:
+    _configure_prompt_publication_model(client)
+    _create_agent(client, logical_agent_id="agent-prompt-publish-failure")
+    draft = _get_draft(client, "agent-prompt-publish-failure")
+    draft["manifest"]["model_deployment"] = {
+        "deployment_name": "gpt-4o-prod",
+        "model_name": "gpt-4o",
+        "model_format": "OpenAI",
+        "capacity": 2,
+    }
+    _update_manifest(client, "agent-prompt-publish-failure", draft["manifest"])
+    version = _cut_gated_version(client, "agent-prompt-publish-failure")
+
+    class FailingPublisher:
+        def publish(self, published_version: AgentVersion) -> PromptAgentPublication:
+            del published_version
+            raise PromptAgentPublicationError("Foundry did not confirm the publication.")
+
+    cast(Any, client).app.state.agent_studio_prompt_agent_publisher = FailingPublisher()
+    body = {"project_id": DEFAULT_PROJECT_ID, "idempotency_key": "unknown-outcome"}
+    first = client.post(
+        f"/api/agent-studio/versions/{version['id']}/publish-prompt",
+        json=body,
+        headers=USER_HEADERS,
+    )
+    retry = client.post(
+        f"/api/agent-studio/versions/{version['id']}/publish-prompt",
+        json=body,
+        headers=USER_HEADERS,
+    )
+
+    assert first.status_code == 502
+    assert retry.status_code == 409
+    assert "requires reconciliation" in retry.json()["detail"]
 
 
 def test_list_capabilities_and_attach_cover_catalog_and_new_request_shape(
@@ -5320,7 +5543,7 @@ def test_tenant_isolation_holds_for_tenant_scoped_routes(
     ).json() == []
 
 
-def test_project_membership_is_enforced_and_demo_sandbox_bypasses_it(client: TestClient) -> None:
+def test_project_membership_is_enforced_for_every_identity(client: TestClient) -> None:
     _create_agent(client, logical_agent_id="agent-project-membership", headers=USER_HEADERS)
 
     no_membership_headers = _headers(tenant_id="demo", user_id="outsider")
@@ -5340,18 +5563,6 @@ def test_project_membership_is_enforced_and_demo_sandbox_bypasses_it(client: Tes
     )
     assert overage.status_code == 403
     assert "group overage" in overage.json()["detail"]
-
-    sandbox_create = client.post(
-        "/api/agent-studio/agents",
-        json=_body(
-            OTHER_PROJECT_ID,
-            logical_agent_id="agent-demo-sandbox",
-            display_name="Sandbox Agent",
-        ),
-    )
-    assert sandbox_create.status_code == 201, sandbox_create.text
-    assert sandbox_create.json()["manifest"]["project_id"] == OTHER_PROJECT_ID
-    assert sandbox_create.json()["manifest"]["owner_id"] == "demo-researcher"
 
 
 def test_project_membership_in_one_project_does_not_authorize_a_different_project(
@@ -5437,41 +5648,16 @@ def test_router_denies_when_app_composed_resolver_reports_unavailable(client: Te
     assert "directory unreachable" in response.json()["detail"]
 
 
-def test_demo_sandbox_identity_is_isolated_from_app_composed_membership_resolver(
-    client: TestClient,
-) -> None:
-    """The demo-sandbox identity must always route to its own explicit
-    ``DemoSandboxMembershipPolicy`` -- never to whatever real
-    ``ProjectMembershipResolver`` the application composes on
-    ``app.state``. Proven here by installing a hostile always-UNAVAILABLE
-    resolver and confirming the (header-less, therefore demo-sandbox)
-    request still succeeds against an arbitrary project."""
-    hostile_resolver: ProjectMembershipResolver = _AlwaysUnavailableResolver()
-    cast(Any, client).app.state.agent_studio_membership_resolver = hostile_resolver
-    response = client.post(
-        "/api/agent-studio/agents",
-        json=_body(
-            OTHER_PROJECT_ID,
-            logical_agent_id="agent-demo-sandbox-isolated",
-            display_name="Isolated Sandbox Agent",
-        ),
-    )
-    assert response.status_code == 201, response.text
-    assert response.json()["manifest"]["owner_id"] == "demo-researcher"
-
-
-def test_demo_sandbox_identity_cannot_access_platform_scope(client: TestClient) -> None:
-    """The demo-sandbox identity's fabricated groups deliberately exclude
-    the platform-owner group, so routing its membership through
-    ``DemoSandboxMembershipPolicy`` (which unconditionally grants project
-    membership) must not widen access to the platform-reserved project --
-    that check is a separate, unaffected ``_is_platform_owner`` gate."""
+def test_requests_without_a_gateway_principal_are_rejected(client: TestClient) -> None:
+    """With gateway authentication enforced there is no unauthenticated
+    identity to fall back to, so a header-less request is refused before any
+    membership or platform-scope check can run."""
     response = client.get(
         "/api/agent-studio/agents",
         params={"project_id": PLATFORM_PROJECT_ID},
     )
-    assert response.status_code == 403
-    assert "platform owners" in response.json()["detail"]
+    assert response.status_code == 401
+    assert response.json()["detail"] == "An authenticated platform identity is required."
 
 
 def test_draft_and_version_routes_are_cross_project_and_cross_tenant_isolated(

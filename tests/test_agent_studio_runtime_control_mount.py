@@ -27,7 +27,7 @@ def _resolver() -> StoreBackedApprovalContextResolver:
 
 
 def _enforceable_settings() -> Settings:
-    return Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
+    return Settings(entra_auth_enforced=True)
 
 
 def _all_deps() -> dict[str, object]:
@@ -42,11 +42,9 @@ def _all_deps() -> dict[str, object]:
 # --- enforceability --------------------------------------------------------
 
 
-def test_enforceable_requires_both_flags() -> None:
-    assert runtime_trust_is_enforceable(Settings(trust_platform_identity_headers=True, entra_auth_enforced=True))
-    assert not runtime_trust_is_enforceable(Settings(trust_platform_identity_headers=True, entra_auth_enforced=False))
-    assert not runtime_trust_is_enforceable(Settings(trust_platform_identity_headers=False, entra_auth_enforced=True))
-    assert not runtime_trust_is_enforceable(Settings(trust_platform_identity_headers=False, entra_auth_enforced=False))
+def test_enforceable_requires_gateway_authentication() -> None:
+    assert runtime_trust_is_enforceable(Settings(entra_auth_enforced=True))
+    assert not runtime_trust_is_enforceable(Settings(entra_auth_enforced=False))
 
 
 # --- fail-closed app --------------------------------------------------------
@@ -77,7 +75,7 @@ def test_mount_builds_real_app_when_enforceable_and_deps_present() -> None:
 
 
 def test_mount_fails_closed_when_trust_not_enforceable() -> None:
-    settings = Settings(trust_platform_identity_headers=False, entra_auth_enforced=True)
+    settings = Settings(entra_auth_enforced=False)
     app = build_runtime_control_mount(settings=settings, **_all_deps())  # type: ignore[arg-type]
     # Fail-closed app has no concrete route, only the catch-all deny.
     paths = [route.path for route in app.routes]  # type: ignore[attr-defined]

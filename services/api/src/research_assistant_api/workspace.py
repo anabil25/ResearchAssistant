@@ -9,10 +9,11 @@ from threading import RLock
 from typing import Any, Literal
 from uuid import uuid4
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from research_assistant_core.connector_catalog import ConnectorDefinition, connector_definitions
 from research_assistant_core.models import Capability, RunStatus
 
-from research_assistant_api.identity import DEMO_SANDBOX_SOURCE, IdentityContext
+from research_assistant_api.identity import IdentityContext, LOCAL_DEVELOPMENT_SOURCE
 
 
 def utc_now() -> datetime:
@@ -400,6 +401,7 @@ class ConnectorSetting(BaseModel):
     terms_url: HttpUrl
     data_boundary: str
     capabilities: list[str]
+    operations: list[str] = Field(default_factory=list)
 
 
 class ConnectorUpdate(BaseModel):
@@ -429,6 +431,78 @@ class ProjectSettings(BaseModel):
     allowed_export_destinations: list[str]
     model_profile: str
     evaluation_policy: str
+
+
+DEFAULT_PROJECT_NAME = "Research workspace template"
+DEFAULT_PROJECT_DESCRIPTION = (
+    "A governed template for evidence review, research workflows, "
+    "and institutional guidance."
+)
+
+
+def default_project_settings(
+    project_id: str,
+    *,
+    name: str = DEFAULT_PROJECT_NAME,
+    description: str = DEFAULT_PROJECT_DESCRIPTION,
+) -> ProjectSettings:
+    """Return the governed defaults applied to a newly created workspace."""
+    return ProjectSettings(
+        project_id=project_id,
+        name=name,
+        description=description,
+        default_classification="internal",
+        online_research_default=False,
+        retention_days=2555,
+        citation_coverage_threshold=1.0,
+        require_human_approval=True,
+        allowed_export_destinations=["Workspace Library", "SharePoint research site"],
+        model_profile="Balanced quality",
+        evaluation_policy="Block release on unresolved citations or critical policy findings",
+    )
+
+
+class ProjectLifecycle(StrEnum):
+    ACTIVE = "active"
+    ARCHIVED = "archived"
+
+
+class PersonalProject(BaseModel):
+    """Catalog metadata for one user-owned workspace.
+
+    Operational data stays in the existing project-scoped stores. This record
+    is only the authorization and lifecycle boundary used to select one.
+    """
+
+    project_id: str = Field(pattern=r"^(?:project-[a-f0-9]{32}|demo-project)$")
+    owner_user_id: str = Field(min_length=1, max_length=200)
+    name: str = Field(min_length=3, max_length=120)
+    description: str = Field(min_length=3, max_length=1000)
+    lifecycle: ProjectLifecycle = ProjectLifecycle.ACTIVE
+    created_at: datetime
+    updated_at: datetime
+    template_project_id: str = Field(min_length=1, max_length=200)
+
+
+class PersonalProjectCreate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str = Field(min_length=3, max_length=120)
+    description: str = Field(min_length=3, max_length=1000)
+
+
+class PersonalProjectUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=3, max_length=120)
+    description: str | None = Field(default=None, min_length=3, max_length=1000)
+    archive: bool = False
+
+    @model_validator(mode="after")
+    def has_change(self) -> PersonalProjectUpdate:
+        if self.name is None and self.description is None and not self.archive:
+            raise ValueError("Provide a name, description, or archive=true.")
+        return self
 
 
 class WorkspaceSummary(BaseModel):
@@ -474,13 +548,17 @@ class WorkspaceStore:
         self,
         tenant_id: str = "demo",
         project_id: str = "demo-project",
+        *,
+        project_name: str = DEFAULT_PROJECT_NAME,
+        project_description: str = DEFAULT_PROJECT_DESCRIPTION,
+        seed_demo_data: bool = True,
     ) -> None:
         self.tenant_id = tenant_id
         self.project_id = project_id
         self._lock = RLock()
-        self._library = _seed_library()
-        self._runs = _seed_runs(project_id)
-        self._approvals = _seed_approvals()
+        self._library = _seed_library() if seed_demo_data else []
+        self._runs = _seed_runs(project_id) if seed_demo_data else []
+        self._approvals = _seed_approvals() if seed_demo_data else []
         self._dataset_approvals: list[DatasetApprovalRequest] = []
         #: Requester principal id (``IdentityContext.user_id``) per approval id,
         #: kept distinct from the public read model (which exposes only the
@@ -492,22 +570,21 @@ class WorkspaceStore:
         #: Monotonic counter backing ``DatasetApprovalAuditEntry.sequence``, so
         #: append order survives ties in the coarse system clock.
         self._dataset_audit_sequence = 0
-        self._connectors = _seed_connectors()
-        self._settings = ProjectSettings(
-            project_id=project_id,
-            name="AI for equitable clinical research",
-            description=(
-                "A governed workspace for evidence review, grant development, "
-                "collaborator discovery, dataset analysis, and institutional guidance."
-            ),
-            default_classification="internal",
-            online_research_default=False,
-            retention_days=2555,
-            citation_coverage_threshold=1.0,
-            require_human_approval=True,
-            allowed_export_destinations=["Workspace Library", "SharePoint research site"],
-            model_profile="Balanced quality",
-            evaluation_policy="Block release on unresolved citations or critical policy findings",
+        self._connectors = _seed_connectors() if seed_demo_data else [
+            connector.model_copy(
+                update={
+                    "enabled": False,
+                    "secret_status": "not_configured",
+                    "test_status": "not_configured",
+                    "assigned_agents": [],
+                }
+            )
+            for connector in _seed_connectors()
+        ]
+        self._settings = default_project_settings(
+            project_id,
+            name=project_name,
+            description=project_description,
         )
         self._agents = _seed_agents()
 
@@ -524,7 +601,7 @@ class WorkspaceStore:
                     item.enabled and item.test_status in {"ready", "ready_with_key"} for item in self._connectors
                 ),
                 connector_total=len(self._connectors),
-                last_activity_at=max(item.started_at for item in self._runs),
+                last_activity_at=max((item.started_at for item in self._runs), default=utc_now()),
                 persistence=self.persistence,
             )
 
@@ -871,25 +948,15 @@ class WorkspaceStore:
         """Deterministic separation-of-duties policy exemption.
 
         The only identity allowed to both request and decide the same dataset
-        approval is the local/dev demo-sandbox identity (issued solely when
-        ``Settings.allow_demo_identity`` is explicitly enabled and never
-        carrying a real Entra principal). This keeps SOD strictly enforced for
-        every real platform identity.
+        approval is the local developer identity, which exists solely when no
+        authenticating gateway fronts the API. Separation of duties stays
+        strictly enforced for every gateway-authenticated identity.
 
-        ADVISORY, not resolved here (673985b is frozen and approved; the
-        resolution belongs with the program-wide demo-identity footgun): this
-        exemption and the ``DEMO_SANDBOX_SOURCE`` check in
-        ``agent_studio.authz`` share one constant while asserting DIFFERENT
-        KINDS of thing. There it is a FACT -- the demo identity carries no real
-        Entra group claims, so group membership genuinely cannot be evaluated.
-        Here it is a POLICY -- the demo identity *may* approve its own request.
-        Descriptive versus normative. The useful framing is that fact/policy
-        split rather than "remove the exemption", because one of the two uses is
-        legitimate and the other is a choice. Deliberately NOT consulted on the
-        consume path: see ``_verify_consuming_principal``, where the same
-        predicate would mean "anyone may consume".
+        Deliberately NOT consulted on the consume path: see
+        ``_verify_consuming_principal``, where the same predicate would mean
+        "anyone may consume".
         """
-        return identity.source == DEMO_SANDBOX_SOURCE
+        return identity.source == LOCAL_DEVELOPMENT_SOURCE
 
     def _append_dataset_audit(
         self,
@@ -1483,9 +1550,9 @@ def _seed_library() -> list[LibraryItem]:
             ["pilot", "outcomes"],
         ),
         (
-            "person-chen",
-            "Dr. Maya Chen — Computational Biology",
-            "Person",
+            "profile-computational-biology",
+            "Computational biology collaboration profile",
+            "Research profile",
             "Faculty directory",
             2,
             "Institutional",
@@ -1595,7 +1662,7 @@ def _seed_runs(project_id: str) -> list[RunSummary]:
             status=row[3],
             progress=row[4],
             current_stage=row[5],
-            owner="Dr. Maya Chen",
+            owner="Workspace researcher",
             started_at=now,
             completed_at=now if row[3] == RunStatus.COMPLETED else None,
             artifact_count=row[6],
@@ -1626,149 +1693,30 @@ def _seed_approvals() -> list[ApprovalRecord]:
     ]
 
 
-def _connector(
-    id: str,
-    name: str,
-    category: str,
-    description: str,
-    agents: list[str],
-    terms_url: str,
-    capabilities: list[str],
-    *,
-    auth_kind: str = "None",
-    secret_status: str = "Not required",
-    test_status: str = "ready",
-) -> ConnectorSetting:
+def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
     return ConnectorSetting(
-        id=id,
-        name=name,
-        category=category,
-        description=description,
-        auth_kind=auth_kind,
-        secret_status=secret_status,
+        id=definition.id,
+        name=definition.name,
+        category=definition.category,
+        description=definition.description,
+        auth_kind=definition.auth_kind,
+        secret_status=definition.secret_status,
         enabled=True,
-        test_status=test_status,
-        assigned_agents=agents,
-        terms_url=HttpUrl(terms_url),
-        data_boundary="Public metadata only; query text is sent to the provider.",
-        capabilities=capabilities,
+        test_status=definition.test_status,
+        assigned_agents=list(definition.assigned_agents),
+        terms_url=HttpUrl(definition.terms_url),
+        data_boundary=definition.data_boundary,
+        capabilities=list(definition.capabilities),
+        operations=[
+            operation.mcp_tool_name
+            for operation in definition.operations
+            if operation.operation_class != "delete"
+        ],
     )
 
 
 def _seed_connectors() -> list[ConnectorSetting]:
-    return [
-        _connector(
-            "pubmed",
-            "PubMed",
-            "Literature",
-            "Biomedical citations and abstracts from NCBI.",
-            ["literature"],
-            "https://www.ncbi.nlm.nih.gov/home/about/policies/",
-            ["Search", "Metadata"],
-        ),
-        _connector(
-            "europe_pmc",
-            "Europe PMC",
-            "Literature",
-            "Life-sciences publications, grants, and links.",
-            ["literature"],
-            "https://europepmc.org/terms",
-            ["Search", "Metadata"],
-        ),
-        _connector(
-            "crossref",
-            "Crossref",
-            "Literature",
-            "DOI metadata and scholarly work resolution.",
-            ["literature", "grant"],
-            "https://www.crossref.org/services/metadata-delivery/rest-api/",
-            ["DOI resolution", "Metadata"],
-        ),
-        _connector(
-            "openalex",
-            "OpenAlex",
-            "Discovery",
-            "Open catalog of works, people, venues, and institutions.",
-            ["literature", "matching", "dataset"],
-            "https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication",
-            ["Search", "Entity leads"],
-        ),
-        _connector(
-            "arxiv",
-            "arXiv",
-            "Literature",
-            "Preprint metadata for supported disciplines.",
-            ["literature"],
-            "https://info.arxiv.org/help/api/tou.html",
-            ["Search", "Preprints"],
-        ),
-        _connector(
-            "clinical_trials",
-            "ClinicalTrials.gov",
-            "Clinical research",
-            "Clinical study records from the U.S. NLM.",
-            ["literature"],
-            "https://clinicaltrials.gov/about-site/terms-conditions",
-            ["Trials", "Metadata"],
-        ),
-        _connector(
-            "grants_gov",
-            "Grants.gov",
-            "Funding",
-            "Authoritative U.S. federal opportunity records.",
-            ["grant"],
-            "https://www.grants.gov/web/grants/legal-privacy.html",
-            ["Opportunities", "Requirements"],
-        ),
-        _connector(
-            "nih_reporter",
-            "NIH RePORTER",
-            "Funding",
-            "NIH funded-project and investigator metadata.",
-            ["grant", "matching"],
-            "https://reporter.nih.gov/termsconditions",
-            ["Awards", "Project leads"],
-        ),
-        _connector(
-            "datacite",
-            "DataCite",
-            "Datasets",
-            "DOI metadata for datasets and research outputs.",
-            ["literature", "dataset"],
-            "https://support.datacite.org/docs/terms-and-conditions",
-            ["Dataset discovery", "DOI resolution"],
-        ),
-        _connector(
-            "orcid",
-            "ORCID",
-            "Identity",
-            "Public researcher identifier records.",
-            ["matching"],
-            "https://info.orcid.org/terms-of-use/",
-            ["Identity resolution"],
-        ),
-        _connector(
-            "ror",
-            "ROR",
-            "Identity",
-            "Open identifiers for research organizations.",
-            ["matching"],
-            "https://ror.org/terms/",
-            ["Organization resolution"],
-        ),
-        _connector(
-            "semantic_scholar",
-            "Semantic Scholar",
-            "Literature",
-            "Paper and citation graph metadata.",
-            ["literature"],
-            "https://www.semanticscholar.org/product/api/license",
-            ["Search", "Citation graph"],
-            auth_kind="API key recommended",
-            secret_status="Optional secret not configured",
-            test_status="ready_with_key",
-        ),
-    ]
+    return [_connector(definition) for definition in connector_definitions()]
 
 
 def _seed_agents() -> list[AgentSetting]:

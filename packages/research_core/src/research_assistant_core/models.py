@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import UTC, datetime
 from enum import StrEnum
-from typing import Any
+from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, model_validator
 
 
 def utc_now() -> datetime:
@@ -164,6 +164,29 @@ class ResearchRequest(BaseModel):
     tenant_id: str = Field(default="demo", min_length=1, max_length=100)
     group_ids: list[str] = Field(default_factory=lambda: ["researchers"])
     context: dict[str, Any] = Field(default_factory=dict)
+
+
+class HostedPublicAgentRequest(BaseModel):
+    """Server-authenticated envelope for a public hosted-agent invocation."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    query: str = Field(min_length=3, max_length=4000)
+    tenant_id: str = Field(min_length=1, max_length=100)
+    project_id: str = Field(min_length=1, max_length=100)
+    principal_id: str = Field(min_length=1, max_length=256)
+    session_id: str = Field(min_length=1, max_length=256)
+    sensitivity: Literal["public"] = "public"
+    authorized_connector_ids: tuple[str, ...] = ()
+    public_context: str | None = Field(default=None, max_length=40_000)
+
+    @model_validator(mode="after")
+    def connector_ids_are_unique_and_nonempty(self) -> HostedPublicAgentRequest:
+        if len(self.authorized_connector_ids) != len(set(self.authorized_connector_ids)):
+            raise ValueError("authorized connector identifiers must be unique")
+        if any(not connector_id for connector_id in self.authorized_connector_ids):
+            raise ValueError("authorized connector identifiers must be non-empty")
+        return self
 
 
 class ResearchResult(BaseModel):

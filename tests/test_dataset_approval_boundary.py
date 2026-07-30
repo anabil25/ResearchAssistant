@@ -96,7 +96,7 @@ def hosted_spy_client() -> Iterator[tuple[TestClient, SpyGateway, WorkspaceStore
         app.state.workspace = store
         app.state.settings = Settings(
             execution_mode="hosted",
-            trust_platform_identity_headers=True,
+            entra_auth_enforced=True,
             foundry_project_endpoint="https://foundry.example.test",
         )
         yield client, spy, store
@@ -529,7 +529,7 @@ def test_sod_unattributable_record_is_still_decidable_in_demo_sandbox() -> None:
     decided = store.decide_dataset_approval_request(
         record.id,
         DatasetApprovalDecisionRequest(decision="approved", rationale="Demo approval."),
-        _identity("demo-researcher", ("research-reviewers",), source="demo-sandbox"),
+        _identity("local-developer", ("research-reviewers",), source="local-development"),
     )
     assert decided is not None
     assert decided.state.value == "approved"
@@ -560,12 +560,12 @@ def test_store_separation_of_duties_is_enforced_and_demo_exempt() -> None:
         objective="obj",
         requested_by="Demo",
         ttl_minutes=60,
-        requested_by_principal_id="demo-researcher",
+        requested_by_principal_id="local-developer",
     )
     decided = store.decide_dataset_approval_request(
         demo.id,
         DatasetApprovalDecisionRequest(decision="approved", rationale="Demo self approval."),
-        _identity("demo-researcher", ("research-reviewers",), source="demo-sandbox"),
+        _identity("local-developer", ("research-reviewers",), source="local-development"),
     )
     assert decided is not None
     assert decided.state.value == "approved"
@@ -747,7 +747,7 @@ def mock_spy_client() -> Iterator[tuple[TestClient, SpyGateway, WorkspaceStore]]
         store = WorkspaceStore()
         app.state.hosted = spy
         app.state.workspace = store
-        app.state.settings = Settings(execution_mode="mock", trust_platform_identity_headers=True)
+        app.state.settings = Settings(execution_mode="mock", entra_auth_enforced=True)
         yield client, spy, store
 
 
@@ -923,7 +923,7 @@ def test_unapproved_csv_is_rejected_before_any_local_profiling(
         with hosted_spy_client() as (client, spy, store):
             app.state.settings = Settings(
                 execution_mode=mode,
-                trust_platform_identity_headers=True,
+                entra_auth_enforced=True,
                 foundry_project_endpoint="https://foundry.example.test",
             )
             headers = _headers(store, ["researchers"], user_id="alice")
@@ -1266,7 +1266,7 @@ def test_no_send_preserves_a_usable_approval(mode: str, route: str) -> None:
     with hosted_spy_client() as (client, spy, store):
         app.state.settings = Settings(
             execution_mode=cast(Literal["mock", "hosted"], mode),
-            trust_platform_identity_headers=True,
+            entra_auth_enforced=True,
             foundry_project_endpoint="https://foundry.example.test",
         )
         approval_id = _approve(client, store, csv)
@@ -1632,7 +1632,7 @@ def test_no_content_dependent_processing_of_unapproved_csv(
         with hosted_spy_client() as (client, spy, store):
             app.state.settings = Settings(
                 execution_mode=mode,
-                trust_platform_identity_headers=True,
+                entra_auth_enforced=True,
                 foundry_project_endpoint="https://foundry.example.test",
             )
             research = app.state.research
@@ -1866,7 +1866,7 @@ def test_demo_sandbox_passes_by_matching_and_is_not_exempt_at_consume() -> None:
     the same fixed principal, so the match SUCCEEDS NATURALLY -- no exemption is
     needed. And a demo-sandbox consumer with a DIFFERENT stored requester must
     still DENY, proving no waiver was smuggled in."""
-    demo_principal = "demo-researcher"
+    demo_principal = "local-developer"
 
     # Requester == consumer: passes by MATCHING, not by exemption.
     store = WorkspaceStore()
@@ -1882,7 +1882,7 @@ def test_demo_sandbox_passes_by_matching_and_is_not_exempt_at_consume() -> None:
     store.decide_dataset_approval_request(
         own.id,
         DatasetApprovalDecisionRequest(decision="approved", rationale="Demo self-approval."),
-        _identity(demo_principal, ("research-reviewers",), source="demo-sandbox"),
+        _identity(demo_principal, ("research-reviewers",), source="local-development"),
     )
     consumed = store.consume_dataset_approval_request(
         own.id,

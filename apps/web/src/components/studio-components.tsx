@@ -225,7 +225,94 @@ function InsightCard({ result }: { result: StudioResult }) {
           label="Hosted Agent analysis"
         />
       </Suspense>
+      <div className="agent-boundary-card">
+        <p>
+          Model text is supplemental analysis. It cannot grant permissions,
+          calculate scores, approve actions, or promote unresolved claims to
+          verified evidence.
+        </p>
+        <dl>
+          <div>
+            <dt>Resolved IDs</dt>
+            <dd>{(result.insight.referenced_source_ids ?? []).length}</dd>
+          </div>
+          <div>
+            <dt>Unresolved IDs</dt>
+            <dd>{(result.insight.unresolved_source_ids ?? []).length}</dd>
+          </div>
+        </dl>
+      </div>
     </article>
+  );
+}
+
+const INLINE_EVIDENCE_SOURCE_LIMIT = 5;
+
+/**
+ * Run provenance for a resolved studio run: which durable instance produced
+ * the artifact, how far it got, and which stored passages it actually
+ * resolved. Rendered by every studio so the artifact and the evidence that
+ * backs it stay in the same place.
+ */
+function RunEvidence({ result }: { result: StudioResult }) {
+  const citations = result.citations;
+  return (
+    <section className="run-evidence" aria-label="Evidence and lineage">
+      <div className="evidence-section-heading">
+        <span>Evidence &amp; lineage</span>
+        <em>Run resolved</em>
+      </div>
+      <div className="evidence-run-card">
+        <div>
+          <span className="evidence-run-icon">
+            <ShieldCheck size={18} />
+          </span>
+          <span>
+            <strong>{result.run.title}</strong>
+            <small>{result.run.durable_instance_id}</small>
+          </span>
+        </div>
+        <div className="evidence-progress">
+          <span>
+            <strong>{result.run.progress}%</strong>
+            {result.run.current_stage}
+          </span>
+          <div>
+            <i style={{ width: `${result.run.progress}%` }} />
+          </div>
+        </div>
+      </div>
+      <div className="evidence-section">
+        <div className="evidence-section-heading">
+          <span>Resolved sources</span>
+          <em>{citations.length}</em>
+        </div>
+        {citations.length ? (
+          <div className="evidence-source-list">
+            {citations
+              .slice(0, INLINE_EVIDENCE_SOURCE_LIMIT)
+              .map((citation, index) => (
+                <article key={citation.id}>
+                  <span>{index + 1}</span>
+                  <div>
+                    <strong>{citation.title}</strong>
+                    <small>
+                      {citation.section}
+                      {citation.page_start ? ` · p. ${citation.page_start}` : ""}
+                    </small>
+                    <p>{citation.quote}</p>
+                    <code>{citation.source_id}</code>
+                  </div>
+                </article>
+              ))}
+          </div>
+        ) : (
+          <div className="evidence-empty">
+            No stored citations were used by this artifact.
+          </div>
+        )}
+      </div>
+    </section>
   );
 }
 
@@ -930,7 +1017,12 @@ export function LiteratureStudio({
             </p>
           </div>
         )}
-        {literature ? <InsightCard result={literature} /> : null}
+        {literature ? (
+          <>
+            <RunEvidence result={literature} />
+            <InsightCard result={literature} />
+          </>
+        ) : null}
       </section>
     </div>
   );
@@ -1424,7 +1516,12 @@ export function GrantStudio({
           ) : null}
         </aside>
       </form>
-      {grant ? <InsightCard result={grant} /> : null}
+      {grant ? (
+        <>
+          <RunEvidence result={grant} />
+          <InsightCard result={grant} />
+        </>
+      ) : null}
       {builderOpen ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -1960,7 +2057,12 @@ export function MatchingStudio({
           )}
         </aside>
       </form>
-      {matching ? <InsightCard result={matching} /> : null}
+      {matching ? (
+        <>
+          <RunEvidence result={matching} />
+          <InsightCard result={matching} />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -2458,7 +2560,12 @@ export function DatasetStudio({
           </aside>
         </div>
       </form>
-      {dataset ? <InsightCard result={dataset} /> : null}
+      {dataset ? (
+        <>
+          <RunEvidence result={dataset} />
+          <InsightCard result={dataset} />
+        </>
+      ) : null}
     </div>
   );
 }
@@ -2718,7 +2825,12 @@ export function InstitutionalStudio({
         </p>
       </section>
 
-      {institutional ? <InsightCard result={institutional} /> : null}
+      {institutional ? (
+        <>
+          <RunEvidence result={institutional} />
+          <InsightCard result={institutional} />
+        </>
+      ) : null}
       {selectedCitation ? (
         <div className="modal-backdrop" role="presentation">
           <div
@@ -3737,7 +3849,12 @@ export function AutomationStudio({
           </p>
         )}
       </section>
-      {automation ? <InsightCard result={automation} /> : null}
+      {automation ? (
+        <>
+          <RunEvidence result={automation} />
+          <InsightCard result={automation} />
+        </>
+      ) : null}
       </div>
       {activationConfirmOpen
         ? createPortal(

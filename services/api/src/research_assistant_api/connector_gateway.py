@@ -4,7 +4,7 @@ from typing import Protocol
 
 import httpx
 from azure.core.credentials_async import AsyncTokenCredential
-from azure.identity.aio import ManagedIdentityCredential
+from azure.identity.aio import ManagedIdentityCredential, get_bearer_token_provider
 from pydantic import ValidationError
 from research_assistant_core.connector_gateway import (
     ConnectorSearchResponse,
@@ -13,12 +13,6 @@ from research_assistant_core.connector_gateway import (
 from research_assistant_core.models import Capability
 
 from research_assistant_api.config import Settings
-
-_CAPABILITY_PATHS = {
-    Capability.LITERATURE: "v1/literature/search",
-    Capability.GRANT: "v1/grants/search",
-    Capability.MATCHING: "v1/matching/search",
-}
 
 
 class ConnectorGatewayError(RuntimeError):
@@ -53,6 +47,11 @@ class HttpConnectorGateway:
     ) -> None:
         self._credential = credential
         self._token_scope = token_scope
+        self._token = (
+            get_bearer_token_provider(credential, token_scope)
+            if credential is not None and token_scope
+            else None
+        )
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
             base_url=f"{base_url.rstrip('/')}/",
@@ -68,22 +67,18 @@ class HttpConnectorGateway:
         *,
         limit: int,
     ) -> ConnectorSearchResponse:
-        path = _CAPABILITY_PATHS.get(capability)
-        if path is None:
-            raise ConnectorGatewayError(f"Capability {capability.value} has no public connector gateway.")
+        del capability
         try:
             normalized_source = PublicConnectorSource(source)
         except ValueError as exc:
             raise ConnectorGatewayError(f"Connector {source} is not in the public gateway contract.") from exc
         headers: dict[str, str] = {}
-        if self._credential and self._token_scope:
-            token = await self._credential.get_token(self._token_scope)
-            headers["Authorization"] = f"Bearer {token.token}"
+        if self._token is not None:
+            headers["Authorization"] = f"Bearer {await self._token()}"
         try:
             response = await self._client.post(
-                path,
+                f"v1/connectors/{normalized_source.value}/search",
                 json={
-                    "source": normalized_source.value,
                     "query": query,
                     "limit": limit,
                 },

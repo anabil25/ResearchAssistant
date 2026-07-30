@@ -79,12 +79,14 @@ async function proxy(
       process.env.TRUST_PLATFORM_IDENTITY_HEADERS === "true"
         ? request.headers.get("X-MS-CLIENT-PRINCIPAL")
         : null;
+    const projectId = request.headers.get("X-Research-Project-ID");
     const upstream = await fetch(url, {
       method: request.method,
       headers: {
         "Content-Type": request.headers.get("Content-Type") ?? "application/json",
         "X-Request-ID": requestId,
         ...(principal ? { "X-MS-CLIENT-PRINCIPAL": principal } : {}),
+        ...(projectId ? { "X-Research-Project-ID": projectId } : {}),
       },
       body,
       duplex: "half",

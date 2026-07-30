@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import pytest
 from pydantic import HttpUrl
+from research_assistant_core.connector_catalog import connector_definitions
 from research_assistant_api.connector_gateway import (
     ConnectorGatewayError,
     DisabledConnectorGateway,
@@ -9,6 +10,7 @@ from research_assistant_api.connector_gateway import (
 from research_assistant_api.public_research import (
     ConnectorAuthorizationError,
     resolve_authorized_sources,
+    select_authorized_sources,
     retrieve_public_metadata,
 )
 from research_assistant_api.workspace import WorkspaceStore
@@ -17,6 +19,24 @@ from research_assistant_core.connector_gateway import (
     PublicConnectorSource,
 )
 from research_assistant_core.models import Capability
+
+
+def test_workspace_connector_seeds_match_the_governed_catalog() -> None:
+    seeded = {connector.id: connector for connector in WorkspaceStore().connectors()}
+    catalog = {connector.id: connector for connector in connector_definitions()}
+
+    assert set(seeded) == set(catalog)
+    for connector_id, definition in catalog.items():
+        connector = seeded[connector_id]
+        assert connector.name == definition.name
+        assert connector.assigned_agents == list(definition.assigned_agents)
+        assert connector.capabilities == list(definition.capabilities)
+        assert connector.operations == [
+            operation.mcp_tool_name
+            for operation in definition.operations
+            if operation.operation_class != "delete"
+        ]
+        assert str(connector.terms_url) == definition.terms_url
 
 
 @pytest.mark.asyncio
@@ -178,6 +198,23 @@ def test_resolve_authorized_sources_passes_through_none_unchanged() -> None:
     connectors = WorkspaceStore().connectors()
 
     assert resolve_authorized_sources(Capability.LITERATURE, None, connectors) is None
+
+
+def test_select_authorized_sources_applies_ready_defaults_and_explicit_selection() -> None:
+    connectors = WorkspaceStore().connectors()
+    for connector in connectors:
+        if connector.id == "crossref":
+            connector.test_status = "unavailable"
+
+    assert select_authorized_sources(Capability.LITERATURE, None, connectors) == (
+        "pubmed",
+        "openalex",
+    )
+    assert select_authorized_sources(
+        Capability.LITERATURE,
+        ["Europe PMC"],
+        connectors,
+    ) == ("europe_pmc",)
 
 
 def test_resolve_authorized_sources_accepts_known_ready_connectors() -> None:

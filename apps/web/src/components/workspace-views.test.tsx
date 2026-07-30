@@ -1086,6 +1086,37 @@ describe("SettingsView", () => {
     ).toBeInTheDocument();
   });
 
+  it("shows catalogued connector tools and a legacy fallback", async () => {
+    const user = setupUser();
+    const pubmed = buildConnector({ operations: ["search", "lookup"] });
+    const legacyConnector = buildConnector({
+      id: "legacy-connector",
+      name: "Legacy Connector",
+      operations: undefined,
+    });
+
+    render(
+      <SettingsView
+        data={buildWorkspaceData({ connectors: [pubmed, legacyConnector] })}
+        onRefresh={jest.fn()}
+      />,
+    );
+
+    await user.click(screen.getByRole("button", { name: /Connectors 2/i }));
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Connector to manage" }),
+      "pubmed",
+    );
+    expect(screen.getByText("Exposed tools")).toBeInTheDocument();
+    expect(screen.getByText("search · lookup")).toBeInTheDocument();
+
+    await user.selectOptions(
+      screen.getByRole("combobox", { name: "Connector to manage" }),
+      "legacy-connector",
+    );
+    expect(screen.getByText("No approved operations")).toBeInTheDocument();
+  });
+
   it("[pw.connector-terms:ready] shows an allowlisted connector terms link as an accessible external link", async () => {
     const pubmed = buildConnector();
     const data = buildWorkspaceData({ connectors: [pubmed] });

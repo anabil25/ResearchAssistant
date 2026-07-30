@@ -75,13 +75,39 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "resource sourceConnectorMcps" in module
     assert "resource sourceConnectorMcpTools" in module
     assert "resource sourceConnectorMcpPolicies" in module
+    assert "resource connectorMcpProduct " in module
+    assert "resource connectorMcpSubscription " in module
+    assert "resource connectorMcpProductApi " in module
+    assert "resource sourceConnectorMcpProductApis " in module
+    assert "var connectorMcpProductId = 'research-agent-tools'" in module
+    assert "var connectorMcpSubscriptionId = 'foundry-agent-tools'" in module
+    assert "scope: '/products/${connectorMcpProduct.name}'" in module
     assert "output connectorMcpUrls array" in module
+    assert "output connectorMcpSubscriptionId string" in module
     assert "searchLiteratureMetadata" in module
     assert "searchGrantOpportunities" in module
     assert "searchMatchingMetadata" in module
     assert "validate-azure-ad-token" in module
     assert "validate-content" in module
     assert "rate-limit-by-key" in module
+    assert 'counter-key="@(context.Subscription.Id)"' in module
+    assert "__APIM_PRINCIPAL_ID__" in module
+    mcp_policy = module.split("var mcpPolicyTemplate = '''", maxsplit=1)[1].split(
+        "'''",
+        maxsplit=1,
+    )[0]
+    assert "validate-azure-ad-token" not in mcp_policy
+    assert "authentication-managed-identity" in mcp_policy
+    aggregate_mcp = module.split("resource connectorMcp ", maxsplit=1)[1].split(
+        "resource literatureTool ",
+        maxsplit=1,
+    )[0]
+    source_mcps = module.split("resource sourceConnectorMcps ", maxsplit=1)[1].split(
+        "resource sourceConnectorMcpTools ",
+        maxsplit=1,
+    )[0]
+    assert "subscriptionRequired: true" in aggregate_mcp
+    assert "subscriptionRequired: true" in source_mcps
     assert "context.Response.Body" not in module
     assert "Microsoft.Insights/diagnosticSettings@2021-05-01-preview" in module
     assert "categoryGroup: 'allLogs'" in module
@@ -121,6 +147,7 @@ def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> Non
     assert "RESEARCH_CONNECTOR_GATEWAY_TOKEN_SCOPE" in container_apps
     assert "apiManagement!.outputs.connectorMcpUrl" in resources
     assert "apiManagement!.outputs.connectorMcpUrls" in resources
+    assert "apiManagement!.outputs.connectorMcpSubscriptionId" in resources
     assert "connector-adapter:" in azure_yaml
     assert "services/connector_adapter/Dockerfile" in azure_yaml
     postprovision = (ROOT / "scripts" / "postprovision.py").read_text(

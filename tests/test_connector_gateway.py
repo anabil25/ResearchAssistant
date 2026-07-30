@@ -16,6 +16,7 @@ from research_assistant_api.connector_gateway import (
     HttpConnectorGateway,
     build_connector_gateway,
 )
+from research_assistant_core.connector_gateway import PublicConnectorSource
 from research_assistant_core.models import Capability
 
 
@@ -52,7 +53,7 @@ class FakeCredential:
 
 
 @pytest.mark.asyncio
-async def test_gateway_routes_capability_and_uses_managed_identity_token() -> None:
+async def test_gateway_routes_source_specific_endpoint_and_uses_managed_identity_token() -> None:
     requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
@@ -91,7 +92,7 @@ async def test_gateway_routes_capability_and_uses_managed_identity_token() -> No
     await client.aclose()
 
     assert result.records == [{"id": "grant-1"}]
-    assert requests[0].url.path == "/v1/grants/search"
+    assert requests[0].url.path == "/v1/connectors/grants_gov/search"
     assert requests[0].headers["authorization"] == "Bearer test-token"
     assert credential.scopes == ["https://management.azure.com/.default"]
     assert credential.closed is True
@@ -121,14 +122,22 @@ async def test_gateway_rejects_unknown_source_without_network_call() -> None:
 
 
 @pytest.mark.asyncio
-async def test_gateway_rejects_unsupported_capability_without_network_call() -> None:
-    calls = 0
+async def test_gateway_does_not_select_a_domain_route_from_capability() -> None:
+    requests: list[httpx.Request] = []
 
     async def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        del request
-        calls += 1
-        return httpx.Response(500)
+        requests.append(request)
+        return httpx.Response(
+            200,
+            json={
+                "source": "pubmed",
+                "query": "query",
+                "records": [],
+                "terms_url": "https://terms.example/pubmed",
+                "retrieved_from": "https://api.example/pubmed",
+                "warnings": [],
+            },
+        )
 
     client = httpx.AsyncClient(
         base_url="https://gateway.example",
@@ -136,14 +145,11 @@ async def test_gateway_rejects_unsupported_capability_without_network_call() -> 
     )
     gateway = HttpConnectorGateway("https://gateway.example", client=client)
 
-    with pytest.raises(
-        ConnectorGatewayError,
-        match="has no public connector gateway",
-    ):
-        await gateway.search(Capability.DATASET, "pubmed", "query", limit=3)
+    result = await gateway.search(Capability.DATASET, "pubmed", "query", limit=3)
     await client.aclose()
 
-    assert calls == 0
+    assert result.source is PublicConnectorSource.PUBMED
+    assert requests[0].url.path == "/v1/connectors/pubmed/search"
 
 
 @pytest.mark.asyncio

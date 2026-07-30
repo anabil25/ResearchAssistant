@@ -8,12 +8,12 @@ header. This module projects that already-validated principal into the narrow
 roles, and the client/app id -- and nothing else.
 
 Crucially, this never parses or validates the ``Authorization`` header itself
-(that is EasyAuth's job) and never trusts an independent request-body field for
+(that is the gateway's job) and never trusts an independent request-body field for
 any of these values: a runtime cannot self-assert its issuer, audience, roles,
-or client id. When ``trust_platform_identity_headers`` is disabled, or the
+or client id. When ``entra_auth_enforced`` is unset, or the
 header is absent/malformed, or the principal lacks the minimum workload-identity
 claims (issuer, at least one audience, a client/app id), extraction returns
-``None`` and the caller must fail closed -- there is deliberately no demo/dev
+``None`` and the caller must fail closed -- there is deliberately no local
 runtime identity, because a runtime principal is only ever a real validated
 workload token.
 """
@@ -71,18 +71,17 @@ def extract_runtime_principal(claims: Mapping[str, list[str]]) -> RuntimePrincip
 def resolve_runtime_principal(request: Request, settings: Settings) -> RuntimePrincipal | None:
     """Resolve a ``RuntimePrincipal`` from the request's platform-injected header.
 
-    Returns ``None`` (caller must fail closed) unless BOTH
-    ``trust_platform_identity_headers`` and ``entra_auth_enforced`` are set --
-    the header is only trustworthy when Container Apps EasyAuth is actually
-    validating tokens (enforced) and the app is configured to trust its output
-    (trust). Also returns ``None`` when the header is absent/undecodable or the
-    decoded principal lacks the minimum workload claims. There is intentionally
-    no demo/dev fallback -- a runtime principal is only ever a real validated
-    workload token, built solely from EasyAuth-validated issuer/aud/roles/
-    (appid|azp), never from a request body field.
+    Returns ``None`` (caller must fail closed) unless ``entra_auth_enforced``
+    is set -- the header is only trustworthy when an authenticating gateway is
+    actually validating tokens in front of this process. Also returns ``None``
+    when the header is absent/undecodable or the decoded principal lacks the
+    minimum workload claims. There is intentionally no dev fallback -- a
+    runtime principal is only ever a real validated workload token, built
+    solely from gateway-validated issuer/aud/roles/(appid|azp), never from a
+    request body field.
     """
 
-    if not (settings.trust_platform_identity_headers and settings.entra_auth_enforced):
+    if not settings.entra_auth_enforced:
         return None
     encoded = request.headers.get("x-ms-client-principal")
     if not encoded:

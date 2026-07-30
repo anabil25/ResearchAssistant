@@ -1,8 +1,13 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Annotated, Any
 
+from agent_framework import tool
 from agent_framework_foundry_hosting import FoundryToolbox  # type: ignore[import-untyped]
+from azure.ai.projects import AIProjectClient
+from openai import APIStatusError
+from pydantic import Field
+from research_assistant_core.connector_catalog import connector_definition
 
 from .contracts import AgentManifest, Sensitivity, SpecialistCapability
 from .credentials import get_credential
@@ -11,16 +16,8 @@ from .invocation import RetryingResponsesInvoker
 from .settings import HarnessSettings
 from .workflows import CoordinatorRouter
 import json
-import logging
 import os
 import time
-from typing import Annotated, Any
-from agent_framework import tool
-from azure.ai.projects import AIProjectClient
-from openai import APIStatusError
-from pydantic import Field
-from shared.credentials import get_credential
-from shared.profiles import AgentProfile
 
 
 def delegated_agent_name(capability: str, sensitivity: str) -> str | None:
@@ -55,12 +52,72 @@ def tools_for_profile(
             context={"agent": profile.id},
         )
     if requires_toolbox:
+        if profile.online:
+            return []
         return FoundryToolbox(
             get_credential(settings.managed_identity_client_id if settings is not None else None),
             url=toolbox_endpoint,
             timeout=settings.default_timeout_seconds if settings is not None else 120,
         )
     return []
+
+
+async def request_tools_for_profile(
+    profile: AgentManifest,
+    settings: HarnessSettings,
+    connector_ids: tuple[str, ...],
+) -> tuple[FoundryToolbox, tuple[Any, ...]]:
+    if not profile.online:
+        raise ConfigurationError(
+            "Request-scoped Toolbox tools are only supported for online profiles",
+            context={"agent": profile.id},
+        )
+    if settings.toolbox_endpoint is None:
+        raise ConfigurationError(
+            "Manifest requires a configured Foundry Toolbox endpoint",
+            context={"agent": profile.id},
+        )
+    configured_sources = set(profile.knowledge_bindings[0].sources)
+    unauthorized = set(connector_ids) - configured_sources
+    if unauthorized:
+        raise ConfigurationError(
+            "Request names connectors outside the profile Toolbox surface",
+            context={"agent": profile.id, "connectors": sorted(unauthorized)},
+        )
+    toolbox = FoundryToolbox(
+        get_credential(settings.managed_identity_client_id),
+        url=str(settings.toolbox_endpoint),
+        load_tools=False,
+        timeout=settings.default_timeout_seconds,
+    )
+    allowed_names = {
+        "web_search",
+        *{
+            f"{connector_id}___{operation.mcp_tool_name}"
+            for connector_id in connector_ids
+            for operation in connector_definition(connector_id).operations
+            if operation.operation_class != "delete"
+        },
+    }
+    try:
+        await toolbox.connect()
+        await toolbox.load_tools()
+        functions = tuple(toolbox.functions)
+        functions_by_name = {
+            name: function
+            for function in functions
+            if isinstance((name := getattr(function, "name", function)), str)
+        }
+        missing = allowed_names - set(functions_by_name)
+        if missing:
+            raise ConfigurationError(
+                "Configured Foundry Toolbox is missing authorized tools",
+                context={"agent": profile.id, "tools": sorted(missing)},
+            )
+        return toolbox, tuple(functions_by_name[name] for name in sorted(allowed_names))
+    except BaseException:
+        await toolbox.close()
+        raise
 
 
 def _agent_names() -> dict[str, str]:

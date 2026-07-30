@@ -1,0 +1,210 @@
+[
+  {
+    "apiId": "research-pubmed-mcp-v1",
+    "description": "Biomedical citations and abstracts from NCBI.",
+    "displayName": "PubMed MCP server",
+    "id": "pubmed",
+    "path": "research-pubmed-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "pubmedSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "pubmedLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-europe-pmc-mcp-v1",
+    "description": "Life-sciences publications, grants, and links.",
+    "displayName": "Europe PMC MCP server",
+    "id": "europe_pmc",
+    "path": "research-europe-pmc-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "europePmcSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "europePmcLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-crossref-mcp-v1",
+    "description": "DOI metadata and scholarly work resolution.",
+    "displayName": "Crossref MCP server",
+    "id": "crossref",
+    "path": "research-crossref-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "crossrefSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "crossrefLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-openalex-mcp-v1",
+    "description": "Open catalog of works, people, venues, and institutions.",
+    "displayName": "OpenAlex MCP server",
+    "id": "openalex",
+    "path": "research-openalex-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "openalexSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "openalexLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-arxiv-mcp-v1",
+    "description": "Preprint metadata for supported disciplines.",
+    "displayName": "arXiv MCP server",
+    "id": "arxiv",
+    "path": "research-arxiv-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "arxivSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "arxivLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-clinical-trials-mcp-v1",
+    "description": "Clinical study records from the U.S. NLM.",
+    "displayName": "ClinicalTrials.gov MCP server",
+    "id": "clinical_trials",
+    "path": "research-clinical-trials-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "clinicalTrialsSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "clinicalTrialsLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-grants-gov-mcp-v1",
+    "description": "Authoritative U.S. federal opportunity records.",
+    "displayName": "Grants.gov MCP server",
+    "id": "grants_gov",
+    "path": "research-grants-gov-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "grantsGovSearch"
+      }
+    ]
+  },
+  {
+    "apiId": "research-nih-reporter-mcp-v1",
+    "description": "NIH funded-project and investigator metadata.",
+    "displayName": "NIH RePORTER MCP server",
+    "id": "nih_reporter",
+    "path": "research-nih-reporter-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "nihReporterSearch"
+      }
+    ]
+  },
+  {
+    "apiId": "research-datacite-mcp-v1",
+    "description": "DOI metadata for datasets and research outputs.",
+    "displayName": "DataCite MCP server",
+    "id": "datacite",
+    "path": "research-datacite-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "dataciteSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "dataciteLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-orcid-mcp-v1",
+    "description": "Public researcher identifier records.",
+    "displayName": "ORCID MCP server",
+    "id": "orcid",
+    "path": "research-orcid-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "orcidSearch"
+      }
+    ]
+  },
+  {
+    "apiId": "research-ror-mcp-v1",
+    "description": "Open identifiers for research organizations.",
+    "displayName": "ROR MCP server",
+    "id": "ror",
+    "path": "research-ror-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "rorSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "lookup",
+        "operationId": "rorLookup"
+      }
+    ]
+  },
+  {
+    "apiId": "research-semantic-scholar-mcp-v1",
+    "description": "Paper and citation graph metadata.",
+    "displayName": "Semantic Scholar MCP server",
+    "id": "semantic_scholar",
+    "path": "research-semantic-scholar-mcp",
+    "tools": [
+      {
+        "displayName": "search",
+        "name": "search",
+        "operationId": "semanticScholarSearch"
+      }
+    ]
+  }
+]

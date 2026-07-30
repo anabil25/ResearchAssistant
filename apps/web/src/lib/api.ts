@@ -16,11 +16,19 @@ import type {
   CapabilityInstance,
   ConnectionView,
   ConnectorSetting,
+  FoundryAgentInventoryItem,
+  FoundryModelDeployment,
+  FoundryProjectContext,
   LibraryItem,
   MemoryScope,
   MemoryScopeControl,
   MemoryView,
+  PersonalProjectCreate,
+  PersonalProjectUpdate,
+  ProjectSummary,
   ProjectSettings,
+  PromptAgentDraft,
+  PromptCapabilityBinding,
   RunSummary,
   StudioResult,
   WorkflowBlueprint,
@@ -68,13 +76,28 @@ export class ApiError extends Error {
  * which base path it's rooted under. `apiFetch` and `agentStudioFetch` are
  * both thin wrappers over this that only differ in which base they prefix.
  */
-async function backendFetch<T>(fullPath: string, init?: RequestInit): Promise<T> {
+function requestHeaders(
+  headers: HeadersInit | undefined,
+  projectId?: string,
+): Record<string, string> {
+  const providedHeaders = headers
+    ? Object.fromEntries(new Headers(headers).entries())
+    : {};
+  return {
+    "Content-Type": "application/json",
+    ...providedHeaders,
+    ...(projectId ? { "X-Research-Project-ID": projectId } : {}),
+  };
+}
+
+async function backendFetch<T>(
+  fullPath: string,
+  init?: RequestInit,
+  projectId?: string,
+): Promise<T> {
   const response = await fetch(fullPath, {
     ...init,
-    headers: {
-      "Content-Type": "application/json",
-      ...init?.headers,
-    },
+    headers: requestHeaders(init?.headers, projectId),
   });
 
   if (!response.ok) {
@@ -92,8 +115,12 @@ async function backendFetch<T>(fullPath: string, init?: RequestInit): Promise<T>
   return (await response.json()) as T;
 }
 
-async function apiFetch<T>(path: string, init?: RequestInit): Promise<T> {
-  return backendFetch<T>(`${API_BASE}${path}`, init);
+async function apiFetch<T>(
+  path: string,
+  init?: RequestInit,
+  projectId?: string,
+): Promise<T> {
+  return backendFetch<T>(`${API_BASE}${path}`, init, projectId);
 }
 
 export interface WorkspaceData {
@@ -107,7 +134,7 @@ export interface WorkspaceData {
   workflows: WorkflowBlueprint[];
 }
 
-export async function getWorkspaceData(): Promise<WorkspaceData> {
+export async function getWorkspaceData(projectId?: string): Promise<WorkspaceData> {
   const [
     summary,
     library,
@@ -118,13 +145,13 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
     agents,
     workflows,
   ] = await Promise.all([
-    apiFetch<WorkspaceSummary>("/workspace"),
-    apiFetch<LibraryItem[]>("/library"),
-    apiFetch<RunSummary[]>("/runs"),
-    apiFetch<ApprovalRecord[]>("/approvals"),
-    apiFetch<ConnectorSetting[]>("/connectors"),
-    apiFetch<ProjectSettings>("/settings"),
-    apiFetch<AgentSetting[]>("/agents"),
+    apiFetch<WorkspaceSummary>("/workspace", undefined, projectId),
+    apiFetch<LibraryItem[]>("/library", undefined, projectId),
+    apiFetch<RunSummary[]>("/runs", undefined, projectId),
+    apiFetch<ApprovalRecord[]>("/approvals", undefined, projectId),
+    apiFetch<ConnectorSetting[]>("/connectors", undefined, projectId),
+    apiFetch<ProjectSettings>("/settings", undefined, projectId),
+    apiFetch<AgentSetting[]>("/agents", undefined, projectId),
     apiFetch<WorkflowBlueprint[]>("/workflows"),
   ]);
   return {
@@ -139,6 +166,35 @@ export async function getWorkspaceData(): Promise<WorkspaceData> {
   };
 }
 
+export async function listProjects(): Promise<ProjectSummary[]> {
+  return apiFetch<ProjectSummary[]>("/projects");
+}
+
+export async function createProject(
+  payload: PersonalProjectCreate,
+): Promise<ProjectSummary> {
+  return apiFetch<ProjectSummary>("/projects", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function activateProject(projectId: string): Promise<ProjectSummary> {
+  return apiFetch<ProjectSummary>(`/projects/${projectId}/activate`, {
+    method: "POST",
+  });
+}
+
+export async function updateProject(
+  projectId: string,
+  payload: PersonalProjectUpdate,
+): Promise<ProjectSummary> {
+  return apiFetch<ProjectSummary>(`/projects/${projectId}`, {
+    method: "PATCH",
+    body: JSON.stringify(payload),
+  });
+}
+
 export async function runStudio(
   capability: CapabilityId,
   objective: string,
@@ -146,6 +202,7 @@ export async function runStudio(
     onlineResearch?: boolean;
     inputs?: Record<string, unknown>;
   } = {},
+  projectId?: string,
 ): Promise<StudioResult> {
   return apiFetch<StudioResult>(`/studios/${capability}/run`, {
     method: "POST",
@@ -154,7 +211,7 @@ export async function runStudio(
       online_research: options.onlineResearch ?? false,
       inputs: options.inputs ?? {},
     }),
-  });
+  }, projectId);
 }
 
 export async function decideApproval(
@@ -478,6 +535,60 @@ export async function getAgentStudioCatalog(): Promise<AgentSummary[]> {
   return agentStudioFetch<AgentSummary[]>("/agents");
 }
 
+/** Live inventory of the single Foundry project configured for this Studio deployment. */
+export async function getFoundryAgentInventory(
+): Promise<FoundryAgentInventoryItem[]> {
+  return agentStudioFetch<FoundryAgentInventoryItem[]>("/foundry/agents");
+}
+
+/** The server-authorized Foundry project; distinct from a personal workspace project. */
+export async function getFoundryProjectContext(): Promise<FoundryProjectContext> {
+  return agentStudioFetch<FoundryProjectContext>("/foundry/context");
+}
+
+/** Project-deployed models available for a prompt-agent draft. */
+export async function getFoundryProjectModels(): Promise<FoundryModelDeployment[]> {
+  return agentStudioFetch<FoundryModelDeployment[]>("/models");
+}
+
+/** Creates the server-owned base draft before client-selected prompt fields are applied. */
+export async function createPromptAgentDraft(payload: {
+  logical_agent_id: string;
+  project_id: string;
+  display_name: string;
+  description: string;
+}): Promise<PromptAgentDraft> {
+  return agentStudioFetch<PromptAgentDraft>("/agents", {
+    method: "POST",
+    body: JSON.stringify({ ...payload, owner_kind: "user" }),
+  });
+}
+
+/** Attaches one governed capability; callers then persist the returned binding in their draft. */
+export async function attachPromptCapability(payload: {
+  descriptor_id: string;
+  operation: string;
+}): Promise<PromptCapabilityBinding> {
+  return agentStudioFetch<PromptCapabilityBinding>("/capabilities/attach", {
+    method: "POST",
+    body: JSON.stringify(payload),
+  });
+}
+
+/** Saves a whole server-created draft guarded by its current ETag. */
+export async function savePromptAgentDraft(
+  draft: PromptAgentDraft,
+): Promise<PromptAgentDraft> {
+  return agentStudioFetch<PromptAgentDraft>(
+    `/agents/${encodeURIComponent(draft.logical_agent_id)}/draft`,
+    {
+      method: "PUT",
+      headers: { "If-Match": draft.etag },
+      body: JSON.stringify({ manifest: draft.manifest }),
+    },
+  );
+}
+
 /** Exact, immutable version contract for one released version. */
 export async function getAgentRelease(
   agentId: string,
@@ -519,8 +630,9 @@ export async function getCapabilityInstances(): Promise<CapabilityInstance[]> {
  * read, not a distinct persisted resource; `getCapabilityDescriptors`/
  * `getCapabilityInstances` remain the canonical per-resource reads.
  */
-export async function getCapabilityDiscovery(): Promise<CapabilityDiscovery> {
-  return agentStudioFetch<CapabilityDiscovery>("/capabilities/discovery");
+export async function getCapabilityDiscovery(projectId?: string): Promise<CapabilityDiscovery> {
+  const query = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+  return agentStudioFetch<CapabilityDiscovery>(`/capabilities/discovery${query}`);
 }
 
 /** Discovered project model deployments — the only source for model selection. */

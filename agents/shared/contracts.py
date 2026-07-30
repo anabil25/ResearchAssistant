@@ -116,7 +116,16 @@ def _reject_public_evidence(
 class PublicLiteratureRequest(ResearchRequest):
     sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
     review_question: str | None = Field(default=None, max_length=8_000)
+    authorized_connector_ids: tuple[str, ...] = ()
+    public_context: str | None = Field(default=None, max_length=40_000)
     _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
+
+    @field_validator("authorized_connector_ids")
+    @classmethod
+    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("authorized connector identifiers must be unique")
+        return value
 
 
 class PublicLiteratureResponse(LiteratureResponse):
@@ -140,7 +149,16 @@ class GrantResponse(ResearchResponse):
 class PublicGrantRequest(ResearchRequest):
     sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
     opportunity_id: str | None = Field(default=None, max_length=256)
+    authorized_connector_ids: tuple[str, ...] = ()
+    public_context: str | None = Field(default=None, max_length=40_000)
     _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
+
+    @field_validator("authorized_connector_ids")
+    @classmethod
+    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("authorized connector identifiers must be unique")
+        return value
 
 
 class PublicGrantResponse(GrantResponse):
@@ -163,7 +181,16 @@ class MatchingResponse(ResearchResponse):
 class PublicMatchingRequest(ResearchRequest):
     sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
     required_facets: tuple[str, ...] = ()
+    authorized_connector_ids: tuple[str, ...] = ()
+    public_context: str | None = Field(default=None, max_length=40_000)
     _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
+
+    @field_validator("authorized_connector_ids")
+    @classmethod
+    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("authorized connector identifiers must be unique")
+        return value
 
 
 class PublicMatchingResponse(MatchingResponse):

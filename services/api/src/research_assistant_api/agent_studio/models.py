@@ -113,6 +113,46 @@ class RuntimeTarget(StrEnum):
     CUSTOM_HOSTED = "custom_hosted"
 
 
+class FoundryAgentType(StrEnum):
+    HOSTED = "hosted"
+    PROMPT = "prompt"
+    UNKNOWN = "unknown"
+
+
+class FoundryAgentInventoryItem(BaseModel):
+    """Display-safe metadata for an agent discovered in one Foundry project."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    name: str = Field(min_length=1, max_length=200)
+    agent_type: FoundryAgentType
+    description: str | None = Field(default=None, max_length=4000)
+    version: str | None = Field(default=None, max_length=200)
+    status: str | None = Field(default=None, max_length=200)
+    model: str | None = Field(default=None, max_length=200)
+
+
+class FoundryProjectContext(BaseModel):
+    """The one configured Foundry project available to this Studio deployment."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+
+
+class PromptAgentPublicationResponse(BaseModel):
+    """Durably replayable result of publishing one Studio version to Foundry."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    logical_agent_id: str
+    studio_version_id: str
+    manifest_hash: str
+    remote_agent_name: str
+    remote_version: str
+    remote_status: str | None = None
+
+
 class RuntimeRequirements(BaseModel):
     """Application-declared facts used by deterministic runtime selection.
 
@@ -2395,6 +2435,7 @@ class AuditEventKind(StrEnum):
     RELEASE_PROMOTION_REQUESTED = "release_promotion_requested"
     RELEASE_ACTIVATED = "release_activated"
     DEPLOYMENT_CREATED = "deployment_created"
+    PROMPT_AGENT_PUBLISHED = "prompt_agent_published"
     DEPLOYMENT_ACTIVATED = "deployment_activated"
     DEPLOYMENT_DEPRECATED = "deployment_deprecated"
     DEPLOYMENT_ROLLED_BACK = "deployment_rolled_back"

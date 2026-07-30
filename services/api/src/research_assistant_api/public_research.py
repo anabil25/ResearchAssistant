@@ -251,6 +251,43 @@ def resolve_authorized_sources(
     return resolved
 
 
+def select_authorized_sources(
+    capability: Capability,
+    requested_sources: list[str] | None,
+    connectors: list[ConnectorSetting],
+    *,
+    logical_agent: str | None = None,
+) -> tuple[str, ...]:
+    """Resolve the full effective source set for one authorized public run.
+
+    Explicit selection is rejected by :func:`resolve_authorized_sources` when
+    it names a disabled, unassigned, unknown, duplicate, or unready connector.
+    With no explicit selection, retain the existing server-selected defaults
+    but quietly omit sources that are not currently ready for the capability.
+    """
+    resolved = resolve_authorized_sources(
+        capability,
+        requested_sources,
+        connectors,
+        logical_agent=logical_agent,
+    )
+    if resolved is not None:
+        return tuple(resolved)
+
+    target_agent = logical_agent or capability.value
+    by_id = {connector.id: connector for connector in connectors}
+    return tuple(
+        source
+        for source in _DEFAULT_SOURCES.get(capability, ())
+        if (
+            (connector := by_id.get(source)) is not None
+            and connector.enabled
+            and target_agent in connector.assigned_agents
+            and connector.test_status in _READY_STATUSES
+        )
+    )
+
+
 async def _retrieve_one(
     capability: Capability,
     source: str,

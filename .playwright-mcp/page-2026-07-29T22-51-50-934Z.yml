@@ -1,0 +1,62 @@
+- generic [ref=f2e1]:
+  - generic [ref=f2e3]:
+    - complementary "Project navigation" [ref=f2e4]:
+      - generic [ref=f2e10]:
+        - strong [ref=f2e11]: Research Assistant
+        - generic [ref=f2e12]: Microsoft Foundry workspace
+      - generic [ref=f2e13]:
+        - combobox "Active project" [disabled] [ref=f2e14]:
+          - option "No personal project" [selected]
+        - button "Create project" [ref=f2e15] [cursor=pointer]
+        - button "Manage active project" [disabled] [ref=f2e17]
+      - generic [ref=f2e21]: Workspace
+      - navigation "Workspace navigation" [ref=f2e22]:
+        - button "Overview" [ref=f2e23] [cursor=pointer]
+        - button "Library 9" [ref=f2e28] [cursor=pointer]:
+          - generic [ref=f2e31]: Library
+          - emphasis [ref=f2e32]: "9"
+        - button "Runs & approvals" [ref=f2e33] [cursor=pointer]
+      - generic [ref=f2e39]: Studios
+      - navigation "Research studios" [ref=f2e40]:
+        - button "Literature Studio" [ref=f2e41] [cursor=pointer]
+        - button "Grant Studio" [ref=f2e45] [cursor=pointer]
+        - button "Matching Explorer" [ref=f2e50] [cursor=pointer]
+        - button "Dataset Lab" [ref=f2e57] [cursor=pointer]
+        - button "Institutional Q&A" [ref=f2e61] [cursor=pointer]
+      - navigation "Project utilities" [ref=f2e66]:
+        - button "Workflow Automation" [ref=f2e67] [cursor=pointer]
+        - button "Agents" [active] [ref=f2e73] [cursor=pointer]
+        - button "Project Settings" [ref=f2e78] [cursor=pointer]
+    - generic [ref=f2e83]:
+      - banner [ref=f2e84]:
+        - generic [ref=f2e86]:
+          - generic [ref=f2e87]: Project workspace
+          - strong [ref=f2e88]: Agents
+        - generic [ref=f2e89]:
+          - button "Search workspace" [ref=f2e90] [cursor=pointer]:
+            - generic [ref=f2e95]: Ctrl K
+          - button "0 pending approvals" [ref=f2e96] [cursor=pointer]
+          - button "Open project settings" [ref=f2e100] [cursor=pointer]
+      - status [ref=f2e355]: "Live workspace data is unavailable: An authenticated platform identity is required.. The product shell remains usable."
+      - generic [ref=f2e104]: Opened Agents
+      - main [ref=f2e105]:
+        - generic [ref=f2e620]:
+          - generic [ref=f2e621]:
+            - generic [ref=f2e622]:
+              - generic [ref=f2e623]: Foundry project
+              - heading "Agents" [level=1] [ref=f2e624]
+              - paragraph [ref=f2e625]: Hosted services and published prompt agents available in this project.
+            - button "New prompt agent" [ref=f2e626] [cursor=pointer]
+          - generic [ref=f2e628]:
+            - generic [ref=f2e629]:
+              - generic [ref=f2e633]: Search agents
+              - textbox "Search agents" [ref=f2e634]:
+                - /placeholder: Search by name or description
+            - button "Refresh agent inventory" [ref=f2e635] [cursor=pointer]
+          - status [ref=f2e641]:
+            - generic [ref=f2e646]:
+              - strong [ref=f2e647]: Not authorized
+              - paragraph [ref=f2e648]: An authenticated platform identity is required.
+            - button "Retry" [ref=f2e649] [cursor=pointer]
+  - button "Open Next.js Dev Tools" [ref=f2e351] [cursor=pointer]
+  - alert [ref=f2e389]

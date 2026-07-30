@@ -122,35 +122,27 @@ def test_extract_accepts_duplicate_identical_issuer() -> None:
 # --- resolve_runtime_principal (request-level) -----------------------------
 
 
-def test_resolve_returns_none_when_platform_headers_untrusted() -> None:
-    settings = Settings(trust_platform_identity_headers=False)
-    request = _FakeRequest({"x-ms-client-principal": _principal_header(_claims())})
-    assert resolve_runtime_principal(request, settings) is None  # type: ignore[arg-type]
-
-
-def test_resolve_returns_none_when_easyauth_not_enforced() -> None:
-    # trust flag on but enforcement off (only constructible in a safe env) ->
-    # the injected header is not trustworthy, so no runtime principal.
-    settings = Settings(
-        trust_platform_identity_headers=True, entra_auth_enforced=False, environment="test"
-    )
+def test_resolve_returns_none_when_gateway_auth_not_enforced() -> None:
+    # No gateway validating tokens -> the injected header is not trustworthy,
+    # so no runtime principal is ever extracted from it.
+    settings = Settings(environment="test")
     request = _FakeRequest({"x-ms-client-principal": _principal_header(_claims())})
     assert resolve_runtime_principal(request, settings) is None  # type: ignore[arg-type]
 
 
 def test_resolve_returns_none_without_header() -> None:
-    settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
+    settings = Settings(entra_auth_enforced=True)
     assert resolve_runtime_principal(_FakeRequest({}), settings) is None  # type: ignore[arg-type]
 
 
 def test_resolve_returns_none_for_undecodable_header() -> None:
-    settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
+    settings = Settings(entra_auth_enforced=True)
     request = _FakeRequest({"x-ms-client-principal": "!!!not-base64!!!"})
     assert resolve_runtime_principal(request, settings) is None  # type: ignore[arg-type]
 
 
 def test_resolve_extracts_principal_from_valid_header() -> None:
-    settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
+    settings = Settings(entra_auth_enforced=True)
     request = _FakeRequest({"x-ms-client-principal": _principal_header(_claims())})
     principal = resolve_runtime_principal(request, settings)  # type: ignore[arg-type]
     assert principal is not None
@@ -159,7 +151,7 @@ def test_resolve_extracts_principal_from_valid_header() -> None:
 
 
 def test_resolve_returns_none_when_header_lacks_workload_claims() -> None:
-    settings = Settings(trust_platform_identity_headers=True, entra_auth_enforced=True)
+    settings = Settings(entra_auth_enforced=True)
     claims = _claims()
     del claims["appid"]
     request = _FakeRequest({"x-ms-client-principal": _principal_header(claims)})

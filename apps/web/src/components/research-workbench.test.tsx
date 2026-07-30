@@ -6,11 +6,15 @@ import { ResearchWorkbench } from "@/components/research-workbench";
 import { CAPABILITY_CARDS } from "@/components/workspace-views";
 import { openBlockingModal } from "@/lib/blocking-modal";
 import {
+  activateProject,
+  createProject,
   decideApproval,
   getWorkspaceData,
+  listProjects,
   runStudio,
   testConnector,
   updateConnector,
+  updateProject,
   updateSettings,
   uploadLibraryItem,
   type WorkspaceData,
@@ -47,11 +51,22 @@ function setupUser(
 }
 
 jest.mock("@/lib/api", () => ({
+  activateProject: jest.fn(),
+  createProject: jest.fn(),
+  getCapabilityDiscovery: jest.fn(),
+  getFoundryAgentInventory: jest.fn(),
+  getFoundryProjectContext: jest.fn(),
+  getFoundryProjectModels: jest.fn(),
   getWorkspaceData: jest.fn(),
+  listProjects: jest.fn(),
   runStudio: jest.fn(),
+  attachPromptCapability: jest.fn(),
+  createPromptAgentDraft: jest.fn(),
+  savePromptAgentDraft: jest.fn(),
   decideApproval: jest.fn(),
   testConnector: jest.fn(),
   updateConnector: jest.fn(),
+  updateProject: jest.fn(),
   updateSettings: jest.fn(),
   uploadLibraryItem: jest.fn(),
 }));
@@ -357,10 +372,24 @@ describe("ResearchWorkbench", () => {
     window.history.replaceState(null, "", "/");
     mockedGetWorkspaceData.mockReset();
     mockedGetWorkspaceData.mockResolvedValue(cloneWorkspaceData());
+    jest.mocked(listProjects).mockReset();
+    jest.mocked(listProjects).mockResolvedValue([
+      {
+        id: "demo-project",
+        name: "V2 test workspace",
+        description: "A governed test workspace.",
+        active_runs: 1,
+        source_count: 1,
+        is_active: true,
+      },
+    ]);
+    jest.mocked(activateProject).mockReset();
+    jest.mocked(createProject).mockReset();
     jest.mocked(runStudio).mockReset();
     jest.mocked(decideApproval).mockReset();
     jest.mocked(testConnector).mockReset();
     jest.mocked(updateConnector).mockReset();
+    jest.mocked(updateProject).mockReset();
     jest.mocked(updateSettings).mockReset();
     jest.mocked(uploadLibraryItem).mockReset();
   });
@@ -391,6 +420,50 @@ describe("ResearchWorkbench", () => {
     expect(
       screen.getByRole("button", { name: /research workflow orchestration/i }),
     ).toBeInTheDocument();
+  });
+
+  it("creates a personal project and reloads the workspace in that project scope", async () => {
+    const user = setupUser();
+    const createdProject = {
+      id: "project-0123456789abcdef0123456789abcdef",
+      name: "Cancer outcomes review",
+      description: "A private workspace for a bounded evidence review.",
+      active_runs: 0,
+      source_count: 0,
+      is_active: true,
+    };
+    jest.mocked(listProjects)
+      .mockReset()
+      .mockResolvedValueOnce([
+        {
+          id: "demo-project",
+          name: "V2 test workspace",
+          description: "A governed test workspace.",
+          active_runs: 1,
+          source_count: 1,
+          is_active: true,
+        },
+      ])
+      .mockResolvedValueOnce([createdProject]);
+    jest.mocked(createProject).mockResolvedValue(createdProject);
+
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+    await user.click(screen.getByRole("button", { name: "Create project" }));
+    await user.type(screen.getByLabelText("Project name"), createdProject.name);
+    await user.type(screen.getByLabelText("Description"), createdProject.description);
+    await user.click(screen.getByRole("button", { name: "Save project" }));
+
+    await waitFor(() =>
+      expect(createProject).toHaveBeenCalledWith({
+        name: createdProject.name,
+        description: createdProject.description,
+      }),
+    );
+    await waitFor(() =>
+      expect(mockedGetWorkspaceData).toHaveBeenLastCalledWith(createdProject.id),
+    );
+    expect(window.location.search).toContain(`project=${createdProject.id}`);
   });
 
   it("has no automated accessibility violations on the overview", async () => {
@@ -451,9 +524,9 @@ describe("ResearchWorkbench", () => {
       screen.getByRole("heading", { name: "Project Settings" }),
     ).toBeInTheDocument();
 
-    await user.click(screen.getByRole("button", { name: /Connections 1/i }));
+    await user.click(screen.getByRole("button", { name: /Connectors 1/i }));
     expect(
-      screen.getByRole("heading", { name: "Connections" }),
+      screen.getByRole("heading", { name: "Research data connectors" }),
     ).toBeInTheDocument();
     expect(screen.getAllByText("PubMed").length).toBeGreaterThan(0);
     expect(
@@ -563,7 +636,7 @@ describe("ResearchWorkbench", () => {
     expect(trigger).toHaveFocus();
   });
 
-  it("[pw.mobile-nav:tab-order] tabs forward from the close control through the rail navigation links", async () => {
+  it("[pw.mobile-nav:tab-order] tabs forward from the close control to project controls", async () => {
     const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
@@ -576,8 +649,21 @@ describe("ResearchWorkbench", () => {
 
     await user.tab();
     expect(
-      screen.getByRole("button", { name: /overview/i }),
+      screen.getByRole("combobox", { name: "Active project" }),
     ).toHaveFocus();
+  });
+
+  it("keeps Workflow Automation and Agents above Project Settings in the utility navigation", async () => {
+    render(<ResearchWorkbench />);
+    await screen.findByText("V2 test workspace");
+
+    const studioNav = screen.getByRole("navigation", { name: "Research studios" });
+    expect(within(studioNav).queryByRole("button", { name: "Workflow Automation" })).not.toBeInTheDocument();
+
+    const utilityNav = screen.getByRole("navigation", { name: "Project utilities" });
+    expect(within(utilityNav).getByRole("button", { name: "Workflow Automation" })).toBeInTheDocument();
+    expect(within(utilityNav).getByRole("button", { name: "Agents" })).toBeInTheDocument();
+    expect(within(utilityNav).getByRole("button", { name: "Project Settings" })).toBeInTheDocument();
   });
 
   it("[pw.mobile-nav:axe] has no automated accessibility violations while the drawer is open", async () => {
@@ -640,7 +726,7 @@ describe("ResearchWorkbench", () => {
       "false",
     );
     expect(
-      screen.getAllByText("AI for equitable clinical research").length,
+      screen.getAllByText("Project workspace").length,
     ).toBeGreaterThan(0);
     expect(
       screen.getByRole("button", { name: "0 pending approvals" }),
@@ -950,6 +1036,8 @@ describe("ResearchWorkbench", () => {
       screen.getByRole("main").closest(".workbench-shell"),
     ).toHaveAttribute("data-workspace-ready", "false");
 
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(1));
+
     act(() => {
       window.dispatchEvent(new Event("focus"));
     });
@@ -985,6 +1073,8 @@ describe("ResearchWorkbench", () => {
 
     render(<ResearchWorkbench />);
 
+    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(1));
+
     act(() => {
       window.dispatchEvent(new Event("focus"));
     });
@@ -1008,7 +1098,7 @@ describe("ResearchWorkbench", () => {
     ).toBeInTheDocument();
   });
 
-  it("supports search, evidence, and navigation controls through buttons, scrims, and keyboard shortcuts", async () => {
+  it("supports search and navigation controls through buttons, scrims, and keyboard shortcuts", async () => {
     const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
@@ -1027,26 +1117,6 @@ describe("ResearchWorkbench", () => {
         "false",
       ),
     );
-
-    const evidencePanel = screen.getByLabelText("Evidence and lineage inspector");
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
-    expect(evidencePanel).toHaveAttribute("data-open", "true");
-    await user.click(
-      within(evidencePanel).getByRole("button", {
-        name: "Close evidence inspector",
-      }),
-    );
-    expect(evidencePanel).toHaveAttribute("data-open", "false");
-
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
-    await user.click(
-      screen.getAllByRole("button", { name: "Close evidence inspector" })[1],
-    );
-    expect(evidencePanel).toHaveAttribute("data-open", "false");
 
     await user.click(screen.getByRole("button", { name: /Search workspace/i }));
     const searchDialog = screen.getByRole("dialog", { name: "Search workspace" });
@@ -1095,16 +1165,12 @@ describe("ResearchWorkbench", () => {
       screen.getByRole("dialog", { name: "Search workspace" }),
     ).toBeInTheDocument();
 
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
     fireEvent.keyDown(window, { key: "Escape" });
     await waitFor(() =>
       expect(
         screen.queryByRole("dialog", { name: "Search workspace" }),
       ).not.toBeInTheDocument(),
     );
-    expect(evidencePanel).toHaveAttribute("data-open", "false");
   });
 
   it("suppresses global shortcuts and inerts the shell while a blocking modal is open", async () => {
@@ -1116,21 +1182,21 @@ describe("ResearchWorkbench", () => {
     expect(shell).not.toBeNull();
     expect(shell).not.toHaveAttribute("inert");
 
-    // Open the evidence inspector first so there is visible shell state that
-    // a stray Escape would wrongly collapse behind the modal.
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
-    const evidencePanel = screen.getByLabelText("Evidence and lineage inspector");
-    expect(evidencePanel).toHaveAttribute("data-open", "true");
+    // Open the navigation drawer first so there is visible shell state that
+    // a stray Escape would wrongly collapse behind the modal. This used to be
+    // the evidence inspector; the drawer is the same kind of proof -- a shell
+    // surface with observable open state that Escape owns when no modal is up.
+    await user.click(screen.getByRole("button", { name: "Open navigation" }));
+    const projectNavigation = screen.getByLabelText("Project navigation");
+    expect(projectNavigation).toHaveAttribute("data-open", "true");
 
     let release!: () => void;
     act(() => {
       release = openBlockingModal();
     });
 
-    // The whole shell -- rail, main, evidence inspector, palette -- is inert,
-    // so nothing behind the modal is reachable by keyboard or assistive tech.
+    // The whole shell -- rail, main, palette -- is inert, so nothing behind
+    // the modal is reachable by keyboard or assistive tech.
     expect(shell).toHaveAttribute("inert");
 
     // Ctrl+K must not open the command palette on top of the modal: that
@@ -1150,7 +1216,7 @@ describe("ResearchWorkbench", () => {
     // Escape belongs to the modal while it is open; it must not reach through
     // and collapse shell surfaces the user cannot currently see.
     fireEvent.keyDown(window, { key: "Escape" });
-    expect(evidencePanel).toHaveAttribute("data-open", "true");
+    expect(projectNavigation).toHaveAttribute("data-open", "true");
 
     act(() => {
       release();
@@ -1168,7 +1234,7 @@ describe("ResearchWorkbench", () => {
         screen.queryByRole("dialog", { name: "Search workspace" }),
       ).not.toBeInTheDocument(),
     );
-    expect(evidencePanel).toHaveAttribute("data-open", "false");
+    expect(projectNavigation).toHaveAttribute("data-open", "false");
   });
 
   it("uses the original initial-load error message when the loader rejects with an Error", async () => {
@@ -1281,6 +1347,7 @@ describe("ResearchWorkbench", () => {
         "literature",
         "Implicit options",
         {},
+        "demo-project",
       ),
     );
   });
@@ -1300,14 +1367,14 @@ describe("ResearchWorkbench", () => {
     await user.click(
       screen.getByRole("button", { name: "Search & screen evidence" }),
     );
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
 
     expect(
-      screen.getByText("No stored citations were used by this artifact."),
+      await screen.findByText(
+        "No stored citations were used by this artifact.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.queryByText("Hosted Agent boundary")).not.toBeInTheDocument();
+    // No insight means no agent-boundary card to render alongside it.
+    expect(screen.queryByText("Resolved IDs")).not.toBeInTheDocument();
   });
 
   it("navigates through search and rails, opens library dialogs, and runs literature research with evidence boundaries", async () => {
@@ -1374,6 +1441,7 @@ describe("ResearchWorkbench", () => {
             public_research_acknowledged: true,
           }),
         }),
+        "demo-project",
       ),
     );
     await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(3));
@@ -1385,17 +1453,15 @@ describe("ResearchWorkbench", () => {
     expect(screen.getByText("Unsupported references")).toBeInTheDocument();
     expect(screen.getByText("source-3")).toBeInTheDocument();
 
-    const evidencePanel = screen.getByLabelText("Evidence and lineage inspector");
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
-    expect(within(evidencePanel).getByText("Auditable literature review")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("research-run-lit-1")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("Study A")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("Study B")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("Hosted Agent boundary")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("Resolved IDs")).toBeInTheDocument();
-    expect(within(evidencePanel).getByText("Unresolved IDs")).toBeInTheDocument();
+    const runEvidence = document.querySelector(".run-evidence");
+    expect(runEvidence).not.toBeNull();
+    const evidence = within(runEvidence as HTMLElement);
+    expect(evidence.getByText("Auditable literature review")).toBeInTheDocument();
+    expect(evidence.getByText("research-run-lit-1")).toBeInTheDocument();
+    expect(evidence.getByText("Study A")).toBeInTheDocument();
+    expect(evidence.getByText("Study B")).toBeInTheDocument();
+    expect(screen.getByText("Resolved IDs")).toBeInTheDocument();
+    expect(screen.getByText("Unresolved IDs")).toBeInTheDocument();
   });
 
   it("handles studio failures, renders no-citation evidence results, and routes orchestration inspections to Runs", async () => {
@@ -1484,13 +1550,12 @@ describe("ResearchWorkbench", () => {
     );
 
     await user.click(runButton);
-    await user.click(
-      screen.getByRole("button", { name: "Open evidence inspector" }),
-    );
     expect(
-      screen.getByText("No stored citations were used by this artifact."),
+      await screen.findByText(
+        "No stored citations were used by this artifact.",
+      ),
     ).toBeInTheDocument();
-    expect(screen.getByText("Hosted Agent boundary")).toBeInTheDocument();
+    expect(screen.getByText("Resolved IDs")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "2 pending approvals" }));
     await screen.findByRole("heading", { name: "Runs & Approvals" });

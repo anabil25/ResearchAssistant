@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from typing import Literal
 
+from research_assistant_core.connector_catalog import connector_definitions
+
 from .capabilities import (
     PROVIDER_CONTRACT_SCHEMA_DIGEST,
     PROVIDER_CONTRACT_VERSION,
@@ -141,6 +143,45 @@ def _toolbox_binding(
         connection_ref=f"app://connections/capabilities/{capability_id}",
         policy_ref=f"app://policy/capabilities/{capability_id}",
     )
+
+
+def _connector_sources_for(agent_id: str) -> tuple[str, ...]:
+    return tuple(
+        connector.id
+        for connector in connector_definitions()
+        if agent_id in connector.assigned_agents
+    )
+
+
+def _online_toolbox_bindings(
+    capability_id: str,
+    agent_id: str,
+    input_contract: str,
+    output_contract: str,
+) -> tuple[CapabilityBinding, ...]:
+    bindings = [
+        _toolbox_binding(
+            capability_id,
+            "web_search",
+            input_contract,
+            output_contract,
+        )
+    ]
+    for connector in connector_definitions():
+        if agent_id not in connector.assigned_agents:
+            continue
+        for operation in connector.operations:
+            if operation.operation_class == "delete":
+                continue
+            bindings.append(
+                _toolbox_binding(
+                    capability_id,
+                    f"{connector.id}___{operation.mcp_tool_name}",
+                    input_contract,
+                    output_contract,
+                )
+            )
+    return tuple(bindings)
 
 
 def _capability_binding(
@@ -441,31 +482,14 @@ _MANIFESTS: dict[str, AgentManifest] = {
         evidence_kinds=("paper",),
         model_tier="fast",
         workflow_steps=("public_research", "screen", "extract", "synthesize", "audit"),
-        capability_bindings=(
-            _toolbox_binding(
-                "literature.public_lookup",
-                "web_search",
-                "PublicLiteratureRequestV2",
-                "PublicLiteratureResearchV2",
-            ),
-            _toolbox_binding(
-                "literature.public_lookup",
-                "searchLiteratureMetadata",
-                "PublicLiteratureRequestV2",
-                "PublicLiteratureResearchV2",
-            ),
+        capability_bindings=_online_toolbox_bindings(
+            "literature.public_lookup",
+            "literature",
+            "PublicLiteratureRequestV2",
+            "PublicLiteratureResearchV2",
         ),
         online=True,
-        connector_sources=(
-            "pubmed",
-            "europe_pmc",
-            "crossref",
-            "openalex",
-            "arxiv",
-            "clinical_trials",
-            "datacite",
-            "semantic_scholar",
-        ),
+        connector_sources=_connector_sources_for("literature"),
     ),
     "grant_online": _manifest(
         id="grant_online",
@@ -480,22 +504,14 @@ _MANIFESTS: dict[str, AgentManifest] = {
         evidence_kinds=("grant", "paper"),
         model_tier="fast",
         workflow_steps=("public_opportunity", "requirements", "verify", "audit"),
-        capability_bindings=(
-            _toolbox_binding(
-                "grant.public_lookup",
-                "web_search",
-                "PublicGrantRequestV2",
-                "PublicGrantResearchV2",
-            ),
-            _toolbox_binding(
-                "grant.public_lookup",
-                "searchGrantOpportunities",
-                "PublicGrantRequestV2",
-                "PublicGrantResearchV2",
-            ),
+        capability_bindings=_online_toolbox_bindings(
+            "grant.public_lookup",
+            "grant",
+            "PublicGrantRequestV2",
+            "PublicGrantResearchV2",
         ),
         online=True,
-        connector_sources=("grants_gov", "nih_reporter", "crossref", "openalex"),
+        connector_sources=_connector_sources_for("grant"),
     ),
     "matching_online": _manifest(
         id="matching_online",
@@ -510,22 +526,14 @@ _MANIFESTS: dict[str, AgentManifest] = {
         evidence_kinds=("person", "organization"),
         model_tier="fast",
         workflow_steps=("public_discovery", "entity_resolution", "score", "shortlist"),
-        capability_bindings=(
-            _toolbox_binding(
-                "matching.public_lookup",
-                "web_search",
-                "PublicMatchingRequestV2",
-                "PublicMatchingResearchV2",
-            ),
-            _toolbox_binding(
-                "matching.public_lookup",
-                "searchMatchingMetadata",
-                "PublicMatchingRequestV2",
-                "PublicMatchingResearchV2",
-            ),
+        capability_bindings=_online_toolbox_bindings(
+            "matching.public_lookup",
+            "matching",
+            "PublicMatchingRequestV2",
+            "PublicMatchingResearchV2",
         ),
         online=True,
-        connector_sources=("openalex", "orcid", "ror", "nih_reporter"),
+        connector_sources=_connector_sources_for("matching"),
     ),
 }
 

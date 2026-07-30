@@ -182,6 +182,18 @@ class DeploymentService:
             if reason is not None:
                 raise DeploymentServiceError(f"Capability binding is stale and cannot be deployed: {reason}")
 
+    def validate_version_for_publication(self, scope: ScopeContext, version: AgentVersion) -> None:
+        """Revalidate every live dependency before remote prompt publication.
+
+        Publishing a prompt agent is an external side effect distinct from a
+        local ``DeploymentRecord``. It nonetheless needs the same model,
+        capability freshness, and approval checks as deployment so a version
+        cannot be published after its dependencies have drifted.
+        """
+        self._revalidate_model_deployment(version)
+        self._revalidate_capability_approvals(scope, version)
+        self._revalidate_capability_bindings(version)
+
     def deploy(
         self,
         *,
@@ -217,9 +229,7 @@ class DeploymentService:
                 f"Version '{version_id}' has release status '{current_status}'; it must pass all hard gates "
                 "before it can be deployed."
             )
-        self._revalidate_model_deployment(version)
-        self._revalidate_capability_approvals(scope, version)
-        self._revalidate_capability_bindings(version)
+        self.validate_version_for_publication(scope, version)
         runtime_target = version.runtime_target
         if runtime_target is None:
             raise DeploymentServiceError(f"Version '{version_id}' has no runtime_target resolved.")

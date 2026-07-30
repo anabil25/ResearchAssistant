@@ -4,6 +4,18 @@ tools:
     name: web_search
     require_approval: "never"
   - type: mcp
-    server_label: research-connectors
-    project_connection_id: research-connectors-apim
+    server_label: openalex
+    project_connection_id: research-connector-openalex-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: nih_reporter
+    project_connection_id: research-connector-nih-reporter-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: orcid
+    project_connection_id: research-connector-orcid-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: ror
+    project_connection_id: research-connector-ror-apim
     require_approval: "never"

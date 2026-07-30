@@ -1,0 +1,644 @@
+{
+  "info": {
+    "title": "NIH RePORTER API",
+    "version": "2.0"
+  },
+  "openapi": "3.0.1",
+  "paths": {
+    "/v2/projects/search": {
+      "post": {
+        "description": "Implementation Notes\r\n\r\nThe input is a criteria payload in JSON format. Only required filter criteria fields can be provided to get the desired project records. \r\n***\r\n**Response includes:**        \r\n* Total Count of matches       \r\n* Offset  \r\n* Limit\r\n* Total number of pages (based on the Limit per request)\r\n* One or more matching projects. \r\n***\r\n**Example input payloads:** \r\n***\r\n\r\n        \r\n**Complete Payload with Partially Filled Properties:**\r\n\r\n\r\nThe following is a partially filled input Payload. The \"include_fields\" values are used to return only specified columns. \r\n\r\n        {\r\n         \"criteria\": {\r\n           \"use_relevance\": true,\r\n           \"fiscal_years\": [],\r\n           \"include_active_projects\": true,\r\n           \"pi_names\": [\r\n             {\r\n               \"any_name\": \"\",\r\n               \"first_name\": \"\",\r\n               \"last_name\": \"\"\r\n             }\r\n           ],\r\n           \"po_names\": [\r\n             {\r\n               \"any_name\": \"\",\r\n               \"first_name\": \"\",\r\n               \"last_name\": \"\"\r\n             }\r\n           ],\r\n           \"org_names\": [\r\n                         \"EMORY UNIVERSITY\",\r\n                         \"JOHNS HOPKINS UNIVERSITY\",\r\n                         \"NEW ECHOTA BIOTECHNOLOGY, INC.\",\r\n                         \"UNIV OF NORTH CAROLINA CHAPEL HILL\",\r\n                         \"UNIV OF NORTH CAROLINA CHAPEL HILL\"\r\n           ],\r\n           \"pi_profile_ids\": [\r\n             0,1\r\n           ],\r\n           \"org_cities\": [\r\n             \"\"\r\n           ],\r\n           \"org_states\": [\r\n             \"\"\r\n           ],\r\n           \"project_nums\": [],\r\n           \"org_countries\": [\r\n             \"UNITED STATES\"\r\n           ],\r\n           \"appl_ids\": [],\r\n           \"project_num_split\": {\r\n             \"appl_type_code\": \"\",\r\n             \"activity_code\": \"\",\r\n             \"ic_code\": \"\",\r\n             \"serial_num\": \"\",\r\n             \"support_year\": \"\",\r\n             \"suffix_code\": \"\"\r\n           },\r\n           \"agencies\": [\r\n             \"\"\r\n           ],\r\n           \"is_agency_admin\": true,\r\n           \"is_agency_funding\": true,\r\n           \"activity_codes\": [\r\n             \"\"\r\n           ],\r\n           \"award_types\": [\r\n             \"\"\r\n           ],\r\n           \"dept_types\": [\r\n             \"\"\r\n           ],\r\n           \"cong_dists\": [\r\n             \"\"\r\n           ],\r\n           \"opportunity_numbers\": [\r\n             \"\"\r\n           ],\r\n           \"spending_categories\": {\r\n             \"values\": [\r\n               0\r\n             ],\r\n             \"match_all\": true\r\n           },\r\n           \"project_start_date\": {\r\n             \"from_date\": \"\",\r\n             \"to_date\": \"\"\r\n           },\r\n           \"project_end_date\": {\r\n             \"from_date\": \"\",\r\n             \"to_date\": \"\"\r\n           },\r\n           \"organization_type\": [\r\n             \"\"\r\n           ],\r\n           \"full_study_sections\": [\r\n             {\r\n               \"irg_code\": \"\",\r\n               \"sra_designator_code\": \"\",\r\n               \"sra_flex_code\": \"\",\r\n               \"group_code\": \"\",\r\n               \"name\": \"\",\r\n               \"url\": \"\"\r\n             }\r\n           ],\r\n           \"award_notice_date\": {\r\n               \"from_date\": \"2020-02-17\",\r\n               \"to_date\": \"2021-05-01\"\r\n           },\r\n           \"award_amount_range\": {\r\n               \"min_amount\": 0,\r\n               \"max_amount\": 50000000\r\n           },\r\n           \"date_added\": {\r\n               \"from_date\": \"2020-02-17\",\r\n               \"to_date\": \"2021-05-01\"\r\n           },\r\n           \"exclude_subprojects\": false,\r\n           \"multi_pi_only\": false,\r\n           \"newly_added_projects_only\": false,\r\n           \"sub_project_only\": false,\r\n           \"funding_mechanism\": [\r\n             \"\"\r\n           ],\r\n           \"covid_response\" : [\r\n             \"\"\r\n           ]\r\n         },\r\n         \"include_fields\": [\r\n           \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\r\n           \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n           \"ProjectStartDate\",\"ProjectEndDate\"\r\n         ],\r\n         \"exclude_fields\": [\r\n           \"\"\r\n         ],\r\n         \"offset\": 0,\r\n         \"limit\": 0,\r\n         \"sort_field\": \"\",\r\n         \"sort_order\": \"\"\r\n     }        \r\n        \r\n**Opportunity Number Search:**\r\n\r\n The Following criteria payload filters the projects by given Opportunity Number list and returns 10 records sorted by Application ID in descending order.\r\n   \r\n     {\r\n        \"criteria\": {\r\n            \"opportunity_numbers\": [\r\n                \"RFA-DA-18-020\",\r\n                \"PAR-18-218\",\r\n                \"PAR-18-219\",\r\n                \"RFA-DA-19-002\",\r\n                \"RFA-DA-19-019\",\r\n                \"RFA-DA-19-020\",\r\n                \"RFA-EB-18-003\",\r\n                \"RFA-NS-18-041\",\r\n                \"RFA-NS-18-042\",\r\n                \"RFA-NS-18-043\",\r\n                \"RFA-NS-18-046\",\r\n                \"RFA-NS-19-010\",\r\n                \"RFA-NS-19-016\",\r\n                \"RFA-NS-19-017\",\r\n                \"RFA-NS-19-018\",\r\n                \"RFA-NS-19-020\",\r\n                \"RFA-NS-19-036\"\r\n            ]\r\n        },\r\n        \"include_fields\": [\r\n            \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\r\n            \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n            \"ProjectStartDate\",\"ProjectEndDate\",\"OpportunityNumber\"    \r\n        ],\r\n        \"offset\": 10,\r\n        \"limit\": 10,\r\n        \"sort_field\": \"appl_id\",\r\n        \"sort_order\": \"desc\"\r\n     }\r\n \r\n\r\n\r\n\r\n **Org Name Search:**\r\n\r\n The Following criteria payload filters the projects by given Organization Name list and returns 25 records sorted by Project Start Date in descending order.\r\n \r\n      {\r\n            \"criteria\":\r\n            {\r\n                \"org_names\": [\"HARVARD MEDICAL SCHOOL\"]\r\n            },\r\n            \"include_fields\": [\r\n                 \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\r\n                 \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n                 \"ProjectStartDate\",\"ProjectEndDate\"\r\n             ],\r\n             \"offset\":0,\r\n             \"limit\":25,\r\n             \"sort_field\":\"project_start_date\",\r\n              \"sort_order\":\"desc\"\r\n       }\r\n  \r\n\r\n\r\n\r\n**Project Number Search With Wildcard:**\r\n\r\n The wildcard helps to search the projects with partial Project Numbers. The \"*\" is used to match zero or more characters. It is recommended not to use the Wildcard at the beginning of the text to avoid the lengthy process.\r\n   \r\n     {\r\n         \"criteria\":\r\n         {\r\n            \"project_nums\": [\"1r03ai1*\"]\r\n         },\r\n         \"include_fields\": [\r\n             \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\r\n             \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n             \"ProjectStartDate\",\"ProjectEndDate\"\r\n         ],\r\n         \"offset\":0,\r\n         \"limit\":25,\r\n         \"sort_field\":\"project_start_date\",\r\n         \"sort_order\":\"desc\"\r\n     }\r\n\r\n\r\n\r\n\r\n**Fiscal Year or Institute Search:**\r\n\r\n You can specify the list of Fiscal Years to filter the associated projects. \r\n  \r\n     {\r\n         \"criteria\":\r\n         {\r\n           \"fiscal_years\":[2019,2018]\r\n         },\r\n         \"include_fields\": [\r\n            \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\"OrgCountry\",\r\n            \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n            \"ProjectStartDate\",\"ProjectEndDate\"\r\n         ],\r\n         \"offset\":0,\r\n         \"limit\":25,\r\n         \"sort_field\":\"project_start_date\",\r\n         \"sort_order\":\"desc\"\r\n     }\r\n      \r\n\r\n\r\n**Specify the list of Agencies to filter the corresponding projects:**\r\n\r\n     {\r\n        \"criteria\":\r\n        {\r\n            \"agencies\":[\"NIGMS\",\"NIAID\"]\r\n        },\r\n        \"include_fields\": [\r\n            \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\"OrgCountry\",\r\n            \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n            \"ProjectStartDate\",\"ProjectEndDate\"\r\n        ],\r\n        \"offset\":0,\r\n        \"limit\":25,\r\n        \"sort_field\":\"project_start_date\",\r\n        \"sort_order\":\"desc\"\r\n     }\r\n  \r\n\r\n\r\n\r\n**Opportunity Number with PI Elements with No Submitted Value Search:**\r\n\r\n The following criteria filter will search all projects with given Funding Opportunity Announcements and Principle Investigators for all Fiscal Years. \r\n  \r\n       {\r\n          \"criteria\":\r\n           {\r\n               \"fiscal_years\":[],\r\n               \"pi_names\": [{\"any_name\": \"\"},{\"first_name\": \"\"} ],\r\n               \"opportunity_numbers\":[\"RFA-DA-18-020\",\"PAR-18-218\",\"PAR-18-219\"]\r\n           },\r\n           \"include_fields\": [\r\n               \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\"OrgCountry\",\r\n               \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n               \"ProjectStartDate\",\"ProjectEndDate\",\"OpportunityNumber\"\r\n           ],\r\n           \"offset\":0,\r\n           \"limit\":25,\r\n           \"sort_field\":\"project_start_date\",\r\n           \"sort_order\":\"desc\"\r\n       }\r\n  \r\n\r\n\r\n\r\n**Multiple Investigators (OR) Search:**\r\n\r\n Multiple parameters for Principle Investigator can be specified e.g. First, Last or any name. The projects with any matching parameters return by the API. \r\n \r\n      {\r\n         \"criteria\":\r\n         {\r\n             \"fiscal_years\":[],\r\n             \"pi_names\": [{\"any_name\": \"gullo\"},{\"first_name\": \"\"},{\"any_name\": \"welch\"},{\"first_name\": \"\"}]\r\n         },\r\n         \"include_fields\": [\r\n             \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\"OrgCountry\",\r\n             \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n             \"ProjectStartDate\",\"ProjectEndDate\"\r\n         ],\r\n         \"offset\":0,\r\n         \"limit\":10\r\n     }\r\n\r\n\r\n***\r\n\r\n\r\n\r\n**NIH COVID-19 Response Search:**\r\n\r\n     {\r\n         \"criteria\":\r\n         {\r\n            \"covid_response\": [\"Reg-CV\", \"CV\"]\r\n         },\r\n         \"include_fields\": [\r\n                \"ApplId\",\"SubprojectId\",\"FiscalYear\",\"Organization\", \"ProjectNum\",\"OrgCountry\",\r\n                \"ProjectNumSplit\",\"ContactPiName\",\"AllText\",\"FullStudySection\",\r\n                \"ProjectStartDate\",\"ProjectEndDate\"\r\n         ],\r\n         \"offset\":0,\r\n         \"limit\":10\r\n     }\r\n\r\n***\r\n\r\n\r\n**The response can be in JSON and is controlled by the 'Accept' request header.**",
+        "operationId": "nihPostV2ProjectsSearch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "criteria": {
+                    "properties": {
+                      "activityCodes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "advancedTextSearch": {
+                        "properties": {
+                          "formattedSearchText": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "operator": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "searchField": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "searchRegion": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "searchText": {
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "agencies": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "applIds": {
+                        "items": {
+                          "format": "int32",
+                          "type": "integer"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "arraType": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "awardAmountRange": {
+                        "properties": {
+                          "hasValue": {
+                            "type": "boolean"
+                          },
+                          "maxAmount": {
+                            "format": "double",
+                            "nullable": true,
+                            "type": "number"
+                          },
+                          "minAmount": {
+                            "format": "double",
+                            "nullable": true,
+                            "type": "number"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "awardNoticeDate": {
+                        "properties": {
+                          "fromDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "toDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "awardTypes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "congDists": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "cooperativeAgreementCodes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "covidResponse": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "dateAdded": {
+                        "properties": {
+                          "fromDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "toDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "deptTypes": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "excludeSubprojects": {
+                        "type": "boolean"
+                      },
+                      "fiscalYears": {
+                        "items": {
+                          "format": "int32",
+                          "type": "integer"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "foa": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "fullStudySections": {
+                        "items": {
+                          "properties": {
+                            "clusterIrgCode": {
+                              "type": "object"
+                            },
+                            "cmteId": {
+                              "type": "object"
+                            },
+                            "groupCode": {
+                              "type": "object"
+                            },
+                            "irgCode": {
+                              "type": "object"
+                            },
+                            "name": {
+                              "type": "object"
+                            },
+                            "properties": {
+                              "type": "object"
+                            },
+                            "sraDesignatorCode": {
+                              "type": "object"
+                            },
+                            "sraFlexCode": {
+                              "type": "object"
+                            },
+                            "srgCode": {
+                              "type": "object"
+                            },
+                            "srgFlex": {
+                              "type": "object"
+                            },
+                            "url": {
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "fundingMechanism": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "includeActiveProjects": {
+                        "nullable": true,
+                        "type": "boolean"
+                      },
+                      "isAgencyAdmin": {
+                        "type": "boolean"
+                      },
+                      "isAgencyFunding": {
+                        "type": "boolean"
+                      },
+                      "multiPiOnly": {
+                        "type": "boolean"
+                      },
+                      "newlyAddedProjectsOnly": {
+                        "type": "boolean"
+                      },
+                      "opportunityNumbers": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "orgCities": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "orgCountries": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "orgNames": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "orgNamesExactMatch": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "orgStates": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "organizationType": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "outcomesOnly": {
+                        "nullable": true,
+                        "type": "boolean"
+                      },
+                      "piNames": {
+                        "items": {
+                          "properties": {
+                            "anyName": {
+                              "type": "object"
+                            },
+                            "firstName": {
+                              "type": "object"
+                            },
+                            "lastName": {
+                              "type": "object"
+                            },
+                            "middleName": {
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "piProfileIds": {
+                        "items": {
+                          "format": "int32",
+                          "type": "integer"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "poNames": {
+                        "items": {
+                          "properties": {
+                            "anyName": {
+                              "type": "object"
+                            },
+                            "firstName": {
+                              "type": "object"
+                            },
+                            "lastName": {
+                              "type": "object"
+                            },
+                            "middleName": {
+                              "type": "object"
+                            }
+                          },
+                          "type": "object"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "projectEndDate": {
+                        "properties": {
+                          "fromDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "toDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "projectNumSplit": {
+                        "properties": {
+                          "activityCode": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "applTypeCode": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "fullSupportYear": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "icCode": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "serialNum": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "suffixCode": {
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "supportYear": {
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "projectNums": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "projectStartDate": {
+                        "properties": {
+                          "fromDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          },
+                          "toDate": {
+                            "format": "date-time",
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "publicationsSearch": {
+                        "properties": {
+                          "applId": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "nullable": true,
+                            "type": "array"
+                          },
+                          "coreProjectNums": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "nullable": true,
+                            "type": "array"
+                          },
+                          "filterApplIds": {
+                            "type": "boolean"
+                          },
+                          "getNonNIHPubs": {
+                            "type": "boolean"
+                          },
+                          "pmId": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "nullable": true,
+                            "type": "array"
+                          },
+                          "pmcId": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "nullable": true,
+                            "type": "array"
+                          },
+                          "publicationsTextSearch": {
+                            "nullable": true,
+                            "type": "string"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "spendingCategories": {
+                        "properties": {
+                          "matchAll": {
+                            "type": "boolean"
+                          },
+                          "values": {
+                            "items": {
+                              "type": "object"
+                            },
+                            "nullable": true,
+                            "type": "array"
+                          }
+                        },
+                        "type": "object"
+                      },
+                      "subProjectOnly": {
+                        "type": "boolean"
+                      },
+                      "useRelevance": {
+                        "type": "boolean"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "excludeFields": {
+                    "description": "Exclude these fields in the results.\r\nIf null or empty, no fields are excluded.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "nullable": true,
+                    "type": "array"
+                  },
+                  "includeFields": {
+                    "description": "Include these fields in the results.\r\nIf null the all fields are included by default.\r\nIf not null but empty, then no fields are included.",
+                    "items": {
+                      "type": "string"
+                    },
+                    "nullable": true,
+                    "type": "array"
+                  },
+                  "isInitialSearch": {
+                    "type": "boolean"
+                  },
+                  "limit": {
+                    "description": "Number of records to retrieve. System imposed limit is 50",
+                    "format": "int32",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "description": "Start at",
+                    "format": "int32",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "searchId": {
+                    "description": "Search Id",
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "sortField": {
+                    "description": "Name of the property to sort on",
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "sortOrder": {
+                    "description": "Direction of the Sort",
+                    "nullable": true,
+                    "type": "string"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieves Projects against specified criteria payload.",
+        "tags": [
+          "Search"
+        ]
+      }
+    },
+    "/v2/publications/search": {
+      "post": {
+        "description": "Implementation Notes\r\n\r\nThe input is a criteria payload in JSON format. Only required filter criteria fields can be provided to get the desired publication records. \r\n***\r\n**Response includes:**        \r\n* Total Count of matches       \r\n* Offset  \r\n* Limit\r\n* Total number of pages (based on the Limit per request)\r\n* One or more matching publications. \r\n***\r\n**Example input payloads:** \r\n***\r\n\r\n        \r\n**Complete Payload with all Filled Properties:**\r\n\r\n\r\nThe following is a partially filled input Payload.\r\n\r\n        {\r\n         \"criteria\": {\r\n           \"appl_ids\": [\r\n               10125113,\r\n               9931223,\r\n               10102270\r\n           ],\r\n           \"pmids\": [\r\n               33205613,\r\n               33858821,\r\n               33288912\r\n           ],\r\n           \"core_project_nums\": [\r\n               \"T32GM062754\",\r\n               \"U01HL136297\",\r\n               \"F31HL149358\"\r\n           ]\r\n         },\r\n         \"offset\": 0,\r\n         \"limit\": 10,\r\n         \"sort_field\":\"core_project_nums\",\r\n         \"sort_order\":\"asc\"\r\n     }        \r\n        \r\n**PMID Search:**\r\n\r\n The following criteria payload filters the publications by the given PMID list and returns 10 records sorted by Core Project Num in descending order.\r\n   \r\n     {\r\n        \"criteria\": {\r\n            \"pmids\": [\r\n                33205613,\r\n                33858821,\r\n                33288912\r\n            ]\r\n        },\r\n        \"offset\": 0,\r\n        \"limit\": 10, \r\n        \"sort_field\":\"pmids\",\r\n        \"sort_order\":\"desc\"\r\n     }\r\n \r\n\r\n***\r\n\r\n **Application ID Search:**\r\n\r\n The following criteria payload filters the publications by the given application ids and returns 10 records sorted by Core Project Num in descending order.\r\n   \r\n     {\r\n        \"criteria\": {\r\n            \"appl_ids\": [\r\n                9507800, \r\n                8986571\r\n            ]\r\n        },\r\n        \"offset\": 0,\r\n        \"limit\": 10,\r\n        \"sort_field\":\"appl_ids\",\r\n        \"sort_order\":\"desc\"\r\n     }\r\n \r\n\r\n***\r\n\r\n**Core Project Number Search:**\r\n\r\n The following criteria payload filters the publications by the given Core Project Number list and returns 10 records sorted by Core Project Num in descending order.\r\n   \r\n     {\r\n        \"criteria\": {\r\n            \"core_project_nums\": [\r\n                \"T32DA023356\",\r\n                \"K01DA040543\"\r\n            ]\r\n        },\r\n        \"offset\": 0,\r\n        \"limit\": 10,\r\n        \"sort_field\":\"core_project_nums\",\r\n        \"sort_order\":\"desc\"\r\n     }\r\n \r\n\r\n***\r\n\r\n**The response can be in JSON and is controlled by the 'Accept' request header.**",
+        "operationId": "nihPostV2PublicationsSearch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "criteria": {
+                    "description": "DTO - Used to support external client requests",
+                    "properties": {
+                      "applIds": {
+                        "items": {
+                          "format": "int32",
+                          "type": "integer"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "coreProjectNums": {
+                        "items": {
+                          "type": "string"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      },
+                      "pmids": {
+                        "items": {
+                          "format": "int32",
+                          "type": "integer"
+                        },
+                        "nullable": true,
+                        "type": "array"
+                      }
+                    },
+                    "type": "object"
+                  },
+                  "limit": {
+                    "description": "Number of records to retrieve. System imposed limit is 50",
+                    "format": "int32",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "offset": {
+                    "description": "Start at",
+                    "format": "int32",
+                    "nullable": true,
+                    "type": "integer"
+                  },
+                  "sortField": {
+                    "description": "Name of the property to sort on",
+                    "nullable": true,
+                    "type": "string"
+                  },
+                  "sortOrder": {
+                    "description": "Direction of the Sort",
+                    "nullable": true,
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "criteria"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": false
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieves publications against specified criteria payload.",
+        "tags": [
+          "Search"
+        ]
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.reporter.nih.gov"
+    }
+  ]
+}

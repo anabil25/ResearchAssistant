@@ -149,6 +149,25 @@ function baseRun(overrides: Partial<StudioRun> = {}): StudioRun {
   };
 }
 
+/**
+ * Inline run evidence lists the citations that backed the artifact, so a
+ * source title legitimately renders twice once a run resolves: once in the
+ * studio's own output, once in the provenance list. Assertions about the
+ * studio output must say which one they mean rather than relying on the title
+ * being globally unique.
+ */
+function getOutsideRunEvidence(text: string): HTMLElement {
+  const matches = screen
+    .getAllByText(text)
+    .filter((node) => node.closest(".run-evidence") === null);
+  if (matches.length !== 1) {
+    throw new Error(
+      `Expected exactly one "${text}" outside run evidence, found ${matches.length}.`,
+    );
+  }
+  return matches[0];
+}
+
 describe("LiteratureStudio", () => {
   const literatureResult: LiteratureStudioResult = {
     run: baseRun({ capability: "literature" }),
@@ -242,7 +261,7 @@ describe("LiteratureStudio", () => {
       />,
     );
 
-    expect(screen.getByText("Study A")).toBeInTheDocument();
+    expect(getOutsideRunEvidence("Study A")).toBeInTheDocument();
     expect(screen.queryByDisplayValue("Method A")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Extract" }));
@@ -334,7 +353,9 @@ describe("LiteratureStudio", () => {
     const metricLine = document.querySelector(".metric-line");
     expect(metricLine?.textContent).toContain("2 included");
 
-    const studyARow = screen.getByText("Study A").closest(".screening-record");
+    const studyARow = getOutsideRunEvidence("Study A").closest(
+      ".screening-record",
+    );
     expect(studyARow).not.toBeNull();
     await user.click(
       within(studyARow as HTMLElement).getByRole("button", {
@@ -460,12 +481,16 @@ describe("LiteratureStudio", () => {
 
     fireEvent.click(
       within(
-        screen.getByText("Study A").closest(".screening-record") as HTMLElement,
+        getOutsideRunEvidence("Study A").closest(
+          ".screening-record",
+        ) as HTMLElement,
       ).getByRole("button", { name: "Exclude" }),
     );
     fireEvent.click(
       within(
-        screen.getByText("Study B").closest(".screening-record") as HTMLElement,
+        getOutsideRunEvidence("Study B").closest(
+          ".screening-record",
+        ) as HTMLElement,
       ).getByRole("button", { name: "Exclude" }),
     );
     fireEvent.click(screen.getByRole("button", { name: "Extract" }));
@@ -2825,7 +2850,7 @@ describe("InstitutionalStudio", () => {
     ).toBeInTheDocument();
     expect(screen.getByText("Escalate to research compliance counsel.")).toBeInTheDocument();
     expect(screen.getByText("Retention timing")).toBeInTheDocument();
-    expect(screen.getByText("IRB Handbook")).toBeInTheDocument();
+    expect(getOutsideRunEvidence("IRB Handbook")).toBeInTheDocument();
     expect(screen.getByText(/v2\.0 · Effective 2026-01-01/i)).toBeInTheDocument();
     expect(await screen.findByTestId("research-markdown")).toHaveTextContent(
       "The corpus abstained until counsel confirms the retained wording.",

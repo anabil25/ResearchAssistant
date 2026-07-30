@@ -64,9 +64,9 @@ describe("V3 interaction manifest", () => {
     expect(multiViewport.length).toBeGreaterThan(0);
     expect(multiViewport.length).toBeLessThan(UI_COVERAGE_MANIFEST.length);
     // Everything classified viewport-sensitive is a shell surface -- the
-    // navigation rail, evidence inspector, command palette and approvals
-    // control are the elements this app's `@media (max-width: 1180px)` and
-    // `(max-width: 900px)` rules actually restructure.
+    // navigation rail, command palette and approvals control are the
+    // elements this app's `@media (max-width: 900px)` and `(max-width:
+    // 680px)` rules actually restructure.
     for (const interaction of multiViewport) {
       expect(interaction.id.startsWith("shell.")).toBe(true);
       expect(interaction.viewports).toEqual(["desktop", "tablet", "mobile"]);

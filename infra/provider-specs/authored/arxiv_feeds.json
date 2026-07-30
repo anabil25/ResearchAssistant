@@ -1,0 +1,73 @@
+{
+  "info": {
+    "description": "arXiv daily announcement feeds. Authored from https://info.arxiv.org/help/api/user-manual.html",
+    "title": "arXiv API (feeds)",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/atom/{category}": {
+      "get": {
+        "operationId": "arxivAtomFeed",
+        "parameters": [
+          {
+            "description": "Archive, subject class, or several joined by '+'.",
+            "in": "path",
+            "name": "category",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Daily Atom feed of new and cross-listed announcements for a category."
+      }
+    },
+    "/rss/{category}": {
+      "get": {
+        "operationId": "arxivRssFeed",
+        "parameters": [
+          {
+            "description": "Archive, subject class, or several joined by '+'.",
+            "in": "path",
+            "name": "category",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Daily RSS 2.0 feed of new and cross-listed announcements for a category."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://rss.arxiv.org"
+    }
+  ]
+}

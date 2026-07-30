@@ -37,7 +37,7 @@ def test_health_and_security_headers() -> None:
     with TestClient(app) as client:
         response = client.get("/health")
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     assert response.json()["status"] == "healthy"
     assert response.headers["x-content-type-options"] == "nosniff"
     assert response.headers["x-request-id"].startswith("req-")
@@ -91,8 +91,69 @@ def test_ready_workflows_projects_and_missing_run_routes() -> None:
     assert workflows.json()[0]["stages"]
     assert projects.status_code == 200
     assert projects.json()[0]["id"] == "demo-project"
+    assert projects.json()[0]["name"] == "Personal research workspace"
     assert missing_run.status_code == 404
     assert missing_run.json()["detail"] == "Run not found."
+
+
+def test_personal_projects_enforce_owner_selection_and_archive_lifecycle() -> None:
+    owner_headers = {
+        "X-MS-CLIENT-PRINCIPAL": _principal("demo", ["researchers"]),
+    }
+    other_user_headers = {
+        "X-MS-CLIENT-PRINCIPAL": base64.b64encode(
+            json.dumps(
+                {
+                    "userId": "user-2",
+                    "userDetails": "Another user",
+                    "claims": [
+                        {"typ": "tid", "val": "demo"},
+                        {"typ": "groups", "val": "researchers"},
+                    ],
+                }
+            ).encode()
+        ).decode(),
+    }
+    with TestClient(app) as client:
+        app.state.settings = Settings(
+            entra_auth_enforced=True,
+        )
+        created = client.post(
+            "/api/projects",
+            headers=owner_headers,
+            json={
+                "name": "Cancer outcomes review",
+                "description": "A private workspace for a bounded evidence review.",
+            },
+        )
+
+        assert created.status_code == 201
+        project = created.json()
+        assert project["is_active"] is True
+
+        selected = client.get(
+            "/api/workspace",
+            headers={**owner_headers, "X-Research-Project-ID": project["id"]},
+        )
+        foreign = client.get(
+            "/api/workspace",
+            headers={**other_user_headers, "X-Research-Project-ID": project["id"]},
+        )
+        archived = client.patch(
+            f"/api/projects/{project['id']}",
+            headers=owner_headers,
+            json={"archive": True},
+        )
+        after_archive = client.get("/api/workspace", headers=owner_headers)
+
+    assert selected.status_code == 200
+    assert selected.json()["project"]["project_id"] == project["id"]
+    assert selected.json()["library_items"] == 0
+    assert foreign.status_code == 404
+    assert foreign.json()["detail"] == "The requested project is unavailable."
+    assert archived.status_code == 200
+    assert archived.json()["is_active"] is False
+    assert after_archive.status_code == 404
 
 
 def test_ready_reports_missing_hosted_endpoint() -> None:
@@ -107,8 +168,7 @@ def test_ready_reports_missing_hosted_endpoint() -> None:
 def test_workspace_requires_authenticated_identity_when_demo_disabled() -> None:
     with TestClient(app) as client:
         app.state.settings = Settings(
-            allow_demo_identity=False,
-            trust_platform_identity_headers=True,
+            entra_auth_enforced=True,
         )
         response = client.get("/api/workspace")
 
@@ -122,12 +182,19 @@ def test_public_ingestion_requires_research_admin_role() -> None:
     }
     with TestClient(app) as client:
         app.state.settings = Settings(
-            allow_demo_identity=False,
-            trust_platform_identity_headers=True,
+            entra_auth_enforced=True,
         )
+        project = client.post(
+            "/api/projects",
+            headers=headers,
+            json={
+                "name": "Public release review",
+                "description": "A personal workspace for reviewing a public release.",
+            },
+        ).json()
         response = client.post(
             "/api/library/ingest",
-            headers=headers,
+            headers={**headers, "X-Research-Project-ID": project["id"]},
             json={
                 "title": "Public release candidate",
                 "kind": "Policy",
@@ -483,12 +550,10 @@ def test_studio_route_uses_hosted_agent_for_online_runs(
             message: str,
             *,
             agent_name: str | None = None,
-            allow_tools: bool = True,
         ) -> HostedAgentReply:
             calls["invoke"] = {
                 "message": message,
                 "agent_name": agent_name,
-                "allow_tools": allow_tools,
             }
             return HostedAgentReply(
                 agent_name=agent_name or "missing",
@@ -520,9 +585,11 @@ def test_studio_route_uses_hosted_agent_for_online_runs(
     assert response.json()["insight"]["agent_name"] == "literature-online-agent"
     assert response.json()["insight"]["online_research_used"] is True
     assert calls["invoke"]["agent_name"] == "literature-online-agent"
-    assert calls["invoke"]["allow_tools"] is True
-    assert "public reproducibility guidance" in calls["invoke"]["message"]
-    assert calls["metadata"]["kwargs"]["requested_sources"] == ["PubMed"]
+    envelope = json.loads(calls["invoke"]["message"])
+    assert envelope["query"] == "Compare public reproducibility guidance"
+    assert envelope["authorized_connector_ids"] == ["pubmed"]
+    assert "public reproducibility guidance" in envelope["public_context"]
+    assert calls["metadata"]["kwargs"]["requested_sources"] == ["pubmed"]
 
 
 @pytest.mark.parametrize(
@@ -597,7 +664,7 @@ def test_research_route_uses_hosted_agent_and_records_unresolved_insight() -> No
             allow_tools: bool = True,
         ) -> HostedAgentReply:
             assert agent_name == "literature-agent"
-            assert allow_tools is False
+            assert allow_tools is True
             assert "Authorized evidence" in message
             return HostedAgentReply(
                 agent_name="literature-agent",
@@ -645,12 +712,10 @@ def test_research_route_fetches_public_metadata_for_online_hosted_runs(
             message: str,
             *,
             agent_name: str | None = None,
-            allow_tools: bool = True,
         ) -> HostedAgentReply:
             calls["invoke"] = {
                 "message": message,
                 "agent_name": agent_name,
-                "allow_tools": allow_tools,
             }
             return HostedAgentReply(
                 agent_name=agent_name or "missing",
@@ -669,6 +734,7 @@ def test_research_route_fetches_public_metadata_for_online_hosted_runs(
             "/api/research/literature",
             json={
                 "query": "Compare public guidance",
+                "project_id": "demo-project",
                 "context": {
                     "online_research": True,
                     "public_search_query": "current public guidance",
@@ -678,11 +744,13 @@ def test_research_route_fetches_public_metadata_for_online_hosted_runs(
             },
         )
 
-    assert response.status_code == 200
+    assert response.status_code == 200, response.json()
     assert response.json()["metadata"]["online_research"] is True
     assert calls["invoke"]["agent_name"] == "literature-online-agent"
-    assert calls["invoke"]["allow_tools"] is True
-    assert calls["metadata"]["kwargs"]["requested_sources"] == ["PubMed"]
+    envelope = json.loads(calls["invoke"]["message"])
+    assert envelope["query"] == "Compare public guidance"
+    assert envelope["authorized_connector_ids"] == ["pubmed"]
+    assert calls["metadata"]["kwargs"]["requested_sources"] == ["pubmed"]
 
 
 def test_research_route_deselecting_all_grant_sources_makes_zero_gateway_calls() -> None:

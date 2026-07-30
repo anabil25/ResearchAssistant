@@ -61,16 +61,18 @@ from .telemetry import (
     OpenTelemetryGovernanceAuditSink,
     telemetry_identity_digest,
 )
+from .tools import request_tools_for_profile
 
 _GOVERNANCE_CONTEXT_KEY = "governance_context"
 _TOOL_EVIDENCE_KEY = "authorized_tool_evidence"
-_CONNECTOR_OPERATIONS = frozenset(
-    {
-        "searchLiteratureMetadata",
-        "searchGrantOpportunities",
-        "searchMatchingMetadata",
-    }
-)
+_AUTHORIZED_CONNECTOR_IDS_KEY = "authorized_connector_ids"
+
+
+def _connector_id_for_tool_name(tool_name: str) -> str | None:
+    connector_id, separator, operation = tool_name.partition("___")
+    if not separator or not connector_id or not operation:
+        return None
+    return connector_id
 
 
 class _ConnectorToolResult(BaseModel):
@@ -121,6 +123,7 @@ class ContractMiddleware(AgentMiddleware):
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
         request = self._validate(context.messages)
+        connector_ids = self._authorized_connector_ids(request)
         await self._load_conversation(context, request)
         self._emit_audit("agent.invocation", "accepted", request)
         tool_evidence: list[EvidenceRef] = []
@@ -132,7 +135,21 @@ class ContractMiddleware(AgentMiddleware):
             mode="json"
         )
         context.function_invocation_kwargs[_TOOL_EVIDENCE_KEY] = tool_evidence
+        context.function_invocation_kwargs[_AUTHORIZED_CONNECTOR_IDS_KEY] = connector_ids
+        request_toolbox = None
         try:
+            if self._manifest.online:
+                if self._settings is None:
+                    raise ConfigurationError(
+                        "Online Toolbox requests require runtime settings",
+                        context={"agent": self._manifest.id},
+                    )
+                request_toolbox, request_tools = await request_tools_for_profile(
+                    self._manifest,
+                    self._settings,
+                    connector_ids,
+                )
+                context.tools = request_tools
             await call_next()
             if context.stream:
                 if not isinstance(context.result, ResponseStream):
@@ -145,6 +162,9 @@ class ContractMiddleware(AgentMiddleware):
                     request,
                     tool_evidence,
                 )
+                if request_toolbox is not None:
+                    context.stream_cleanup_hooks.append(request_toolbox.close)
+                    request_toolbox = None
             elif isinstance(context.result, AgentResponse):
                 context.result = self._normalize_response(
                     context.result,
@@ -162,6 +182,9 @@ class ContractMiddleware(AgentMiddleware):
                 error_code=error_from_exception(exc).code,
             )
             raise
+        finally:
+            if request_toolbox is not None:
+                await request_toolbox.close()
 
     def _validate(self, messages: list[Message]) -> ResearchRequest:
         if not messages or messages[-1].role != "user":
@@ -174,6 +197,21 @@ class ContractMiddleware(AgentMiddleware):
                 context={"contract": self._manifest.input_contract},
             ) from exc
 
+    def _authorized_connector_ids(self, request: ResearchRequest) -> tuple[str, ...]:
+        if not self._manifest.online:
+            return ()
+        connector_ids = getattr(request, "authorized_connector_ids", ())
+        if not isinstance(connector_ids, tuple):
+            raise ContractError("Online request connector authorization is invalid")
+        configured_sources = set(self._manifest.knowledge_bindings[0].sources)
+        unauthorized = set(connector_ids) - configured_sources
+        if unauthorized:
+            raise AuthorizationError(
+                "Online request names connectors outside the agent policy",
+                context={"agent": self._manifest.id, "connectors": sorted(unauthorized)},
+            )
+        return connector_ids
+
     @staticmethod
     def _model_input(request: ResearchRequest) -> str:
         excluded = {
@@ -184,6 +222,7 @@ class ContractMiddleware(AgentMiddleware):
             "approval_decision_id",
             "invocation_id",
             "idempotency_key",
+            "authorized_connector_ids",
         }
         return request.model_dump_json(exclude=excluded)
 
@@ -424,6 +463,81 @@ class ContractMiddleware(AgentMiddleware):
         )
 
 
+class ConnectorToolAuthorizationMiddleware(FunctionMiddleware):
+    """Reject connector MCP tools outside the request's validated source set."""
+
+    def __init__(self, manifest: AgentManifest) -> None:
+        self._agent_id = manifest.id
+        self._configured_sources = frozenset(manifest.connector_sources)
+
+    async def process(
+        self,
+        context: FunctionInvocationContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        connector_id = _connector_id_for_tool_name(context.function.name)
+        if connector_id is not None:
+            authorized = context.kwargs.get(_AUTHORIZED_CONNECTOR_IDS_KEY)
+            if not isinstance(authorized, tuple) or not all(
+                isinstance(item, str) for item in authorized
+            ):
+                raise AuthorizationError("Connector tool invocation is missing validated authorization")
+            if connector_id not in self._configured_sources or connector_id not in authorized:
+                raise AuthorizationError(
+                    "Connector tool is not authorized for this request",
+                    context={"agent": self._agent_id, "connector": connector_id},
+                )
+        await call_next()
+        if connector_id is None:
+            return
+        collector = context.kwargs.get(_TOOL_EVIDENCE_KEY)
+        if not isinstance(collector, list):
+            raise ContractError("Connector tool invocation is missing its trusted evidence collector")
+        evidence = self._evidence_from_matching_connector_result(
+            connector_id,
+            context.result,
+        )
+        collector.extend(evidence)
+        context.result = GovernedFunctionMiddleware._expose_authorized_evidence(
+            context.result,
+            evidence,
+        )
+
+    @staticmethod
+    def _evidence_from_matching_connector_result(
+        connector_id: str,
+        result: Any,
+    ) -> tuple[EvidenceRef, ...]:
+        payloads = GovernedFunctionMiddleware._dict_payloads(result)
+        try:
+            connector_result = next(
+                _ConnectorToolResult.model_validate(payload)
+                for payload in payloads
+                if payload.get("source") == connector_id
+            )
+        except (StopIteration, ValidationError) as exc:
+            raise ContractError(
+                "Connector tool output does not match its authorized source"
+            ) from exc
+        evidence: list[EvidenceRef] = []
+        for record in connector_result.records:
+            record_uri = record.get("url")
+            source_uri = (
+                record_uri
+                if isinstance(record_uri, str) and record_uri
+                else str(connector_result.retrieved_from)
+            )
+            title = record.get("title")
+            evidence.append(
+                EvidenceRef(
+                    evidence_id=f"connector:{connector_id}:{canonical_digest(record)}",
+                    source_uri=source_uri,
+                    title=title[:512] if isinstance(title, str) else None,
+                )
+            )
+        return tuple(evidence)
+
+
 class GovernedFunctionMiddleware(FunctionMiddleware):
     def __init__(
         self,
@@ -580,8 +694,12 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
     ) -> tuple[EvidenceRef, ...]:
         if tool_name == "web_search":
             return self._evidence_from_web_search(result)
-        if tool_name in _CONNECTOR_OPERATIONS:
-            return self._evidence_from_connector_result(result)
+        connector_id = _connector_id_for_tool_name(tool_name)
+        if connector_id is not None:
+            return self._evidence_from_connector_result(
+                result,
+                expected_connector_id=connector_id,
+            )
         return ()
 
     def _evidence_from_web_search(self, result: Any) -> tuple[EvidenceRef, ...]:
@@ -624,13 +742,21 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
     def _evidence_from_connector_result(
         self,
         result: Any,
+        *,
+        expected_connector_id: str | None = None,
     ) -> tuple[EvidenceRef, ...]:
         payloads = self._dict_payloads(result)
         try:
             connector_result = next(
                 _ConnectorToolResult.model_validate(payload)
                 for payload in payloads
-                if payload.get("source") in self._allowed_connector_sources
+                if (
+                    payload.get("source") in self._allowed_connector_sources
+                    and (
+                        expected_connector_id is None
+                        or payload.get("source") == expected_connector_id
+                    )
+                )
             )
         except (StopIteration, ValidationError) as exc:
             raise ContractError("Connector tool output does not match its governed response contract") from exc
@@ -743,6 +869,8 @@ def middleware_for_manifest(
             trusted_project_id=trusted_project_id,
         )
     ]
+    if manifest.online:
+        middleware.append(ConnectorToolAuthorizationMiddleware(manifest))
     if (
         not platform_managed_tools
         and tuple(registration.binding for registration in registrations)

@@ -1,7 +1,9 @@
 "use client";
 
 import {
+  Archive,
   Bell,
+  Bot,
   BookOpen,
   FileText,
   History,
@@ -9,7 +11,8 @@ import {
   Landmark,
   Library,
   Menu,
-  PanelRight,
+  Pencil,
+  Plus,
   Search,
   Settings,
   ShieldCheck,
@@ -24,6 +27,7 @@ import {
   StudioForCapability,
   type StudioRunOptions,
 } from "@/components/studio-components";
+import { FoundryAgentCatalog, PromptAgentBuilder } from "@/components/foundry-agent-studio";
 import {
   CAPABILITY_CARDS,
   LibraryView,
@@ -33,14 +37,18 @@ import {
   type WorkspaceViewId,
 } from "@/components/workspace-views";
 import {
+  activateProject,
+  createProject,
   getWorkspaceData,
+  listProjects,
   runStudio,
+  updateProject,
   type WorkspaceData,
 } from "@/lib/api";
 import { useBlockingModalOpen } from "@/lib/blocking-modal";
 import type {
   CapabilityId,
-  Citation,
+  ProjectSummary,
   StudioResult,
 } from "@/lib/types";
 
@@ -53,6 +61,8 @@ function viewTitle(view: WorkspaceViewId): string {
   if (view === "library") return "Evidence Library";
   if (view === "runs") return "Runs & Approvals";
   if (view === "settings") return "Project Settings";
+  if (view === "agents") return "Agents";
+  if (view === "prompt-builder") return "Prompt builder";
   return (
     CAPABILITY_CARDS.find((capability) => capability.id === view)?.shortTitle ??
     "Research Assistant"
@@ -65,6 +75,8 @@ function isWorkspaceView(candidate: string | null): candidate is WorkspaceViewId
     candidate === "library" ||
     candidate === "runs" ||
     candidate === "settings" ||
+    candidate === "agents" ||
+    candidate === "prompt-builder" ||
     CAPABILITY_CARDS.some((capability) => capability.id === candidate)
   );
 }
@@ -74,192 +86,29 @@ function viewFromSearch(search: string): WorkspaceViewId {
   return isWorkspaceView(candidate) ? candidate : "overview";
 }
 
-function ResultEvidence({
-  result,
-  data,
-}: {
-  result: StudioResult | null;
-  data: WorkspaceData | null;
-}) {
-  const citations: Citation[] = result?.citations ?? [];
-  return (
-    <>
-      <div className="evidence-header">
-        <div>
-          <span className="eyebrow">Trust inspector</span>
-          <h2>Evidence & lineage</h2>
-        </div>
-        <span className="evidence-health">
-          <span />
-          {result ? "Run resolved" : "Ready"}
-        </span>
-      </div>
-
-      {result ? (
-        <>
-          <section className="evidence-run-card">
-            <div>
-              <span className="evidence-run-icon">
-                <ShieldCheck size={18} />
-              </span>
-              <span>
-                <strong>{result.run.title}</strong>
-                <small>{result.run.durable_instance_id}</small>
-              </span>
-            </div>
-            <div className="evidence-progress">
-              <span>
-                <strong>{result.run.progress}%</strong>
-                {result.run.current_stage}
-              </span>
-              <div>
-                <i style={{ width: `${result.run.progress}%` }} />
-              </div>
-            </div>
-          </section>
-          <section className="evidence-section">
-            <div className="evidence-section-heading">
-              <span>Resolved sources</span>
-              <em>{citations.length}</em>
-            </div>
-            {citations.length ? (
-              <div className="evidence-source-list">
-                {citations.slice(0, 5).map((citation, index) => (
-                  <article key={citation.id}>
-                    <span>{index + 1}</span>
-                    <div>
-                      <strong>{citation.title}</strong>
-                      <small>
-                        {citation.section}
-                        {citation.page_start
-                          ? ` · p. ${citation.page_start}`
-                          : ""}
-                      </small>
-                      <p>{citation.quote}</p>
-                      <code>{citation.source_id}</code>
-                    </div>
-                  </article>
-                ))}
-              </div>
-            ) : (
-              <div className="evidence-empty">
-                No stored citations were used by this artifact.
-              </div>
-            )}
-          </section>
-          {result.insight ? (
-            <section className="evidence-section agent-boundary-card">
-              <div className="evidence-section-heading">
-                <span>Hosted Agent boundary</span>
-                <em>{result.insight.evidence_state.replaceAll("_", " ")}</em>
-              </div>
-              <p>
-                Model text is supplemental analysis. It cannot grant
-                permissions, calculate scores, approve actions, or promote
-                unresolved claims to verified evidence.
-              </p>
-              <dl>
-                <div>
-                  <dt>Resolved IDs</dt>
-                  <dd>{(result.insight.referenced_source_ids ?? []).length}</dd>
-                </div>
-                <div>
-                  <dt>Unresolved IDs</dt>
-                  <dd>{(result.insight.unresolved_source_ids ?? []).length}</dd>
-                </div>
-              </dl>
-            </section>
-          ) : null}
-        </>
-      ) : (
-        <>
-          <section className="trust-principle">
-            <span className="trust-mark">
-              <ShieldCheck size={21} />
-            </span>
-            <div>
-              <strong>Proof before prose</strong>
-              <p>
-                Claims become verified only after their source IDs resolve to
-                authorized stored passages.
-              </p>
-            </div>
-          </section>
-          <section className="evidence-section">
-            <div className="evidence-section-heading">
-              <span>Active controls</span>
-              <em>6</em>
-            </div>
-            <div className="control-list">
-              {[
-                ["Identity-bound tenant", "demo"],
-                ["Public web default", "Off"],
-                ["Citation coverage", "100%"],
-                ["Approval policy", "Required"],
-                ["Connector boundary", "Public metadata"],
-                ["Agent runtime", "Foundry hosted"],
-                [
-                  "Operational state",
-                  data?.summary.persistence ?? "Loading",
-                ],
-              ].map(([label, value]) => (
-                <div key={label}>
-                  <span>
-                    <i />
-                    {label}
-                  </span>
-                  <strong>{value}</strong>
-                </div>
-              ))}
-            </div>
-          </section>
-          <section className="evidence-section">
-            <div className="evidence-section-heading">
-              <span>Workspace readiness</span>
-              <em>
-                {data?.summary.connector_ready ?? 12}/
-                {data?.summary.connector_total ?? 12}
-              </em>
-            </div>
-            <div className="readiness-bars">
-              <div>
-                <span>Connectors</span>
-                <i>
-                  <b style={{ width: "100%" }} />
-                </i>
-              </div>
-              <div>
-                <span>Citation policy</span>
-                <i>
-                  <b style={{ width: "100%" }} />
-                </i>
-              </div>
-              <div>
-                <span>Evaluations</span>
-                <i>
-                  <b style={{ width: "96%" }} />
-                </i>
-              </div>
-            </div>
-          </section>
-        </>
-      )}
-    </>
-  );
+function projectFromSearch(search: string): string | null {
+  return new URLSearchParams(search).get("project");
 }
 
 export function ResearchWorkbench() {
   const [view, setView] = useState<WorkspaceViewId>("overview");
   const [data, setData] = useState<WorkspaceData | null>(null);
+  const [projects, setProjects] = useState<ProjectSummary[]>([]);
+  const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [evidenceOpen, setEvidenceOpen] = useState(false);
   const [searchOpen, setSearchOpen] = useState(false);
   const blockingModalOpen = useBlockingModalOpen();
   const [searchQuery, setSearchQuery] = useState("");
   const [studioResult, setStudioResult] = useState<StudioResult | null>(null);
   const [studioRunning, setStudioRunning] = useState(false);
   const [studioError, setStudioError] = useState<string | null>(null);
+  const [projectPanelMode, setProjectPanelMode] = useState<"create" | "edit" | null>(null);
+  const [projectName, setProjectName] = useState("");
+  const [projectDescription, setProjectDescription] = useState("");
+  const [projectError, setProjectError] = useState<string | null>(null);
+  const [projectSubmitting, setProjectSubmitting] = useState(false);
+  const [archiveConfirmationOpen, setArchiveConfirmationOpen] = useState(false);
   const [focusRunId, setFocusRunId] = useState<string | null>(null);
   const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const railCloseRef = useRef<HTMLButtonElement | null>(null);
@@ -289,10 +138,15 @@ export function ResearchWorkbench() {
   // abandoned.
   const studioRequestSequenceRef = useRef(0);
 
-  const refresh = useCallback(async () => {
+  const loadWorkspace = useCallback(async (projectId: string | null) => {
+    if (!projectId) {
+      setData(null);
+      setLoadError(null);
+      return;
+    }
     const requestId = (requestSequenceRef.current += 1);
     try {
-      const next = await getWorkspaceData();
+      const next = await getWorkspaceData(projectId);
       if (requestSequenceRef.current !== requestId) return;
       setData(next);
       setLoadError(null);
@@ -306,36 +160,68 @@ export function ResearchWorkbench() {
     }
   }, []);
 
+  const refresh = useCallback(async () => {
+    await loadWorkspace(activeProjectId);
+  }, [activeProjectId, loadWorkspace]);
+
+  const updateProjectUrl = (projectId: string | null) => {
+    const url = new URL(window.location.href);
+    if (projectId) {
+      url.searchParams.set("project", projectId);
+    } else {
+      url.searchParams.delete("project");
+    }
+    if (url.href !== window.location.href) {
+      window.history.pushState(null, "", url);
+    }
+  };
+
+  const loadProjects = useCallback(async () => {
+    return listProjects();
+  }, []);
+
   useEffect(() => {
-    // Inlined rather than calling the `refresh` useCallback directly: the
-    // mount effect must not invoke a state-setting function synchronously
-    // from its own body (react-hooks/set-state-in-effect), so the fetch is
-    // issued as an async continuation here instead, while still sharing the
-    // same monotonic `requestSequenceRef` guard `refresh` uses, so this
-    // initial load and any other concurrently-triggered refresh still
-    // resolve deterministically to whichever was requested most recently.
-    const requestId = (requestSequenceRef.current += 1);
-    void getWorkspaceData()
-      .then((next) => {
-        if (requestSequenceRef.current !== requestId) return;
-        setData(next);
-        setLoadError(null);
+    let cancelled = false;
+    void loadProjects()
+      .then(async (availableProjects) => {
+        if (cancelled) return;
+        const requestedProjectId = projectFromSearch(window.location.search);
+        const storedProject = availableProjects.find((project) => project.is_active);
+        const selectedProjectId = requestedProjectId ?? storedProject?.id ?? null;
+        if (requestedProjectId && requestedProjectId !== storedProject?.id) {
+          await activateProject(requestedProjectId);
+        }
+        if (cancelled) return;
+        setProjects(
+          availableProjects.map((project) => ({
+            ...project,
+            is_active: project.id === selectedProjectId,
+          })),
+        );
+        setActiveProjectId(selectedProjectId);
+        if (selectedProjectId) {
+          await loadWorkspace(selectedProjectId);
+        } else {
+          setProjectPanelMode("create");
+        }
       })
       .catch((error: unknown) => {
-        if (requestSequenceRef.current !== requestId) return;
+        if (cancelled) return;
         setLoadError(
           error instanceof Error
             ? error.message
-            : "Workspace data could not be loaded.",
+            : "Projects could not be loaded.",
         );
       });
-  }, []);
+    return () => {
+      cancelled = true;
+    };
+  }, [loadProjects, loadWorkspace]);
 
   useEffect(() => {
     const restoreView = () => {
       setView(viewFromSearch(window.location.search));
       setNavOpen(false);
-      setEvidenceOpen(false);
       setSearchOpen(false);
       setStudioResult(null);
       setStudioError(null);
@@ -344,6 +230,39 @@ export function ResearchWorkbench() {
     window.addEventListener("popstate", restoreView);
     return () => window.removeEventListener("popstate", restoreView);
   }, []);
+
+  useEffect(() => {
+    const restoreProject = () => {
+      const requestedProjectId = projectFromSearch(window.location.search);
+      if (
+        !requestedProjectId ||
+        requestedProjectId === activeProjectId ||
+        projects.length === 0
+      ) {
+        return;
+      }
+      void activateProject(requestedProjectId)
+        .then(() => {
+          setActiveProjectId(requestedProjectId);
+          setProjects((current) =>
+            current.map((project) => ({
+              ...project,
+              is_active: project.id === requestedProjectId,
+            })),
+          );
+          void loadWorkspace(requestedProjectId);
+        })
+        .catch((error: unknown) => {
+          setProjectError(
+            error instanceof Error
+              ? error.message
+              : "The requested project is unavailable.",
+          );
+        });
+    };
+    window.addEventListener("popstate", restoreProject);
+    return () => window.removeEventListener("popstate", restoreProject);
+  }, [activeProjectId, loadWorkspace, projects.length]);
 
   useEffect(() => {
     const hasTransitionalState =
@@ -409,8 +328,8 @@ export function ResearchWorkbench() {
       }
       if (event.key === "Escape") {
         setNavOpen(false);
-        setEvidenceOpen(false);
         setSearchOpen(false);
+        setProjectPanelMode(null);
       }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
         event.preventDefault();
@@ -459,6 +378,105 @@ export function ResearchWorkbench() {
     setFocusRunId(runId);
   };
 
+  const selectProject = async (projectId: string) => {
+    setProjectSubmitting(true);
+    setProjectError(null);
+    try {
+      await activateProject(projectId);
+      setProjects((current) =>
+        current.map((project) => ({
+          ...project,
+          is_active: project.id === projectId,
+        })),
+      );
+      setActiveProjectId(projectId);
+      setStudioResult(null);
+      setStudioError(null);
+      setFocusRunId(null);
+      updateProjectUrl(projectId);
+      await loadWorkspace(projectId);
+    } catch (error) {
+      setProjectError(
+        error instanceof Error ? error.message : "Project selection failed.",
+      );
+    } finally {
+      setProjectSubmitting(false);
+    }
+  };
+
+  const openProjectPanel = (mode: "create" | "edit") => {
+    const activeProject = projects.find((project) => project.id === activeProjectId);
+    setProjectName(mode === "edit" ? activeProject?.name ?? "" : "");
+    setProjectDescription(mode === "edit" ? activeProject?.description ?? "" : "");
+    setArchiveConfirmationOpen(false);
+    setProjectError(null);
+    setProjectPanelMode(mode);
+  };
+
+  const submitProject = async () => {
+    setProjectSubmitting(true);
+    setProjectError(null);
+    try {
+      const project =
+        projectPanelMode === "edit" && activeProjectId
+          ? await updateProject(activeProjectId, {
+              name: projectName,
+              description: projectDescription,
+              archive: false,
+            })
+          : await createProject({
+              name: projectName,
+              description: projectDescription,
+            });
+      const availableProjects = await loadProjects();
+      setActiveProjectId(project.id);
+      setProjects(
+        availableProjects.map((availableProject) => ({
+          ...availableProject,
+          is_active: availableProject.id === project.id,
+        })),
+      );
+      updateProjectUrl(project.id);
+      setProjectPanelMode(null);
+      await loadWorkspace(project.id);
+    } catch (error) {
+      setProjectError(
+        error instanceof Error ? error.message : "Project changes could not be saved.",
+      );
+    } finally {
+      setProjectSubmitting(false);
+    }
+  };
+
+  const archiveProject = async () => {
+    if (!activeProjectId) return;
+    setProjectSubmitting(true);
+    setProjectError(null);
+    try {
+      await updateProject(activeProjectId, { archive: true });
+      const availableProjects = await loadProjects();
+      const nextProject = availableProjects.find((project) => project.is_active) ?? null;
+      setProjects(availableProjects);
+      setActiveProjectId(nextProject?.id ?? null);
+      setData(null);
+      setStudioResult(null);
+      setStudioError(null);
+      setFocusRunId(null);
+      updateProjectUrl(nextProject?.id ?? null);
+      setArchiveConfirmationOpen(false);
+      setProjectPanelMode(nextProject ? null : "create");
+      if (nextProject) {
+        await loadWorkspace(nextProject.id);
+      }
+    } catch (error) {
+      setProjectError(
+        error instanceof Error ? error.message : "Project archive failed.",
+      );
+    } finally {
+      setProjectSubmitting(false);
+    }
+  };
+
   const executeStudio = async (
     capability: CapabilityId,
     objective: string,
@@ -468,7 +486,7 @@ export function ResearchWorkbench() {
     setStudioRunning(true);
     setStudioError(null);
     try {
-      const result = await runStudio(capability, objective, options);
+      const result = await runStudio(capability, objective, options, activeProjectId ?? undefined);
       if (studioRequestSequenceRef.current !== requestId) return;
       setStudioResult(result);
       void refresh();
@@ -490,6 +508,7 @@ export function ResearchWorkbench() {
   const pendingApprovals =
     data?.approvals.filter((approval) => approval.state === "pending").length ??
     0;
+  const activeProject = projects.find((project) => project.id === activeProjectId);
   const searchItems = useMemo(() => {
     const items: { id: WorkspaceViewId; title: string; subtitle: string }[] = [
       {
@@ -512,6 +531,11 @@ export function ResearchWorkbench() {
         title: "Project Settings",
         subtitle: "Agents, connectors, evidence, and governance",
       },
+      {
+        id: "agents",
+        title: "Agents",
+        subtitle: "Foundry Hosted and Prompt agents",
+      },
       ...CAPABILITY_CARDS.map((capability) => ({
         id: capability.id,
         title: capability.title,
@@ -529,8 +553,8 @@ export function ResearchWorkbench() {
     <div
       className="workbench-shell"
       data-workspace-ready={Boolean(data)}
-      // The entire shell -- rail, main content, evidence inspector, command
-      // palette -- is inert while an application-modal dialog is open. That
+      // The entire shell -- rail, main content, command palette -- is inert
+      // while an application-modal dialog is open. That
       // dialog is portalled into `document.body`, outside this subtree, so it
       // is unaffected. Without this, the dialog's own focus trap is the only
       // thing keeping keyboard and assistive-technology users out of the
@@ -571,14 +595,47 @@ export function ResearchWorkbench() {
         </div>
 
         <div className="project-switcher">
-          <span>
-            <small>Active project</small>
-            <strong>
-              {data?.summary.project.name ??
-                "AI for equitable clinical research"}
-            </strong>
-          </span>
+          <select
+            aria-label="Active project"
+            disabled={projectSubmitting || projects.length === 0}
+            value={activeProjectId ?? ""}
+            onChange={(event) => {
+              if (event.target.value) {
+                void selectProject(event.target.value);
+              }
+            }}
+          >
+            {projects.length === 0 ? (
+              <option value="">No personal project</option>
+            ) : (
+              projects.map((project) => (
+                <option key={project.id} value={project.id}>
+                  {project.name}
+                </option>
+              ))
+            )}
+          </select>
+          <button
+            aria-label="Create project"
+            title="Create project"
+            type="button"
+            onClick={() => openProjectPanel("create")}
+          >
+            <Plus size={15} />
+          </button>
+          <button
+            aria-label="Manage active project"
+            disabled={!activeProject}
+            title="Manage active project"
+            type="button"
+            onClick={() => openProjectPanel("edit")}
+          >
+            <Pencil size={14} />
+          </button>
         </div>
+        {projectError && !projectPanelMode ? (
+          <p className="project-switcher-error">{projectError}</p>
+        ) : null}
 
         <span className="rail-section-label">Workspace</span>
         <nav className="rail-nav" aria-label="Workspace navigation">
@@ -615,7 +672,7 @@ export function ResearchWorkbench() {
 
         <span className="rail-section-label">Studios</span>
         <nav className="rail-nav studio-nav" aria-label="Research studios">
-          {CAPABILITY_CARDS.map((capability) => {
+          {CAPABILITY_CARDS.filter((capability) => capability.id !== "orchestration").map((capability) => {
             const Icon = capability.icon;
             return (
               <button
@@ -633,23 +690,35 @@ export function ResearchWorkbench() {
         </nav>
 
         <div className="rail-spacer" />
-        <button
-          className="rail-link settings-link"
-          data-active={view === "settings"}
-          aria-current={view === "settings" ? "page" : undefined}
-          onClick={() => navigate("settings")}
-        >
-          <Settings size={17} />
-          <span>Project Settings</span>
-        </button>
-        <div className="rail-footer">
-          <span className="avatar">MC</span>
-          <span>
-            <strong>Dr. Maya Chen</strong>
-            <small>Researcher · demo tenant</small>
-          </span>
-          <ShieldCheck size={15} />
-        </div>
+        <nav className="rail-nav utility-nav" aria-label="Project utilities">
+          <button
+            className="rail-link"
+            data-active={view === "orchestration"}
+            aria-current={view === "orchestration" ? "page" : undefined}
+            onClick={() => navigate("orchestration")}
+          >
+            <Workflow size={17} />
+            <span>Workflow Automation</span>
+          </button>
+          <button
+            className="rail-link"
+            data-active={view === "agents" || view === "prompt-builder"}
+            aria-current={view === "agents" || view === "prompt-builder" ? "page" : undefined}
+            onClick={() => navigate("agents")}
+          >
+            <Bot size={17} />
+            <span>Agents</span>
+          </button>
+          <button
+            className="rail-link settings-link"
+            data-active={view === "settings"}
+            aria-current={view === "settings" ? "page" : undefined}
+            onClick={() => navigate("settings")}
+          >
+            <Settings size={17} />
+            <span>Project Settings</span>
+          </button>
+        </nav>
       </aside>
 
       <div className="workspace">
@@ -666,7 +735,7 @@ export function ResearchWorkbench() {
               <Menu size={20} />
             </button>
             <div className="breadcrumbs">
-              <small>AI for equitable clinical research</small>
+              <small>Project workspace</small>
               <strong>{viewTitle(view)}</strong>
             </div>
           </div>
@@ -694,13 +763,6 @@ export function ResearchWorkbench() {
               onClick={() => navigate("settings")}
             >
               <Settings size={18} />
-            </button>
-            <button
-              className="icon-button evidence-toggle"
-              aria-label="Open evidence inspector"
-              onClick={() => setEvidenceOpen(true)}
-            >
-              <PanelRight size={18} />
             </button>
           </div>
         </header>
@@ -737,6 +799,14 @@ export function ResearchWorkbench() {
               data={data}
               onRefresh={refresh}
             />
+          ) : view === "agents" ? (
+            <FoundryAgentCatalog
+              onCreatePrompt={() => navigate("prompt-builder")}
+            />
+          ) : view === "prompt-builder" ? (
+            <PromptAgentBuilder
+              onViewAgents={() => navigate("agents")}
+            />
           ) : (
             <StudioForCapability
               capability={view}
@@ -753,27 +823,124 @@ export function ResearchWorkbench() {
         </main>
       </div>
 
-      <aside
-        className="evidence-panel"
-        data-open={evidenceOpen}
-        aria-label="Evidence and lineage inspector"
-      >
-        <button
-          className="evidence-close"
-          aria-label="Close evidence inspector"
-          onClick={() => setEvidenceOpen(false)}
-        >
-          <X size={18} />
-        </button>
-        <ResultEvidence result={studioResult} data={data} />
-      </aside>
-
-      {evidenceOpen ? (
-        <button
-          className="evidence-scrim"
-          aria-label="Close evidence inspector"
-          onClick={() => setEvidenceOpen(false)}
-        />
+      {projectPanelMode ? (
+        <div className="modal-backdrop" role="presentation">
+          <div
+            className="modal-card"
+            role="dialog"
+            aria-modal="true"
+            aria-labelledby="project-dialog-title"
+          >
+            <div className="modal-heading">
+              <div>
+                <span className="eyebrow">Personal workspace</span>
+                <h2 id="project-dialog-title">
+                  {projectPanelMode === "create"
+                    ? "Create project"
+                    : "Manage project"}
+                </h2>
+              </div>
+              <button
+                aria-label="Close project dialog"
+                onClick={() => setProjectPanelMode(null)}
+              >
+                <X size={19} />
+              </button>
+            </div>
+            <p>
+              Projects are private to your identity. A new project starts with
+              the governed policy defaults and no sources, runs, or approvals.
+            </p>
+            <form
+              onSubmit={(event) => {
+                event.preventDefault();
+                void submitProject();
+              }}
+            >
+              <label className="field">
+                <span>Project name</span>
+                <input
+                  autoFocus
+                  required
+                  disabled={projectSubmitting}
+                  maxLength={120}
+                  minLength={3}
+                  value={projectName}
+                  onChange={(event) => setProjectName(event.target.value)}
+                />
+              </label>
+              <label className="field">
+                <span>Description</span>
+                <textarea
+                  required
+                  disabled={projectSubmitting}
+                  maxLength={1000}
+                  minLength={3}
+                  rows={3}
+                  value={projectDescription}
+                  onChange={(event) => setProjectDescription(event.target.value)}
+                />
+              </label>
+              {projectError ? (
+                <p className="project-dialog-error" role="alert">
+                  {projectError}
+                </p>
+              ) : null}
+              {archiveConfirmationOpen ? (
+                <div className="archive-confirmation">
+                  <span>
+                    Archive this project? Its records stay retained and it
+                    leaves the project list.
+                  </span>
+                  <button
+                    className="secondary-button"
+                    disabled={projectSubmitting}
+                    type="button"
+                    onClick={() => setArchiveConfirmationOpen(false)}
+                  >
+                    Keep project
+                  </button>
+                  <button
+                    className="primary-button"
+                    disabled={projectSubmitting}
+                    type="button"
+                    onClick={() => void archiveProject()}
+                  >
+                    Confirm archive
+                  </button>
+                </div>
+              ) : null}
+              <div className="modal-actions">
+                {projectPanelMode === "edit" ? (
+                  <button
+                    className="secondary-button project-archive-button"
+                    disabled={projectSubmitting}
+                    type="button"
+                    onClick={() => setArchiveConfirmationOpen(true)}
+                  >
+                    <Archive size={15} />
+                    Archive project
+                  </button>
+                ) : null}
+                <button
+                  className="secondary-button"
+                  disabled={projectSubmitting}
+                  type="button"
+                  onClick={() => setProjectPanelMode(null)}
+                >
+                  Cancel
+                </button>
+                <button
+                  className="primary-button"
+                  disabled={projectSubmitting}
+                  type="submit"
+                >
+                  {projectSubmitting ? "Saving" : "Save project"}
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
       ) : null}
 
       {searchOpen ? (

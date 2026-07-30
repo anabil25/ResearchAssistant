@@ -12,8 +12,12 @@ param foundryProjectPrincipalId string
 param logAnalyticsWorkspaceId string
 
 var connectorOpenApi = loadTextContent('../../packages/contracts/connector-adapter-openapi.json')
+var connectorMcpDefinitions = loadJsonContent('../../infra/connector-mcp-catalog.json')
+var connectorMcpTools = loadJsonContent('../../infra/connector-mcp-tools.json')
 var connectorApiId = 'research-connectors-v1'
 var connectorMcpId = 'research-connectors-mcp-v1'
+var connectorMcpProductId = 'research-agent-tools'
+var connectorMcpSubscriptionId = 'foundry-agent-tools'
 var connectorPolicyTemplate = '''
 <policies>
   <inbound>
@@ -26,6 +30,7 @@ var connectorPolicyTemplate = '''
         <claim name="oid" match="any">
           <value>__API_PRINCIPAL_ID__</value>
           <value>__FOUNDRY_PRINCIPAL_ID__</value>
+          <value>__APIM_PRINCIPAL_ID__</value>
         </claim>
       </required-claims>
     </validate-azure-ad-token>
@@ -50,18 +55,8 @@ var mcpPolicyTemplate = '''
 <policies>
   <inbound>
     <base />
-    <validate-azure-ad-token tenant-id="__TENANT_ID__" output-token-variable-name="validated-token">
-      <audiences>
-        <audience>__ARM_AUDIENCE__</audience>
-      </audiences>
-      <required-claims>
-        <claim name="oid" match="any">
-          <value>__API_PRINCIPAL_ID__</value>
-          <value>__FOUNDRY_PRINCIPAL_ID__</value>
-        </claim>
-      </required-claims>
-    </validate-azure-ad-token>
-    <rate-limit-by-key calls="30" renewal-period="60" counter-key="@(context.Variables.GetValueOrDefault&lt;Jwt&gt;(&quot;validated-token&quot;).Claims.GetValueOrDefault(&quot;appid&quot;, &quot;unknown&quot;))" />
+    <rate-limit-by-key calls="30" renewal-period="60" counter-key="@(context.Subscription.Id)" />
+    <authentication-managed-identity resource="__ARM_AUDIENCE__" />
   </inbound>
   <backend>
     <base />
@@ -84,22 +79,15 @@ var connectorPolicy = replace(
     '__FOUNDRY_PRINCIPAL_ID__',
     foundryProjectPrincipalId
   ),
+  '__APIM_PRINCIPAL_ID__',
+  apiManagement.identity.principalId
+)
+var connectorPolicyWithAudience = replace(
+  connectorPolicy,
   '__ARM_AUDIENCE__',
   environment().resourceManager
 )
-var mcpPolicy = replace(
-  replace(
-    replace(
-      replace(mcpPolicyTemplate, '__TENANT_ID__', tenantId),
-      '__API_PRINCIPAL_ID__',
-      apiPrincipalId
-    ),
-    '__FOUNDRY_PRINCIPAL_ID__',
-    foundryProjectPrincipalId
-  ),
-  '__ARM_AUDIENCE__',
-  environment().resourceManager
-)
+var mcpPolicy = replace(mcpPolicyTemplate, '__ARM_AUDIENCE__', environment().resourceManager)
 
 resource apiManagement 'Microsoft.ApiManagement/service@2024-05-01' = {
   name: name
@@ -123,6 +111,29 @@ resource apiManagement 'Microsoft.ApiManagement/service@2024-05-01' = {
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls10': 'false'
       'Microsoft.WindowsAzure.ApiManagement.Gateway.Security.Backend.Protocols.Tls11': 'false'
     }
+  }
+}
+
+resource connectorMcpProduct 'Microsoft.ApiManagement/service/products@2024-05-01' = {
+  parent: apiManagement
+  name: connectorMcpProductId
+  properties: {
+    displayName: 'Research agent tools'
+    description: 'Governed connector MCP servers consumed by Microsoft Foundry.'
+    subscriptionRequired: true
+    approvalRequired: false
+    state: 'published'
+  }
+}
+
+resource connectorMcpSubscription 'Microsoft.ApiManagement/service/subscriptions@2024-05-01' = {
+  parent: apiManagement
+  name: connectorMcpSubscriptionId
+  properties: {
+    displayName: 'Microsoft Foundry connector MCP access'
+    scope: '/products/${connectorMcpProduct.name}'
+    state: 'active'
+    allowTracing: false
   }
 }
 
@@ -150,7 +161,7 @@ resource connectorApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-
   name: 'policy'
   properties: {
     format: 'rawxml'
-    value: connectorPolicy
+    value: connectorPolicyWithAudience
   }
 }
 
@@ -165,7 +176,7 @@ resource connectorMcp 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' 
     protocols: [
       'https'
     ]
-    subscriptionRequired: false
+    subscriptionRequired: true
   }
   dependsOn: [
     connectorApi
@@ -226,6 +237,68 @@ resource connectorMcpPolicy 'Microsoft.ApiManagement/service/apis/policies@2025-
   }
 }
 
+resource sourceConnectorMcps 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' = [
+  for connector in connectorMcpDefinitions: {
+    parent: apiManagement
+    name: connector.apiId
+    properties: {
+      type: 'mcp'
+      path: connector.path
+      displayName: connector.displayName
+      description: connector.description
+      protocols: [
+        'https'
+      ]
+      subscriptionRequired: true
+    }
+    dependsOn: [
+      connectorApi
+    ]
+  }
+]
+
+resource sourceConnectorMcpTools 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = [
+  for tool in connectorMcpTools: {
+    name: '${apiManagement.name}/${tool.apiId}/${tool.name}'
+    properties: {
+      displayName: tool.displayName
+      description: tool.description
+      operationId: resourceId(
+        'Microsoft.ApiManagement/service/apis/operations',
+        apiManagement.name,
+        connectorApi.name,
+        tool.operationId
+      )
+    }
+    dependsOn: [
+      sourceConnectorMcps
+    ]
+  }
+]
+
+resource sourceConnectorMcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2025-09-01-preview' = [
+  for (connector, index) in connectorMcpDefinitions: {
+    parent: sourceConnectorMcps[index]
+    name: 'policy'
+    properties: {
+      format: 'rawxml'
+      value: mcpPolicy
+    }
+  }
+]
+
+resource connectorMcpProductApi 'Microsoft.ApiManagement/service/products/apis@2024-05-01' = {
+  parent: connectorMcpProduct
+  name: connectorMcp.name
+}
+
+resource sourceConnectorMcpProductApis 'Microsoft.ApiManagement/service/products/apis@2024-05-01' = [
+  for (connector, index) in connectorMcpDefinitions: {
+    parent: connectorMcpProduct
+    name: sourceConnectorMcps[index].name
+  }
+]
+
 resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' = {
   name: 'apim-diagnostics'
   scope: apiManagement
@@ -250,4 +323,11 @@ output serviceName string = apiManagement.name
 output gatewayUrl string = apiManagement.properties.gatewayUrl
 output connectorApiUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors'
 output connectorMcpUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors-mcp/mcp'
+output connectorMcpUrls array = [
+  for connector in connectorMcpDefinitions: {
+    id: connector.id
+    endpoint: '${apiManagement.properties.gatewayUrl}/${connector.path}/mcp'
+  }
+]
+output connectorMcpSubscriptionId string = connectorMcpSubscription.name
 output principalId string = apiManagement.identity.principalId

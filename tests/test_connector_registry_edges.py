@@ -302,6 +302,42 @@ def test_clinical_trials_urllib_parser_enforces_shape_and_size(
         registry.search("clinical_trials", "heart study")
 
 
+def test_clinical_trials_lookup_requires_a_canonical_nct_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    requests: list[Request] = []
+    payload = {
+        "protocolSection": {
+            "identificationModule": {
+                "nctId": "NCT00000001",
+                "briefTitle": "Study",
+            },
+            "statusModule": {
+                "overallStatus": "RECRUITING",
+                "studyFirstPostDateStruct": {"date": "2026-01-01"},
+            },
+        }
+    }
+
+    def fake_urlopen(request: Request, **_kwargs: object) -> FakeUrlResponse:
+        requests.append(request)
+        return FakeUrlResponse(json.dumps(payload).encode())
+
+    monkeypatch.setattr(registry_module, "urlopen", fake_urlopen)
+    registry = ResearchConnectorRegistry(
+        httpx.Client(
+            transport=httpx.MockTransport(lambda _: httpx.Response(500))
+        )
+    )
+    result = registry.lookup("clinical_trials", "nct00000001")
+
+    assert result.query == "NCT00000001"
+    assert result.records[0]["nct_id"] == "NCT00000001"
+    assert requests[0].full_url.endswith("/studies/NCT00000001")
+    with pytest.raises(ValueError, match="NCT ID"):
+        registry.lookup("clinical_trials", "NCT1")
+
+
 def test_ror_selects_display_names_and_respects_limit() -> None:
     payload = {
         "items": [

@@ -51,7 +51,6 @@ from research_assistant_api.identity import project_group_name
 
 __all__ = [
     "ClaimsGroupMembershipResolver",
-    "DemoSandboxMembershipPolicy",
     "MembershipCheckRequest",
     "MembershipDecision",
     "MembershipOutcome",
@@ -163,47 +162,6 @@ class ClaimsGroupMembershipResolver:
         return MembershipDecision(
             outcome=MembershipOutcome.NOT_MEMBER,
             reason=f"Identity is not a member of project '{request.project_id}'.",
-        )
-
-
-class DemoSandboxMembershipPolicy:
-    """Explicit, named local/test-only membership policy for the demo sandbox identity.
-
-    ``research_assistant_api.identity``'s unauthenticated "demo sandbox"
-    identity (``DEMO_SANDBOX_SOURCE``) is deliberately allowed to reach any
-    project without a real membership claim -- it exists purely so an
-    unauthenticated local/dev/test caller can exercise the API. That
-    behavior must never be an ad hoc ``if identity.source == ...`` skip
-    embedded in route-scoping logic: an implicit bypass that never even
-    constructs a ``MembershipCheckRequest`` is invisible to anything that
-    instruments/audits the ``ProjectMembershipResolver`` seam, and is easy to
-    accidentally widen later. Routing it through this single, explicitly
-    named, unit-testable policy object instead means:
-
-    * the demo bypass is a single, greppable symbol, not scattered logic;
-    * it always goes through :func:`enforce_project_membership`, so any
-      future instrumentation on that seam also observes demo-sandbox calls;
-    * it is independent of whatever ``ProjectMembershipResolver`` the
-      application composes for real identities (e.g. a future Graph
-      adapter) -- a hardened real-identity resolver can never accidentally
-      loosen or tighten the demo sandbox's behavior, and vice versa.
-
-    This policy performs no verification of its own and unconditionally
-    grants ``MEMBER`` -- it is the caller's responsibility (see
-    ``research_assistant_api.agent_studio.router._scope``) to route to this
-    policy *only* for a principal whose ``IdentityContext.source`` is
-    already confirmed to be ``DEMO_SANDBOX_SOURCE``, which is itself only
-    ever constructible when ``Settings.allow_demo_identity`` is enabled --
-    and that field defaults to ``False`` and is refused outside
-    ``DEMO_IDENTITY_SAFE_ENVIRONMENTS`` (see ``config.py``). This class does
-    not re-check either of those preconditions so it can be exercised as a
-    pure, isolated decision in unit tests.
-    """
-
-    def resolve_membership(self, request: MembershipCheckRequest) -> MembershipDecision:
-        return MembershipDecision(
-            outcome=MembershipOutcome.MEMBER,
-            reason="Demo sandbox identity: explicit local/test-only membership policy.",
         )
 
 

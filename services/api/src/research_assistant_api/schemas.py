@@ -28,3 +28,4 @@ class ProjectSummary(BaseModel):
     description: str
     active_runs: int
     source_count: int
+    is_active: bool = False

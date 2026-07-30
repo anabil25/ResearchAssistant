@@ -35,7 +35,6 @@ from research_assistant_api.agent_studio.approvals import (
 from research_assistant_api.agent_studio.audit_service import AuditService
 from research_assistant_api.agent_studio.authz import (
     ClaimsGroupMembershipResolver,
-    DemoSandboxMembershipPolicy,
     MembershipCheckRequest,
     ProjectMembershipError,
     ProjectMembershipResolver,
@@ -57,6 +56,14 @@ from research_assistant_api.agent_studio.deployment_service import (
     DeploymentServiceError,
 )
 from research_assistant_api.agent_studio.evaluation_runner import EvaluationRunner, EvaluationRunnerError
+from research_assistant_api.agent_studio.foundry_agent_inventory import (
+    FoundryAgentInventory,
+    FoundryAgentInventoryError,
+)
+from research_assistant_api.agent_studio.foundry_prompt_publisher import (
+    PromptAgentPublicationError,
+    PromptAgentPublisher,
+)
 from research_assistant_api.agent_studio.idempotency import (
     IdempotencyPort,
     IdempotencyReleaseMismatchError,
@@ -96,7 +103,10 @@ from research_assistant_api.agent_studio.models import (
     EvaluationRun,
     EvaluationRunStatus,
     EvaluationSuite,
+    FoundryAgentInventoryItem,
+    FoundryProjectContext,
     IdempotencyClaim,
+    IdempotencyClaimDisposition,
     IdempotencyKey,
     IdempotencyRecord,
     MemoryAuditRecord,
@@ -105,9 +115,12 @@ from research_assistant_api.agent_studio.models import (
     ModelDeploymentRef,
     PlaygroundRunStatus,
     PlaygroundTestRun,
+    PromptAgentPublicationResponse,
     ReleaseAttestation,
     ReleaseGateReport,
+    ReleaseStatus,
     ResolvedAgentContract,
+    RuntimeTarget,
     StudioApprovalRecord,
     TemplateListResponse,
     TemplateReadiness,
@@ -159,6 +172,7 @@ from research_assistant_api.agent_studio.schemas import (
     LoadIdempotencyResultRequest,
     MarkIdempotencyInProgressRequest,
     PromotionRequest,
+    PublishPromptAgentRequest,
     RegisterToolRequest,
     RememberRequest,
     ResolveApprovalContextRequest,
@@ -176,12 +190,10 @@ from research_assistant_api.agent_studio.store import (
 from research_assistant_api.agent_studio.template_catalog import TemplateCatalog
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
-    DEMO_SANDBOX_SOURCE,
     IdentityContext,
+    is_platform_owner,
     resolve_identity,
 )
-
-PLATFORM_OWNER_GROUPS = {"research-admins", "agent-studio-admins"}
 
 #: The exact Entra application-role value a caller's ``IdentityContext.roles``
 #: must contain to invoke the runtime-internal control-plane routes below
@@ -201,14 +213,6 @@ HOSTED_RUNTIME_SERVICE_ROLE = "AgentStudio.RuntimeService"
 #: See ``agent_studio.authz`` for why this is a Protocol-backed seam rather
 #: than a direct ``identity.groups`` check.
 _DEFAULT_MEMBERSHIP_RESOLVER = ClaimsGroupMembershipResolver()
-
-#: The single, explicit, named local/test-only membership policy for the
-#: demo sandbox identity -- see ``DemoSandboxMembershipPolicy`` for why this
-#: exists instead of an ad hoc ``if identity.source == ...`` skip in
-#: ``_scope``. It is never influenced by (and never influences) whatever
-#: ``ProjectMembershipResolver`` the application composes for real
-#: identities via ``_membership_resolver``.
-_DEMO_SANDBOX_MEMBERSHIP_POLICY = DemoSandboxMembershipPolicy()
 
 router = APIRouter(prefix="/api/agent-studio", tags=["agent-studio"])
 
@@ -245,6 +249,14 @@ def _deployment_service(request: Request) -> DeploymentService:
 
 def _model_discovery(request: Request) -> ModelDiscovery:
     return cast(ModelDiscovery, request.app.state.agent_studio_model_discovery)
+
+
+def _foundry_agent_inventory(request: Request) -> FoundryAgentInventory:
+    return cast(FoundryAgentInventory, request.app.state.agent_studio_foundry_agent_inventory)
+
+
+def _prompt_agent_publisher(request: Request) -> PromptAgentPublisher:
+    return cast(PromptAgentPublisher, request.app.state.agent_studio_prompt_agent_publisher)
 
 
 def _template_catalog(request: Request) -> TemplateCatalog:
@@ -394,7 +406,7 @@ def _audit(
 
 
 def _is_platform_owner(identity: IdentityContext) -> bool:
-    return bool(PLATFORM_OWNER_GROUPS.intersection(identity.groups))
+    return is_platform_owner(identity)
 
 
 def _is_hosted_runtime_service(identity: IdentityContext) -> bool:
@@ -491,21 +503,8 @@ def _scope(request: Request, identity: IdentityContext, project_id: str) -> Scop
             # entirely and resolve membership out-of-band instead.
             groups_known_complete=not identity.groups_overage,
         )
-        # The demo sandbox identity always routes to its own explicit,
-        # named local/test-only policy (see ``DemoSandboxMembershipPolicy``)
-        # -- never to the application-composed resolver used for real
-        # identities. This still goes through the same
-        # ``enforce_project_membership`` seam (unlike a bare
-        # ``if identity.source == DEMO_SANDBOX_SOURCE: skip`` short-circuit)
-        # so the "any project is reachable" behavior is a single,
-        # unit-testable symbol rather than logic embedded here.
-        resolver = (
-            _DEMO_SANDBOX_MEMBERSHIP_POLICY
-            if identity.source == DEMO_SANDBOX_SOURCE
-            else _membership_resolver(request)
-        )
         try:
-            enforce_project_membership(resolver, membership_request)
+            enforce_project_membership(_membership_resolver(request), membership_request)
         except ProjectMembershipError as exc:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=str(exc)) from exc
     return ScopeContext(tenant_id=identity.tenant_id, project_id=project_id)
@@ -553,6 +552,183 @@ def _not_found(detail: str) -> HTTPException:
 
 def _unavailable(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=detail)
+
+
+def _prompt_publication_key(scope: ScopeContext, version: AgentVersion, caller_key: str) -> IdempotencyKey:
+    argument_hash = hashlib.sha256(
+        json.dumps(
+            [version.id, version.manifest_hash],
+            ensure_ascii=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
+    return IdempotencyKey(
+        tenant_id=scope.tenant_id,
+        project_id=scope.project_id,
+        binding_digest=hashlib.sha256(version.manifest_hash.encode("utf-8")).hexdigest(),
+        operation_id="prompt_agent_publish",
+        destination=f"foundry-prompt-agent:{version.logical_agent_id}",
+        caller_key=caller_key,
+        argument_hash=argument_hash,
+    )
+
+
+def _configured_foundry_scope(request: Request, identity: IdentityContext) -> ScopeContext:
+    """Resolve the deployment's Foundry project after caller authorization."""
+    settings = cast(Settings, request.app.state.settings)
+    return _scope(request, identity, settings.workspace_project_id)
+
+
+@router.get("/foundry/context", response_model=FoundryProjectContext)
+def get_foundry_project_context(request: Request) -> FoundryProjectContext:
+    """Return the configured Foundry scope; personal workspace state is irrelevant."""
+    identity = _identity(request)
+    scope = _configured_foundry_scope(request, identity)
+    return FoundryProjectContext(project_id=scope.project_id)
+
+
+@router.get("/foundry/agents", response_model=list[FoundryAgentInventoryItem])
+def list_foundry_agents(
+    request: Request,
+    project_id: str | None = None,
+) -> list[FoundryAgentInventoryItem]:
+    """List display-safe metadata for agents in this configured Foundry project.
+
+    The endpoint is deliberately limited to the single Foundry project this
+    deployment is configured to access. The caller's project membership is
+    still enforced, preventing a caller from using the shared project client
+    as a cross-project inventory probe.
+    """
+    identity = _identity(request)
+    scope = _configured_foundry_scope(request, identity)
+    if project_id is not None and project_id != scope.project_id:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Foundry inventory is available only for the configured Agent Studio project.",
+        )
+    try:
+        return list(_foundry_agent_inventory(request).list_agents())
+    except FoundryAgentInventoryError as exc:
+        raise _unavailable(str(exc)) from exc
+
+
+@router.post("/versions/{version_id}/publish-prompt", response_model=PromptAgentPublicationResponse)
+async def publish_prompt_agent(
+    request: Request,
+    version_id: str,
+    payload: PublishPromptAgentRequest,
+) -> PromptAgentPublicationResponse:
+    """Publish one gated user-owned Managed Foundry version exactly once.
+
+    The idempotency lease is marked irreversible immediately before the SDK
+    call. Any uncertain remote outcome therefore requires reconciliation
+    instead of creating a second Foundry agent version on retry.
+    """
+    identity = _identity(request)
+    scope = _scope(request, identity, payload.project_id)
+    store = _store(request)
+    version = store.get_version(scope, version_id)
+    if version is None:
+        raise _not_found(f"Version '{version_id}' was not found.")
+    if version.manifest.owner_kind is not AgentOwnerKind.USER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Only user-owned prompt-agent versions may be published through Agent Studio.",
+        )
+    role = _actor_role(request, identity, version.logical_agent_id, scope.project_id)
+    if role is not AgentRole.OWNER:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail=f"Role '{role.value}' cannot publish this prompt agent; owner role is required.",
+        )
+    if version.runtime_target is not RuntimeTarget.MANAGED_FOUNDRY:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Only Managed Foundry versions may be published as prompt agents.",
+        )
+    release = store.latest_release_for_version(scope, version.id)
+    if release is None or release.status is not ReleaseStatus.GATED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="Prompt publication requires an exact version that has passed all hard release gates.",
+        )
+    try:
+        _deployment_service(request).validate_version_for_publication(scope, version)
+    except DeploymentServiceError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+
+    key = _prompt_publication_key(scope, version, payload.idempotency_key)
+    idempotency = _idempotency_port(request)
+    claim = await idempotency.claim(scope, key, actor_id=identity.user_id, release_id=release.id)
+    if claim.disposition is IdempotencyClaimDisposition.COMPLETED:
+        try:
+            result = await idempotency.load_result(scope, key, release_id=release.id)
+            assert result is not None
+            return PromptAgentPublicationResponse.model_validate(result)
+        except (IdempotencyReleaseMismatchError, IdempotencyResultIntegrityError, ValueError) as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    if claim.disposition is IdempotencyClaimDisposition.IN_PROGRESS:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail="Prompt publication is already in progress.")
+    if claim.disposition is IdempotencyClaimDisposition.RECONCILIATION_REQUIRED:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail="A prior prompt publication attempt has an unknown outcome and requires reconciliation.",
+        )
+    assert claim.claim_token is not None
+    record = await idempotency.mark_in_progress(
+        scope,
+        key,
+        claim_token=claim.claim_token,
+        expected_version=claim.record.version,
+        irreversible=True,
+    )
+    try:
+        publication = _prompt_agent_publisher(request).publish(version)
+    except PromptAgentPublicationError as exc:
+        await idempotency.fail(
+            scope,
+            key,
+            claim_token=claim.claim_token,
+            expected_version=record.version,
+            failure_code="foundry_publish_unknown",
+        )
+        raise HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=str(exc)) from exc
+
+    response = PromptAgentPublicationResponse(
+        logical_agent_id=publication.logical_agent_id,
+        studio_version_id=publication.studio_version_id,
+        manifest_hash=publication.manifest_hash,
+        remote_agent_name=publication.remote_agent_name,
+        remote_version=publication.remote_version,
+        remote_status=publication.remote_status,
+    )
+    try:
+        await idempotency.complete(
+            scope,
+            key,
+            claim_token=claim.claim_token,
+            expected_version=record.version,
+            result=response.model_dump(mode="json"),
+        )
+    except (IdempotencyNotFoundError, IdempotencyConcurrencyError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=(
+                "Foundry published the prompt agent but the Studio result could not be recorded; "
+                "reconcile it manually."
+            ),
+        ) from exc
+    _audit_service(request)
+    _audit(
+        request,
+        scope=scope,
+        kind=AuditEventKind.PROMPT_AGENT_PUBLISHED,
+        actor_id=identity.user_id,
+        subject_id=response.remote_agent_name,
+        logical_agent_id=version.logical_agent_id,
+        detail={"version_id": version.id, "remote_version": response.remote_version},
+    )
+    return response
 
 
 @router.get("/capabilities/descriptors", response_model=list[CapabilityDescriptor])

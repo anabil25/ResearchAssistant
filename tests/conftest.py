@@ -1,32 +1,30 @@
 """Test-session environment policy.
 
-``Settings.allow_demo_identity`` defaults to ``False`` in application code
-(the unauthenticated "demo sandbox" identity bypass must be an explicit,
-impossible-to-misconfigure-into-production local/dev/test adapter, never a
-silent default -- see the review finding this fixes). Most of this test
-suite exercises endpoints without supplying an authenticated principal and
-therefore *does* need the demo identity enabled; that opt-in must happen
-here, as an explicit environment-variable declaration for the test session,
-rather than by relying on the library default. This module is collected
-before any test module in this directory imports
-``research_assistant_api.app`` (whose module-level ``app.state.settings``
-is resolved once via the process-wide ``get_settings()`` cache), so setting
-the environment variable here reliably takes effect for that first import.
-
-``os.environ.setdefault`` is used (not ``setenv``) so a test that needs to
-exercise the "demo identity disabled" behavior can still monkeypatch this
-variable to ``"false"`` for its own scope without being overridden back.
+The suite exercises endpoints without supplying a gateway principal, which
+resolves to the local developer identity because ``entra_auth_enforced``
+defaults to ``False`` and the default ``environment`` is local. No
+environment opt-in is required.
 """
 
 from __future__ import annotations
 
-import os
 import ipaddress
 import socket
 from collections.abc import Iterator
-import pytest
 
-os.environ.setdefault("RESEARCH_ALLOW_DEMO_IDENTITY", "true")
+import pytest
+from research_assistant_api.config import Settings
+
+
+def pytest_configure(config: pytest.Config) -> None:
+    """Stop a developer's root ``.env`` from reaching ``Settings()``.
+
+    ``Settings`` reads ``.env`` so a local run can point at a real deployment.
+    Tests construct ``Settings()`` directly to assert unconfigured behaviour,
+    so inheriting that file makes results depend on whether the machine has
+    ever been pointed at Azure.
+    """
+    Settings.model_config["env_file"] = None
 
 
 @pytest.fixture(autouse=True)

@@ -1,0 +1,73 @@
+{
+  "info": {
+    "description": "U.S. federal funding opportunity search and retrieval. Authored from https://www.grants.gov/api/api-guide",
+    "title": "Grants.gov Search API",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/fetchOpportunity": {
+      "post": {
+        "operationId": "grantsGovFetchOpportunity",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve one funding opportunity by its identifier."
+      }
+    },
+    "/search2": {
+      "post": {
+        "operationId": "grantsGovSearch2",
+        "parameters": [],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search federal funding opportunities by keyword, agency, status, and category."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.grants.gov/v1/api"
+    }
+  ]
+}

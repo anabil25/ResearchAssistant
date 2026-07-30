@@ -4,6 +4,34 @@ tools:
     name: web_search
     require_approval: "never"
   - type: mcp
-    server_label: research-connectors
-    project_connection_id: research-connectors-apim
+    server_label: pubmed
+    project_connection_id: research-connector-pubmed-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: europe_pmc
+    project_connection_id: research-connector-europe-pmc-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: crossref
+    project_connection_id: research-connector-crossref-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: openalex
+    project_connection_id: research-connector-openalex-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: arxiv
+    project_connection_id: research-connector-arxiv-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: clinical_trials
+    project_connection_id: research-connector-clinical-trials-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: datacite
+    project_connection_id: research-connector-datacite-apim
+    require_approval: "never"
+  - type: mcp
+    server_label: semantic_scholar
+    project_connection_id: research-connector-semantic-scholar-apim
     require_approval: "never"

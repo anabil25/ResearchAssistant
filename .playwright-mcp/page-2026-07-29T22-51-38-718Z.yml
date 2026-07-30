@@ -1,0 +1,176 @@
+- generic [ref=f2e1]:
+  - generic [ref=f2e3]:
+    - complementary "Project navigation" [ref=f2e4]:
+      - generic [ref=f2e10]:
+        - strong [ref=f2e11]: Research Assistant
+        - generic [ref=f2e12]: Microsoft Foundry workspace
+      - generic [ref=f2e13]:
+        - combobox "Active project" [disabled] [ref=f2e14]:
+          - option "No personal project" [selected]
+        - button "Create project" [ref=f2e15] [cursor=pointer]
+        - button "Manage active project" [disabled] [ref=f2e17]
+      - generic [ref=f2e21]: Workspace
+      - navigation "Workspace navigation" [ref=f2e22]:
+        - button "Overview" [ref=f2e23] [cursor=pointer]
+        - button "Library 9" [ref=f2e28] [cursor=pointer]:
+          - generic [ref=f2e31]: Library
+          - emphasis [ref=f2e32]: "9"
+        - button "Runs & approvals" [ref=f2e33] [cursor=pointer]
+      - generic [ref=f2e39]: Studios
+      - navigation "Research studios" [ref=f2e40]:
+        - button "Literature Studio" [ref=f2e41] [cursor=pointer]
+        - button "Grant Studio" [ref=f2e45] [cursor=pointer]
+        - button "Matching Explorer" [ref=f2e50] [cursor=pointer]
+        - button "Dataset Lab" [ref=f2e57] [cursor=pointer]
+        - button "Institutional Q&A" [ref=f2e61] [cursor=pointer]
+      - navigation "Project utilities" [ref=f2e66]:
+        - button "Workflow Automation" [active] [ref=f2e67] [cursor=pointer]
+        - button "Agents" [ref=f2e73] [cursor=pointer]
+        - button "Project Settings" [ref=f2e78] [cursor=pointer]
+    - generic [ref=f2e83]:
+      - banner [ref=f2e84]:
+        - generic [ref=f2e86]:
+          - generic [ref=f2e87]: Project workspace
+          - strong [ref=f2e88]: Workflow Automation
+        - generic [ref=f2e89]:
+          - button "Search workspace" [ref=f2e90] [cursor=pointer]:
+            - generic [ref=f2e95]: Ctrl K
+          - button "0 pending approvals" [ref=f2e96] [cursor=pointer]
+          - button "Open project settings" [ref=f2e100] [cursor=pointer]
+      - status [ref=f2e355]: "Live workspace data is unavailable: An authenticated platform identity is required.. The product shell remains usable."
+      - generic [ref=f2e104]: Opened Workflow Automation
+      - main [ref=f2e105]:
+        - generic [ref=f2e390]:
+          - generic [ref=f2e391]:
+            - generic [ref=f2e398]:
+              - generic [ref=f2e399]: Durable orchestration
+              - heading "Workflow Automation" [level=1] [ref=f2e400]
+              - paragraph [ref=f2e401]: Build typed graphs with retries, compensation, and named human gates—not a generic agent chat.
+            - generic [ref=f2e402]: Builder draft
+          - generic [ref=f2e403]:
+            - generic [ref=f2e404]:
+              - button "Evidence review Ingest → screen → synthesize" [pressed] [ref=f2e405] [cursor=pointer]:
+                - generic [ref=f2e411]:
+                  - strong [ref=f2e412]: Evidence review
+                  - generic [ref=f2e413]: Ingest → screen → synthesize
+              - button "Grant red team Draft → compliance → approval" [ref=f2e417] [cursor=pointer]:
+                - generic [ref=f2e423]:
+                  - strong [ref=f2e424]: Grant red team
+                  - generic [ref=f2e425]: Draft → compliance → approval
+              - button "Dataset profile Validate → compute → interpret" [ref=f2e426] [cursor=pointer]:
+                - generic [ref=f2e432]:
+                  - strong [ref=f2e433]: Dataset profile
+                  - generic [ref=f2e434]: Validate → compute → interpret
+              - generic [ref=f2e435]:
+                - generic [ref=f2e436]: Trigger
+                - combobox "Trigger" [ref=f2e437]:
+                  - option "Manual" [selected]
+                  - option "Schedule"
+                  - option "Webhook"
+                  - option "GitHub"
+                  - option "Library upload"
+            - generic [ref=f2e438]:
+              - generic [ref=f2e439]:
+                - generic [ref=f2e440]:
+                  - generic [ref=f2e441]:
+                    - generic [ref=f2e442]: Version 1.0
+                    - heading "Evidence review graph" [level=2] [ref=f2e443]
+                  - generic [ref=f2e444]:
+                    - button "Zoom out" [ref=f2e445]: −
+                    - status "Workflow zoom" [ref=f2e446]: 100%
+                    - button "Zoom in" [ref=f2e447]: +
+                - generic [ref=f2e448]:
+                  - article [ref=f2e450]:
+                    - strong [ref=f2e456]: Ingest & verify
+                    - generic [ref=f2e457]: activity
+                    - emphasis [ref=f2e458]: 3 retries
+                  - article [ref=f2e461]:
+                    - strong [ref=f2e467]: Retrieve evidence
+                    - generic [ref=f2e468]: fan out
+                    - emphasis [ref=f2e469]: 2 retries
+                  - article [ref=f2e472]:
+                    - strong [ref=f2e477]: Synthesize
+                    - generic [ref=f2e478]: agent
+                    - emphasis [ref=f2e479]: 1 retries
+                  - article [ref=f2e482]:
+                    - strong [ref=f2e487]: Human review
+                    - generic [ref=f2e488]: approval
+                  - article [ref=f2e491]:
+                    - strong [ref=f2e497]: Export
+                    - generic [ref=f2e498]: external action
+                    - emphasis [ref=f2e499]: 2 retries
+                - generic [ref=f2e500]:
+                  - strong [ref=f2e502]: Dry-run validation
+                  - generic [ref=f2e503]: Not run · external side effects disabled
+              - complementary "Workflow execution controls" [ref=f2e504]:
+                - generic [ref=f2e505]: Graph policy
+                - heading "Execution controls" [level=2] [ref=f2e506]
+                - generic [ref=f2e511]:
+                  - strong [ref=f2e512]: Bounded retries
+                  - generic [ref=f2e513]: Exponential backoff · max 5
+                - generic [ref=f2e518]:
+                  - strong [ref=f2e519]: 1 activation gate
+                  - generic [ref=f2e520]: Review authorizes the exact downstream graph
+                - generic [ref=f2e525]:
+                  - strong [ref=f2e526]: Idempotent actions
+                  - generic [ref=f2e527]: Destination + artifact version bound
+                - button [ref=f2e528] [cursor=pointer]
+                - button "Activate after approval" [disabled] [ref=f2e532]
+            - region "Workflow capability catalog" [ref=f2e533]:
+              - generic [ref=f2e534]:
+                - generic [ref=f2e535]:
+                  - generic [ref=f2e536]: Authorized capabilities
+                  - heading "Capability catalog" [level=2] [ref=f2e537]
+                - generic [ref=f2e538]: 5 available
+              - paragraph [ref=f2e539]: Loading workspace catalog…
+            - region "Workflow step editor" [ref=f2e540]:
+              - generic [ref=f2e541]:
+                - generic [ref=f2e542]:
+                  - generic [ref=f2e543]: Builder
+                  - heading "Steps (5/8)" [level=2] [ref=f2e544]
+                - button "Add step" [ref=f2e545] [cursor=pointer]
+              - generic [ref=f2e547]:
+                - generic [ref=f2e548]:
+                  - generic [ref=f2e549]:
+                    - strong [ref=f2e550]: Ingest & verify
+                    - generic [ref=f2e551]: activity · depends on none · 3 retries
+                  - generic [ref=f2e552]:
+                    - button "Configure Ingest & verify" [ref=f2e553]
+                    - button "Remove Ingest & verify" [disabled] [ref=f2e557]
+                - generic [ref=f2e561]:
+                  - generic [ref=f2e562]:
+                    - strong [ref=f2e563]: Retrieve evidence
+                    - generic [ref=f2e564]: fan out · depends on ingest · 2 retries
+                  - generic [ref=f2e565]:
+                    - button "Configure Retrieve evidence" [ref=f2e566]
+                    - button "Remove Retrieve evidence" [disabled] [ref=f2e570]
+                - generic [ref=f2e574]:
+                  - generic [ref=f2e575]:
+                    - strong [ref=f2e576]: Synthesize
+                    - generic [ref=f2e577]: agent · depends on retrieve · 1 retries
+                  - generic [ref=f2e578]:
+                    - button "Configure Synthesize" [ref=f2e579]
+                    - button "Remove Synthesize" [disabled] [ref=f2e583]
+                - generic [ref=f2e587]:
+                  - generic [ref=f2e588]:
+                    - strong [ref=f2e589]: Human review
+                    - generic [ref=f2e590]: approval · depends on synthesize · 0 retries · approval gate
+                  - generic [ref=f2e591]:
+                    - button "Configure Human review" [ref=f2e592]
+                    - button "Remove Human review" [disabled] [ref=f2e596]
+                - generic [ref=f2e600]:
+                  - generic [ref=f2e601]:
+                    - strong [ref=f2e602]: Export
+                    - generic [ref=f2e603]: external action · depends on review · 2 retries
+                  - generic [ref=f2e604]:
+                    - button "Configure Export" [ref=f2e605]
+                    - button "Remove Export" [ref=f2e609]
+          - region "Workflow run management" [ref=f2e613]:
+            - generic [ref=f2e614]:
+              - generic [ref=f2e615]:
+                - generic [ref=f2e616]: Durable execution
+                - heading "Run management" [level=2] [ref=f2e617]
+              - generic [ref=f2e618]: 0 runs
+            - paragraph [ref=f2e619]: No durable orchestration runs yet. Validate and dry run to create one.
+  - button "Open Next.js Dev Tools" [ref=f2e351] [cursor=pointer]
+  - alert [ref=f2e389]

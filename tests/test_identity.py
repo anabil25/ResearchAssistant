@@ -49,13 +49,9 @@ import pytest
 from fastapi import HTTPException
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
-    GATEWAY_SOURCE,
-    LOCAL_DEVELOPMENT_GROUPS,
-    LOCAL_DEVELOPMENT_SOURCE,
     _claim_values,
     _decode_client_principal,
     enforce_tenant_claim,
-    project_group_name,
     resolve_identity,
 )
 
@@ -126,24 +122,33 @@ def test_resolve_identity_prefers_platform_headers_when_enabled(
     assert identity.display_name == "Ada Lovelace"
     assert identity.tenant_id == expected_tenant
     assert identity.groups == ("researchers",)
-    assert identity.source == GATEWAY_SOURCE
+    assert identity.source == "container-apps-auth"
 
 
-def test_resolve_identity_issues_the_local_identity_without_a_gateway() -> None:
-    settings = Settings(workspace_tenant_id="demo-tenant", workspace_project_id="demo-project")
+@pytest.mark.parametrize(
+    "headers",
+    [
+        {"x-ms-client-principal": "broken"},
+        {
+            "x-ms-client-principal": _principal(
+                {
+                    "userId": "",
+                    "claims": [{"typ": "tid", "val": "tenant-1"}],
+                }
+            )
+        },
+    ],
+)
+def test_resolve_identity_rejects_invalid_or_incomplete_platform_headers(
+    headers: dict[str, str],
+) -> None:
+    with pytest.raises(HTTPException) as excinfo:
+        resolve_identity(_request(headers), Settings(entra_auth_enforced=True))
 
-    # Without a gateway the header is ignored outright, so even a forged or
-    # malformed one grants nothing beyond the local developer identity.
-    identity = resolve_identity(_request({"x-ms-client-principal": "broken"}), settings)
-
-    assert identity.source == LOCAL_DEVELOPMENT_SOURCE
-    assert identity.user_id == "local-developer"
-    assert identity.tenant_id == "demo-tenant"
-    assert identity.display_name == "Local developer"
-    assert identity.groups == (*LOCAL_DEVELOPMENT_GROUPS, project_group_name("demo-project"))
+    assert excinfo.value.status_code == 401
 
 
-def test_resolve_identity_requires_authenticated_identity_when_gateway_is_enforced() -> None:
+def test_resolve_identity_requires_authenticated_identity_when_demo_is_disabled() -> None:
     settings = Settings(entra_auth_enforced=True)
 
     with pytest.raises(HTTPException, match="platform identity is required") as excinfo:
@@ -156,7 +161,7 @@ def test_resolve_identity_requires_authenticated_identity_when_gateway_is_enforc
 def test_enforce_tenant_claim_rejects_mismatched_tenant() -> None:
     identity = resolve_identity(
         _request({}),
-        Settings(allow_demo_identity=True, workspace_tenant_id="tenant-1"),
+        Settings(workspace_tenant_id="tenant-1"),
     )
 
     enforce_tenant_claim(identity, "tenant-1")

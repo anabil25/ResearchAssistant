@@ -52,14 +52,12 @@ class HostedAgentGateway:
         message: str,
         *,
         agent_name: str | None = None,
-        allow_tools: bool = True,
     ) -> HostedAgentReply:
         endpoint = self._settings.foundry_project_endpoint
         if not endpoint:
             raise HostedAgentConfigurationError("FOUNDRY_PROJECT_ENDPOINT is required in hosted execution mode")
 
         target = agent_name or self._settings.coordinator_agent_name
-        del allow_tools
         project = AIProjectClient(
             endpoint=endpoint,
             credential=self._credential,

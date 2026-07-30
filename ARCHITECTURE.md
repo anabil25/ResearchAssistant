@@ -144,6 +144,21 @@ flowchart LR
 - A server-side typed connector registry provides PubMed, Europe PMC, Crossref, OpenAlex,
   arXiv, ClinicalTrials.gov, Grants.gov, NIH RePORTER, DataCite, ORCID, ROR,
   and optional Semantic Scholar access.
+- Each reviewed connector operation has a fixed source-specific adapter route.
+  APIM exposes each connector as a separate MCP server and applies its
+  managed-identity, Entra validation, content-validation, rate-limit, and
+  diagnostics policy before the adapter reaches the public provider.
+- Literature, grant, and matching each consume a stable Foundry Toolbox
+  consumer endpoint. Toolbox versions are immutable; provisioning creates a
+  complete candidate version, validates its version-specific MCP `tools/list`
+  inventory against the checked-in connector catalog, then promotes it as the
+  default version. A connector Settings change never rebuilds a Toolbox.
+- The Settings UI is the authoritative selector for a run. The API resolves
+  enabled, ready, assigned connector IDs and sends them in a typed public
+  hosted-agent envelope. Hosted middleware exposes only the matching
+  `connector___operation` Toolbox tools for that request, rejects any
+  off-list connector call, and requires returned source metadata to match the
+  invoked connector before it becomes evidence.
 - Each profile has an explicit source allowlist. The institution agent has no
   tools and receives only server-authorized, version-resolved passages.
 - Connectors cap queries/results, use official HTTPS endpoints, return metadata
@@ -187,6 +202,18 @@ same `durable_instance_id` displayed in the UI. Approval records bind actor,
 timestamp, rationale, exact action, destination, and idempotency key; approval
 events resume that same orchestration instance.
 
+Personal workspaces reuse the deployed serverless Cosmos account's existing
+`research/projects` container, partitioned by tenant. Project catalog records
+bind each active or archived project to one owner identity, and a separate
+per-user preference record stores the active project ID. The API treats a
+browser-supplied project header as a selection request only: it resolves the
+record in the authenticated tenant partition and requires the matching owner
+and active lifecycle before opening any workspace store. New projects copy
+governance defaults but begin with no sources, runs, approvals, artifacts, or
+connector credentials. No SQLite file, Azure SQL resource, Cosmos container,
+or other Azure resource is introduced. The deployment's Foundry project is
+still a trusted runtime scope, not a user-selectable workspace.
+
 ## Durable workflow
 
 The worker uses the managed Durable Task Scheduler, not the legacy Durable
@@ -219,6 +246,9 @@ not an implicit behavior change.
 - Microsoft Foundry account/project and three model deployments
 - nine Foundry Hosted Agents: coordinator, five tool-free specialists, and
   three public-online researchers
+- API Management Standard v2 with one MCP server per reviewed public
+  connector, plus a temporary shared fallback MCP server during the staged
+  migration
 - Azure AI Search Basic, hybrid/vector/semantic index
 - Document Intelligence S0, `prebuilt-layout` v4 GA
 - Blob Storage
@@ -239,7 +269,9 @@ replica for the scheduler's push connection.
 1. `preprovision` validates every required service/SKU and exact model in the
    selected region, then registers Durable Task when needed.
 2. Bicep provisions resources and data-plane roles.
-3. `postprovision` creates the Search index and uploads synthetic evidence.
+3. `postprovision` creates the Search index, uploads synthetic evidence,
+   creates connector-specific Foundry project connections, and reconciles and
+   validates Toolbox versions before promoting them.
 4. `azd deploy` creates Hosted Agent versions and deploys Container Apps.
 5. `postdeploy` grants the coordinator only the Foundry delegation role.
 6. Smoke and evaluation suites verify the deployed endpoints.

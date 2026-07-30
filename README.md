@@ -133,9 +133,12 @@ npm run dev
 ```
 
 Open <http://localhost:3000>. Local execution uses a deterministic synthetic
-corpus, in-memory workspace/blob adapters, and makes no model calls. Azure uses
-Cosmos DB for operational state, Durable Task Scheduler for every new run, and
-Blob Storage through a private endpoint for uploaded source files.
+corpus, an anonymous identity-scoped workspace/blob sandbox, and makes no
+model calls. Azure uses Cosmos DB for operational state, Durable Task Scheduler
+for every new run, and Blob Storage through a private endpoint for uploaded
+source files. Personal projects and the active-project preference are stored in
+the already deployed tenant-partitioned Cosmos `research/projects` container;
+the feature does not add a SQLite, SQL, or other persistence resource.
 
 ## Runtime ingestion
 

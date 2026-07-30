@@ -22,6 +22,8 @@ from research_assistant_api.agent_studio.approval_consumption import StoreBacked
 from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.builder_service import BuilderService
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
+from research_assistant_api.agent_studio.foundry_agent_inventory import UnavailableFoundryAgentInventory
+from research_assistant_api.agent_studio.foundry_prompt_publisher import UnavailablePromptAgentPublisher
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.release_attestation import StoreBackedReleaseAttestationPort
 from research_assistant_api.agent_studio.release_service import ReleaseService
@@ -64,6 +66,8 @@ async def test_init_agent_studio_wires_concrete_collaborators_when_store_availab
     assert application.state.agent_studio_store is store
     assert isinstance(application.state.agent_studio_release_service, ReleaseService)
     assert isinstance(application.state.agent_studio_deployment_service, DeploymentService)
+    assert isinstance(application.state.agent_studio_foundry_agent_inventory, UnavailableFoundryAgentInventory)
+    assert isinstance(application.state.agent_studio_prompt_agent_publisher, UnavailablePromptAgentPublisher)
     assert isinstance(application.state.agent_studio_builder_service, BuilderService)
     assert isinstance(
         application.state.agent_studio_approval_consumption_port, StoreBackedApprovalConsumptionPort

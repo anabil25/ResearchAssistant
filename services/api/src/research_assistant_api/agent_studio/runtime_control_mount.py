@@ -3,7 +3,7 @@
 The composition root never mounts the real runtime-control endpoints unless the
 runtime-trust preconditions are fully met. This is a *structural* fail-closed
 gate that sits above the per-request identity gate (``resolve_runtime_principal``
-already returns ``None`` unless both trust flags are set): when trust is not
+already returns ``None`` unless the switch is set): when trust is not
 enforceable, or any durable dependency is missing, the mount serves a
 fail-closed app that answers EVERY path with the same uniform 404
 (``uniform_denial()``) the real plane uses for a denied/absent deployment -- so a
@@ -11,10 +11,9 @@ probe cannot distinguish "not configured" from "no such deployment", and a
 misconfigured or half-provisioned deployment can never silently expose the
 control plane with a permissive default.
 
-Enforceability requires BOTH ``entra_auth_enforced`` and
-``trust_platform_identity_headers`` (the same pair the identity layer checks) AND
-every durable dependency present. A demo/unset environment therefore yields the
-fail-closed app, never the real one.
+Enforceability requires ``entra_auth_enforced`` (the same switch the identity
+layer checks) AND every durable dependency present. An unset/local environment
+therefore yields the fail-closed app, never the real one.
 """
 
 from __future__ import annotations
@@ -30,14 +29,12 @@ from research_assistant_api.config import Settings
 
 
 def runtime_trust_is_enforceable(settings: Settings) -> bool:
-    """True iff the platform trust preconditions for the runtime plane are met.
+    """True iff an authenticating gateway is validating identity in front of us.
 
-    Both flags are required: the platform must be validating identity
-    (``entra_auth_enforced``) AND the backend must be configured to trust the
-    platform-injected principal headers (``trust_platform_identity_headers``).
-    Either one alone is insufficient and yields the fail-closed app.
+    Without it the platform-injected principal header is not trustworthy, so
+    the runtime plane serves the fail-closed app instead.
     """
-    return bool(settings.entra_auth_enforced and settings.trust_platform_identity_headers)
+    return bool(settings.entra_auth_enforced)
 
 
 def build_fail_closed_runtime_control_app() -> FastAPI:

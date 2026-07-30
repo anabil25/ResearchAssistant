@@ -203,6 +203,15 @@ class DeployRequest(BaseModel):
     trace_ref: str | None = None
 
 
+class PublishPromptAgentRequest(BaseModel):
+    """Request a durable, idempotent Foundry prompt-agent publication."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    project_id: str = Field(min_length=1, max_length=200)
+    idempotency_key: str = Field(min_length=1, max_length=256)
+
+
 class HealthUpdateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 

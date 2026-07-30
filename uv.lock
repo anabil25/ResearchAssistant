@@ -2997,6 +2997,7 @@ source = { editable = "packages/research_connectors" }
 dependencies = [
     { name = "defusedxml" },
     { name = "httpx" },
+    { name = "research-assistant-core" },
     { name = "rfc8785" },
 ]
 
@@ -3004,6 +3005,7 @@ dependencies = [
 requires-dist = [
     { name = "defusedxml", specifier = "==0.7.1" },
     { name = "httpx", specifier = ">=0.28,<1" },
+    { name = "research-assistant-core", editable = "packages/research_core" },
     { name = "rfc8785", specifier = "==0.1.4" },
 ]
 

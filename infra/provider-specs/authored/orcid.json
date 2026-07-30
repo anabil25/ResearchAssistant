@@ -1,0 +1,341 @@
+{
+  "info": {
+    "description": "Public researcher identifier, affiliation, and work records. Authored from https://info.orcid.org/documentation/api-tutorials/",
+    "title": "ORCID Public API v3.0",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/expanded-search/": {
+      "get": {
+        "operationId": "orcidExpandedSearch",
+        "parameters": [
+          {
+            "description": "Solr/Lucene ORCID search expression.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Zero-based result offset.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of rows to return, maximum 1000.",
+            "in": "query",
+            "name": "rows",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search ORCID records and return expanded summary fields."
+      }
+    },
+    "/search/": {
+      "get": {
+        "operationId": "orcidSearch",
+        "parameters": [
+          {
+            "description": "Solr/Lucene ORCID search expression.",
+            "in": "query",
+            "name": "q",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Zero-based result offset.",
+            "in": "query",
+            "name": "start",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Number of rows to return, maximum 1000.",
+            "in": "query",
+            "name": "rows",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search ORCID records and return matching identifiers."
+      }
+    },
+    "/{orcid}/educations": {
+      "get": {
+        "operationId": "orcidGetEducations",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List education affiliations on a public ORCID record."
+      }
+    },
+    "/{orcid}/employments": {
+      "get": {
+        "operationId": "orcidGetEmployments",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List employment affiliations on a public ORCID record."
+      }
+    },
+    "/{orcid}/fundings": {
+      "get": {
+        "operationId": "orcidGetFundings",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List funding entries on a public ORCID record."
+      }
+    },
+    "/{orcid}/peer-reviews": {
+      "get": {
+        "operationId": "orcidGetPeerReviews",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List peer-review activity on a public ORCID record."
+      }
+    },
+    "/{orcid}/person": {
+      "get": {
+        "operationId": "orcidGetPerson",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve the person section of a public ORCID record."
+      }
+    },
+    "/{orcid}/record": {
+      "get": {
+        "operationId": "orcidGetRecord",
+        "parameters": [
+          {
+            "description": "ORCID iD, for example 0000-0002-1825-0097.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve the complete public ORCID record."
+      }
+    },
+    "/{orcid}/research-resources": {
+      "get": {
+        "operationId": "orcidGetResearchResources",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List research resources on a public ORCID record."
+      }
+    },
+    "/{orcid}/works": {
+      "get": {
+        "operationId": "orcidGetWorks",
+        "parameters": [
+          {
+            "description": "ORCID iD.",
+            "in": "path",
+            "name": "orcid",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "List the works on a public ORCID record."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://pub.orcid.org/v3.0"
+    }
+  ]
+}

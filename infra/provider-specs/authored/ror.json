@@ -1,0 +1,137 @@
+{
+  "info": {
+    "description": "Open identifiers and metadata for research organizations. Authored from https://ror.readme.io/v2/docs/rest-api",
+    "title": "ROR API v2",
+    "version": "1.0.0"
+  },
+  "openapi": "3.0.3",
+  "paths": {
+    "/heartbeat": {
+      "get": {
+        "operationId": "rorHeartbeat",
+        "parameters": [],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Report ROR API availability."
+      }
+    },
+    "/v2/organizations": {
+      "get": {
+        "operationId": "rorListOrganizations",
+        "parameters": [
+          {
+            "description": "Keyword matched against organization names and external identifiers.",
+            "in": "query",
+            "name": "query",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Elasticsearch query string searching all record fields.",
+            "in": "query",
+            "name": "query.advanced",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Unstructured affiliation string to match against ROR records.",
+            "in": "query",
+            "name": "affiliation",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Comma-separated field:value filters, for example status:active.",
+            "in": "query",
+            "name": "filter",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "1-based page number; maximum 500.",
+            "in": "query",
+            "name": "page",
+            "required": false,
+            "schema": {
+              "type": "integer"
+            }
+          },
+          {
+            "description": "Include inactive and withdrawn records.",
+            "in": "query",
+            "name": "all_status",
+            "required": false,
+            "schema": {
+              "type": "boolean"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Search or filter research organization records."
+      }
+    },
+    "/v2/organizations/{ror_id}": {
+      "get": {
+        "operationId": "rorGetOrganization",
+        "parameters": [
+          {
+            "description": "ROR identifier, for example 015w2mp89.",
+            "in": "path",
+            "name": "ror_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Successful provider response."
+          }
+        },
+        "summary": "Retrieve one research organization record by ROR identifier."
+      }
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.ror.org"
+    }
+  ]
+}

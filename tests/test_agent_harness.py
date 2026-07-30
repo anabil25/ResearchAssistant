@@ -149,6 +149,7 @@ from shared.idempotency import (
 from shared.invocation import HostedAgentReply, HostedInvocationPolicy, RetryingResponsesInvoker
 from shared.local_harness import LocalHarness, LocalInvocation
 from shared.middleware import (
+    ConnectorToolAuthorizationMiddleware,
     ContractMiddleware,
     GovernedFunctionMiddleware,
     middleware_for_manifest,
@@ -4920,7 +4921,7 @@ def test_tools_are_bounded_to_profile_and_configured_destination(
             default_timeout_seconds=15,
         ),
     )
-    assert configured is marker
+    assert configured == []
     assert (
         tools_for_profile(
             get_manifest("dataset"),
@@ -5093,7 +5094,9 @@ def test_hosted_invoker_structured_failure_paths() -> None:
 
 
 @pytest.mark.asyncio
-async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> None:
+async def test_contract_middleware_validates_and_redacts_hosted_envelopes(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     settings = _settings(
         toolbox_endpoint="https://toolbox.example/toolboxes/public/mcp",
         default_timeout_seconds=15,
@@ -5103,7 +5106,13 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
         settings,
         monotonic=lambda: 10,
     )
-    request = PublicLiteratureRequest.model_validate(_request(sensitivity="public", query="Find public evidence"))
+    request = PublicLiteratureRequest.model_validate(
+        _request(
+            sensitivity="public",
+            query="Find public evidence",
+            authorized_connector_ids=("pubmed",),
+        )
+    )
     context = AgentContext(
         agent=cast(Any, SimpleNamespace()),
         messages=[Message(role="user", contents=[request.model_dump_json()])],
@@ -5113,8 +5122,22 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
     async def call_next() -> None:
         calls.append(True)
 
+    class FakeToolbox:
+        closed = False
+
+        async def close(self) -> None:
+            self.closed = True
+
+    request_toolbox = FakeToolbox()
+
+    async def request_tools(*_args: object, **_kwargs: object) -> tuple[FakeToolbox, tuple[str, ...]]:
+        return request_toolbox, ("pubmed___search", "web_search")
+
+    monkeypatch.setattr("shared.middleware.request_tools_for_profile", request_tools)
     await middleware.process(context, call_next)
     assert calls == [True]
+    assert context.tools == ("pubmed___search", "web_search")
+    assert request_toolbox.closed is True
     assert "principal-a" not in context.messages[-1].text
     assert "Find public evidence" in context.messages[-1].text
     governance = InvocationContext.model_validate(context.function_invocation_kwargs["governance_context"])
@@ -5165,6 +5188,73 @@ async def test_contract_middleware_validates_and_redacts_hosted_envelopes() -> N
                 _request(tenant_id="tenant-b", project_id="project-a")
             )
         )
+
+
+@pytest.mark.asyncio
+async def test_connector_tool_authorization_middleware_denies_unselected_sources() -> None:
+    middleware = ConnectorToolAuthorizationMiddleware(get_manifest("literature_online"))
+    allowed = FunctionInvocationContext(
+        function=cast(Any, SimpleNamespace(name="pubmed___search")),
+        arguments={},
+        kwargs={
+            "authorized_connector_ids": ("pubmed",),
+            "authorized_tool_evidence": [],
+        },
+    )
+    called = False
+
+    async def call_next() -> None:
+        nonlocal called
+        called = True
+        allowed.result = {
+            "source": "pubmed",
+            "query": "public evidence",
+            "records": [{"id": "pmid-1", "title": "Public evidence"}],
+            "terms_url": "https://terms.example/pubmed",
+            "retrieved_from": "https://api.example/pubmed",
+            "warnings": [],
+            "notice": "Metadata only.",
+        }
+
+    await middleware.process(allowed, call_next)
+    assert called is True
+    assert allowed.kwargs["authorized_tool_evidence"][0].evidence_id.startswith("connector:pubmed:")
+
+    denied = FunctionInvocationContext(
+        function=cast(Any, SimpleNamespace(name="crossref___search")),
+        arguments={},
+        kwargs={"authorized_connector_ids": ("pubmed",)},
+    )
+    with pytest.raises(AuthorizationError, match="not authorized"):
+        await middleware.process(denied, call_next)
+
+
+@pytest.mark.asyncio
+async def test_connector_tool_authorization_middleware_rejects_mismatched_output_source() -> None:
+    middleware = ConnectorToolAuthorizationMiddleware(get_manifest("literature_online"))
+    context = FunctionInvocationContext(
+        function=cast(Any, SimpleNamespace(name="pubmed___search")),
+        arguments={},
+        kwargs={
+            "authorized_connector_ids": ("pubmed",),
+            "authorized_tool_evidence": [],
+        },
+    )
+
+    async def call_next() -> None:
+        context.result = {
+            "source": "crossref",
+            "query": "public evidence",
+            "records": [],
+            "terms_url": "https://terms.example/crossref",
+            "retrieved_from": "https://api.example/crossref",
+            "warnings": [],
+            "notice": "Metadata only.",
+        }
+
+    with pytest.raises(ContractError, match="authorized source"):
+        await middleware.process(context, call_next)
+    assert context.kwargs["authorized_tool_evidence"] == []
 
 
 @pytest.mark.asyncio
@@ -5304,7 +5394,7 @@ async def test_contract_middleware_accepts_only_trusted_runtime_evidence() -> No
     )
     base_binding = _binding(capability.id)
     binding = base_binding.model_copy(
-        update={"operation_ref": base_binding.operation_ref.model_copy(update={"id": "local.searchLiteratureMetadata"})}
+        update={"operation_ref": base_binding.operation_ref.model_copy(update={"id": "local.pubmed___search"})}
     )
     registration, _ = _runtime_registration(binding)
     function_middleware = GovernedFunctionMiddleware(
@@ -5329,7 +5419,7 @@ async def test_contract_middleware_accepts_only_trusted_runtime_evidence() -> No
         "notice": "Metadata only.",
     }
     evidence = function_middleware._evidence_from_tool_result(
-        "searchLiteratureMetadata",
+        "pubmed___search",
         tool_result,
     )[0]
     response = LiteratureResponse(
@@ -5350,7 +5440,7 @@ async def test_contract_middleware_accepts_only_trusted_runtime_evidence() -> No
 
     async def call_next() -> None:
         function_context = FunctionInvocationContext(
-            cast(Any, SimpleNamespace(name="searchLiteratureMetadata")),
+            cast(Any, SimpleNamespace(name="pubmed___search")),
             {},
             kwargs=agent_context.function_invocation_kwargs,
         )
@@ -5529,7 +5619,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
                 **_trusted_scope(online_manifest),
             )
         )
-        == 2
+        == 3
     )
     with pytest.raises(ConfigurationError, match="authenticated tenant and project"):
         middleware_for_manifest(
@@ -5595,7 +5685,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         GovernedFunctionMiddleware(capability, other_registration)
 
     connector_binding = binding.model_copy(
-        update={"operation_ref": binding.operation_ref.model_copy(update={"id": "local.searchLiteratureMetadata"})}
+        update={"operation_ref": binding.operation_ref.model_copy(update={"id": "local.pubmed___search"})}
     )
     connector_registration, _ = _runtime_registration(connector_binding)
     connector_middleware = GovernedFunctionMiddleware(
@@ -5620,7 +5710,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
         "notice": "Metadata only.",
     }
     connector_evidence = connector_middleware._evidence_from_tool_result(
-        "searchLiteratureMetadata",
+        "pubmed___search",
         connector_result,
     )
     assert len(connector_evidence) == 2
@@ -5628,11 +5718,11 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     assert connector_evidence[1].source_uri == "https://eutils.ncbi.nlm.nih.gov/"
     with pytest.raises(ContractError, match="governed response contract"):
         connector_middleware._evidence_from_tool_result(
-            "searchLiteratureMetadata",
+            "pubmed___search",
             {**connector_result, "source": "forbidden"},
         )
     connector_context = FunctionInvocationContext(
-        cast(Any, SimpleNamespace(name="searchLiteratureMetadata")),
+        cast(Any, SimpleNamespace(name="pubmed___search")),
         {},
         kwargs={
             "governance_context": governance.model_dump(mode="json"),
@@ -5731,7 +5821,7 @@ async def test_function_middleware_enforces_governance_before_tool_execution() -
     connector_json = json.dumps(connector_result)
     assert (
         connector_middleware._evidence_from_tool_result(
-            "searchLiteratureMetadata",
+            "pubmed___search",
             Content.from_mcp_server_tool_result("call-3", output=connector_json),
         )
         == connector_evidence
