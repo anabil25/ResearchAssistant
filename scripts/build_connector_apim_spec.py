@@ -10,11 +10,17 @@ from pathlib import Path
 from typing import Any
 from xml.etree import ElementTree
 
-from research_assistant_core.connector_catalog import connector_definitions
+from research_assistant_core.connector_catalog import (
+    UNCONFIGURED_CREDENTIAL,
+    connector_definitions,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "infra" / "provider-specs" / "authored" / "research_connectors.json"
 POLICY_OUTPUT = ROOT / "infra" / "connector-operation-policies.json"
+_CREDENTIALS = {
+    connector.id: connector.credential for connector in connector_definitions()
+}
 NOTICE = (
     "Metadata only. Verify source rights, current status, and full text before using a record as research evidence."
 )
@@ -221,6 +227,18 @@ def _set_variable(name: str, query_name: str, default: str) -> str:
     )
 
 
+def _credential_header_policy(source: str) -> str:
+    credential = _CREDENTIALS[source]
+    if credential.kind != "api_key":
+        return ""
+    reference = "{{" + credential.named_value + "}}"
+    return (
+        f'<choose><when condition="@(&quot;{reference}&quot; != &quot;{UNCONFIGURED_CREDENTIAL}&quot;)">'
+        f'<set-header name="{credential.header}" exists-action="override">'
+        f"<value>{reference}</value></set-header></when></choose>"
+    )
+
+
 def _set_query(name: str, expression: str) -> str:
     return (
         f'<set-query-parameter name="{name}" exists-action="override">'
@@ -318,6 +336,9 @@ def _simple_search_policy(source: str) -> str:
     }.get(source, {})
     for name, expression in query_parameters.items():
         inbound.append(_set_query(name, expression))
+    credential_policy = _credential_header_policy(source)
+    if credential_policy:
+        inbound.append(credential_policy)
     if source in {"europe_pmc", "orcid"}:
         inbound.append('<set-header name="Accept" exists-action="override"><value>application/json</value></set-header>')
     if source == "arxiv":
@@ -343,7 +364,7 @@ def _simple_search_policy(source: str) -> str:
     outbound: list[str] = []
     if source == "arxiv":
         outbound.append(
-            '<xml-to-json kind="direct" apply="always" consider-accept-header="false" always-array-child-elements="true" />'
+            '<xml-to-json kind="direct" apply="always" consider-accept-header="false" always-array-child-elements="false" />'
         )
     if source == "semantic_scholar":
         warning_body = _normalize_body(
@@ -469,7 +490,7 @@ def _lookup_policy(source: str) -> str:
     outbound: list[str] = []
     if source == "arxiv":
         outbound.append(
-            '<xml-to-json kind="direct" apply="always" consider-accept-header="false" always-array-child-elements="true" />'
+            '<xml-to-json kind="direct" apply="always" consider-accept-header="false" always-array-child-elements="false" />'
         )
     outbound.append(
         _normalize_body(

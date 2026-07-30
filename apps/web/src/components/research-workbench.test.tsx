@@ -9,18 +9,24 @@ import {
   activateProject,
   createProject,
   decideApproval,
+  getChatThread,
   getWorkspaceData,
+  listChatAgents,
   listProjects,
+  openChatThread,
   runStudio,
+  sendChatMessage,
   testConnector,
   updateConnector,
   updateProject,
   updateSettings,
+  uploadChatFile,
   uploadLibraryItem,
   type WorkspaceData,
 } from "@/lib/api";
 import type {
   AutomationStudioResult,
+  ChatThread,
   LiteratureStudioResult,
   StudioRun,
 } from "@/lib/types";
@@ -51,6 +57,9 @@ function setupUser(
 }
 
 jest.mock("@/lib/api", () => ({
+  // `classifyAsyncError` narrows on `instanceof ApiError`, so the real class
+  // has to survive the mock or every error path throws instead of rendering.
+  ApiError: jest.requireActual<typeof import("@/lib/api")>("@/lib/api").ApiError,
   activateProject: jest.fn(),
   createProject: jest.fn(),
   getCapabilityDiscovery: jest.fn(),
@@ -60,6 +69,11 @@ jest.mock("@/lib/api", () => ({
   getWorkspaceData: jest.fn(),
   listProjects: jest.fn(),
   runStudio: jest.fn(),
+  listChatAgents: jest.fn(),
+  openChatThread: jest.fn(),
+  getChatThread: jest.fn(),
+  sendChatMessage: jest.fn(),
+  uploadChatFile: jest.fn(),
   attachPromptCapability: jest.fn(),
   createPromptAgentDraft: jest.fn(),
   savePromptAgentDraft: jest.fn(),
@@ -196,6 +210,8 @@ const workspaceData: WorkspaceData = {
       category: "Literature",
       description: "Biomedical citations and abstracts.",
       auth_kind: "None",
+      credential_kind: "none",
+      credential_required: false,
       secret_status: "Not required",
       enabled: true,
       test_status: "ready",
@@ -386,6 +402,28 @@ describe("ResearchWorkbench", () => {
     jest.mocked(activateProject).mockReset();
     jest.mocked(createProject).mockReset();
     jest.mocked(runStudio).mockReset();
+    jest.mocked(listChatAgents).mockReset();
+    jest.mocked(listChatAgents).mockResolvedValue([
+      {
+        name: "literature-agent",
+        label: "Literature agent",
+        description: "Grounded synthesis over stored evidence.",
+        online: false,
+      },
+    ]);
+    jest.mocked(openChatThread).mockReset();
+    jest.mocked(openChatThread).mockResolvedValue({
+      id: "thread-1",
+      capability: "literature",
+      agent_name: "literature-agent",
+      created_at: "2026-07-30T00:00:00Z",
+      updated_at: "2026-07-30T00:00:00Z",
+      messages: [],
+      attachments: [],
+    });
+    jest.mocked(sendChatMessage).mockReset();
+    jest.mocked(getChatThread).mockReset();
+    jest.mocked(uploadChatFile).mockReset();
     jest.mocked(decideApproval).mockReset();
     jest.mocked(testConnector).mockReset();
     jest.mocked(updateConnector).mockReset();
@@ -473,7 +511,7 @@ describe("ResearchWorkbench", () => {
     expect(await axe(container)).toHaveNoViolations();
   });
 
-  it("opens the distinct Literature Studio protocol", async () => {
+  it("opens the Literature Studio as an agent chat", async () => {
     const user = setupUser();
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
@@ -486,9 +524,11 @@ describe("ResearchWorkbench", () => {
       screen.getByRole("heading", { name: "Literature Studio" }),
     ).toBeInTheDocument();
     expect(
-      (screen.getByLabelText("Research question") as HTMLTextAreaElement).value,
-    ).toContain("auditable retrieval");
-    expect(screen.getByText("Scholarly sources")).toBeInTheDocument();
+      await screen.findByRole("combobox", { name: "Agent" }),
+    ).toHaveValue("literature-agent");
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
+    // No multi-step protocol form survives: the agent owns the workflow.
+    expect(screen.queryByLabelText("Research question")).not.toBeInTheDocument();
   });
 
   it("renders real Library and Runs data", async () => {
@@ -751,13 +791,9 @@ describe("ResearchWorkbench", () => {
 
     await user.click(screen.getByRole("button", { name: "Matching Explorer" }));
     expect(
-      screen.getByText(/No public connectors are assigned to Matching yet/i),
+      await screen.findByRole("combobox", { name: "Agent" }),
     ).toBeInTheDocument();
-    expect(
-      screen.getByRole("checkbox", {
-        name: /Work IQ collaboration signals/i,
-      }),
-    ).toBeDisabled();
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "Project Settings" }));
     expect(
@@ -1352,42 +1388,33 @@ describe("ResearchWorkbench", () => {
     );
   });
 
-  it("keeps the hosted-agent boundary hidden for successful runs without insight metadata", async () => {
+  it("keeps the composer usable and the transcript empty until a turn is sent", async () => {
     const user = setupUser();
-    jest.mocked(runStudio).mockResolvedValue({
-      ...literatureResult,
-      citations: [],
-      insight: undefined,
-    });
 
     window.history.replaceState(null, "", "/?view=literature");
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
-    await user.click(
-      screen.getByRole("button", { name: "Search & screen evidence" }),
-    );
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
 
-    expect(
-      await screen.findByText(
-        "No stored citations were used by this artifact.",
-      ),
-    ).toBeInTheDocument();
-    // No insight means no agent-boundary card to render alongside it.
+    expect(screen.getByRole("log")).toHaveTextContent(
+      /Describe what you need in your own words/i,
+    );
+    // Nothing has been sent, so no run artifact or boundary card exists yet.
     expect(screen.queryByText("Resolved IDs")).not.toBeInTheDocument();
+
+    // Suggestions prefill the composer rather than launching a workflow.
+    await user.click(screen.getAllByRole("button", { name: /^Compare / })[0]);
+    expect((composer as HTMLTextAreaElement).value.length).toBeGreaterThan(0);
+    expect(sendChatMessage).not.toHaveBeenCalled();
   });
 
-  it("navigates through search and rails, opens library dialogs, and runs literature research with evidence boundaries", async () => {
+  it("navigates through search and rails, opens library dialogs, and holds a literature conversation", async () => {
     const user = setupUser();
-    const refreshedWorkspace = cloneWorkspaceData();
-    refreshedWorkspace.summary.active_runs = 2;
 
     window.history.replaceState(null, "", "/?view=grant");
-    mockedGetWorkspaceData
-      .mockResolvedValueOnce(cloneWorkspaceData())
-      .mockResolvedValueOnce(cloneWorkspaceData())
-      .mockResolvedValueOnce(refreshedWorkspace);
-    jest.mocked(runStudio).mockResolvedValue(literatureResult);
+    mockedGetWorkspaceData.mockResolvedValue(cloneWorkspaceData());
 
     render(<ResearchWorkbench />);
     await screen.findByRole("heading", { name: "Grant Studio" });
@@ -1418,50 +1445,56 @@ describe("ResearchWorkbench", () => {
     await user.click(screen.getByRole("button", { name: "Literature Studio" }));
     await screen.findByRole("heading", { name: "Literature Studio" });
 
-    const question = screen.getByLabelText("Research question");
-    await user.clear(question);
-    await user.type(question, "How can auditable synthesis stay deterministic?");
-    await user.click(
-      screen.getByRole("checkbox", { name: /Current public research/i }),
-    );
-    await user.click(
-      screen.getByRole("button", { name: "Search & screen evidence" }),
-    );
+    const answered: ChatThread = {
+      id: "thread-1",
+      capability: "literature",
+      agent_name: "literature-agent",
+      created_at: "2026-07-30T00:00:00Z",
+      updated_at: "2026-07-30T00:01:00Z",
+      attachments: [],
+      messages: [
+        {
+          id: "m1",
+          role: "user",
+          content: "How can auditable synthesis stay deterministic?",
+          created_at: "2026-07-30T00:00:30Z",
+          agent_name: null,
+          attachments: [],
+        },
+        {
+          id: "m2",
+          role: "assistant",
+          content: "Verified insight from stored citations.",
+          created_at: "2026-07-30T00:01:00Z",
+          agent_name: "literature-agent",
+          attachments: [],
+        },
+      ],
+    };
+    jest.mocked(sendChatMessage).mockResolvedValue(answered.messages[1]);
+    jest.mocked(getChatThread).mockResolvedValue(answered);
+
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
+    await user.type(composer, "How can auditable synthesis stay deterministic?");
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
-      expect(runStudio).toHaveBeenCalledWith(
-        "literature",
+      expect(sendChatMessage).toHaveBeenCalledWith(
+        "thread-1",
         "How can auditable synthesis stay deterministic?",
-        expect.objectContaining({
-          onlineResearch: true,
-          inputs: expect.objectContaining({
-            date_from: 2020,
-            date_to: 2026,
-            public_search_query: "How can auditable synthesis stay deterministic?",
-            public_research_acknowledged: true,
-          }),
-        }),
         "demo-project",
       ),
     );
-    await waitFor(() => expect(mockedGetWorkspaceData).toHaveBeenCalledTimes(3));
 
-    expect(await screen.findByText("Hosted Agent analysis")).toBeInTheDocument();
     expect(
       await screen.findByText("Verified insight from stored citations."),
     ).toBeInTheDocument();
-    expect(screen.getByText("Unsupported references")).toBeInTheDocument();
-    expect(screen.getByText("source-3")).toBeInTheDocument();
-
-    const runEvidence = document.querySelector(".run-evidence");
-    expect(runEvidence).not.toBeNull();
-    const evidence = within(runEvidence as HTMLElement);
-    expect(evidence.getByText("Auditable literature review")).toBeInTheDocument();
-    expect(evidence.getByText("research-run-lit-1")).toBeInTheDocument();
-    expect(evidence.getByText("Study A")).toBeInTheDocument();
-    expect(evidence.getByText("Study B")).toBeInTheDocument();
-    expect(screen.getByText("Resolved IDs")).toBeInTheDocument();
-    expect(screen.getByText("Unresolved IDs")).toBeInTheDocument();
+    const transcript = within(screen.getByRole("log"));
+    expect(
+      transcript.getByText("How can auditable synthesis stay deterministic?"),
+    ).toBeInTheDocument();
+    expect(transcript.getAllByText("literature-agent").length).toBeGreaterThan(0);
   });
 
   it("handles studio failures, renders no-citation evidence results, and routes orchestration inspections to Runs", async () => {
@@ -1507,55 +1540,31 @@ describe("ResearchWorkbench", () => {
     });
     orchestrationWorkspace.summary.pending_approvals = 2;
 
-    const noCitationResult: LiteratureStudioResult = {
-      ...literatureResult,
-      run: {
-        ...literatureResult.run,
-        id: "run-lit-empty",
-        durable_instance_id: "research-run-lit-empty",
-        title: "Empty citation review",
-      },
-      citations: [],
-      insight: {
-        agent_name: "Literature synthesis",
-        content: "No resolved evidence was promoted.",
-        evidence_state: "unsupported",
-        online_research_used: false,
-      },
-    };
-
     mockedGetWorkspaceData.mockResolvedValue(orchestrationWorkspace);
-    jest.mocked(runStudio)
+    jest
+      .mocked(sendChatMessage)
       .mockRejectedValueOnce(new Error("Research orchestration unavailable"))
-      .mockRejectedValueOnce("service timeout")
-      .mockResolvedValueOnce(noCitationResult);
+      .mockRejectedValueOnce("service timeout");
 
     render(<ResearchWorkbench />);
     await screen.findByText("V2 test workspace");
 
     await user.click(screen.getByRole("button", { name: "Literature Studio" }));
-    const runButton = screen.getByRole("button", {
-      name: "Search & screen evidence",
-    });
+    const composer = await screen.findByRole("textbox", { name: "Message" });
+    await waitFor(() => expect(composer).toBeEnabled());
 
-    await user.click(runButton);
+    await user.type(composer, "Summarise the evidence");
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
       "Research orchestration unavailable",
     );
-    expect(runButton).toBeEnabled();
+    // The failed turn is rolled back and the draft restored, so the user can retry.
+    await waitFor(() => expect(composer).toHaveValue("Summarise the evidence"));
 
-    await user.click(runButton);
+    await user.click(screen.getByRole("button", { name: "Send" }));
     expect(await screen.findByRole("alert")).toHaveTextContent(
-      "The studio run failed.",
+      "Request failed.",
     );
-
-    await user.click(runButton);
-    expect(
-      await screen.findByText(
-        "No stored citations were used by this artifact.",
-      ),
-    ).toBeInTheDocument();
-    expect(screen.getByText("Resolved IDs")).toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: "2 pending approvals" }));
     await screen.findByRole("heading", { name: "Runs & Approvals" });

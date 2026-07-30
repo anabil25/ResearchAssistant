@@ -22,6 +22,35 @@
         "title": "ActivationRequest",
         "type": "object"
       },
+      "AgentChoice": {
+        "description": "A deployed agent the caller may talk to for a given capability.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "online": {
+            "title": "Online",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "description",
+          "online"
+        ],
+        "title": "AgentChoice",
+        "type": "object"
+      },
       "AgentDraft": {
         "additionalProperties": false,
         "description": "A mutable, in-progress edit of a manifest prior to cutting a version.\n\n``etag`` changes on every ``save_draft`` (see ``store.py``), giving\ncallers optimistic concurrency: a client that read an older ``etag`` and\nsubmits an update built against stale state can be rejected rather than\nsilently clobbering a concurrent edit.",
@@ -1714,6 +1743,20 @@
         "title": "AutomationStudioResult",
         "type": "object"
       },
+      "Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post": {
+        "properties": {
+          "file": {
+            "contentMediaType": "application/octet-stream",
+            "title": "File",
+            "type": "string"
+          }
+        },
+        "required": [
+          "file"
+        ],
+        "title": "Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post",
+        "type": "object"
+      },
       "Body_upload_library_item_api_library_upload_post": {
         "properties": {
           "access": {
@@ -3122,6 +3165,165 @@
         "title": "CapabilityVersionPin",
         "type": "object"
       },
+      "ChatAttachmentView": {
+        "properties": {
+          "content_type": {
+            "title": "Content Type",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "size_bytes": {
+            "title": "Size Bytes",
+            "type": "integer"
+          },
+          "uploaded_at": {
+            "format": "date-time",
+            "title": "Uploaded At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "path",
+          "size_bytes",
+          "content_type",
+          "uploaded_at"
+        ],
+        "title": "ChatAttachmentView",
+        "type": "object"
+      },
+      "ChatMessageCreate": {
+        "properties": {
+          "text": {
+            "maxLength": 8000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text"
+        ],
+        "title": "ChatMessageCreate",
+        "type": "object"
+      },
+      "ChatMessageView": {
+        "properties": {
+          "agent_name": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Agent Name"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/ChatAttachmentView"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "content": {
+            "title": "Content",
+            "type": "string"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "role": {
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "role",
+          "content",
+          "created_at"
+        ],
+        "title": "ChatMessageView",
+        "type": "object"
+      },
+      "ChatThreadCreate": {
+        "properties": {
+          "agent_name": {
+            "maxLength": 120,
+            "minLength": 1,
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          }
+        },
+        "required": [
+          "capability",
+          "agent_name"
+        ],
+        "title": "ChatThreadCreate",
+        "type": "object"
+      },
+      "ChatThreadView": {
+        "description": "Read model for a thread. Carries no session, conversation, or owner id.",
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "attachments": {
+            "items": {
+              "$ref": "#/components/schemas/ChatAttachmentView"
+            },
+            "title": "Attachments",
+            "type": "array"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "created_at": {
+            "format": "date-time",
+            "title": "Created At",
+            "type": "string"
+          },
+          "id": {
+            "title": "Id",
+            "type": "string"
+          },
+          "messages": {
+            "items": {
+              "$ref": "#/components/schemas/ChatMessageView"
+            },
+            "title": "Messages",
+            "type": "array"
+          },
+          "updated_at": {
+            "format": "date-time",
+            "title": "Updated At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "id",
+          "capability",
+          "agent_name",
+          "created_at",
+          "updated_at"
+        ],
+        "title": "ChatThreadView",
+        "type": "object"
+      },
       "Citation": {
         "properties": {
           "canonical_url": {
@@ -3297,6 +3499,25 @@
         "title": "ComputeProposal",
         "type": "object"
       },
+      "ConnectorCredentialUpdate": {
+        "properties": {
+          "api_key": {
+            "anyOf": [
+              {
+                "maxLength": 500,
+                "minLength": 1,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Api Key"
+          }
+        },
+        "title": "ConnectorCredentialUpdate",
+        "type": "object"
+      },
       "ConnectorSetting": {
         "properties": {
           "assigned_agents": {
@@ -3320,6 +3541,31 @@
           "category": {
             "title": "Category",
             "type": "string"
+          },
+          "credential_help_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Credential Help Url"
+          },
+          "credential_kind": {
+            "default": "none",
+            "enum": [
+              "none",
+              "api_key"
+            ],
+            "title": "Credential Kind",
+            "type": "string"
+          },
+          "credential_required": {
+            "default": false,
+            "title": "Credential Required",
+            "type": "boolean"
           },
           "data_boundary": {
             "title": "Data Boundary",
@@ -8784,6 +9030,238 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/agent-chat/agents": {
+      "get": {
+        "operationId": "list_chat_agents_api_agent_chat_agents_get",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "capability",
+            "required": true,
+            "schema": {
+              "$ref": "#/components/schemas/Capability"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentChoice"
+                  },
+                  "title": "Response List Chat Agents Api Agent Chat Agents Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "List Chat Agents",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
+    "/api/agent-chat/threads": {
+      "post": {
+        "operationId": "open_chat_thread_api_agent_chat_threads_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatThreadCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatThreadView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Open Chat Thread",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
+    "/api/agent-chat/threads/{thread_id}": {
+      "get": {
+        "operationId": "get_chat_thread_api_agent_chat_threads__thread_id__get",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatThreadView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Get Chat Thread",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
+    "/api/agent-chat/threads/{thread_id}/files": {
+      "post": {
+        "operationId": "upload_chat_file_api_agent_chat_threads__thread_id__files_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "multipart/form-data": {
+              "schema": {
+                "$ref": "#/components/schemas/Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatAttachmentView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Upload Chat File",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
+    "/api/agent-chat/threads/{thread_id}/messages": {
+      "post": {
+        "operationId": "send_chat_message_api_agent_chat_threads__thread_id__messages_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatMessageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ChatMessageView"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Send Chat Message",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
     "/api/agent-studio/agents": {
       "get": {
         "description": "Authorized registry listing of agent summaries within one scope.\n\nDistinct from ``POST /agents`` (create) and from\n``/agents/{id}/workspace`` (full single-agent aggregate): this is the\nread-side registry surface researchers/platform owners use to browse\n*many* existing agents at once -- draft + latest cut version + latest\nrelease status -- with optional ``owner_kind``/``q`` (case-insensitive\ndisplay-name substring) filters and ``limit``/``offset`` pagination.\n\nScoped identically to every other read in this package: ``project_id``\nselects one ``ScopeContext`` (either a real project or, for a caller\nwho is a platform owner, ``PLATFORM_PROJECT_ID`` to browse system-owned\nagents). There is no cross-scope merge -- a caller that wants both\ntheir project's own agents and the system catalog makes two calls, one\nper scope, matching every other scope-partitioned read here.",
@@ -12473,6 +12951,58 @@
           }
         },
         "summary": "Update Connector",
+        "tags": [
+          "connectors"
+        ]
+      }
+    },
+    "/api/connectors/{connector_id}/credential": {
+      "put": {
+        "operationId": "update_connector_credential_api_connectors__connector_id__credential_put",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "connector_id",
+            "required": true,
+            "schema": {
+              "title": "Connector Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ConnectorCredentialUpdate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorSetting"
+                }
+              }
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Update Connector Credential",
         "tags": [
           "connectors"
         ]

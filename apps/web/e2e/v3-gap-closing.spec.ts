@@ -321,7 +321,7 @@ test.describe("Dataset Lab interactions", () => {
 });
 
 test.describe("Institutional Q&A interactions", () => {
-  test("corpus scopes are sent, citations open an evidence dialog, and Work IQ stays disabled", async ({
+  test("shows the Work IQ plugin coming-soon page without retired controls", async ({
     page,
   }) => {
     await waitForWorkspace(page);
@@ -330,31 +330,15 @@ test.describe("Institutional Q&A interactions", () => {
       .first()
       .click();
 
-    const legalHold = page.getByRole("checkbox", { name: /legal hold/i });
-    await expect(legalHold).toBeDisabled();
-    await page
-      .getByRole("checkbox", { name: /research records/i })
-      .uncheck();
-
-    const payload = await runStudioAndCapturePayload(
-      page,
-      "institutional_qa",
-      "Resolve policy answer",
-    );
-    expect(payload.inputs.corpus_scopes).not.toContain("records");
-    expect(payload.inputs.corpus_scopes).not.toContain("legal_hold");
-
-    await page.locator(".inline-citation").first().click();
     await expect(
-      page.getByRole("dialog", { name: /.+/ }).locator("dl.citation-detail-facts"),
+      page.getByRole("heading", { name: "Work IQ", level: 1 }),
     ).toBeVisible();
-    await page.getByLabel("Close evidence detail").click();
-
-    const workIqToggle = page.getByRole("checkbox", {
-      name: /enable work iq readiness signals/i,
-    });
-    await expect(workIqToggle).toBeDisabled();
-    await expect(workIqToggle).not.toBeChecked();
+    await expect(page.getByText("Plugin coming soon")).toBeVisible();
+    await expect(
+      page.getByRole("button", { name: "Resolve policy answer" }),
+    ).toHaveCount(0);
+    await expect(page.getByLabel("Search workspace")).toHaveCount(0);
+    await expect(page.getByLabel(/pending approvals/i)).toHaveCount(0);
   });
 });
 

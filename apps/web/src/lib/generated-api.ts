@@ -4,6 +4,91 @@
  */
 
 export interface paths {
+    "/api/agent-chat/agents": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Chat Agents */
+        get: operations["list_chat_agents_api_agent_chat_agents_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-chat/threads": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Open Chat Thread */
+        post: operations["open_chat_thread_api_agent_chat_threads_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-chat/threads/{thread_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Get Chat Thread */
+        get: operations["get_chat_thread_api_agent_chat_threads__thread_id__get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-chat/threads/{thread_id}/files": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Upload Chat File */
+        post: operations["upload_chat_file_api_agent_chat_threads__thread_id__files_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/agent-chat/threads/{thread_id}/messages": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /** Send Chat Message */
+        post: operations["send_chat_message_api_agent_chat_threads__thread_id__messages_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-studio/agents": {
         parameters: {
             query?: never;
@@ -907,6 +992,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-studio/foundry/context": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Foundry Project Context
+         * @description Return the configured Foundry scope; personal workspace state is irrelevant.
+         */
+        get: operations["get_foundry_project_context_api_agent_studio_foundry_context_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-studio/models": {
         parameters: {
             query?: never;
@@ -1628,6 +1733,20 @@ export interface components {
             environment: components["schemas"]["DeploymentEnvironment"];
             /** Project Id */
             project_id: string;
+        };
+        /**
+         * AgentChoice
+         * @description A deployed agent the caller may talk to for a given capability.
+         */
+        AgentChoice: {
+            /** Description */
+            description: string;
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /** Online */
+            online: boolean;
         };
         /**
          * AgentDraft
@@ -2364,6 +2483,11 @@ export interface components {
             /** Validation Errors */
             validation_errors: string[];
         };
+        /** Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post */
+        Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post: {
+            /** File */
+            file: string;
+        };
         /** Body_upload_library_item_api_library_upload_post */
         Body_upload_library_item_api_library_upload_post: {
             /**
@@ -3036,6 +3160,74 @@ export interface components {
             operation_ref: components["schemas"]["CapabilityOperationRef"];
             policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
         };
+        /** ChatAttachmentView */
+        ChatAttachmentView: {
+            /** Content Type */
+            content_type: string;
+            /** Path */
+            path: string;
+            /** Size Bytes */
+            size_bytes: number;
+            /**
+             * Uploaded At
+             * Format: date-time
+             */
+            uploaded_at: string;
+        };
+        /** ChatMessageCreate */
+        ChatMessageCreate: {
+            /** Text */
+            text: string;
+        };
+        /** ChatMessageView */
+        ChatMessageView: {
+            /** Agent Name */
+            agent_name?: string | null;
+            /** Attachments */
+            attachments?: components["schemas"]["ChatAttachmentView"][];
+            /** Content */
+            content: string;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Role */
+            role: string;
+        };
+        /** ChatThreadCreate */
+        ChatThreadCreate: {
+            /** Agent Name */
+            agent_name: string;
+            capability: components["schemas"]["Capability"];
+        };
+        /**
+         * ChatThreadView
+         * @description Read model for a thread. Carries no session, conversation, or owner id.
+         */
+        ChatThreadView: {
+            /** Agent Name */
+            agent_name: string;
+            /** Attachments */
+            attachments?: components["schemas"]["ChatAttachmentView"][];
+            capability: components["schemas"]["Capability"];
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
+            /** Id */
+            id: string;
+            /** Messages */
+            messages?: components["schemas"]["ChatMessageView"][];
+            /**
+             * Updated At
+             * Format: date-time
+             */
+            updated_at: string;
+        };
         /** Citation */
         Citation: {
             /** Canonical Url */
@@ -3110,6 +3302,19 @@ export interface components {
             capabilities: string[];
             /** Category */
             category: string;
+            /** Credential Help Url */
+            credential_help_url?: string | null;
+            /**
+             * Credential Kind
+             * @default none
+             * @enum {string}
+             */
+            credential_kind: "none" | "api_key";
+            /**
+             * Credential Required
+             * @default false
+             */
+            credential_required: boolean;
             /** Data Boundary */
             data_boundary: string;
             /** Description */
@@ -3684,6 +3889,14 @@ export interface components {
          * @enum {string}
          */
         FoundryAgentType: "hosted" | "prompt" | "unknown";
+        /**
+         * FoundryProjectContext
+         * @description The one configured Foundry project available to this Studio deployment.
+         */
+        FoundryProjectContext: {
+            /** Project Id */
+            project_id: string;
+        };
         /**
          * GateEvidence
          * @description Facts supplied by the actual build/test/smoke systems.
@@ -5513,6 +5726,171 @@ export interface components {
 }
 export type $defs = Record<string, never>;
 export interface operations {
+    list_chat_agents_api_agent_chat_agents_get: {
+        parameters: {
+            query: {
+                capability: components["schemas"]["Capability"];
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentChoice"][];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    open_chat_thread_api_agent_chat_threads_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatThreadCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            201: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatThreadView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_chat_thread_api_agent_chat_threads__thread_id__get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatThreadView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    upload_chat_file_api_agent_chat_threads__thread_id__files_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "multipart/form-data": components["schemas"]["Body_upload_chat_file_api_agent_chat_threads__thread_id__files_post"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatAttachmentView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_chat_message_api_agent_chat_threads__thread_id__messages_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatMessageCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChatMessageView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
     list_agents_api_agent_studio_agents_get: {
         parameters: {
             query: {
@@ -7145,8 +7523,8 @@ export interface operations {
     };
     list_foundry_agents_api_agent_studio_foundry_agents_get: {
         parameters: {
-            query: {
-                project_id: string;
+            query?: {
+                project_id?: string | null;
             };
             header?: never;
             path?: never;
@@ -7170,6 +7548,26 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_foundry_project_context_api_agent_studio_foundry_context_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["FoundryProjectContext"];
                 };
             };
         };

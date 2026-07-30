@@ -14,7 +14,12 @@ import {
 } from "lucide-react";
 import { useState } from "react";
 
-import { testConnector, updateConnector, type WorkspaceData } from "@/lib/api";
+import {
+  testConnector,
+  updateConnector,
+  updateConnectorCredential,
+  type WorkspaceData,
+} from "@/lib/api";
 import type { ConnectorSetting } from "@/lib/types";
 import { formatTime, statusLabel } from "@/components/workspace-views";
 import { EmptyBlock, LoadingBlock } from "@/components/async-state";
@@ -102,6 +107,8 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
   const [connectorQuery, setConnectorQuery] = useState("");
   const [connectorCategory, setConnectorCategory] = useState("All");
   const [busyConnector, setBusyConnector] = useState<string | null>(null);
+  const [credentialDraft, setCredentialDraft] = useState("");
+  const [credentialBusy, setCredentialBusy] = useState(false);
   const [managedConnectorId, setManagedConnectorId] = useState(
     data?.connectors[0]?.id ?? "",
   );
@@ -177,6 +184,30 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
         }),
       )
       .finally(() => setBusyConnector(null));
+  };
+
+  const saveCredential = async (connectorId: string, apiKey: string | null) => {
+    setCredentialBusy(true);
+    setStatus(null);
+    try {
+      await updateConnectorCredential(connectorId, apiKey);
+      await onRefresh();
+      setCredentialDraft("");
+      setStatus({
+        message: apiKey
+          ? "API key saved to the gateway."
+          : "API key cleared; the connector now uses anonymous quota.",
+        tone: "success",
+      });
+    } catch (error: unknown) {
+      setStatus({
+        message:
+          error instanceof Error ? error.message : "Credential update failed.",
+        tone: "error",
+      });
+    } finally {
+      setCredentialBusy(false);
+    }
   };
 
   const runConnectorTest = (connector: ConnectorSetting) => {
@@ -412,6 +443,91 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
                   </div>
                 </dl>
               </div>
+
+              <fieldset className="connector-credential">
+                <legend>Authentication</legend>
+                <dl>
+                  <div>
+                    <dt>Protocol</dt>
+                    <dd>{managedConnector.auth_kind}</dd>
+                  </div>
+                  <div>
+                    <dt>Requirement</dt>
+                    <dd>
+                      {managedConnector.credential_kind === "none"
+                        ? "No credential required"
+                        : managedConnector.credential_required
+                          ? "API key required"
+                          : "API key optional (raises quota)"}
+                    </dd>
+                  </div>
+                </dl>
+                {managedConnector.credential_kind === "none" ? (
+                  <p className="connector-credential-note">
+                    This provider serves public metadata anonymously, so there
+                    is nothing to configure.
+                  </p>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>API key</span>
+                      <input
+                        type="password"
+                        autoComplete="off"
+                        placeholder="Enter a new key to replace the stored one"
+                        aria-label={`API key for ${managedConnector.name}`}
+                        value={credentialDraft}
+                        disabled={credentialBusy}
+                        onChange={(event) =>
+                          setCredentialDraft(event.target.value)
+                        }
+                      />
+                    </label>
+                    <p className="connector-credential-note">
+                      Stored in the API gateway as a secret and never shown
+                      again. Clearing it returns the connector to anonymous
+                      quota.
+                      {managedConnector.credential_help_url ? (
+                        <>
+                          {" "}
+                          <a
+                            href={managedConnector.credential_help_url}
+                            target="_blank"
+                            rel="noreferrer"
+                          >
+                            Where do I get a key?
+                          </a>
+                        </>
+                      ) : null}
+                    </p>
+                    <div className="connector-credential-actions">
+                      <button
+                        type="button"
+                        className="secondary"
+                        disabled={credentialBusy || !credentialDraft.trim()}
+                        onClick={() => {
+                          void saveCredential(
+                            managedConnector.id,
+                            credentialDraft.trim(),
+                          );
+                        }}
+                      >
+                        {credentialBusy ? "Saving…" : "Save key"}
+                      </button>
+                      <button
+                        type="button"
+                        className="ghost"
+                        disabled={credentialBusy}
+                        onClick={() => {
+                          void saveCredential(managedConnector.id, null);
+                        }}
+                      >
+                        Clear key
+                      </button>
+                    </div>
+                  </>
+                )}
+              </fieldset>
 
               <label className="connector-enable-row">
                 <span>

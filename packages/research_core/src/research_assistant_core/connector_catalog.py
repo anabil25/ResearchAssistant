@@ -6,6 +6,23 @@ from dataclasses import dataclass
 from typing import Literal
 
 OperationClass = Literal["read", "create", "update", "delete"]
+CredentialKind = Literal["none", "api_key"]
+
+
+@dataclass(frozen=True, slots=True)
+class ConnectorCredential:
+    kind: CredentialKind
+    required: bool
+    #: Upstream header the gateway injects; empty when no credential applies.
+    header: str = ""
+    #: APIM named value holding the secret, so it never reaches the app store.
+    named_value: str = ""
+    help_url: str = ""
+
+
+NO_CREDENTIAL = ConnectorCredential(kind="none", required=False)
+#: Sentinel stored in the APIM named value while no operator key is configured.
+UNCONFIGURED_CREDENTIAL = "unset"
 
 
 @dataclass(frozen=True, slots=True)
@@ -15,6 +32,11 @@ class ConnectorOperation:
     method: Literal["GET", "POST", "PUT", "PATCH", "DELETE"]
     path: str
     operation_class: OperationClass
+
+    @property
+    def apim_tool_name(self) -> str:
+        """APIM requires tool resource names to be unique across the whole service."""
+        return f"research{self.id[:1].upper()}{self.id[1:]}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -31,6 +53,7 @@ class ConnectorDefinition:
     test_status: str = "ready"
     data_boundary: str = "Public metadata only; query text is sent to the provider."
     probe_query: str = "research reproducibility"
+    credential: ConnectorCredential = NO_CREDENTIAL
     operations: tuple[ConnectorOperation, ...] = ()
 
     @property
@@ -283,6 +306,13 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         auth_kind="API key recommended",
         secret_status="Optional secret not configured",
         test_status="ready_with_key",
+        credential=ConnectorCredential(
+            kind="api_key",
+            required=False,
+            header="x-api-key",
+            named_value="research-semantic-scholar-key",
+            help_url="https://www.semanticscholar.org/product/api",
+        ),
         operations=(_search_operation("semantic_scholar"),),
     ),
 )

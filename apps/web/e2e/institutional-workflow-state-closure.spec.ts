@@ -6,7 +6,6 @@ import { expect, test } from "./fixtures";
 const API_ROOT = "/api/backend/api";
 const WCAG_TAGS = ["wcag2a", "wcag2aa", "wcag21a", "wcag21aa"] as const;
 const WORKSPACE_READY_SELECTOR = ".workbench-shell";
-const POLICY_SCOPE_ORDER = ["irb", "records", "governance"] as const;
 const RUN_CONTROL_NAMES = ["Pause", "Resume", "Retry", "Cancel"] as const;
 
 type StudioName = "institutional_qa" | "orchestration";
@@ -345,32 +344,6 @@ function createStudioRunRecord(
   };
 }
 
-function createInstitutionalAnswer(answer: string) {
-  return {
-    abstained: false,
-    answer,
-    citations: [],
-    conflicts: [],
-    escalation: null,
-    insight: null,
-    run: createStudioRunRecord(
-      "institutional_qa",
-      "completed",
-      "Institutional policy answer",
-    ),
-    scope: "IRB and research compliance",
-    versions: [
-      {
-        effective_date: "2026-01-01",
-        source_id: "policy-irb-2026",
-        status: "effective",
-        title: "IRB protocol guidance",
-        version: "2026.1",
-      },
-    ],
-  };
-}
-
 function defineAutomationStep(
   id: string,
   label: string,
@@ -449,14 +422,6 @@ function createAutomationResult(overrides?: {
     trigger: overrides?.trigger ?? "Manual",
     validation_errors: overrides?.validation_errors ?? [],
   };
-}
-
-async function replaceInstitutionalQuestion(page: Page, prompt: string) {
-  const field = page.getByRole("textbox", { name: "Institutional question" });
-  await field.focus();
-  await page.keyboard.press("Control+a");
-  await page.keyboard.type(prompt);
-  return field;
 }
 
 async function activateWithKeyboard(page: Page, control: Locator, times = 1) {
@@ -598,68 +563,6 @@ test.describe("Institutional and workflow state closure", () => {
   });
 
   test.describe(() => {
-    test("[pw.institutional-answer] keyboard submission enters a loading state before rendering the grounded answer [pw.institutional.question:keyboard][pw.institutional.question:loading]", async ({
-      page,
-    }, testInfo) => {
-      await installWorkspaceFixture(page, createWorkspaceFixture());
-      const runGate = createGate<void>();
-      await page.route(backendMatcher("/studios/institutional_qa/run"), async (route) => {
-        await runGate.wait;
-        await fulfillJson(
-          route,
-          createInstitutionalAnswer(
-            "Disclose generative AI assistance in the protocol narrative whenever it shapes study materials or analysis outputs.",
-          ),
-        );
-      });
-
-      await openView(page, "institutional_qa");
-      await replaceInstitutionalQuestion(
-        page,
-        "When does an IRB protocol need a disclosure about generative AI assistance?",
-      );
-
-      const postStarted = page.waitForRequest(
-        (request) =>
-          request.method() === "POST" &&
-          request.url().includes("/api/studios/institutional_qa/run"),
-      );
-      await page.keyboard.press("Tab");
-      const resolvePolicyAnswer = page.getByRole("button", {
-        name: "Resolve policy answer",
-      });
-      await expect(resolvePolicyAnswer).toBeFocused();
-      await page.keyboard.press("Enter");
-
-      const submission = (await postStarted).postDataJSON() as {
-        objective: string;
-        inputs: { corpus_scopes: string[] };
-      };
-      expect(submission.objective).toContain(
-        "disclosure about generative AI assistance",
-      );
-      expect(submission.inputs.corpus_scopes).toEqual([...POLICY_SCOPE_ORDER]);
-
-      await expect(
-        page.getByRole("button", { name: "Running workflow..." }),
-      ).toBeDisabled();
-      await saveEvidence(page, testInfo, "institutional-question-loading");
-      await expectNoAccessibilityViolations(page);
-
-      runGate.release();
-      await expect(page.getByText("Grounded answer")).toBeVisible();
-      await expect(
-        page.getByRole("heading", {
-          name: /IRB protocol need a disclosure about generative AI assistance/i,
-        }),
-      ).toBeVisible();
-      await expect(
-        page.getByText(
-          /Disclose generative AI assistance in the protocol narrative/i,
-        ),
-      ).toBeVisible();
-    });
-
     test("[pw.workflow-trigger] keyboard selection changes the submitted trigger field before validation runs [pw.workflow.trigger:keyboard]", async ({
       page,
     }, testInfo) => {
@@ -750,43 +653,6 @@ test.describe("Institutional and workflow state closure", () => {
   });
 
   test.describe(() => {
-    test("[pw.institutional-answer] failed submission shows the scoped error banner without clearing the typed prompt [pw.institutional.question:error]", async ({
-      page,
-      releaseDiagnostics,
-    }, testInfo) => {
-      await installWorkspaceFixture(page, createWorkspaceFixture());
-      await page.route(backendMatcher("/studios/institutional_qa/run"), async (route) => {
-        await fulfillJson(
-          route,
-          {
-            detail:
-              "Institutional answer generation failed for the selected policy scope.",
-          },
-          500,
-        );
-      });
-
-      await openView(page, "institutional_qa");
-      releaseDiagnostics.expectConsoleError(/500 \(Internal Server Error\)/);
-      const promptField = page.getByRole("textbox", {
-        name: "Institutional question",
-      });
-      await promptField.fill(
-        "What approval language must be disclosed for automated participant messaging?",
-      );
-      await page.getByRole("button", { name: "Resolve policy answer" }).click();
-
-      await expect(page.locator(".error-banner")).toContainText(
-        "Institutional answer generation failed for the selected policy scope.",
-      );
-      await expect(promptField).toHaveValue(
-        "What approval language must be disclosed for automated participant messaging?",
-      );
-      await expect(page.getByText("Ask from authorized policy")).toBeVisible();
-      await saveEvidence(page, testInfo, "institutional-question-error");
-      await expectNoAccessibilityViolations(page);
-    });
-
     test("[pw.workflow-dry-run] validation failures surface the backend error without leaving the form stuck in a running state [pw.workflow.validate:error]", async ({
       page,
       releaseDiagnostics,

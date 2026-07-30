@@ -14,6 +14,10 @@ import type {
   CapabilityDiscovery,
   CapabilityId,
   CapabilityInstance,
+  ChatAgentChoice,
+  ChatAttachment,
+  ChatMessage,
+  ChatThread,
   ConnectionView,
   ConnectorSetting,
   FoundryAgentInventoryItem,
@@ -245,6 +249,16 @@ export async function updateConnector(
   });
 }
 
+export async function updateConnectorCredential(
+  connectorId: string,
+  apiKey: string | null,
+): Promise<ConnectorSetting> {
+  return apiFetch<ConnectorSetting>(`/connectors/${connectorId}/credential`, {
+    method: "PUT",
+    body: JSON.stringify({ api_key: apiKey }),
+  });
+}
+
 export async function updateSettings(
   settings: ProjectSettings,
 ): Promise<ProjectSettings> {
@@ -287,6 +301,96 @@ export async function uploadLibraryItem(
     );
   }
   return (await response.json()) as { item: LibraryItem; run: RunSummary };
+}
+
+// ---------------------------------------------------------------------------
+// Agent chat — the conversational surface the four capability studios render.
+// Mounted under the same `/api` prefix as every other feature router; see
+// `services/api/src/research_assistant_api/agent_chat.py`.
+// ---------------------------------------------------------------------------
+
+const AGENT_CHAT_BASE = `${API_BASE}/agent-chat`;
+
+export async function listChatAgents(
+  capability: CapabilityId,
+  projectId?: string,
+): Promise<ChatAgentChoice[]> {
+  return backendFetch<ChatAgentChoice[]>(
+    `${AGENT_CHAT_BASE}/agents?capability=${encodeURIComponent(capability)}`,
+    undefined,
+    projectId,
+  );
+}
+
+export async function openChatThread(
+  capability: CapabilityId,
+  agentName: string,
+  projectId?: string,
+): Promise<ChatThread> {
+  return backendFetch<ChatThread>(
+    `${AGENT_CHAT_BASE}/threads`,
+    {
+      method: "POST",
+      body: JSON.stringify({ capability, agent_name: agentName }),
+    },
+    projectId,
+  );
+}
+
+export async function getChatThread(
+  threadId: string,
+  projectId?: string,
+): Promise<ChatThread> {
+  return backendFetch<ChatThread>(
+    `${AGENT_CHAT_BASE}/threads/${encodeURIComponent(threadId)}`,
+    undefined,
+    projectId,
+  );
+}
+
+export async function sendChatMessage(
+  threadId: string,
+  text: string,
+  projectId?: string,
+): Promise<ChatMessage> {
+  return backendFetch<ChatMessage>(
+    `${AGENT_CHAT_BASE}/threads/${encodeURIComponent(threadId)}/messages`,
+    { method: "POST", body: JSON.stringify({ text }) },
+    projectId,
+  );
+}
+
+export async function uploadChatFile(
+  threadId: string,
+  file: File,
+  projectId?: string,
+): Promise<ChatAttachment> {
+  const body = new FormData();
+  body.append("file", file);
+  // `requestHeaders` would force `Content-Type: application/json` and strip the
+  // multipart boundary the browser generates, so this call sets its headers
+  // itself instead of going through `backendFetch`.
+  const response = await fetch(
+    `${AGENT_CHAT_BASE}/threads/${encodeURIComponent(threadId)}/files`,
+    {
+      method: "POST",
+      body,
+      headers: projectId ? { "X-Research-Project-ID": projectId } : undefined,
+    },
+  );
+  if (!response.ok) {
+    const payload = (await response.json().catch(() => null)) as {
+      detail?: string;
+      error?: string;
+    } | null;
+    throw new ApiError(
+      payload?.detail ??
+        payload?.error ??
+        `Research API returned ${response.status}`,
+      response.status,
+    );
+  }
+  return (await response.json()) as ChatAttachment;
 }
 
 // ---------------------------------------------------------------------------

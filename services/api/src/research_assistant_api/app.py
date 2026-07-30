@@ -34,6 +34,8 @@ from research_assistant_core.studio_models import (
 from starlette.concurrency import run_in_threadpool
 from starlette.middleware.base import RequestResponseEndpoint
 
+from research_assistant_api.agent_chat import build_agent_chat_gateway
+from research_assistant_api.agent_chat import router as agent_chat_router
 from research_assistant_api.agent_studio.approval_consumption import StoreBackedApprovalConsumptionPort
 from research_assistant_api.agent_studio.approval_context import StoreBackedApprovalContextResolver
 from research_assistant_api.agent_studio.artifact_bundle_store import build_artifact_bundle_store
@@ -125,6 +127,7 @@ from research_assistant_api.workspace import (
     ApprovalDecision,
     ApprovalRecord,
     ApprovalState,
+    ConnectorCredentialUpdate,
     ConnectorSetting,
     ConnectorUpdate,
     DatasetApprovalDecisionRequest,
@@ -180,6 +183,11 @@ from research_assistant_api.approval_context import (
     compose_approval_context_resolver,
     resolve_approval_context,
 )
+from research_assistant_api.connector_credentials import (
+    ConnectorCredentialError,
+    ConnectorCredentialNotConfiguredError,
+    set_connector_api_key,
+)
 from research_assistant_api.public_research import retrieve_public_metadata
 from research_assistant_api.telemetry import (
     configure_telemetry,
@@ -214,6 +222,7 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.research = build_research_service(settings)
     application.state.studios = StudioService(application.state.research)
     application.state.hosted = HostedAgentGateway(settings)
+    application.state.agent_chat = build_agent_chat_gateway(settings)
     application.state.workspace_projects = build_workspace_project_provider(settings)
     if not settings.cosmos_endpoint:
         # Compatibility alias for local test hooks; every request still
@@ -398,6 +407,7 @@ app.add_middleware(
 )
 
 app.include_router(agent_studio_router)
+app.include_router(agent_chat_router)
 
 
 def custom_openapi() -> dict[str, Any]:
@@ -968,6 +978,41 @@ def update_connector(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if connector is None:
         raise HTTPException(status_code=404, detail="Connector not found.")
+    return connector
+
+
+@app.put(
+    "/api/connectors/{connector_id}/credential",
+    response_model=ConnectorSetting,
+    tags=["connectors"],
+)
+def update_connector_credential(
+    connector_id: str,
+    payload: ConnectorCredentialUpdate,
+    request: Request,
+) -> ConnectorSetting:
+    store, _ = _workspace_access(
+        request,
+        required_groups={"research-admins"},
+    )
+    connector = next(
+        (item for item in store.connectors() if item.id == connector_id),
+        None,
+    )
+    if connector is None:
+        raise HTTPException(status_code=404, detail="Connector not found.")
+    definition = connector_definition(connector_id)
+    if definition.credential.kind == "none":
+        raise HTTPException(
+            status_code=422,
+            detail="This connector does not accept a credential.",
+        )
+    try:
+        set_connector_api_key(definition.credential.named_value, payload.api_key)
+    except ConnectorCredentialNotConfiguredError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ConnectorCredentialError as exc:
+        raise HTTPException(status_code=502, detail=str(exc)) from exc
     return connector
 
 

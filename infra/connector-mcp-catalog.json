@@ -1,6 +1,7 @@
 [
   {
     "apiId": "research-pubmed-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Biomedical citations and abstracts from NCBI.",
     "displayName": "PubMed MCP server",
     "id": "pubmed",
@@ -8,18 +9,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "pubmedSearch",
+        "name": "researchPubmedSearch",
         "operationId": "pubmedSearch"
       },
       {
         "displayName": "lookup",
-        "name": "pubmedLookup",
+        "name": "researchPubmedLookup",
         "operationId": "pubmedLookup"
       }
     ]
   },
   {
     "apiId": "research-europe-pmc-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Life-sciences publications, grants, and links.",
     "displayName": "Europe PMC MCP server",
     "id": "europe_pmc",
@@ -27,18 +29,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "europePmcSearch",
+        "name": "researchEuropePmcSearch",
         "operationId": "europePmcSearch"
       },
       {
         "displayName": "lookup",
-        "name": "europePmcLookup",
+        "name": "researchEuropePmcLookup",
         "operationId": "europePmcLookup"
       }
     ]
   },
   {
     "apiId": "research-crossref-mcp-v1",
+    "credentialNamedValue": "",
     "description": "DOI metadata and scholarly work resolution.",
     "displayName": "Crossref MCP server",
     "id": "crossref",
@@ -46,18 +49,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "crossrefSearch",
+        "name": "researchCrossrefSearch",
         "operationId": "crossrefSearch"
       },
       {
         "displayName": "lookup",
-        "name": "crossrefLookup",
+        "name": "researchCrossrefLookup",
         "operationId": "crossrefLookup"
       }
     ]
   },
   {
     "apiId": "research-openalex-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Open catalog of works, people, venues, and institutions.",
     "displayName": "OpenAlex MCP server",
     "id": "openalex",
@@ -65,18 +69,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "openalexSearch",
+        "name": "researchOpenalexSearch",
         "operationId": "openalexSearch"
       },
       {
         "displayName": "lookup",
-        "name": "openalexLookup",
+        "name": "researchOpenalexLookup",
         "operationId": "openalexLookup"
       }
     ]
   },
   {
     "apiId": "research-arxiv-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Preprint metadata for supported disciplines.",
     "displayName": "arXiv MCP server",
     "id": "arxiv",
@@ -84,18 +89,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "arxivSearch",
+        "name": "researchArxivSearch",
         "operationId": "arxivSearch"
       },
       {
         "displayName": "lookup",
-        "name": "arxivLookup",
+        "name": "researchArxivLookup",
         "operationId": "arxivLookup"
       }
     ]
   },
   {
     "apiId": "research-clinical-trials-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Clinical study records from the U.S. NLM.",
     "displayName": "ClinicalTrials.gov MCP server",
     "id": "clinical_trials",
@@ -103,18 +109,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "clinicalTrialsSearch",
+        "name": "researchClinicalTrialsSearch",
         "operationId": "clinicalTrialsSearch"
       },
       {
         "displayName": "lookup",
-        "name": "clinicalTrialsLookup",
+        "name": "researchClinicalTrialsLookup",
         "operationId": "clinicalTrialsLookup"
       }
     ]
   },
   {
     "apiId": "research-grants-gov-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Authoritative U.S. federal opportunity records.",
     "displayName": "Grants.gov MCP server",
     "id": "grants_gov",
@@ -122,13 +129,14 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "grantsGovSearch",
+        "name": "researchGrantsGovSearch",
         "operationId": "grantsGovSearch"
       }
     ]
   },
   {
     "apiId": "research-nih-reporter-mcp-v1",
+    "credentialNamedValue": "",
     "description": "NIH funded-project and investigator metadata.",
     "displayName": "NIH RePORTER MCP server",
     "id": "nih_reporter",
@@ -136,13 +144,14 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "nihReporterSearch",
+        "name": "researchNihReporterSearch",
         "operationId": "nihReporterSearch"
       }
     ]
   },
   {
     "apiId": "research-datacite-mcp-v1",
+    "credentialNamedValue": "",
     "description": "DOI metadata for datasets and research outputs.",
     "displayName": "DataCite MCP server",
     "id": "datacite",
@@ -150,18 +159,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "dataciteSearch",
+        "name": "researchDataciteSearch",
         "operationId": "dataciteSearch"
       },
       {
         "displayName": "lookup",
-        "name": "dataciteLookup",
+        "name": "researchDataciteLookup",
         "operationId": "dataciteLookup"
       }
     ]
   },
   {
     "apiId": "research-orcid-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Public researcher identifier records.",
     "displayName": "ORCID MCP server",
     "id": "orcid",
@@ -169,13 +179,14 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "orcidSearch",
+        "name": "researchOrcidSearch",
         "operationId": "orcidSearch"
       }
     ]
   },
   {
     "apiId": "research-ror-mcp-v1",
+    "credentialNamedValue": "",
     "description": "Open identifiers for research organizations.",
     "displayName": "ROR MCP server",
     "id": "ror",
@@ -183,18 +194,19 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "rorSearch",
+        "name": "researchRorSearch",
         "operationId": "rorSearch"
       },
       {
         "displayName": "lookup",
-        "name": "rorLookup",
+        "name": "researchRorLookup",
         "operationId": "rorLookup"
       }
     ]
   },
   {
     "apiId": "research-semantic-scholar-mcp-v1",
+    "credentialNamedValue": "research-semantic-scholar-key",
     "description": "Paper and citation graph metadata.",
     "displayName": "Semantic Scholar MCP server",
     "id": "semantic_scholar",
@@ -202,7 +214,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "semanticScholarSearch",
+        "name": "researchSemanticScholarSearch",
         "operationId": "semanticScholarSearch"
       }
     ]

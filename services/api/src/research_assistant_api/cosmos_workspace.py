@@ -22,6 +22,7 @@ from research_assistant_api.workspace import (
     ApprovalDecision,
     ApprovalRecord,
     ApprovalState,
+    ChatThread,
     ConnectorSetting,
     ConnectorUpdate,
     DatasetApprovalAuditEntry,
@@ -328,6 +329,10 @@ class CosmosWorkspaceStore(WorkspaceStore):
         if dataset_approval_documents:
             self._reload_dataset_state(dataset_approval_documents)
 
+        for document in self._query(self._runs_container, "chat_thread"):
+            thread = ChatThread.model_validate(document["payload"])
+            self._chat_threads[thread.id] = thread
+
     def _persist_settings(self, settings: ProjectSettings) -> None:
         self._projects_container.upsert_item(
             {
@@ -386,6 +391,23 @@ class CosmosWorkspaceStore(WorkspaceStore):
                 "payload": approval.model_dump(mode="json"),
             }
         )
+
+    def _persist_chat_thread(self, thread: ChatThread) -> None:
+        self._runs_container.upsert_item(
+            {
+                "id": f"chat-thread::{thread.id}",
+                "documentType": "chat_thread",
+                "tenantId": self.tenant_id,
+                "projectId": thread.project_id,
+                "tenantRunKey": f"{self.tenant_id}|{thread.id}",
+                "payload": thread.model_dump(mode="json"),
+            }
+        )
+
+    def save_chat_thread(self, thread: ChatThread) -> ChatThread:
+        record = super().save_chat_thread(thread)
+        self._persist_chat_thread(record)
+        return record
 
     def _persist_dataset_approval(
         self,

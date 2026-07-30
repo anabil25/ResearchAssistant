@@ -22,6 +22,8 @@ function connector(overrides: Partial<ConnectorSetting> = {}): ConnectorSetting 
     category: "Literature",
     description: "Biomedical citations and abstracts.",
     auth_kind: "None",
+    credential_kind: "none",
+    credential_required: false,
     secret_status: "Not required",
     enabled: true,
     test_status: "ready",

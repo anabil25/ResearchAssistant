@@ -211,6 +211,8 @@ function connector(
     category: assignedAgents.includes("grant") ? "Funding" : "Literature",
     description: `${name} deterministic state fixture.`,
     auth_kind: "None",
+    credential_kind: "none",
+    credential_required: false,
     secret_status: "Not required",
     enabled: true,
     test_status: "ready",

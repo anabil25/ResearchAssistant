@@ -56,7 +56,9 @@ FOUNDRY_CONNECTION_API_VERSION = "2025-04-01-preview"
 APIM_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
 CONNECTOR_API_ID = "research-connectors-v1"
 CONNECTOR_MCP_TOOLS_PATH = ROOT / "infra" / "connector-mcp-tools.json"
-APIM_TOOL_RETRY_DELAYS = (0, 5, 10, 20, 30, 60)
+# A tool write that fails twice is a contract defect, not a transient fault.
+APIM_TOOL_RETRY_DELAYS = (0, 5)
+APIM_TOOL_VERIFY_DELAYS = (0, 5, 15)
 # The memory store API is versioned separately from the agents API.
 FOUNDRY_MEMORY_API_VERSION = "2025-11-15-preview"
 MEMORY_STORE_NAME = "research_shared_memory"
@@ -205,7 +207,12 @@ def connector_mcp_tool_catalog() -> tuple[dict[str, str], ...]:
         identities.add(identity)
         tools.append(tool)
     expected = {
-        (connector.apim_mcp_api_id, operation.id, operation.mcp_tool_name, operation.id)
+        (
+            connector.apim_mcp_api_id,
+            operation.apim_tool_name,
+            operation.mcp_tool_name,
+            operation.id,
+        )
         for connector in connector_definitions()
         for operation in connector.operations
         if operation.operation_class != "delete"
@@ -295,11 +302,11 @@ def configure_connector_mcp_tools(
         )
 
     last_missing: dict[str, list[str]] = {}
-    for attempt, delay in enumerate(APIM_TOOL_RETRY_DELAYS, start=1):
+    for attempt, delay in enumerate(APIM_TOOL_VERIFY_DELAYS, start=1):
         if delay:
             print(
                 f"Waiting {delay}s for APIM MCP tool inventory "
-                f"({attempt}/{len(APIM_TOOL_RETRY_DELAYS)})."
+                f"({attempt}/{len(APIM_TOOL_VERIFY_DELAYS)})."
             )
             time.sleep(delay)
         missing: dict[str, list[str]] = {}
@@ -878,7 +885,7 @@ def _toolbox_json_request(
 
 def _assert_mcp_success(payload: dict[str, Any], operation: str) -> dict[str, Any]:
     if "error" in payload:
-        raise RuntimeError(f"Foundry Toolbox MCP {operation} failed")
+        raise RuntimeError(f"Foundry Toolbox MCP {operation} failed: {payload['error']}")
     result = payload.get("result")
     if not isinstance(result, dict):
         raise RuntimeError(f"Foundry Toolbox MCP {operation} returned no result")

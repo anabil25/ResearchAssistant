@@ -32,6 +32,50 @@ export type ProjectSummary = components["schemas"]["ProjectSummary"];
 export type ProjectSettings = components["schemas"]["ProjectSettings"];
 export type AgentSetting = components["schemas"]["AgentSetting"];
 
+/**
+ * Agent chat contract (`/api/agent-chat`). Hand-written rather than generated
+ * because `generated-api.ts` is regenerated from a committed
+ * `packages/contracts/openapi.json` snapshot; these mirror the response models
+ * in `services/api/src/research_assistant_api/agent_chat.py` and will collapse
+ * into generated types on the next contract export.
+ *
+ * Note what is deliberately absent: the Foundry conversation id, session id,
+ * isolation key, and owner principal never cross this boundary. The browser
+ * holds only `id`, so it cannot bind itself to another user's sandbox.
+ */
+export interface ChatAgentChoice {
+  name: string;
+  label: string;
+  description: string;
+  online: boolean;
+}
+
+export interface ChatAttachment {
+  path: string;
+  size_bytes: number;
+  content_type: string;
+  uploaded_at: string;
+}
+
+export interface ChatMessage {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+  agent_name: string | null;
+  attachments: ChatAttachment[];
+}
+
+export interface ChatThread {
+  id: string;
+  capability: CapabilityId;
+  agent_name: string;
+  created_at: string;
+  updated_at: string;
+  messages: ChatMessage[];
+  attachments: ChatAttachment[];
+}
+
 export type FoundryAgentType = "hosted" | "prompt" | "unknown";
 
 export interface FoundryAgentInventoryItem {

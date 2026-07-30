@@ -401,12 +401,20 @@ class ConnectorSetting(BaseModel):
     terms_url: HttpUrl
     data_boundary: str
     capabilities: list[str]
+    credential_kind: Literal["none", "api_key"] = "none"
+    credential_required: bool = False
+    credential_help_url: str | None = None
     operations: list[str] = Field(default_factory=list)
 
 
 class ConnectorUpdate(BaseModel):
     enabled: bool
     assigned_agents: list[str]
+
+
+class ConnectorCredentialUpdate(BaseModel):
+    #: ``None`` clears the stored key and returns the connector to anonymous quota.
+    api_key: str | None = Field(default=None, min_length=1, max_length=500)
 
 
 class AgentSetting(BaseModel):
@@ -417,6 +425,48 @@ class AgentSetting(BaseModel):
     web_access: str
     workflow_steps: list[str]
     deployment: str
+
+
+class ChatAttachment(BaseModel):
+    """A file uploaded into the Foundry hosted-agent session filesystem."""
+
+    path: str = Field(min_length=1, max_length=256)
+    size_bytes: int = Field(ge=0)
+    content_type: str = Field(min_length=1, max_length=160)
+    uploaded_at: datetime
+
+
+class ChatMessage(BaseModel):
+    id: str
+    role: Literal["user", "assistant"]
+    content: str
+    created_at: datetime
+    agent_name: str | None = None
+    attachments: list[ChatAttachment] = Field(default_factory=list)
+
+
+class ChatThread(BaseModel):
+    """Server-owned binding between a browser chat and a Foundry conversation.
+
+    ``conversation_id`` and ``session_id`` are never accepted from a client;
+    the browser only ever holds ``id``, and the owning principal is re-checked
+    on every turn so one project member cannot resume another's session
+    sandbox or read the files uploaded into it.
+    """
+
+    id: str
+    project_id: str
+    tenant_id: str
+    capability: Capability
+    agent_name: str
+    owner_principal_id: str
+    conversation_id: str
+    session_id: str
+    isolation_key: str
+    created_at: datetime
+    updated_at: datetime
+    messages: list[ChatMessage] = Field(default_factory=list)
+    attachments: list[ChatAttachment] = Field(default_factory=list)
 
 
 class ProjectSettings(BaseModel):
@@ -587,6 +637,7 @@ class WorkspaceStore:
             description=project_description,
         )
         self._agents = _seed_agents()
+        self._chat_threads: dict[str, ChatThread] = {}
 
     def summary(self) -> WorkspaceSummary:
         with self._lock:
@@ -1369,6 +1420,23 @@ class WorkspaceStore:
         with self._lock:
             return deepcopy(self._agents)
 
+    def chat_thread(self, thread_id: str, *, owner_principal_id: str) -> ChatThread | None:
+        """Return a thread only to the principal that opened it."""
+        with self._lock:
+            record = self._chat_threads.get(thread_id)
+            if record is None or record.owner_principal_id != owner_principal_id:
+                return None
+            return deepcopy(record)
+
+    def save_chat_thread(self, thread: ChatThread) -> ChatThread:
+        with self._lock:
+            existing = self._chat_threads.get(thread.id)
+            if existing is not None and existing.owner_principal_id != thread.owner_principal_id:
+                raise ValueError("A chat thread cannot change owner.")
+            record = thread.model_copy(deep=True, update={"updated_at": utc_now()})
+            self._chat_threads[thread.id] = record
+            return deepcopy(record)
+
     def settings(self) -> ProjectSettings:
         with self._lock:
             return deepcopy(self._settings)
@@ -1644,6 +1712,9 @@ def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
         terms_url=HttpUrl(definition.terms_url),
         data_boundary=definition.data_boundary,
         capabilities=list(definition.capabilities),
+        credential_kind=definition.credential.kind,
+        credential_required=definition.credential.required,
+        credential_help_url=definition.credential.help_url or None,
         operations=[
             operation.mcp_tool_name
             for operation in definition.operations

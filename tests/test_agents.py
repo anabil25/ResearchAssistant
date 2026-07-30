@@ -52,6 +52,13 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
         if has_toolbox_binding:
             with pytest.raises(ConfigurationError, match="Toolbox endpoint"):
                 tools_for_profile(profile)
+        elif profile.runtime_requirements.session_files:
+            # Reading chat attachments out of the agent's own sandbox is a
+            # local, in-process read, so it needs no Toolbox endpoint.
+            assert [tool.name for tool in tools_for_profile(profile)] == [
+                "list_session_files",
+                "read_session_file",
+            ]
         else:
             assert tools_for_profile(profile) == []
     assert len({profile.output_contract for profile in profiles}) == len(profiles)
@@ -755,7 +762,12 @@ def test_missing_toolbox_never_falls_back_to_web_search() -> None:
             with pytest.raises(ConfigurationError, match="Toolbox"):
                 tools_for_profile(profile, FakeClient())
         else:
-            assert tools_for_profile(profile, FakeClient()) == []
+            # Session-file readers are local tools; nothing here may silently
+            # become a web search when the Toolbox is absent.
+            assert all(
+                tool.name in {"list_session_files", "read_session_file"}
+                for tool in tools_for_profile(profile, FakeClient())
+            )
 
 
 def test_toolbox_bindings_match_deployed_operation_names() -> None:

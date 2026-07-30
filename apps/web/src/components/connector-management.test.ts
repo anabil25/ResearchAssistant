@@ -17,6 +17,8 @@ function connector(
     category: "Literature",
     description: "Public scholarly metadata.",
     auth_kind: "None",
+    credential_kind: "none",
+    credential_required: false,
     secret_status: "Not required",
     enabled: true,
     test_status: "untested",

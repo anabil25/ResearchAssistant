@@ -816,6 +816,7 @@ export function ResearchWorkbench() {
               workflow={workflow}
               onRun={executeStudio}
               data={data}
+              projectId={activeProjectId}
               onRefresh={refresh}
               onNavigateToRun={navigateToRun}
             />

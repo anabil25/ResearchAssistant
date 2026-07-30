@@ -28,7 +28,7 @@ def test_generated_connector_mcp_catalog_matches_governed_operations() -> None:
         tools = by_id[connector.id]["tools"]
         assert tools == [
             {
-                "name": operation.mcp_tool_name,
+                "name": operation.apim_tool_name,
                 "displayName": operation.mcp_tool_name,
                 "operationId": operation.id,
             }
@@ -42,7 +42,7 @@ def test_generated_connector_mcp_tools_cover_every_non_delete_operation() -> Non
     expected = [
         {
             "apiId": connector.apim_mcp_api_id,
-            "name": operation.mcp_tool_name,
+            "name": operation.apim_tool_name,
             "displayName": operation.mcp_tool_name,
             "description": connector.description,
             "operationId": operation.id,
@@ -53,6 +53,12 @@ def test_generated_connector_mcp_tools_cover_every_non_delete_operation() -> Non
     ]
 
     assert generated == expected
+
+
+def test_generated_connector_mcp_tool_names_are_unique_across_the_service() -> None:
+    names = [tool["name"] for tool in connector_mcp_tools()]
+
+    assert len(names) == len(set(names))
 
 
 def test_generated_specialist_toolboxes_include_only_assigned_connectors() -> None:
@@ -95,8 +101,9 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "output connectorMcpSubscriptionId string" in module
     assert "validate-azure-ad-token" in module
     assert "validate-parameters" in module
-    assert "rate-limit-by-key" in module
-    assert 'counter-key="@(context.Subscription.Id)"' in module
+    # Rate limiting throttles Toolbox tool enumeration across every MCP server at once.
+    assert "rate-limit-by-key" not in module
+    assert '<headers specified-parameter-action="ignore" unspecified-parameter-action="ignore" />' in module
     assert "__APIM_PRINCIPAL_ID__" in module
     mcp_policy = module.split("var mcpPolicyTemplate = '''", maxsplit=1)[1].split(
         "'''",
@@ -108,7 +115,7 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
         "resource sourceConnectorMcpPolicies ",
         maxsplit=1,
     )[0]
-    assert "subscriptionRequired: true" in source_mcps
+    assert "subscriptionRequired: false" in source_mcps
     assert "context.Response.Body" not in mcp_policy
     assert "connectorBackendUrl" not in module
     assert "connector-adapter-openapi.json" not in module

@@ -12,6 +12,10 @@ param logAnalyticsWorkspaceId string
 
 var connectorOpenApi = loadTextContent('../../infra/provider-specs/authored/research_connectors.json')
 var connectorMcpDefinitions = loadJsonContent('../../infra/connector-mcp-catalog.json')
+var connectorCredentialNames = filter(
+  map(connectorMcpDefinitions, connector => connector.credentialNamedValue),
+  name => !empty(name)
+)
 var connectorOperationPolicies = loadJsonContent('../../infra/connector-operation-policies.json')
 var connectorApiId = 'research-connectors-v1'
 var connectorMcpProductId = 'research-agent-tools'
@@ -32,8 +36,9 @@ var connectorPolicyTemplate = '''
         </claim>
       </required-claims>
     </validate-azure-ad-token>
-    <rate-limit-by-key calls="60" renewal-period="60" counter-key="@(context.Variables.GetValueOrDefault&lt;Jwt&gt;(&quot;validated-token&quot;).Claims.GetValueOrDefault(&quot;appid&quot;, &quot;unknown&quot;))" />
-    <validate-parameters specified-parameter-action="prevent" unspecified-parameter-action="prevent" errors-variable-name="connector-validation-errors" />
+    <validate-parameters specified-parameter-action="prevent" unspecified-parameter-action="prevent" errors-variable-name="connector-validation-errors">
+      <headers specified-parameter-action="ignore" unspecified-parameter-action="ignore" />
+    </validate-parameters>
   </inbound>
   <backend>
     <base />
@@ -50,7 +55,6 @@ var mcpPolicyTemplate = '''
 <policies>
   <inbound>
     <base />
-    <rate-limit-by-key calls="30" renewal-period="60" counter-key="@(context.Subscription.Id)" />
     <authentication-managed-identity resource="__ARM_AUDIENCE__" />
   </inbound>
   <backend>
@@ -145,6 +149,43 @@ resource connectorContact 'Microsoft.ApiManagement/service/namedValues@2024-05-0
   }
 }
 
+resource connectorCredentials 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [
+  for credential in connectorCredentialNames: {
+    parent: apiManagement
+    name: credential
+    properties: {
+      displayName: credential
+      // Seeded unconfigured; operators set the real key from Settings so it never lands in IaC or azd env.
+      value: 'unset'
+      secret: true
+      tags: [
+        'connector'
+      ]
+    }
+  }
+]
+
+// Scoped to the individual named values so the API can rotate connector keys and nothing else.
+resource connectorCredentialWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
+  for (credential, index) in connectorCredentialNames: {
+    scope: connectorCredentials[index]
+    name: guid(
+      apiManagement.id,
+      credential,
+      apiPrincipalId,
+      '312a565d-c81f-4fd8-895a-4e21e48d571c'
+    )
+    properties: {
+      principalId: apiPrincipalId
+      principalType: 'ServicePrincipal'
+      roleDefinitionId: subscriptionResourceId(
+        'Microsoft.Authorization/roleDefinitions',
+        '312a565d-c81f-4fd8-895a-4e21e48d571c'
+      )
+    }
+  }
+]
+
 resource connectorApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apiManagement
   name: connectorApiId
@@ -182,6 +223,7 @@ resource connectorPolicies 'Microsoft.ApiManagement/service/apis/operations/poli
     }
     dependsOn: [
       connectorContact
+      connectorCredentials
     ]
   }
 ]
@@ -198,7 +240,7 @@ resource sourceConnectorMcps 'Microsoft.ApiManagement/service/apis@2025-09-01-pr
       protocols: [
         'https'
       ]
-      subscriptionRequired: true
+      subscriptionRequired: false
     }
     dependsOn: [
       connectorApi

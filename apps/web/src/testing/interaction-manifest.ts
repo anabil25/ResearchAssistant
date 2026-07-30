@@ -89,56 +89,6 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     testIds: ["pw.route-state", "jest.primary-navigation"],
   },
   {
-    id: "shell.search.open",
-    surface: "Shell",
-    control: "Search workspace and Ctrl/Cmd+K",
-    behavior: "Opens the command palette, traps focus, and focuses the query.",
-    baseline: "functional-uncovered",
-    milestone: "M1",
-    states: ["ready", "keyboard", "open", "mobile"],
-    testIds: ["pw.command-palette"],
-  },
-  {
-    id: "shell.search.query",
-    surface: "Shell",
-    control: "Workspace search query",
-    behavior: "Filters authorized routes and records with empty and no-result states.",
-    baseline: "functional-uncovered",
-    milestone: "M1",
-    states: ["ready", "typing", "empty", "no-results"],
-    testIds: ["pw.command-palette"],
-  },
-  {
-    id: "shell.search.select-result",
-    surface: "Shell",
-    control: "Command result",
-    behavior: "Navigates with pointer or keyboard and closes the palette.",
-    baseline: "functional-uncovered",
-    milestone: "M1",
-    states: ["ready", "keyboard", "selected"],
-    testIds: ["pw.command-palette"],
-  },
-  {
-    id: "shell.search.close",
-    surface: "Shell",
-    control: "Close search and Escape",
-    behavior: "Closes the dialog and restores focus to the trigger.",
-    baseline: "functional-uncovered",
-    milestone: "M1",
-    states: ["open", "keyboard", "closed"],
-    testIds: ["pw.command-palette"],
-  },
-  {
-    id: "shell.approvals.open",
-    surface: "Shell",
-    control: "Pending approvals notification",
-    behavior: "Navigates to Runs with the pending approval filter and count.",
-    baseline: "functional-uncovered",
-    milestone: "M9",
-    states: ["none", "pending", "keyboard"],
-    testIds: ["pw.approval-notification"],
-  },
-  {
     id: "studio.run-evidence",
     surface: "Studio",
     control: "Inline run evidence",
@@ -745,66 +695,6 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
     testIds: ["jest.dataset-plan", "pw.dataset-upload"],
   },
   {
-    id: "institutional.corpora",
-    surface: "Institutional",
-    control: "Authorized corpus checkboxes",
-    behavior: "Sends selected authorized corpora as part of the run request and keeps the legal-hold corpus locked.",
-    baseline: "functional-covered",
-    milestone: "M7",
-    // Evidence: studio-components.tsx ~L2282-2292 — CORPUS_SCOPES is a hardcoded
-    // 4-item array always rendered in full, so "empty" has no reachable code path.
-    // There is no per-checkbox error variable (only the studio-level StudioError),
-    // so "error" is trimmed too.
-    states: ["selected", "unselected", "locked"],
-    testIds: ["jest.institutional-corpora", "pw.institutional-corpora"],
-  },
-  {
-    id: "institutional.work-iq",
-    surface: "Institutional",
-    control: "Work IQ readiness and consent",
-    behavior: "Shows an honest, disabled, default-off readiness panel; this workspace never claims Work IQ is configured or enabled.",
-    baseline: "functional-covered",
-    milestone: "M7",
-    // Corrected from a 5-state aspirational list to the single state this workspace can
-    // actually reach: studio-components.tsx (~2507-2535) renders the Work IQ toggle as
-    // permanently `checked={false}` + `disabled`, driven by no prop or data path. The
-    // other four states (admin-consent-required/user-consent-required/ready/
-    // unsupported-network) have no code path that can ever set them, matching this
-    // interaction's own `behavior` text above. Declaring them would make the state
-    // contract unsatisfiable by design, not a real coverage gap.
-    states: ["unconfigured"],
-    testIds: ["jest.work-iq-readiness", "pw.work-iq-readiness"],
-  },
-  {
-    id: "institutional.question",
-    surface: "Institutional",
-    control: "Institutional question",
-    behavior: "Edits and submits a scoped question.",
-    baseline: "functional-covered",
-    milestone: "M7",
-    // Evidence: studio-components.tsx ~L2404-2412 — a plain <textarea> paired with
-    // `<RunButton running={running}>` (no `disabled` prop passed), so "disabled" has
-    // no reachable code path. "loading"/"error"/"keyboard" (typing + Enter/submit)
-    // remain reachable through the same onRun submit path as every other studio.
-    states: ["ready", "keyboard", "loading", "success", "error"],
-    testIds: ["pw.institutional-answer"],
-  },
-  {
-    id: "institutional.evidence.open",
-    surface: "Institutional",
-    control: "Inline citation buttons",
-    behavior: "Opens a dialog with the exact citation title, section, page, quote, checksum, and license.",
-    baseline: "functional-covered",
-    milestone: "M7",
-    // Evidence: studio-components.tsx ~L2445-2588 — the citation modal renders
-    // directly from the already-available `Citation` object passed via
-    // `setSelectedCitation`; there is no fetch, no access-control flag, and no
-    // version-supersession concept anywhere in this dialog, so
-    // unavailable/superseded/permission-denied have no reachable code path.
-    states: ["ready", "open"],
-    testIds: ["jest.institutional-evidence", "pw.institutional-evidence"],
-  },
-  {
     id: "workflow.template",
     surface: "Workflow",
     control: "Workflow template cards",
@@ -1364,10 +1254,9 @@ function classifyState(name: string): CoverageStateKind {
  * tablet 834, mobile 390):
  *
  *  - `@media (max-width: 900px)` restyles `.project-rail`,
- *    `.mobile-menu-button`, `.mobile-scrim` and `.topbar`/`.search-button`
- *    -- the navigation rail becomes a drawer opened by a button that does
- *    not exist at desktop width, and the search affordance changes shape.
- *    Applies to tablet (834) and mobile.
+ *    `.mobile-menu-button`, `.mobile-scrim`, and `.topbar` -- the navigation
+ *    rail becomes a drawer opened by a button that does not exist at desktop
+ *    width. Applies to tablet (834) and mobile.
  *  - `@media (max-width: 680px)` further restyles `.topbar` and its
  *    controls. Applies to mobile only.
  *
@@ -1389,11 +1278,6 @@ const VIEWPORT_SENSITIVE_INTERACTION_IDS: ReadonlySet<string> = new Set([
   "shell.navigation.primary-routes",
   "shell.navigation.open-mobile",
   "shell.navigation.close-mobile",
-  "shell.search.open",
-  "shell.search.close",
-  "shell.search.query",
-  "shell.search.select-result",
-  "shell.approvals.open",
 ]);
 
 const DESKTOP_ONLY_VIEWPORTS = ["desktop"] as const;

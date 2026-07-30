@@ -30,7 +30,7 @@ async function selectWorkspaceRoute(page: Page, route: string) {
   }, route);
 }
 
-test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] captures core and critical states [pw.literature.protocol.run:loading][pw.literature.protocol.run:error][pw.literature.screen.tab:empty]", async ({
+test("[pw.literature-run] captures core and critical states [pw.literature.protocol.run:loading][pw.literature.protocol.run:error][pw.literature.screen.tab:empty]", async ({
   page,
   releaseDiagnostics,
 }, testInfo) => {
@@ -104,13 +104,9 @@ test("[pw.literature-run] [pw.institutional-corpora] [pw.work-iq-readiness] capt
     "true",
   );
   await expect(
-    page.getByRole("checkbox", { name: /legal hold/i }),
-  ).toBeDisabled();
-  await expect(
-    page.getByRole("checkbox", {
-      name: /enable work iq readiness signals/i,
-    }),
-  ).toBeDisabled();
+    page.getByRole("heading", { name: "Work IQ", level: 1 }),
+  ).toBeVisible();
+  await expect(page.getByText("Plugin coming soon")).toBeVisible();
   await expectAccessible(page);
   await capture(page, testInfo, STATE_SCREENSHOT_IDS[3]);
 });

@@ -26,7 +26,10 @@ describe("backend proxy route", () => {
     process.env = originalEnv;
   });
 
-  it("forwards allowlisted GET requests without client query data and preserves upstream responses", async () => {
+  // The query string is forwarded, not dropped: `getCapabilityDiscovery`
+  // (`?project_id=`), `forkAgent` (`?version=`) and the agent-chat agent
+  // catalog all carry required filters there.
+  it("forwards allowlisted GET requests with their query string and preserves upstream responses", async () => {
     process.env.INTERNAL_API_URL = "https://backend.example.internal/root/";
     fetchMock.mockResolvedValue(
       new Response(JSON.stringify({ detail: "Temporarily unavailable" }), {
@@ -51,7 +54,7 @@ describe("backend proxy route", () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0];
     expect(String(url)).toBe(
-      "https://backend.example.internal/root/api/workspace",
+      "https://backend.example.internal/root/api/workspace?mode=full&mode=delta",
     );
     expect(init).toMatchObject({
       method: "GET",

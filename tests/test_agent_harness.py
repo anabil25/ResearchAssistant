@@ -6328,7 +6328,7 @@ def test_all_hosted_agents_construct_responses_servers_without_history_loading(
         "matching_online.factory",
     )
     monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
-    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: SimpleNamespace())
     for module_name in module_names:
         module = importlib.import_module(module_name)
         agent = module.build_agent(
@@ -6443,7 +6443,7 @@ def test_all_nine_agent_specific_factories_are_first_class(
     )
     ids = []
     monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
-    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: object())
+    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: SimpleNamespace())
     for module_name in module_names:
         module = importlib.import_module(module_name)
         ids.append(module.MANIFEST.id)

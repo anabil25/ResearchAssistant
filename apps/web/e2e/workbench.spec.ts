@@ -25,7 +25,6 @@ const artifactViews = [
   { studio: "Grant Studio", surface: "Requirement matrix" },
   { studio: "Matching Explorer", surface: "Match criteria" },
   { studio: "Dataset Lab", surface: "Schema & quality" },
-  { studio: "Institutional Q&A", surface: "Authorized corpus" },
   { studio: "Workflow Automation", surface: "Evidence review graph" },
 ] as const;
 
@@ -665,13 +664,10 @@ test.describe("visual coverage capture", () => {
         name: "07-institutional-qa-v3-m1.png",
         prepare: async () => {
           await studioCard(page, "Institutional Q&A").click();
-          await page
-            .getByRole("button", { name: "Resolve policy answer" })
-            .click();
-          await expect(page.locator(".answer-card")).toBeVisible();
           await expect(
-            page.getByRole("button", { name: "Resolve policy answer" }),
-          ).toBeEnabled();
+            page.getByRole("heading", { name: "Work IQ", level: 1 }),
+          ).toBeVisible();
+          await expect(page.getByText("Plugin coming soon")).toBeVisible();
         },
       },
       {

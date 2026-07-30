@@ -45,9 +45,10 @@ def connector_mcp_catalog() -> list[dict[str, object]]:
             "path": connector.apim_mcp_path,
             "displayName": f"{connector.name} MCP server",
             "description": connector.description,
+            "credentialNamedValue": connector.credential.named_value,
             "tools": [
                 {
-                    "name": operation.id,
+                    "name": operation.apim_tool_name,
                     "displayName": operation.mcp_tool_name,
                     "operationId": operation.id,
                 }
@@ -60,11 +61,11 @@ def connector_mcp_catalog() -> list[dict[str, object]]:
 
 
 def connector_mcp_tools() -> list[dict[str, str]]:
-    # APIM reserves the tool resource name "search"; the MCP-facing name comes from displayName.
+    # Tool resource names are unique per APIM service; the MCP-facing name comes from displayName.
     return [
         {
             "apiId": connector.apim_mcp_api_id,
-            "name": operation.id,
+            "name": operation.apim_tool_name,
             "displayName": operation.mcp_tool_name,
             "description": connector.description,
             "operationId": operation.id,

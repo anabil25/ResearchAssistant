@@ -9,7 +9,6 @@ type StudioRequestPayload = {
   inputs: Record<string, unknown>;
 };
 
-const MIDSCREEN = { width: 834, height: 1112 };
 const HANDHELD = { width: 390, height: 844 };
 
 async function openWorkbenchShell(page: Page, view?: string) {
@@ -882,121 +881,6 @@ test.describe("shell interaction coverage", () => {
       ).toHaveText("0");
 
       await recordWorkbenchShot(page, testInfo, "run-evidence-empty");
-    });
-  });
-
-  test.describe("[pw.command-palette] command palette", () => {
-    test("[pw.command-palette] opens via Ctrl+K and the search button, live-filters results, and has no fake empty-state text [pw.shell.search.open:ready][pw.shell.search.open:keyboard][pw.shell.search.open:open][pw.shell.search.query:ready][pw.shell.search.query:typing][pw.shell.search.query:empty][pw.shell.search.query:no-results][pw.shell.search.select-result:ready][pw.shell.search.select-result:keyboard][pw.shell.search.select-result:selected][pw.shell.search.close:open][pw.shell.search.close:keyboard][pw.shell.search.close:closed]", async ({
-      page,
-    }, testInfo) => {
-      await openWorkbenchShell(page);
-      await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeHidden();
-
-      await page.keyboard.press("Control+k");
-      const dialog = page.getByRole("dialog", { name: "Search workspace" });
-      await expect(dialog).toBeVisible();
-      const input = dialog.getByPlaceholder("Search studios, Library, runs, or settings");
-      await expect(input).toBeFocused();
-      await expect(dialog.locator(".command-results button")).toHaveCount(10);
-      await recordWorkbenchShot(page, testInfo, "command-palette-open");
-      await expectAccessibleExperience(page);
-
-      await page.keyboard.press("Escape");
-      await expect(dialog).toBeHidden();
-
-      await page.getByLabel("Search workspace").click();
-      await expect(dialog).toBeVisible();
-
-      await input.fill("grant");
-      await expect(dialog.locator(".command-results button")).toHaveCount(1);
-      await expect(dialog.locator(".command-results button").first()).toContainText(
-        "Grant application studio",
-      );
-
-      await input.fill("review");
-      await expect(dialog.locator(".command-results button")).toHaveCount(3);
-
-      await input.fill("zzzznonexistentzzzz");
-      await expect(dialog.locator(".command-results button")).toHaveCount(0);
-      await expect(dialog.locator(".command-results")).toBeEmpty();
-      await recordWorkbenchShot(page, testInfo, "command-palette-no-results");
-
-      await input.fill("literature review synthesis");
-      await expect(dialog.locator(".command-results button")).toHaveCount(1);
-      await input.focus();
-      await page.keyboard.press("Tab");
-      await expect(dialog.getByLabel("Close search")).toBeFocused();
-      await page.keyboard.press("Tab");
-      await expect(dialog.locator(".command-results button").first()).toBeFocused();
-      await page.keyboard.press("Enter");
-      await expect(dialog).toBeHidden();
-      await expect(
-        page.getByRole("heading", { name: "Literature Studio", level: 1 }),
-      ).toBeVisible();
-    });
-
-    test("[pw.command-palette] renders correctly at tablet and mobile viewports [pw.shell.search.open:mobile]", async ({
-      page,
-    }, testInfo) => {
-      await page.setViewportSize(MIDSCREEN);
-      await openWorkbenchShell(page);
-      await page.keyboard.press("Control+k");
-      await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
-      await recordWorkbenchShot(page, testInfo, "command-palette-tablet");
-      await page.keyboard.press("Escape");
-
-      await page.setViewportSize(HANDHELD);
-      await page.getByLabel("Search workspace").click();
-      await expect(page.getByRole("dialog", { name: "Search workspace" })).toBeVisible();
-      await recordWorkbenchShot(page, testInfo, "command-palette-mobile");
-      await expectAccessibleExperience(page);
-    });
-  });
-
-  test.describe("[pw.approval-notification] pending approvals notification", () => {
-    test("[pw.approval-notification] shows the pending count, navigates to Runs, and supports keyboard activation [pw.shell.approvals.open:pending][pw.shell.approvals.open:keyboard]", async ({
-      page,
-    }, testInfo) => {
-      await stubRunAndApprovalEndpoints(
-        page,
-        [RUN_FIXTURE_PENDING, RUN_FIXTURE_FINISHED],
-        [APPROVAL_FIXTURE_PENDING],
-      );
-      await openWorkbenchShell(page);
-      const bell = page.getByLabel("1 pending approvals");
-      await expect(bell).toBeVisible();
-      await expect(bell.locator("span")).toHaveText("1");
-      await recordWorkbenchShot(page, testInfo, "approval-notification-pending");
-
-      await bell.click();
-      await expect(
-        page.getByRole("heading", { name: "Runs & Approvals", level: 1 }),
-      ).toBeVisible();
-
-      const overviewNav = page.getByRole("button", {
-        name: "Overview",
-        exact: true,
-      });
-      await overviewNav.click();
-      await expect(overviewNav).toHaveAttribute("aria-current", "page");
-      await page.getByLabel("Search workspace").focus();
-      await page.keyboard.press("Tab");
-      await expect(page.getByLabel("1 pending approvals")).toBeFocused();
-      await page.keyboard.press("Enter");
-      await expect(
-        page.getByRole("heading", { name: "Runs & Approvals", level: 1 }),
-      ).toBeVisible();
-    });
-
-    test("[pw.approval-notification] shows a zero count with no numeric badge when there are no pending approvals [pw.shell.approvals.open:none]", async ({
-      page,
-    }, testInfo) => {
-      await stubRunAndApprovalEndpoints(page, [RUN_FIXTURE_FINISHED], []);
-      await openWorkbenchShell(page);
-      const bell = page.getByLabel("0 pending approvals");
-      await expect(bell).toBeVisible();
-      await expect(bell.locator("span")).toHaveCount(0);
-      await recordWorkbenchShot(page, testInfo, "approval-notification-none");
     });
   });
 

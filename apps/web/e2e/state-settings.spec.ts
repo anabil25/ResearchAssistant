@@ -27,6 +27,8 @@ const DATACITE_FIXTURE: ConnectorSetting = {
   category: "Datasets",
   description: "Dataset DOI metadata and bounded repository resolution.",
   auth_kind: "Managed identity",
+  credential_kind: "none",
+  credential_required: false,
   secret_status: "Deployment managed",
   enabled: true,
   test_status: "ready",
