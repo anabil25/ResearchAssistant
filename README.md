@@ -15,7 +15,7 @@ Foundry Hosted Agents across six research studios.
 > components, data flows, and cross-component contracts. This README is the
 > deploy & run guide for a fresh clone.
 >
-> 🌐 Prefer a browsable version? Open the [project landing page](docs/index.html)
+> 🌐 Prefer a browsable version? Open the [project landing page](https://anabil25.github.io/ResearchAssistant/)
 > — this README and the architecture docs with a left-nav menu and interactive
 > diagram.
 
@@ -269,7 +269,7 @@ Run `azd down` when done to stop all charges (see [Clean up](#clean-up)).
 
 ```bash
 # 1. Clone
-git clone <this-repo-url>
+git clone https://github.com/anabil25/ResearchAssistant.git
 cd ResearchAssistant
 
 # 2. Sign in (both CLIs)
