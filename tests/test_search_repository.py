@@ -355,33 +355,15 @@ def test_chunk_supplies_defaults_for_optional_fields() -> None:
     assert chunk.metadata == {"provider": ""}
 
 
-def test_search_repository_credential_helper_selects_default_or_managed_identity(
-    monkeypatch: Any,
-) -> None:
-    default_credential = object()
-    managed_credential = object()
-    monkeypatch.setattr(search_repository, "DefaultAzureCredential", lambda: default_credential)
-    monkeypatch.setattr(
-        search_repository,
-        "ManagedIdentityCredential",
-        lambda *, client_id: {"client_id": client_id, "credential": managed_credential},
-    )
-
-    assert search_repository._credential(None) is default_credential
-    assert search_repository._credential("client-123") == {  # type: ignore[comparison-overlap]
-        "client_id": "client-123",
-        "credential": managed_credential,
-    }
-
-
 def test_build_research_service_uses_azure_search_when_configured(monkeypatch: Any) -> None:
     managed_credential = object()
-    monkeypatch.setattr(search_repository, "DefaultAzureCredential", lambda: object())
-    monkeypatch.setattr(
-        search_repository,
-        "ManagedIdentityCredential",
-        lambda *, client_id: {"client_id": client_id, "credential": managed_credential},
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> object:
+        requested.append(client_id)
+        return managed_credential
+
+    monkeypatch.setattr(search_repository, "azure_credential", _credential)
     monkeypatch.setattr(search_repository, "AzureSearchEvidenceRepository", RecordingRepository)
 
     service = search_repository.build_research_service(
@@ -396,10 +378,8 @@ def test_build_research_service_uses_azure_search_when_configured(monkeypatch: A
     assert isinstance(service.repository, RecordingRepository)
     assert service.repository.endpoint == "https://search.example.test"
     assert service.repository.index_name == "evidence-index"
-    assert service.repository.credential == {
-        "client_id": "mi-client",
-        "credential": managed_credential,
-    }
+    assert service.repository.credential is managed_credential
+    assert requested == ["mi-client"]
     assert service.mode == "hosted"
     assert service.model_deployment == "foundry-hosted-specialists"
 

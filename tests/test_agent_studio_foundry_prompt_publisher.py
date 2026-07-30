@@ -140,11 +140,13 @@ def test_build_publisher_returns_unavailable_without_foundry_endpoint() -> None:
 
 
 def test_build_publisher_uses_managed_identity_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        publisher_module,
-        "ManagedIdentityCredential",
-        lambda client_id: f"managed:{client_id}",
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
+    monkeypatch.setattr(publisher_module, "azure_credential", _credential)
     publisher = build_prompt_agent_publisher(
         Settings(
             foundry_project_endpoint="https://project.example.test",
@@ -154,3 +156,4 @@ def test_build_publisher_uses_managed_identity_when_configured(monkeypatch: pyte
 
     assert isinstance(publisher, AIProjectPromptAgentPublisher)
     assert cast(Any, publisher._credential) == "managed:client-123"
+    assert requested == ["client-123"]

@@ -156,47 +156,6 @@ def test_ingestion_settings_reads_environment(monkeypatch: pytest.MonkeyPatch) -
     )
 
 
-def test_credential_prefers_managed_identity_and_caches(monkeypatch: pytest.MonkeyPatch) -> None:
-    created: list[str] = []
-
-    class FakeManagedIdentityCredential:
-        def __init__(self, *, client_id: str) -> None:
-            created.append(client_id)
-            self.client_id = client_id
-
-    monkeypatch.setenv("AZURE_CLIENT_ID", "client-123")
-    monkeypatch.setattr(ingestion, "ManagedIdentityCredential", FakeManagedIdentityCredential)
-    monkeypatch.setattr(ingestion, "DefaultAzureCredential", lambda: pytest.fail("default credential not expected"))
-
-    first = ingestion.credential()
-    second = ingestion.credential()
-
-    assert first is second
-    assert first.client_id == "client-123"  # type: ignore[attr-defined]
-    assert created == ["client-123"]
-
-
-def test_credential_falls_back_to_default(monkeypatch: pytest.MonkeyPatch) -> None:
-    created: list[str] = []
-
-    class FakeDefaultAzureCredential:
-        def __init__(self) -> None:
-            created.append("default")
-
-    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
-    monkeypatch.setattr(
-        ingestion,
-        "ManagedIdentityCredential",
-        lambda **_kwargs: pytest.fail("managed identity not expected"),
-    )
-    monkeypatch.setattr(ingestion, "DefaultAzureCredential", FakeDefaultAzureCredential)
-
-    credential = ingestion.credential()
-
-    assert isinstance(credential, FakeDefaultAzureCredential)
-    assert created == ["default"]
-
-
 def test_run_and_library_updates_are_noops_without_cosmos_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

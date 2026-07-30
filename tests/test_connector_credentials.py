@@ -6,8 +6,6 @@ from __future__ import annotations
 import httpx
 import pytest
 from azure.core.credentials import AccessToken
-
-from research_assistant_api import connector_credentials
 from research_assistant_api.connector_credentials import (
     ConnectorCredentialNotConfiguredError,
     set_connector_api_key,
@@ -53,29 +51,6 @@ def test_arm_token_is_reused_across_requests() -> None:
 
 
 @pytest.mark.usefixtures("apim_env")
-def test_managed_identity_is_used_when_only_the_identity_endpoint_is_present(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """Container Apps injects IDENTITY_ENDPOINT without AZURE_CLIENT_ID."""
-    monkeypatch.delenv("AZURE_CLIENT_ID", raising=False)
-    monkeypatch.setenv("IDENTITY_ENDPOINT", "https://identity.local/token")
-    built: list[str | None] = []
-
-    class _Managed:
-        def __init__(self, client_id: str | None = None) -> None:
-            built.append(client_id)
-
-    monkeypatch.setattr(connector_credentials, "ManagedIdentityCredential", _Managed)
-    monkeypatch.setattr(
-        connector_credentials,
-        "DefaultAzureCredential",
-        lambda: pytest.fail("managed identity was available"),
-    )
-
-    assert isinstance(connector_credentials._azure_credential(), _Managed)
-    assert built == [None]
-
-
 def test_missing_api_management_configuration_is_reported(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

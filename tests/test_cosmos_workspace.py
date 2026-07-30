@@ -1764,12 +1764,15 @@ def test_build_workspace_store_selects_credentials_and_backend(monkeypatch: Any)
 
     default_credential = object()
     managed_credential = object()
-    monkeypatch.setattr(cosmos_workspace, "DefaultAzureCredential", lambda: default_credential)
-    monkeypatch.setattr(
-        cosmos_workspace,
-        "ManagedIdentityCredential",
-        lambda *, client_id: {"client_id": client_id, "credential": managed_credential},
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> object:
+        requested.append(client_id)
+        if client_id is None:
+            return default_credential
+        return {"client_id": client_id, "credential": managed_credential}
+
+    monkeypatch.setattr(cosmos_workspace, "azure_credential", _credential)
     captured: list[tuple[str, str, object, str, str]] = []
 
     def fake_cosmos_workspace_store(
@@ -1821,3 +1824,4 @@ def test_build_workspace_store_selects_credentials_and_backend(monkeypatch: Any)
             "project-2",
         ),
     ]
+    assert requested == [None, "managed-client"]

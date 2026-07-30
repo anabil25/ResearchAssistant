@@ -173,11 +173,13 @@ def test_build_inventory_returns_project_inventory_when_endpoint_is_configured()
 def test_build_inventory_uses_managed_identity_when_client_id_is_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        inventory_module,
-        "ManagedIdentityCredential",
-        lambda client_id: f"managed:{client_id}",
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
+    monkeypatch.setattr(inventory_module, "azure_credential", _credential)
     inventory = build_foundry_agent_inventory(
         Settings(
             foundry_project_endpoint="https://project.example.test",
@@ -187,3 +189,4 @@ def test_build_inventory_uses_managed_identity_when_client_id_is_configured(
 
     assert isinstance(inventory, AIProjectFoundryAgentInventory)
     assert cast(Any, inventory._credential) == "managed:client-123"
+    assert requested == ["client-123"]

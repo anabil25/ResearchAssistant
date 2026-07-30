@@ -12,11 +12,8 @@ from weakref import WeakKeyDictionary
 
 import httpx
 from azure.core.credentials import TokenCredential
-from azure.identity import (
-    DefaultAzureCredential,
-    ManagedIdentityCredential,
-    get_bearer_token_provider,
-)
+from azure.identity import get_bearer_token_provider
+from research_assistant_core.azure_auth import token_provider
 from research_assistant_core.connector_catalog import UNCONFIGURED_CREDENTIAL
 
 ARM_SCOPE = "https://management.azure.com/.default"
@@ -31,14 +28,6 @@ class ConnectorCredentialNotConfiguredError(ConnectorCredentialError):
     """Raised when the deployment has no API Management target configured."""
 
 
-def _azure_credential() -> TokenCredential:
-    client_id = os.environ.get("AZURE_CLIENT_ID")
-    if client_id or os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT"):
-        return ManagedIdentityCredential(client_id=client_id)
-    return DefaultAzureCredential()
-
-
-_DEFAULT_CREDENTIAL: TokenCredential | None = None
 _TOKEN_PROVIDERS: WeakKeyDictionary[TokenCredential, Callable[[], str]] = WeakKeyDictionary()
 
 
@@ -46,13 +35,10 @@ def _arm_token(credential: TokenCredential | None) -> str:
     """Return an ARM token, reusing the cached one until it expires.
 
     Credentials do not cache on their own -- caching lives in the bearer token
-    provider -- so both the credential and the provider must outlive the request.
+    provider -- so the provider must outlive the request, not just the credential.
     """
-    global _DEFAULT_CREDENTIAL
     if credential is None:
-        if _DEFAULT_CREDENTIAL is None:
-            _DEFAULT_CREDENTIAL = _azure_credential()
-        credential = _DEFAULT_CREDENTIAL
+        return token_provider(ARM_SCOPE)()
     provider = _TOKEN_PROVIDERS.get(credential)
     if provider is None:
         provider = get_bearer_token_provider(credential, ARM_SCOPE)

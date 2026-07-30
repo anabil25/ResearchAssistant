@@ -41,27 +41,6 @@ class FakeCredential(TokenCredential):
         return AccessToken("fake", 4_102_444_800)
 
 
-def test_gateway_selects_managed_identity_or_default_credential(
-    monkeypatch: Any,
-) -> None:
-    managed = FakeCredential()
-    default = FakeCredential()
-    monkeypatch.setattr(
-        foundry,
-        "ManagedIdentityCredential",
-        lambda *, client_id: managed if client_id == "client-id" else None,
-    )
-    monkeypatch.setattr(foundry, "DefaultAzureCredential", lambda: default)
-
-    assert (
-        foundry.HostedAgentGateway(
-            Settings(managed_identity_client_id="client-id")
-        )._credential
-        is managed
-    )
-    assert foundry.HostedAgentGateway(Settings())._credential is default
-
-
 def test_gateway_requires_a_foundry_endpoint() -> None:
     gateway = foundry.HostedAgentGateway(Settings(), credential=FakeCredential())
 
@@ -258,16 +237,13 @@ def test_gateway_uses_managed_identity_credential_when_configured(
     monkeypatch: Any,
 ) -> None:
     created: list[str | None] = []
+    managed = FakeCredential()
 
-    class FakeManagedIdentityCredential:
-        def __init__(self, *, client_id: str | None = None) -> None:
-            created.append(client_id)
+    def _credential(client_id: str | None = None) -> FakeCredential:
+        created.append(client_id)
+        return managed
 
-    monkeypatch.setattr(
-        foundry,
-        "ManagedIdentityCredential",
-        FakeManagedIdentityCredential,
-    )
+    monkeypatch.setattr(foundry, "azure_credential", _credential)
 
     gateway = foundry.HostedAgentGateway(
         Settings(
@@ -277,7 +253,7 @@ def test_gateway_uses_managed_identity_credential_when_configured(
     )
 
     assert created == ["managed-client"]
-    assert isinstance(gateway._credential, FakeManagedIdentityCredential)
+    assert gateway._credential is managed
 
 
 def test_gateway_rejects_non_retryable_status_errors(

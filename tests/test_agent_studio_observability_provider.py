@@ -251,9 +251,13 @@ def test_build_observability_provider_returns_app_insights_provider_when_configu
 def test_build_observability_provider_uses_managed_identity_when_client_id_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        observability_provider, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}"
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
+    monkeypatch.setattr(observability_provider, "azure_credential", _credential)
     settings = Settings(
         agent_studio_app_insights_resource_id="/subscriptions/sub/resourceGroups/rg/providers/microsoft.insights/components/app",
         managed_identity_client_id="client-123",
@@ -261,3 +265,4 @@ def test_build_observability_provider_uses_managed_identity_when_client_id_prese
     provider = build_observability_provider(settings)
     assert isinstance(provider, AppInsightsObservabilityProvider)
     assert cast(Any, provider._credential) == "managed:client-123"
+    assert requested == ["client-123"]

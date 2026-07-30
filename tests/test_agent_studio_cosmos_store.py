@@ -2829,7 +2829,6 @@ def test_build_agent_studio_store_raises_without_endpoint() -> None:
 
 def test_build_agent_studio_store_uses_default_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
 
@@ -2846,8 +2845,8 @@ def test_build_agent_studio_store_uses_default_credential(monkeypatch: pytest.Mo
 
     with monkeypatch.context() as patch:
         patch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-        patch.setattr(azure.identity, "DefaultAzureCredential", lambda: "default-credential")
         reloaded = importlib.reload(cosmos_store)
+        patch.setattr(reloaded, "azure_credential", lambda _client_id=None: "default-credential")
         store = reloaded.build_agent_studio_store(
             Settings(
                 cosmos_endpoint="https://cosmos.example.test",
@@ -2872,9 +2871,9 @@ def test_build_agent_studio_store_uses_managed_identity_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
+    requested: list[Any] = []
 
     class CapturingClient:
         def __init__(self, endpoint: str, credential: Any) -> None:
@@ -2887,10 +2886,14 @@ def test_build_agent_studio_store_uses_managed_identity_when_configured(
             captured["database_name"] = name
             return self.database
 
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
     with monkeypatch.context() as patch:
         patch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-        patch.setattr(azure.identity, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}")
         reloaded = importlib.reload(cosmos_store)
+        patch.setattr(reloaded, "azure_credential", _credential)
         store = reloaded.build_agent_studio_store(
             Settings(
                 cosmos_endpoint="https://cosmos.example.test",
@@ -2908,5 +2911,6 @@ def test_build_agent_studio_store_uses_managed_identity_when_configured(
             "database_name": "agent-studio-db",
         }
         assert cast(FakeDatabase, captured["database"]).requested_container_names == ["agentStudioMetadataV1"]
+        assert requested == ["client-123"]
 
     importlib.reload(cosmos_store)

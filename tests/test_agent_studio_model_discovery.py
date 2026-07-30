@@ -127,9 +127,13 @@ def test_build_model_discovery_returns_ai_project_discovery_when_configured() ->
 def test_build_model_discovery_uses_managed_identity_when_client_id_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(
-        model_discovery, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}"
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
+    monkeypatch.setattr(model_discovery, "azure_credential", _credential)
     settings = Settings(
         foundry_project_endpoint="https://project.example.test",
         managed_identity_client_id="client-123",
@@ -137,3 +141,4 @@ def test_build_model_discovery_uses_managed_identity_when_client_id_present(
     discovery = build_model_discovery(settings)
     assert isinstance(discovery, AIProjectModelDiscovery)
     assert cast(Any, discovery._credential) == "managed:client-123"
+    assert requested == ["client-123"]

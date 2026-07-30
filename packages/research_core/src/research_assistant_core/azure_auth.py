@@ -111,12 +111,14 @@ def token_provider(scope: str, *, client_id: str | None = None) -> Callable[[], 
     key = (False, resolved, scope)
     cached = _TOKEN_PROVIDERS.get(key)
     if cached is None:
+        # Resolved before the lock is taken: this caches under the same lock.
+        credential = azure_credential(resolved)
         with _LOCK:
             cached = _TOKEN_PROVIDERS.get(key)
             if cached is None:
                 from azure.identity import get_bearer_token_provider
 
-                cached = get_bearer_token_provider(azure_credential(resolved), scope)
+                cached = get_bearer_token_provider(credential, scope)
                 _TOKEN_PROVIDERS[key] = cached
     return cached  # type: ignore[return-value]
 
@@ -127,12 +129,14 @@ def async_token_provider(scope: str, *, client_id: str | None = None) -> Callabl
     key = (True, resolved, scope)
     cached = _TOKEN_PROVIDERS.get(key)
     if cached is None:
+        # Resolved before the lock is taken: this caches under the same lock.
+        credential = async_azure_credential(resolved)
         with _LOCK:
             cached = _TOKEN_PROVIDERS.get(key)
             if cached is None:
                 from azure.identity.aio import get_bearer_token_provider
 
-                cached = get_bearer_token_provider(async_azure_credential(resolved), scope)
+                cached = get_bearer_token_provider(credential, scope)
                 _TOKEN_PROVIDERS[key] = cached
     return cached  # type: ignore[return-value]
 

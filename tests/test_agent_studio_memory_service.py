@@ -4,6 +4,7 @@ from datetime import UTC, datetime, timedelta
 from typing import TYPE_CHECKING, Any, cast
 
 import pytest
+import research_assistant_api.agent_studio.memory_service as memory_service
 from research_assistant_api.agent_studio.memory_service import (
     CosmosMemoryStore,
     InMemoryMemoryStore,
@@ -434,7 +435,6 @@ def test_build_memory_store_raises_when_cosmos_not_configured() -> None:
 
 def test_build_memory_store_returns_cosmos_store_with_default_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
 
@@ -445,7 +445,7 @@ def test_build_memory_store_returns_cosmos_store_with_default_credential(monkeyp
             super().__init__(endpoint, credential)
 
     monkeypatch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-    monkeypatch.setattr(azure.identity, "DefaultAzureCredential", lambda: "default-credential")
+    monkeypatch.setattr(memory_service, "azure_credential", lambda _client_id=None: "default-credential")
 
     store = build_memory_store(Settings(cosmos_endpoint="https://cosmos.example.test"))
 
@@ -458,9 +458,9 @@ def test_build_memory_store_returns_cosmos_store_with_default_credential(monkeyp
 
 def test_build_memory_store_uses_managed_identity_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
+    requested: list[Any] = []
 
     class CapturingClient(FakeMemoryCosmosClient):
         def __init__(self, endpoint: str, credential: Any) -> None:
@@ -468,8 +468,12 @@ def test_build_memory_store_uses_managed_identity_when_configured(monkeypatch: p
             captured["credential"] = credential
             super().__init__(endpoint, credential)
 
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
     monkeypatch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-    monkeypatch.setattr(azure.identity, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}")
+    monkeypatch.setattr(memory_service, "azure_credential", _credential)
 
     store = build_memory_store(
         Settings(
@@ -483,6 +487,7 @@ def test_build_memory_store_uses_managed_identity_when_configured(monkeypatch: p
         "endpoint": "https://cosmos.example.test",
         "credential": "managed:client-123",
     }
+    assert requested == ["client-123"]
 
 
 @pytest.mark.parametrize("operation", ["remember", "recall", "inspect", "correct", "forget", "export"])

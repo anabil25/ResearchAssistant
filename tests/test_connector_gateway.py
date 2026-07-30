@@ -204,14 +204,14 @@ def test_gateway_configuration_builds_managed_identity_for_token_scope(
 ) -> None:
     captured: dict[str, str | None] = {}
 
-    class FakeManagedIdentityCredential:
-        def __init__(self, *, client_id: str | None = None) -> None:
-            captured["client_id"] = client_id
+    def _credential(client_id: str | None = None) -> object:
+        captured["client_id"] = client_id
+        return object()
 
     monkeypatch.setattr(
         connector_gateway,
-        "ManagedIdentityCredential",
-        FakeManagedIdentityCredential,
+        "async_azure_credential",
+        _credential,
     )
 
     gateway = build_connector_gateway(

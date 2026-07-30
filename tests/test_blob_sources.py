@@ -112,12 +112,15 @@ def test_azure_source_blob_store_put_uploads_metadata(monkeypatch: Any) -> None:
 def test_build_source_blob_store_selects_backend_and_credentials(monkeypatch: Any) -> None:
     default_credential = object()
     managed_credential = object()
-    monkeypatch.setattr(blob_sources, "DefaultAzureCredential", lambda: default_credential)
-    monkeypatch.setattr(
-        blob_sources,
-        "ManagedIdentityCredential",
-        lambda *, client_id: {"client_id": client_id, "credential": managed_credential},
-    )
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> object:
+        requested.append(client_id)
+        if client_id is None:
+            return default_credential
+        return {"client_id": client_id, "credential": managed_credential}
+
+    monkeypatch.setattr(blob_sources, "azure_credential", _credential)
     monkeypatch.setattr(blob_sources, "AzureSourceBlobStore", RecordingAzureBlobStore)
 
     in_memory = blob_sources.build_source_blob_store(Settings(storage_blob_endpoint=None))
@@ -146,3 +149,4 @@ def test_build_source_blob_store_selects_backend_and_credentials(monkeypatch: An
         "client_id": "managed-client",
         "credential": managed_credential,
     }
+    assert requested == [None, "managed-client"]

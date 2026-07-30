@@ -548,12 +548,11 @@ def test_runtime_default_credentials_and_configured_approval_port(
 
     created: list[str | None] = []
 
-    class Credential(FakeCredential):
-        def __init__(self, *, client_id: str | None = None) -> None:
-            created.append(client_id)
+    def _credential(client_id: str | None = None) -> FakeCredential:
+        created.append(client_id)
+        return FakeCredential()
 
-    monkeypatch.setattr(runtime_module, "ManagedIdentityCredential", Credential)
-    monkeypatch.setattr(runtime_module, "DefaultAzureCredential", Credential)
+    monkeypatch.setattr(runtime_module, "azure_credential", _credential)
     transport = httpx.Client(transport=httpx.MockTransport(lambda _: httpx.Response(200)))
     build_provider_runtime(
         _environment(AZURE_SEARCH_ENDPOINT="https://search.test", AZURE_CLIENT_ID="client"),

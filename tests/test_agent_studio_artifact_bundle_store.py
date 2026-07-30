@@ -530,7 +530,7 @@ def test_build_artifact_bundle_store_returns_azure_store_when_configured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", FakeBlobServiceClient)
-    monkeypatch.setattr(artifact_bundle_store, "DefaultAzureCredential", lambda: "default-credential")
+    monkeypatch.setattr(artifact_bundle_store, "azure_credential", lambda _client_id=None: "default-credential")
     settings = Settings(storage_blob_endpoint="https://storage.example.test")
     store = build_artifact_bundle_store(settings)
     assert isinstance(store, AzureArtifactBundleStore)
@@ -548,11 +548,18 @@ def test_build_artifact_bundle_store_uses_managed_identity_when_client_id_presen
         def get_container_client(self, _name: str) -> FakeContainerClient:
             return FakeContainerClient()
 
+    requested: list[Any] = []
+
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
     monkeypatch.setattr(artifact_bundle_store, "BlobServiceClient", _FakeBlobServiceClient)
-    monkeypatch.setattr(artifact_bundle_store, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}")
+    monkeypatch.setattr(artifact_bundle_store, "azure_credential", _credential)
     settings = Settings(
         storage_blob_endpoint="https://storage.example.test",
         managed_identity_client_id="client-123",
     )
     build_artifact_bundle_store(settings)
     assert captured["credential"] == "managed:client-123"
+    assert requested == ["client-123"]

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any, cast
 
 import pytest
+import research_assistant_api.agent_studio.audit_service as audit_service
 from research_assistant_api.agent_studio.audit_service import (
     AuditService,
     AuditStoreUnavailableError,
@@ -264,7 +265,6 @@ def test_build_audit_store_raises_when_cosmos_not_configured() -> None:
 
 def test_build_audit_store_returns_cosmos_store_with_default_credential(monkeypatch: pytest.MonkeyPatch) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
 
@@ -275,7 +275,7 @@ def test_build_audit_store_returns_cosmos_store_with_default_credential(monkeypa
             super().__init__(endpoint, credential)
 
     monkeypatch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-    monkeypatch.setattr(azure.identity, "DefaultAzureCredential", lambda: "default-credential")
+    monkeypatch.setattr(audit_service, "azure_credential", lambda _client_id=None: "default-credential")
 
     store = build_audit_store(Settings(cosmos_endpoint="https://cosmos.example.test"))
 
@@ -288,9 +288,9 @@ def test_build_audit_store_returns_cosmos_store_with_default_credential(monkeypa
 
 def test_build_audit_store_uses_managed_identity_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
     import azure.cosmos
-    import azure.identity
 
     captured: dict[str, Any] = {}
+    requested: list[Any] = []
 
     class CapturingClient(FakeAuditCosmosClient):
         def __init__(self, endpoint: str, credential: Any) -> None:
@@ -298,8 +298,12 @@ def test_build_audit_store_uses_managed_identity_when_configured(monkeypatch: py
             captured["credential"] = credential
             super().__init__(endpoint, credential)
 
+    def _credential(client_id: Any = None) -> str:
+        requested.append(client_id)
+        return f"managed:{client_id}"
+
     monkeypatch.setattr(azure.cosmos, "CosmosClient", CapturingClient)
-    monkeypatch.setattr(azure.identity, "ManagedIdentityCredential", lambda client_id: f"managed:{client_id}")
+    monkeypatch.setattr(audit_service, "azure_credential", _credential)
 
     store = build_audit_store(
         Settings(
@@ -313,3 +317,4 @@ def test_build_audit_store_uses_managed_identity_when_configured(monkeypatch: py
         "endpoint": "https://cosmos.example.test",
         "credential": "managed:client-123",
     }
+    assert requested == ["client-123"]
