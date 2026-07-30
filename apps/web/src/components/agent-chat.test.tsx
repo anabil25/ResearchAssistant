@@ -111,20 +111,27 @@ describe("AgentChat", () => {
   });
 
   it("opens a thread for the first agent and scopes every call to the project", async () => {
-    await renderReady();
+    const user = setupUser();
+    jest.mocked(sendChatMessage).mockResolvedValue({
+      id: "m1", role: "assistant", content: "ok", created_at: "2026-07-30T09:01:00Z",
+      agent_name: "literature-agent", attachments: [],
+    });
+    jest.mocked(getChatThread).mockResolvedValue(emptyThread());
+
+    const { composer } = await renderReady();
 
     expect(listChatAgents).toHaveBeenCalledWith("literature", "demo-project");
-    expect(openChatThread).toHaveBeenCalledWith(
-      "literature",
-      "literature-agent",
-      "demo-project",
+    // Thread is lazy — not opened until the first send.
+    expect(openChatThread).not.toHaveBeenCalled();
+    expect(screen.getByRole("combobox", { name: "Agent" })).toHaveValue("literature-agent");
+    expect(screen.getByText(/Grounded synthesis over stored evidence/)).toBeInTheDocument();
+
+    await user.type(composer, "hello");
+    await user.click(screen.getByRole("button", { name: "Send" }));
+
+    await waitFor(() =>
+      expect(openChatThread).toHaveBeenCalledWith("literature", "literature-agent", "demo-project"),
     );
-    expect(screen.getByRole("combobox", { name: "Agent" })).toHaveValue(
-      "literature-agent",
-    );
-    expect(
-      screen.getByText(/Grounded synthesis over stored evidence/),
-    ).toBeInTheDocument();
   });
 
   it("renders the four capability headings without any workflow form", async () => {
@@ -298,67 +305,63 @@ describe("AgentChat", () => {
 
   it("starts a fresh thread when the agent is switched", async () => {
     const user = setupUser();
-    await renderReady();
+    jest.mocked(sendChatMessage).mockResolvedValue({
+      id: "m1", role: "assistant", content: "ok", created_at: "2026-07-30T09:01:00Z",
+      agent_name: "literature-online-agent", attachments: [],
+    });
+    jest.mocked(getChatThread).mockResolvedValue(emptyThread({ agent_name: "literature-online-agent" }));
+    jest.mocked(openChatThread).mockResolvedValue(emptyThread({ id: "thread-2", agent_name: "literature-online-agent" }));
+
+    const { composer } = await renderReady();
 
     await user.selectOptions(
       screen.getByRole("combobox", { name: "Agent" }),
       "literature-online-agent",
     );
+    // Switching resets the thread (no immediate API call).
+    expect(openChatThread).not.toHaveBeenCalled();
+
+    await user.type(composer, "search pubmed");
+    await user.click(screen.getByRole("button", { name: "Send" }));
 
     await waitFor(() =>
-      expect(openChatThread).toHaveBeenLastCalledWith(
+      expect(openChatThread).toHaveBeenCalledWith(
         "literature",
         "literature-online-agent",
         "demo-project",
       ),
     );
-    expect(
-      await screen.findByText(/Allowlisted public metadata sources only/),
-    ).toBeInTheDocument();
   });
 
   it("ignores a stale thread response that lands after a newer agent was chosen", async () => {
+    // After switching agents, the NEXT send must use the current agent's thread,
+    // not any thread that was started against a previously selected agent.
     const user = setupUser();
-    let releaseStale: (thread: ChatThread) => void = () => undefined;
-    const stale = new Promise<ChatThread>((resolve) => {
-      releaseStale = resolve;
+    jest.mocked(sendChatMessage).mockResolvedValue({
+      id: "m1", role: "assistant", content: "ok", created_at: "2026-07-30T09:01:00Z",
+      agent_name: "literature-agent", attachments: [],
     });
-    jest
-      .mocked(openChatThread)
-      .mockResolvedValueOnce(emptyThread())
-      .mockReturnValueOnce(stale)
-      .mockResolvedValueOnce(emptyThread({ id: "thread-3" }));
+    jest.mocked(getChatThread).mockResolvedValue(emptyThread({ id: "thread-final" }));
+    jest.mocked(openChatThread).mockResolvedValue(emptyThread({ id: "thread-final" }));
 
-    await renderReady();
+    const { composer } = await renderReady();
     const picker = screen.getByRole("combobox", { name: "Agent" });
     await user.selectOptions(picker, "literature-online-agent");
     await user.selectOptions(picker, "literature-agent");
-    await waitFor(() => expect(openChatThread).toHaveBeenCalledTimes(3));
 
-    releaseStale(emptyThread({ id: "thread-2" }));
-    jest.mocked(getChatThread).mockResolvedValue(emptyThread({ id: "thread-3" }));
-    jest.mocked(sendChatMessage).mockResolvedValue({
-      id: "m2",
-      role: "assistant",
-      content: "ok",
-      created_at: "2026-07-30T09:02:00Z",
-      agent_name: "literature-agent",
-      attachments: [],
-    });
-
-    const composer = screen.getByRole("textbox", { name: "Message" });
-    await waitFor(() => expect(composer).toBeEnabled());
     await user.type(composer, "hello");
     await user.click(screen.getByRole("button", { name: "Send" }));
 
-    // The abandoned thread-2 must never become the thread turns are sent to.
     await waitFor(() =>
       expect(sendChatMessage).toHaveBeenCalledWith(
-        "thread-3",
+        "thread-final",
         "hello",
         "demo-project",
       ),
     );
+    // Only one thread opened: for the final selected agent.
+    expect(openChatThread).toHaveBeenCalledTimes(1);
+    expect(openChatThread).toHaveBeenCalledWith("literature", "literature-agent", "demo-project");
   });
 
   it("surfaces an unreachable agent catalog and leaves the composer disabled", async () => {

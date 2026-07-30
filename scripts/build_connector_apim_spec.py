@@ -299,6 +299,7 @@ def _common_inbound(*, lookup: bool = False) -> list[str]:
         ),
         _set_variable("normalizedLimit", "limit", "1" if lookup else "5"),
         '<set-header name="Authorization" exists-action="delete" />',
+        '<set-header name="Accept-Encoding" exists-action="override"><value>identity</value></set-header>',
     ]
     return result
 

@@ -401,14 +401,6 @@ _MANIFESTS: dict[str, AgentManifest] = {
         model_deployment="gpt-5.6-sol",
         model_version="2026-07-09",
         workflow_steps=("protocol", "screen", "extract", "synthesize", "audit"),
-        capability_bindings=(
-            _toolbox_binding(
-                "literature.files",
-                "code_interpreter",
-                "LiteratureRequestV2",
-                "LiteratureSynthesisV2",
-            ),
-        ),
         session_files=True,
     ),
     "grant": _manifest(
@@ -427,14 +419,6 @@ _MANIFESTS: dict[str, AgentManifest] = {
         model_deployment="gpt-5.6-sol",
         model_version="2026-07-09",
         workflow_steps=("requirements", "project_facts", "draft", "compliance", "approval"),
-        capability_bindings=(
-            _toolbox_binding(
-                "grant.files",
-                "code_interpreter",
-                "GrantRequestV2",
-                "GrantPackageV2",
-            ),
-        ),
         session_files=True,
     ),
     "matching": _manifest(
@@ -450,14 +434,6 @@ _MANIFESTS: dict[str, AgentManifest] = {
         evidence_kinds=("person", "facility", "equipment", "method", "template"),
         model_tier="fast",
         workflow_steps=("criteria", "hard_filters", "entity_resolution", "score", "shortlist"),
-        capability_bindings=(
-            _toolbox_binding(
-                "matching.files",
-                "code_interpreter",
-                "MatchingRequestV2",
-                "MatchingShortlistV2",
-            ),
-        ),
         session_files=True,
     ),
     "dataset": _manifest(

@@ -14,8 +14,6 @@ environmentVariables:
       value: ${AZURE_TENANT_ID}
     - name: RESEARCH_WORKSPACE_PROJECT_ID
       value: ${AZURE_AI_PROJECT_NAME}
-    - name: TOOLBOX_ENDPOINT
-      value: ${TOOLBOX_SHARED_MCP_ENDPOINT}
     - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
       value: "false"
 kind: hosted

@@ -36,6 +36,11 @@ apps/web/out/
 apps/web/coverage/
 apps/web/playwright-report/
 apps/web/test-results/
+apps/web/.swc/
+
+# Browser MCP session dumps and ad-hoc screenshots captured during debugging
+.playwright-mcp/
+/*.png
 
 # Generated infrastructure artifacts
 infra/main.json

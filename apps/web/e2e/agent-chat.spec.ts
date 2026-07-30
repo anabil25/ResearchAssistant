@@ -173,15 +173,20 @@ test("[pw.agent-chat-agent] switching the Foundry agent starts a fresh thread [p
   await openStudio(page, "literature", "Literature Studio");
   await sendMessage(page, "Keep this turn in the authorized-evidence thread.");
 
+  // Switching agent clears the transcript and resets thread state.
+  await page.locator(".agent-chat-picker select").selectOption("literature-online-agent");
+  await expect(page.locator(".agent-chat-message")).toHaveCount(0);
+  await expect(page.getByText(/you do not need to configure a workflow/i)).toBeVisible();
+
+  // Thread for the new agent is created lazily on the next send.
   const opened = page.waitForResponse(
     (candidate) =>
       candidate.request().method() === "POST" &&
       new URL(candidate.url()).pathname.endsWith("/api/backend/api/agent-chat/threads"),
   );
-  await page.locator(".agent-chat-picker select").selectOption("literature-online-agent");
+  await page.getByRole("textbox", { name: "Message" }).fill("search using public sources");
+  await page.getByRole("button", { name: "Send" }).click();
   expect((await opened).status()).toBe(201);
 
-  await expect(page.getByText("literature-online-agent")).toBeVisible();
-  await expect(page.locator(".agent-chat-message")).toHaveCount(0);
-  await expect(page.getByText(/you do not need to configure a workflow/i)).toBeVisible();
+  await expect(page.locator(".agent-chat-picker select")).toHaveValue("literature-online-agent");
 });

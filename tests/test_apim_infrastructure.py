@@ -242,6 +242,7 @@ def test_connector_operation_policies_cover_apim_native_transformations() -> Non
     for value in policies.values():
         ElementTree.fromstring(value)
         assert 'name="Authorization" exists-action="delete"' in value
+        assert 'name="Accept-Encoding" exists-action="override"><value>identity</value>' in value
         assert "set-backend-service" in value
     assert "send-request" in policies["pubmedSearch"]
     assert "xml-to-json" in policies["arxivSearch"]

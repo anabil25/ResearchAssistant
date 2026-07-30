@@ -162,8 +162,10 @@ export function AgentChat({
 }) {
   const copy = CAPABILITY_COPY[capability];
   const [agents, setAgents] = useState<ChatAgentChoice[]>([]);
+  const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentName, setAgentName] = useState<string | null>(null);
   const [thread, setThread] = useState<ChatThread | null>(null);
+  const [threadLoading, setThreadLoading] = useState(false);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
@@ -172,28 +174,26 @@ export function AgentChat({
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
-  // Switching agents starts a fresh thread while an older thread's request may
-  // still be in flight. Without a monotonic guard, that stale response would
-  // land afterwards and replace the new thread with the abandoned one.
-  const threadSequenceRef = useRef(0);
+  const threadRef = useRef<ChatThread | null>(null);
+  // Tracks the agent the thread was opened against so we can detect stale threads.
+  const threadAgentRef = useRef<string | null>(null);
 
-  const startThread = useCallback(
-    async (nextAgent: string) => {
-      const requestId = (threadSequenceRef.current += 1);
+  // Returns the active thread, creating one lazily if needed.
+  const ensureThread = useCallback(
+    async (agent: string): Promise<ChatThread> => {
+      if (threadRef.current && threadAgentRef.current === agent) {
+        return threadRef.current;
+      }
+      setThreadLoading(true);
       setError(null);
-      setThread(null);
-      setPending([]);
       try {
-        const opened = await openChatThread(
-          capability,
-          nextAgent,
-          projectId ?? undefined,
-        );
-        if (threadSequenceRef.current !== requestId) return;
+        const opened = await openChatThread(capability, agent, projectId ?? undefined);
+        threadRef.current = opened;
+        threadAgentRef.current = agent;
         setThread(opened);
-      } catch (caught) {
-        if (threadSequenceRef.current !== requestId) return;
-        setError(classifyAsyncError(caught).message);
+        return opened;
+      } finally {
+        setThreadLoading(false);
       }
     },
     [capability, projectId],
@@ -201,22 +201,32 @@ export function AgentChat({
 
   useEffect(() => {
     let cancelled = false;
+    setAgentsLoading(true);
     void listChatAgents(capability, projectId ?? undefined)
       .then((choices) => {
         if (cancelled) return;
         setAgents(choices);
+        setAgentsLoading(false);
         const first = choices[0]?.name ?? null;
         setAgentName(first);
-        if (first) void startThread(first);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
+        setAgentsLoading(false);
         setError(classifyAsyncError(caught).message);
       });
     return () => {
       cancelled = true;
     };
-  }, [capability, projectId, startThread]);
+  }, [capability, projectId]);
+
+  // Reset thread when agent or capability changes so the next interaction opens a fresh one.
+  useEffect(() => {
+    threadRef.current = null;
+    threadAgentRef.current = null;
+    setThread(null);
+    setPending([]);
+  }, [agentName, capability]);
 
   useEffect(() => {
     // jsdom and older engines omit scrollIntoView; autoscroll is cosmetic.
@@ -231,9 +241,18 @@ export function AgentChat({
     [agents, agentName],
   );
 
+  const busy = sending || threadLoading;
+
   const attachFiles = useCallback(
     async (files: File[]) => {
-      if (!thread || files.length === 0) return;
+      if (!agentName || files.length === 0) return;
+      let activeThread: ChatThread;
+      try {
+        activeThread = await ensureThread(agentName);
+      } catch (caught) {
+        setError(classifyAsyncError(caught).message);
+        return;
+      }
       const queued = files.map<PendingAttachment>((file) => ({
         key: attachmentKey(file),
         name: file.name,
@@ -251,7 +270,7 @@ export function AgentChat({
           const key = attachmentKey(file);
           try {
             const uploaded = await uploadChatFile(
-              thread.id,
+              activeThread.id,
               file,
               projectId ?? undefined,
             );
@@ -278,7 +297,7 @@ export function AgentChat({
         }),
       );
     },
-    [thread, projectId],
+    [agentName, ensureThread, projectId],
   );
 
   const onFileInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -294,9 +313,19 @@ export function AgentChat({
 
   const send = async () => {
     const text = draft.trim();
-    if (!thread || !text || sending) return;
+    if (!agentName || !text || sending) return;
     setSending(true);
     setError(null);
+    setDraft("");
+    let activeThread: ChatThread;
+    try {
+      activeThread = await ensureThread(agentName);
+    } catch (caught) {
+      setError(classifyAsyncError(caught).message);
+      setDraft(text);
+      setSending(false);
+      return;
+    }
     const sentAttachments = pending
       .filter((item) => item.state === "ready" && item.attachment)
       .map((item) => item.attachment as ChatAttachment);
@@ -308,26 +337,22 @@ export function AgentChat({
       agent_name: null,
       attachments: sentAttachments,
     };
-    setThread({ ...thread, messages: [...thread.messages, optimistic] });
-    setDraft("");
+    setThread({ ...activeThread, messages: [...activeThread.messages, optimistic] });
+    threadRef.current = { ...activeThread, messages: [...activeThread.messages, optimistic] };
     setPending([]);
     try {
-      await sendChatMessage(thread.id, text, projectId ?? undefined);
-      // The server owns the transcript: refetching keeps the optimistic turn
-      // from drifting from what was actually recorded against the conversation.
-      setThread(await getChatThread(thread.id, projectId ?? undefined));
+      await sendChatMessage(activeThread.id, text, projectId ?? undefined);
+      const refreshed = await getChatThread(activeThread.id, projectId ?? undefined);
+      threadRef.current = refreshed;
+      setThread(refreshed);
     } catch (caught) {
       setError(classifyAsyncError(caught).message);
       setThread((current) =>
         current
-          ? {
-              ...current,
-              messages: current.messages.filter(
-                (message) => message.id !== optimistic.id,
-              ),
-            }
+          ? { ...current, messages: current.messages.filter((m) => m.id !== optimistic.id) }
           : current,
       );
+      threadRef.current = activeThread;
       setDraft(text);
     } finally {
       setSending(false);
@@ -373,10 +398,9 @@ export function AgentChat({
           <span>Agent</span>
           <select
             value={agentName ?? ""}
-            disabled={agents.length === 0 || sending}
+            disabled={agentsLoading || busy}
             onChange={(event) => {
               setAgentName(event.target.value);
-              void startThread(event.target.value);
             }}
           >
             {agents.map((agent) => (
@@ -472,6 +496,12 @@ export function AgentChat({
           </article>
         ))}
 
+        {threadLoading ? (
+          <p className="agent-chat-pending">
+            <CircleDashed className="spin" size={16} aria-hidden="true" />
+            <span>Connecting to {agentName}...</span>
+          </p>
+        ) : null}
         {sending ? (
           <p className="agent-chat-pending">
             <CircleDashed className="spin" size={16} aria-hidden="true" />
@@ -521,7 +551,7 @@ export function AgentChat({
             type="button"
             className="agent-chat-attach"
             aria-label="Attach files"
-            disabled={!thread || sending}
+            disabled={!agentName || busy}
             onClick={() => fileInputRef.current?.click()}
           >
             <Paperclip size={17} />
@@ -539,13 +569,9 @@ export function AgentChat({
             ref={composerRef}
             value={draft}
             rows={1}
-            placeholder={
-              thread
-                ? "Ask the agent anything, or drop a file here"
-                : "Connecting to the agent..."
-            }
+            placeholder="Ask the agent anything, or drop a file here"
             aria-label="Message"
-            disabled={!thread || sending}
+            disabled={!agentName || busy}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onComposerKeyDown}
           />
@@ -553,7 +579,7 @@ export function AgentChat({
             type="submit"
             className="primary-button agent-chat-send"
             aria-label="Send"
-            disabled={!thread || sending || uploading || draft.trim().length === 0}
+            disabled={!agentName || busy || uploading || draft.trim().length === 0}
           >
             {sending ? (
               <CircleDashed className="spin" size={16} />
