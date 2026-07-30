@@ -550,7 +550,7 @@ async def send_chat_message(
             text=_contract_envelope(
                 thread,
                 identity=identity,
-                project_id=store.project_id,
+                settings=cast(Settings, request.app.state.settings),
                 text=payload.text,
                 attachments=pending,
             ),
@@ -708,14 +708,17 @@ def _contract_envelope(
     thread: ChatThread,
     *,
     identity: IdentityContext,
-    project_id: str,
+    settings: Settings,
     text: str,
     attachments: list[ChatAttachment],
 ) -> str:
+    # Agents pin themselves to this deployment's tenant/project and reject any other
+    # scope, so the envelope carries the deployment scope; the caller is carried by
+    # principal_id and the delegated identity header.
     envelope: dict[str, object] = {
         "query": _compose_turn(text, attachments),
-        "tenant_id": identity.tenant_id,
-        "project_id": project_id,
+        "tenant_id": settings.workspace_tenant_id,
+        "project_id": settings.workspace_project_id,
         "principal_id": identity.user_id,
         "session_id": thread.id,
     }

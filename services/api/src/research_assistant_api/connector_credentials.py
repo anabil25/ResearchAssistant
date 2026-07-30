@@ -7,10 +7,16 @@ straight to API Management and never stored in the workspace or returned.
 from __future__ import annotations
 
 import os
+from collections.abc import Callable
+from weakref import WeakKeyDictionary
 
 import httpx
 from azure.core.credentials import TokenCredential
-from azure.identity import DefaultAzureCredential, ManagedIdentityCredential
+from azure.identity import (
+    DefaultAzureCredential,
+    ManagedIdentityCredential,
+    get_bearer_token_provider,
+)
 from research_assistant_core.connector_catalog import UNCONFIGURED_CREDENTIAL
 
 ARM_SCOPE = "https://management.azure.com/.default"
@@ -27,9 +33,31 @@ class ConnectorCredentialNotConfiguredError(ConnectorCredentialError):
 
 def _azure_credential() -> TokenCredential:
     client_id = os.environ.get("AZURE_CLIENT_ID")
-    if client_id:
+    if client_id or os.environ.get("IDENTITY_ENDPOINT") or os.environ.get("MSI_ENDPOINT"):
         return ManagedIdentityCredential(client_id=client_id)
     return DefaultAzureCredential()
+
+
+_DEFAULT_CREDENTIAL: TokenCredential | None = None
+_TOKEN_PROVIDERS: WeakKeyDictionary[TokenCredential, Callable[[], str]] = WeakKeyDictionary()
+
+
+def _arm_token(credential: TokenCredential | None) -> str:
+    """Return an ARM token, reusing the cached one until it expires.
+
+    Credentials do not cache on their own -- caching lives in the bearer token
+    provider -- so both the credential and the provider must outlive the request.
+    """
+    global _DEFAULT_CREDENTIAL
+    if credential is None:
+        if _DEFAULT_CREDENTIAL is None:
+            _DEFAULT_CREDENTIAL = _azure_credential()
+        credential = _DEFAULT_CREDENTIAL
+    provider = _TOKEN_PROVIDERS.get(credential)
+    if provider is None:
+        provider = get_bearer_token_provider(credential, ARM_SCOPE)
+        _TOKEN_PROVIDERS[credential] = provider
+    return provider()
 
 
 def _named_value_url(named_value: str) -> str:
@@ -58,7 +86,7 @@ def set_connector_api_key(
 ) -> None:
     """Upsert ``named_value``; ``None`` restores the unconfigured sentinel."""
     url = _named_value_url(named_value)
-    token = (credential or _azure_credential()).get_token(ARM_SCOPE).token
+    token = _arm_token(credential)
     payload = {
         "properties": {
             "displayName": named_value,
