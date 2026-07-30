@@ -27,11 +27,11 @@ resource account 'Microsoft.Storage/storageAccounts@2026-04-01' = {
     defaultToOAuthAuthentication: true
     dnsEndpointType: 'Standard'
     minimumTlsVersion: 'TLS1_2'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
     supportsHttpsTrafficOnly: true
     networkAcls: {
       bypass: 'None'
-      defaultAction: 'Allow'
+      defaultAction: 'Deny'
       ipRules: []
       virtualNetworkRules: []
     }

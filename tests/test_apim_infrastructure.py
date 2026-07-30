@@ -33,16 +33,26 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "research-connectors/v1'" not in module
 
 
-def test_apim_uses_the_public_network_in_the_poc_profile() -> None:
+def test_data_services_use_the_minimal_private_network() -> None:
     resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
         encoding="utf-8"
     )
     container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
         encoding="utf-8"
     )
+    private_network = (ROOT / "infra" / "modules" / "app-private-network.bicep").read_text(
+        encoding="utf-8"
+    )
 
-    assert "app-private-network.bicep" not in resources
-    assert "infrastructureSubnetId" not in container_apps
+    assert "app-private-network.bicep" in resources
+    assert "infrastructureSubnetId: infrastructureSubnetId" in container_apps
+    assert "10.70.0.0/27" in private_network
+    assert "10.70.0.32/28" in private_network
+    assert "Microsoft.App/environments" in private_network
+    assert "privatelink.blob." in private_network
+    assert "privatelink.documents.azure.com" in private_network
+    assert private_network.count("Microsoft.Network/privateEndpoints@") == 2
+    assert "api-management" not in private_network
 
 
 def test_every_container_app_binds_acr_pull_to_its_system_identity() -> None:

@@ -5,6 +5,7 @@ param location string
 param tags object = {}
 param logAnalyticsWorkspaceName string
 param appInsightsConnectionString string
+param infrastructureSubnetId string
 param foundryProjectEndpoint string
 param openAIEndpoint string
 param apiIdentityResourceId string
@@ -109,6 +110,9 @@ resource environment 'Microsoft.App/managedEnvironments@2026-01-01' = {
   location: location
   tags: tags
   properties: {
+    vnetConfiguration: {
+      infrastructureSubnetId: infrastructureSubnetId
+    }
     appLogsConfiguration: {
       destination: 'log-analytics'
       logAnalyticsConfiguration: {

@@ -252,6 +252,17 @@ module cosmos 'cosmos.bicep' = {
   }
 }
 
+module privateNetwork 'app-private-network.bicep' = if (includeAcr) {
+  name: 'app-private-network'
+  params: {
+    name: resourceToken
+    location: location
+    tags: tags
+    storageAccountId: storage.outputs.accountId
+    cosmosAccountId: cosmos.outputs.accountId
+  }
+}
+
 module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault) {
   name: 'research-attestation-keyvault'
   params: {
@@ -313,6 +324,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.workspaceName
     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+    infrastructureSubnetId: privateNetwork!.outputs.containerAppsSubnetId
     foundryProjectEndpoint: 'https://${foundryAccount.name}.services.ai.azure.com/api/projects/${foundryAccount::project.name}'
     openAIEndpoint: 'https://${foundryAccount.name}.openai.azure.com/'
     apiIdentityResourceId: identities.outputs.apiResourceId

@@ -31,7 +31,7 @@ resource account 'Microsoft.DocumentDB/databaseAccounts@2025-04-15' = {
       }
     ]
     networkAclBypass: 'None'
-    publicNetworkAccess: 'Enabled'
+    publicNetworkAccess: 'Disabled'
   }
 }
 
