@@ -92,7 +92,9 @@ async def test_gateway_routes_source_specific_endpoint_and_uses_managed_identity
     await client.aclose()
 
     assert result.records == [{"id": "grant-1"}]
+    assert requests[0].method == "GET"
     assert requests[0].url.path == "/v1/connectors/grants_gov/search"
+    assert dict(requests[0].url.params) == {"query": "open science", "limit": "3"}
     assert requests[0].headers["authorization"] == "Bearer test-token"
     assert credential.scopes == ["https://management.azure.com/.default"]
     assert credential.closed is True

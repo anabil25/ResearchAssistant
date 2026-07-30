@@ -50,8 +50,12 @@ AZ_CLI = "az.cmd" if os.name == "nt" else "az"
 AZD_CLI = "azd.exe" if os.name == "nt" else "azd"
 FOUNDRY_TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 APIM_API_VERSION = "2024-05-01"
+APIM_MCP_API_VERSION = "2025-09-01-preview"
 FOUNDRY_CONNECTION_API_VERSION = "2025-04-01-preview"
 APIM_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
+CONNECTOR_API_ID = "research-connectors-v1"
+CONNECTOR_MCP_TOOLS_PATH = ROOT / "infra" / "connector-mcp-tools.json"
+APIM_TOOL_RETRY_DELAYS = (0, 5, 10, 20, 30, 60)
 # The memory store API is versioned separately from the agents API.
 FOUNDRY_MEMORY_API_VERSION = "2025-11-15-preview"
 MEMORY_STORE_NAME = "research_shared_memory"
@@ -172,6 +176,109 @@ def apim_mcp_subscription_key(
     if not isinstance(key, str) or not key:
         raise RuntimeError("APIM MCP subscription returned no primary key")
     return key
+
+
+def connector_mcp_tool_catalog() -> tuple[dict[str, str], ...]:
+    payload = json.loads(CONNECTOR_MCP_TOOLS_PATH.read_text(encoding="utf-8"))
+    if not isinstance(payload, list):
+        raise RuntimeError("Connector MCP tool catalog must be a JSON array")
+    required = {"apiId", "name", "displayName", "description", "operationId"}
+    tools: list[dict[str, str]] = []
+    identities: set[tuple[str, str]] = set()
+    for item in payload:
+        if not isinstance(item, dict) or set(item) != required:
+            raise RuntimeError("Connector MCP tool catalog contains an invalid entry")
+        if not all(isinstance(item[field], str) and item[field] for field in required):
+            raise RuntimeError("Connector MCP tool catalog fields must be non-empty strings")
+        tool = {field: item[field] for field in required}
+        identity = (tool["apiId"], tool["name"])
+        if identity in identities:
+            raise RuntimeError(f"Connector MCP tool catalog duplicates {identity[0]}/{identity[1]}")
+        identities.add(identity)
+        tools.append(tool)
+    expected = {
+        (connector.apim_mcp_api_id, operation.mcp_tool_name, operation.id)
+        for connector in connector_definitions()
+        for operation in connector.operations
+        if operation.operation_class != "delete"
+    }
+    actual = {(tool["apiId"], tool["name"], tool["operationId"]) for tool in tools}
+    if actual != expected:
+        raise RuntimeError("Connector MCP tool catalog does not match the governed connector catalog")
+    return tuple(tools)
+
+
+def configure_connector_mcp_tools(
+    credential: TokenCredential | None = None,
+) -> dict[str, int]:
+    """Upsert preview APIM tool children sequentially and verify inventory."""
+    effective_credential = credential or DefaultAzureCredential()
+    resource_manager_endpoint = _resource_manager_endpoint()
+    service_base = (
+        f"{resource_manager_endpoint}/subscriptions/{required_env('AZURE_SUBSCRIPTION_ID')}"
+        f"/resourceGroups/{required_env('AZURE_RESOURCE_GROUP')}"
+        "/providers/Microsoft.ApiManagement/service/"
+        f"{required_env('AZURE_API_MANAGEMENT_NAME')}"
+    )
+    tools = connector_mcp_tool_catalog()
+    expected: dict[str, set[str]] = {}
+    for tool in tools:
+        expected.setdefault(tool["apiId"], set()).add(tool["name"])
+        _arm_json_request(
+            effective_credential,
+            method="PUT",
+            url=(
+                f"{service_base}/apis/{tool['apiId']}/tools/{tool['name']}"
+                f"?api-version={APIM_MCP_API_VERSION}"
+            ),
+            resource_manager_endpoint=resource_manager_endpoint,
+            payload={
+                "properties": {
+                    "displayName": tool["displayName"],
+                    "description": tool["description"],
+                    "operationId": (
+                        f"{service_base}/apis/{CONNECTOR_API_ID}/operations/"
+                        f"{tool['operationId']}"
+                    ),
+                }
+            },
+        )
+
+    last_missing: dict[str, list[str]] = {}
+    for attempt, delay in enumerate(APIM_TOOL_RETRY_DELAYS, start=1):
+        if delay:
+            print(
+                f"Waiting {delay}s for APIM MCP tool inventory "
+                f"({attempt}/{len(APIM_TOOL_RETRY_DELAYS)})."
+            )
+            time.sleep(delay)
+        missing: dict[str, list[str]] = {}
+        for api_id, expected_names in expected.items():
+            try:
+                response = _arm_json_request(
+                    effective_credential,
+                    method="GET",
+                    url=f"{service_base}/apis/{api_id}/tools?api-version={APIM_MCP_API_VERSION}",
+                    resource_manager_endpoint=resource_manager_endpoint,
+                )
+            except RuntimeError:
+                missing[api_id] = sorted(expected_names)
+                continue
+            items = response.get("value")
+            actual_names = {
+                item["name"]
+                for item in items
+                if isinstance(items, list)
+                and isinstance(item, dict)
+                and isinstance(item.get("name"), str)
+            } if isinstance(items, list) else set()
+            absent = expected_names - actual_names
+            if absent:
+                missing[api_id] = sorted(absent)
+        if not missing:
+            return {api_id: len(names) for api_id, names in expected.items()}
+        last_missing = missing
+    raise RuntimeError(f"APIM MCP tool inventory did not converge: {last_missing}")
 
 
 def with_rbac_retry[T](label: str, operation: Callable[[], T]) -> T:
@@ -428,8 +535,6 @@ def wait_for_acr_pull_roles() -> None:
     targets = [
         required_env("SERVICE_WEB_NAME"),
         required_env("SERVICE_API_NAME"),
-        required_env("SERVICE_WORKER_NAME"),
-        required_env("SERVICE_CONNECTOR_ADAPTER_NAME"),
     ]
     for app_name in targets:
         registry_identity = subprocess.run(
@@ -1090,32 +1195,6 @@ def configure_agent_memory(credential: TokenCredential | None = None) -> str:
     return MEMORY_STORE_NAME
 
 
-def configure_connector_adapter_identity() -> None:
-    subprocess.run(
-        [
-            AZ_CLI,
-            "containerapp",
-            "update",
-            "--resource-group",
-            required_env("AZURE_RESOURCE_GROUP"),
-            "--name",
-            required_env("SERVICE_CONNECTOR_ADAPTER_NAME"),
-            "--set-env-vars",
-            (
-                "RESEARCH_APIM_PRINCIPAL_ID="
-                f"{required_env('AZURE_API_MANAGEMENT_PRINCIPAL_ID')}"
-            ),
-            (
-                "RESEARCH_WORKSPACE_TENANT_ID="
-                f"{required_env('AZURE_TENANT_ID')}"
-            ),
-            "--output",
-            "none",
-        ],
-        check=True,
-    )
-
-
 LOCAL_ENV_BEGIN = "# >>> azd postprovision (managed) >>>"
 LOCAL_ENV_END = "# <<< azd postprovision (managed) <<<"
 #: Endpoints a local API process needs to read back what this deployment
@@ -1172,7 +1251,7 @@ def main() -> None:
     embed_documents(documents, credential)
     upload_search_documents(endpoint, index_name, documents, credential)
     upload_source_artifacts(credential)
-    configure_connector_adapter_identity()
+    configure_connector_mcp_tools(credential)
     connector_targets = configure_connector_connections(credential)
     configure_provider_apis(credential, connector_targets=connector_targets)
     configure_agent_memory(credential)

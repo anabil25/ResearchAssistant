@@ -259,12 +259,15 @@ def test_preprovision_checks_requested_model_capacity() -> None:
     assert "az ad signed-in-user show" not in posix
 
 
-def test_accelerator_uses_one_environment_scoped_durable_task_hub() -> None:
-    module = (ROOT / "infra" / "modules" / "durable-task.bicep").read_text(encoding="utf-8")
-
-    assert "resource legacyTaskHub" not in module
-    assert "name: 'research'" in module
-    assert "output taskHubName string = taskHub.name" in module
+def test_accelerator_does_not_provision_durable_task() -> None:
+    assert not (ROOT / "infra" / "modules" / "durable-task.bicep").exists()
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(encoding="utf-8")
+    containers = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
+        encoding="utf-8"
+    )
+    assert "Microsoft.DurableTask" not in resources
+    assert "durableTask" not in resources
+    assert "DURABLE_TASK_SCHEDULER_CONNECTION_STRING" not in containers
 
 
 def test_azd_up_deploys_every_service_in_parallel_without_manifest_writes() -> None:

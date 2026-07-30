@@ -18,8 +18,10 @@ from scripts.postprovision import (
     _reconcile_toolbox,
     apim_mcp_subscription_key,
     configure_connector_connections,
+    configure_connector_mcp_tools,
     connector_connection_payload,
     connector_mcp_targets,
+    connector_mcp_tool_catalog,
     expected_shared_tool_names,
     expected_toolbox_tool_names,
     load_documents,
@@ -175,8 +177,6 @@ def test_postprovision_waits_for_each_container_app_acr_role(
         "AZURE_CONTAINER_REGISTRY_ENDPOINT": "acrtest.azurecr.io",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "connector-adapter",
     }
     role_checks: list[str] = []
 
@@ -206,8 +206,6 @@ def test_postprovision_waits_for_each_container_app_acr_role(
     assert role_checks == [
         "principal-web",
         "principal-api",
-        "principal-worker",
-        "principal-connector-adapter",
     ]
 
 
@@ -273,6 +271,107 @@ def test_connector_mcp_targets_require_the_complete_governed_catalog() -> None:
     }
     with pytest.raises(RuntimeError, match="does not match the governed catalog"):
         connector_mcp_targets("[]")
+
+
+def test_connector_mcp_tools_are_reconciled_sequentially_and_verified(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "AZURE_SUBSCRIPTION_ID": "subscription-id",
+        "AZURE_RESOURCE_GROUP": "resource-group",
+        "AZURE_API_MANAGEMENT_NAME": "apim-name",
+    }
+    tools = connector_mcp_tool_catalog()
+    expected_by_api: dict[str, list[str]] = {}
+    for tool in tools:
+        expected_by_api.setdefault(tool["apiId"], []).append(tool["name"])
+    requests: list[dict[str, object]] = []
+
+    def arm_request(_credential: object, **kwargs: object) -> dict[str, object]:
+        requests.append(kwargs)
+        if kwargs["method"] == "GET":
+            api_id = str(kwargs["url"]).split("/apis/", 1)[1].split("/tools", 1)[0]
+            return {"value": [{"name": name} for name in expected_by_api[api_id]]}
+        return {}
+
+    monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
+    monkeypatch.setattr(
+        "scripts.postprovision._resource_manager_endpoint",
+        lambda: "https://management.azure.com",
+    )
+    monkeypatch.setattr("scripts.postprovision._arm_json_request", arm_request)
+
+    result = configure_connector_mcp_tools(object())
+
+    puts = [request for request in requests if request["method"] == "PUT"]
+    gets = [request for request in requests if request["method"] == "GET"]
+    assert len(puts) == len(tools) == 20
+    assert len(gets) == len(expected_by_api) == 12
+    assert requests[: len(tools)] == puts
+    assert result == {api_id: len(names) for api_id, names in expected_by_api.items()}
+    for request, tool in zip(puts, tools, strict=True):
+        assert str(request["url"]).endswith(
+            f"/apis/{tool['apiId']}/tools/{tool['name']}?api-version=2025-09-01-preview"
+        )
+        assert request["payload"] == {
+            "properties": {
+                "displayName": tool["displayName"],
+                "description": tool["description"],
+                "operationId": (
+                    "https://management.azure.com/subscriptions/subscription-id/"
+                    "resourceGroups/resource-group/providers/Microsoft.ApiManagement/"
+                    "service/apim-name/apis/research-connectors-v1/operations/"
+                    f"{tool['operationId']}"
+                ),
+            }
+        }
+
+
+@pytest.mark.parametrize("status", [400, 502])
+def test_connector_mcp_tool_write_retries_only_transient_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+) -> None:
+    values = {
+        "AZURE_SUBSCRIPTION_ID": "subscription-id",
+        "AZURE_RESOURCE_GROUP": "resource-group",
+        "AZURE_API_MANAGEMENT_NAME": "apim-name",
+    }
+    tool = {
+        "apiId": "research-pubmed-mcp-v1",
+        "name": "search",
+        "displayName": "search",
+        "description": "PubMed search",
+        "operationId": "pubmedSearch",
+    }
+    calls = 0
+    sleeps: list[int] = []
+
+    def arm_request(_credential: object, **kwargs: object) -> dict[str, object]:
+        nonlocal calls
+        calls += 1
+        if kwargs["method"] == "PUT" and calls == 1:
+            raise RuntimeError(f"ARM request failed with HTTP {status}")
+        return {"value": [{"name": "search"}]} if kwargs["method"] == "GET" else {}
+
+    monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
+    monkeypatch.setattr(
+        "scripts.postprovision._resource_manager_endpoint",
+        lambda: "https://management.azure.com",
+    )
+    monkeypatch.setattr("scripts.postprovision.connector_mcp_tool_catalog", lambda: (tool,))
+    monkeypatch.setattr("scripts.postprovision._arm_json_request", arm_request)
+    monkeypatch.setattr("scripts.postprovision.time.sleep", sleeps.append)
+
+    if status == 400:
+        with pytest.raises(RuntimeError, match="HTTP 400"):
+            configure_connector_mcp_tools(object())
+        assert calls == 1
+        assert sleeps == []
+    else:
+        assert configure_connector_mcp_tools(object()) == {"research-pubmed-mcp-v1": 1}
+        assert calls == 3
+        assert sleeps == [10]
 
 
 def test_toolbox_version_payloads_match_the_governed_connector_catalog() -> None:

@@ -47,7 +47,7 @@ if [ -z "$display_location" ]; then
   exit 1
 fi
 
-for provider in Microsoft.ApiManagement Microsoft.Web Microsoft.DurableTask; do
+for provider in Microsoft.ApiManagement Microsoft.Web; do
   state="$(az provider show --namespace "$provider" --query registrationState --output tsv)"
   if [ "$state" != "Registered" ]; then
     echo "Registering $provider..."
@@ -63,7 +63,6 @@ for resource in \
   "Microsoft.App|containerApps" \
   "Microsoft.DocumentDB|databaseAccounts" \
   "Microsoft.Storage|storageAccounts" \
-  "Microsoft.DurableTask|schedulers" \
   "Microsoft.OperationalInsights|workspaces" \
   "Microsoft.Insights|components" \
   "Microsoft.ContainerRegistry|registries"; do

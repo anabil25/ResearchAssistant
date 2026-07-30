@@ -8,11 +8,7 @@ $python = if (Test-Path $provisionPython) { $provisionPython } else { "python" }
 Push-Location $repoRoot
 & $python -m scripts.build_agent_source_tree
 $exitCode = $LASTEXITCODE
-if ($exitCode -eq 0) {
-  & $python -m scripts.build_connector_function_source
-  $exitCode = $LASTEXITCODE
-}
 Pop-Location
 if ($exitCode -ne 0) {
-  throw "Predeploy source generation failed."
+  throw "Hosted Agent committed-source identity generation failed."
 }

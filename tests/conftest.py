@@ -97,9 +97,5 @@ def deny_external_network(monkeypatch: pytest.MonkeyPatch) -> None:
 def shutdown_local_telemetry() -> Iterator[None]:
     yield
     from research_assistant_api.telemetry import shutdown_telemetry as shutdown_api
-    from research_assistant_worker.telemetry import (
-        shutdown_telemetry as shutdown_worker,
-    )
 
-    shutdown_worker()
     shutdown_api()

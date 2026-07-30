@@ -3,7 +3,7 @@ targetScope = 'resourceGroup'
 param name string
 param location string
 param tags object = {}
-param workerPrincipalId string
+param apiPrincipalId string
 
 var cognitiveServicesUserRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -28,11 +28,11 @@ resource account 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   }
 }
 
-resource workerUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(account.id, workerPrincipalId, cognitiveServicesUserRoleId)
+resource apiUserRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(account.id, apiPrincipalId, cognitiveServicesUserRoleId)
   scope: account
   properties: {
-    principalId: workerPrincipalId
+    principalId: apiPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: cognitiveServicesUserRoleId
   }

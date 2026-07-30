@@ -3813,28 +3813,28 @@ export function AutomationStudio({
                   <button
                     type="button"
                     disabled
-                    title="Pausing requires the Durable Task Scheduler control plane, which this workspace does not expose yet."
+                    title="Pausing is unavailable in direct-execution mode."
                   >
                     Pause
                   </button>
                   <button
                     type="button"
                     disabled
-                    title="Resuming requires the Durable Task Scheduler control plane, which this workspace does not expose yet."
+                    title="Resuming is unavailable in direct-execution mode."
                   >
                     Resume
                   </button>
                   <button
                     type="button"
                     disabled
-                    title="Retrying requires the Durable Task Scheduler control plane, which this workspace does not expose yet."
+                    title="Retrying is unavailable in direct-execution mode."
                   >
                     Retry
                   </button>
                   <button
                     type="button"
                     disabled
-                    title="Cancelling requires the Durable Task Scheduler control plane, which this workspace does not expose yet."
+                    title="Cancelling is unavailable in direct-execution mode."
                   >
                     Cancel
                   </button>

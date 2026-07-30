@@ -605,8 +605,6 @@ def test_acr_role_wait_rejects_container_app_without_registry_identity(
         "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
     }
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
     monkeypatch.setattr(
@@ -628,8 +626,6 @@ def test_acr_role_wait_retries_until_assignment_is_visible(
         "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
     }
     role_attempts: dict[str, int] = {}
     sleeps: list[int] = []
@@ -655,11 +651,9 @@ def test_acr_role_wait_retries_until_assignment_is_visible(
     assert role_attempts == {
         "principal-web": 2,
         "principal-api": 2,
-        "principal-worker": 2,
-        "principal-adapter": 2,
     }
-    assert sleeps == [60, 60, 60, 60]
-    assert capsys.readouterr().out.count("Waiting 60s") == 4
+    assert sleeps == [60, 60]
+    assert capsys.readouterr().out.count("Waiting 60s") == 2
 
 
 def test_acr_role_wait_fails_after_fifth_check(
@@ -671,8 +665,6 @@ def test_acr_role_wait_fails_after_fifth_check(
         "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
     }
     checks = 0
 
@@ -704,8 +696,6 @@ def test_acr_role_wait_continues_to_later_apps_if_retry_iterator_is_exhausted(
         "AZURE_CONTAINER_REGISTRY_ENDPOINT": "registry.example",
         "SERVICE_WEB_NAME": "web",
         "SERVICE_API_NAME": "api",
-        "SERVICE_WORKER_NAME": "worker",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "adapter",
     }
     identities: list[str] = []
 
@@ -723,7 +713,7 @@ def test_acr_role_wait_continues_to_later_apps_if_retry_iterator_is_exhausted(
 
     postprovision.wait_for_acr_pull_roles()
 
-    assert identities == ["web", "api", "worker", "adapter"]
+    assert identities == ["web", "api"]
 
 
 def test_connector_connections_require_active_cloud_arm_endpoint(
@@ -820,44 +810,6 @@ def test_connector_connections_reject_non_https_endpoint(
         postprovision.configure_connector_connections(object())
 
 
-def test_connector_adapter_identity_updates_only_expected_environment(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "AZURE_RESOURCE_GROUP": "rg-research",
-        "SERVICE_CONNECTOR_ADAPTER_NAME": "connector-adapter",
-        "AZURE_API_MANAGEMENT_PRINCIPAL_ID": "apim-principal",
-        "AZURE_TENANT_ID": "tenant-id",
-    }
-    commands: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> Completed:
-        commands.append(command)
-        return Completed()
-
-    monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
-    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
-
-    postprovision.configure_connector_adapter_identity()
-
-    assert commands == [
-        [
-            postprovision.AZ_CLI,
-            "containerapp",
-            "update",
-            "--resource-group",
-            "rg-research",
-            "--name",
-            "connector-adapter",
-            "--set-env-vars",
-            "RESEARCH_APIM_PRINCIPAL_ID=apim-principal",
-            "RESEARCH_WORKSPACE_TENANT_ID=tenant-id",
-            "--output",
-            "none",
-        ]
-    ]
-
-
 def test_postprovision_main_orchestrates_in_dependency_order(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
@@ -898,8 +850,9 @@ def test_postprovision_main_orchestrates_in_dependency_order(
         calls.append(("blob-upload", received))
         return True
 
-    def configure_adapter() -> None:
-        calls.append("adapter")
+    def configure_tools(_credential: object) -> dict[str, int]:
+        calls.append("connector-tools")
+        return {"research-pubmed-mcp-v1": 2}
 
     connector_targets = {"pubmed": "https://gateway.example/pubmed/mcp"}
 
@@ -937,8 +890,8 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     )
     monkeypatch.setattr(
         postprovision,
-        "configure_connector_adapter_identity",
-        configure_adapter,
+        "configure_connector_mcp_tools",
+        configure_tools,
     )
     monkeypatch.setattr(
         postprovision,
@@ -972,7 +925,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
             ("https://search.example", "research-index", documents, credential),
         ),
         ("blob-upload", credential),
-        "adapter",
+        "connector-tools",
         "connector-connections",
         "provider-apis",
         "acr-roles",

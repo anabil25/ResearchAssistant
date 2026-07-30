@@ -13,11 +13,7 @@ dependencies = [
     "pyjwt[crypto]==2.13.0",
     "research-assistant-connectors",
     "research-assistant-core",
-    "uvicorn[standard]>=0.38,<1",
 ]
-
-[project.scripts]
-research-assistant-connector-adapter = "research_assistant_connector_adapter:main"
 
 [build-system]
 requires = ["uv_build>=0.10.2,<0.11.0"]

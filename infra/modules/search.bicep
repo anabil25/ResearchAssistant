@@ -4,7 +4,6 @@ param name string
 param location string
 param tags object = {}
 param apiPrincipalId string
-param workerPrincipalId string
 param principalId string = ''
 param principalType string = 'User'
 
@@ -42,21 +41,11 @@ resource search 'Microsoft.Search/searchServices@2025-05-01' = {
   }
 }
 
-resource apiReader 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(search.id, apiPrincipalId, searchIndexDataReaderRoleId)
+resource apiDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(search.id, apiPrincipalId, searchIndexDataContributorRoleId)
   scope: search
   properties: {
     principalId: apiPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: searchIndexDataReaderRoleId
-  }
-}
-
-resource workerDataContributor 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(search.id, workerPrincipalId, searchIndexDataContributorRoleId)
-  scope: search
-  properties: {
-    principalId: workerPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: searchIndexDataContributorRoleId
   }

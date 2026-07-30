@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-
 OperationClass = Literal["read", "create", "update", "delete"]
 
 
@@ -52,7 +51,7 @@ def _search_operation(connector_id: str) -> ConnectorOperation:
     return ConnectorOperation(
         id=f"{first}{''.join(part.capitalize() for part in remaining)}Search",
         mcp_tool_name="search",
-        method="GET",
+        method="POST",
         path=f"/v1/connectors/{connector_id}/search",
         operation_class="read",
     )
@@ -63,7 +62,7 @@ def _pubmed_lookup_operation() -> ConnectorOperation:
         id="pubmedLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/pubmed/lookup",
+        path="/v1/connectors/pubmed/records/{pmid}",
         operation_class="read",
     )
 
@@ -73,7 +72,7 @@ def _crossref_lookup_operation() -> ConnectorOperation:
         id="crossrefLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/crossref/lookup",
+        path="/v1/connectors/crossref/works/{doi:path}",
         operation_class="read",
     )
 
@@ -83,7 +82,7 @@ def _europe_pmc_lookup_operation() -> ConnectorOperation:
         id="europePmcLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/europe_pmc/lookup",
+        path="/v1/connectors/europe_pmc/articles/{source}/{article_id}",
         operation_class="read",
     )
 
@@ -93,7 +92,7 @@ def _clinical_trials_lookup_operation() -> ConnectorOperation:
         id="clinicalTrialsLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/clinical_trials/lookup",
+        path="/v1/connectors/clinical_trials/studies/{nct_id}",
         operation_class="read",
     )
 
@@ -103,7 +102,7 @@ def _datacite_lookup_operation() -> ConnectorOperation:
         id="dataciteLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/datacite/lookup",
+        path="/v1/connectors/datacite/dois/{doi:path}",
         operation_class="read",
     )
 
@@ -113,7 +112,7 @@ def _openalex_lookup_operation() -> ConnectorOperation:
         id="openalexLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/openalex/lookup",
+        path="/v1/connectors/openalex/works/{work_id}",
         operation_class="read",
     )
 
@@ -123,7 +122,7 @@ def _ror_lookup_operation() -> ConnectorOperation:
         id="rorLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/ror/lookup",
+        path="/v1/connectors/ror/organizations/{ror_id}",
         operation_class="read",
     )
 
@@ -133,7 +132,7 @@ def _arxiv_lookup_operation() -> ConnectorOperation:
         id="arxivLookup",
         mcp_tool_name="lookup",
         method="GET",
-        path="/v1/connectors/arxiv/lookup",
+        path="/v1/connectors/arxiv/records/{arxiv_id}",
         operation_class="read",
     )
 

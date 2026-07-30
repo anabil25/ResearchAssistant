@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Annotated, Any, Literal, cast
 from uuid import uuid4
 
-from fastapi import FastAPI, File, Form, HTTPException, Request, Response, UploadFile
+from fastapi import BackgroundTasks, FastAPI, File, Form, HTTPException, Request, Response, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.utils import get_openapi
 from research_assistant_core import (
@@ -104,11 +104,7 @@ from research_assistant_api.identity import (
     local_developer_identity,
     resolve_identity,
 )
-from research_assistant_api.orchestration import (
-    RunScheduler,
-    RunSchedulingError,
-    build_run_scheduler,
-)
+from research_assistant_api.orchestration import execute_library_ingestion
 from research_assistant_api.public_research import (
     ConnectorAuthorizationError,
     resolve_authorized_sources,
@@ -226,16 +222,12 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
             local_developer_identity(settings),
             None,
         )
-    application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
     await _init_agent_studio(application, settings)
-    for workspace_store in application.state.workspace_projects.stores_for_reconciliation():
-        _reconcile_pending_runs(workspace_store, application.state.scheduler)
     try:
         yield
     finally:
-        cast(RunScheduler, application.state.scheduler).close()
         await cast(ConnectorGateway, application.state.connector_gateway).close()
         # ``build_capability_discovery_source`` only returns a ``close``-able
         # adapter (``HttpCapabilityDiscoverySource``) when a real provider is
@@ -504,58 +496,6 @@ def _workspace_access(
     return store, identity
 
 
-def _reconcile_pending_runs(
-    store: WorkspaceStore,
-    scheduler: RunScheduler,
-) -> None:
-    if not scheduler.configured:
-        return
-    for run in store.runs():
-        if run.scheduling_state not in {"pending", "uncertain"} or run.orchestration_input is None:
-            continue
-        try:
-            scheduler.schedule(
-                instance_id=run.durable_instance_id,
-                payload=run.orchestration_input,
-            )
-        except RunSchedulingError as exc:
-            store.mark_run_scheduling(run.id, "uncertain")
-            logger.error(
-                "Durable scheduling reconciliation failed for %s: %s",
-                run.id,
-                exc,
-            )
-        else:
-            store.mark_run_scheduling(run.id, "scheduled")
-
-
-def _schedule_persisted_run(
-    *,
-    store: WorkspaceStore,
-    scheduler: RunScheduler,
-    run_id: str,
-    durable_instance_id: str,
-    orchestration_input: dict[str, Any],
-    ingestion_item_id: str | None = None,
-) -> None:
-    store.set_run_orchestration(run_id, orchestration_input)
-    try:
-        scheduler.schedule(
-            instance_id=durable_instance_id,
-            payload=orchestration_input,
-        )
-    except RunSchedulingError as exc:
-        if exc.ambiguous:
-            store.mark_run_scheduling(run_id, "uncertain")
-        elif ingestion_item_id:
-            store.fail_ingestion(ingestion_item_id, run_id, str(exc))
-        else:
-            store.fail_run(run_id, str(exc))
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if scheduler.configured:
-        store.mark_run_scheduling(run_id, "scheduled")
-
-
 @app.get("/health", response_model=HealthResponse, tags=["operations"])
 def health(request: Request) -> HealthResponse:
     return HealthResponse(
@@ -724,13 +664,12 @@ def library(request: Request) -> list[LibraryItem]:
     return store.library()
 
 
-def _schedule_ingestion(
+def _start_ingestion(
     record: LibraryIngestRecord,
-    request: Request,
     store: WorkspaceStore,
     identity: IdentityContext,
+    background_tasks: BackgroundTasks,
 ) -> LibraryIngestResponse:
-    scheduler = cast(RunScheduler, request.app.state.scheduler)
     if record.access == "public" and "research-admins" not in identity.groups:
         raise HTTPException(
             status_code=403,
@@ -739,9 +678,8 @@ def _schedule_ingestion(
     response = store.ingest(
         record,
         identity,
-        scheduler_managed=scheduler.configured,
     )
-    orchestration_input = {
+    ingestion_input = {
         "run_id": response.run.id,
         "source_id": response.item.id,
         "query": f"Ingest and index {response.item.title}",
@@ -764,14 +702,7 @@ def _schedule_ingestion(
         "ui_progress": response.run.progress,
         "ui_current_stage": response.run.current_stage,
     }
-    _schedule_persisted_run(
-        store=store,
-        scheduler=scheduler,
-        run_id=response.run.id,
-        durable_instance_id=response.run.durable_instance_id,
-        orchestration_input=orchestration_input,
-        ingestion_item_id=response.item.id,
-    )
+    background_tasks.add_task(execute_library_ingestion, store, ingestion_input)
     return response
 
 
@@ -783,16 +714,17 @@ def _schedule_ingestion(
 def ingest_library_item(
     payload: LibraryIngestRequest,
     request: Request,
+    background_tasks: BackgroundTasks,
 ) -> LibraryIngestResponse:
     store, identity = _workspace_access(request)
-    return _schedule_ingestion(
+    return _start_ingestion(
         LibraryIngestRecord(
             source_id=f"source-{uuid4().hex[:12]}",
             **payload.model_dump(),
         ),
-        request,
         store,
         identity,
+        background_tasks,
     )
 
 
@@ -803,6 +735,7 @@ def ingest_library_item(
 )
 async def upload_library_item(
     request: Request,
+    background_tasks: BackgroundTasks,
     title: Annotated[str, Form(min_length=3, max_length=240)],
     kind: Annotated[str, Form(min_length=2, max_length=80)],
     license_name: Annotated[
@@ -853,7 +786,7 @@ async def upload_library_item(
         content=content,
     )
     return await run_in_threadpool(
-        _schedule_ingestion,
+        _start_ingestion,
         LibraryIngestRecord(
             source_id=source_id,
             title=title,
@@ -868,9 +801,9 @@ async def upload_library_item(
             size_bytes=stored.size_bytes,
             checksum=stored.checksum,
         ),
-        request,
         store,
         identity,
+        background_tasks,
     )
 
 
@@ -927,20 +860,7 @@ def decide_approval(
     run = store.run(record.run_id)
     if run is None:
         raise HTTPException(status_code=409, detail="Approval run no longer exists.")
-    if not run.scheduler_managed:
-        return store.mark_approval_delivery(approval_id, "not_required") or record
-    scheduler = cast(RunScheduler, request.app.state.scheduler)
-    try:
-        scheduler.approve(
-            instance_id=run.durable_instance_id,
-            approval_id=record.id,
-            idempotency_key=record.idempotency_key,
-            approved=record.state == ApprovalState.APPROVED,
-        )
-    except RunSchedulingError as exc:
-        store.mark_approval_delivery(approval_id, "failed")
-        raise HTTPException(status_code=503, detail=str(exc)) from exc
-    return store.mark_approval_delivery(approval_id, "delivered") or record
+    return store.mark_approval_delivery(approval_id, "not_required") or record
 
 
 @app.get(
@@ -1467,9 +1387,6 @@ def _hosted_agent_message(
 def _record_studio_result(
     result: STUDIO_RESULT,
     store: WorkspaceStore,
-    *,
-    scheduler_managed: bool,
-    orchestration_input: dict[str, Any],
 ) -> None:
     blueprint = WORKFLOW_BLUEPRINTS[result.run.capability]
     current_index = next(
@@ -1511,8 +1428,6 @@ def _record_studio_result(
         current_stage=result.run.current_stage,
         stages=stages,
         artifact_count=1,
-        scheduler_managed=scheduler_managed,
-        orchestration_input=orchestration_input,
     )
     if result.run.status != RunStatus.WAITING_FOR_APPROVAL:
         return
@@ -1540,7 +1455,7 @@ def _record_studio_result(
                 if isinstance(result, AutomationStudioResult)
                 else "Enable the exact validated workflow graph."
             ),
-            "Durable Task Scheduler",
+            "Research Assistant workflow",
             "research-coordinator",
             (
                 f"Dry run passed for graph {result.graph_hash}; external steps remain blocked."
@@ -1899,50 +1814,7 @@ async def run_studio(
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    scheduler = cast(RunScheduler, request.app.state.scheduler)
-    orchestration_input = {
-        "run_id": result.run.id,
-        "source_id": (result.citations[0].source_id if result.citations else "workspace-request"),
-        "query": payload.objective,
-        "tenant_id": identity.tenant_id,
-        "project_id": store.project_id,
-        "group_ids": list(identity.groups),
-        "capability": capability.value,
-        "require_approval": (result.run.status == RunStatus.WAITING_FOR_APPROVAL),
-        "workflow_kind": "studio_run",
-        "ui_status": result.run.status.value,
-        "ui_progress": result.run.progress,
-        "ui_current_stage": result.run.current_stage,
-    }
-    if isinstance(result, AutomationStudioResult):
-        orchestration_input.update(
-            {
-                "workflow_kind": "automation_graph",
-                "workflow_graph": {
-                    "version": result.graph_version,
-                    "hash": result.graph_hash,
-                    "template_id": result.template_id,
-                    "trigger": result.trigger,
-                    "steps": [step.model_dump(mode="json") for step in result.steps],
-                },
-            }
-        )
-    scheduler_managed = scheduler.configured and result.run.status != RunStatus.BLOCKED
-    _record_studio_result(
-        result,
-        store,
-        scheduler_managed=scheduler_managed,
-        orchestration_input=orchestration_input,
-    )
-    if result.run.status == RunStatus.BLOCKED:
-        return result
-    _schedule_persisted_run(
-        store=store,
-        scheduler=scheduler,
-        run_id=result.run.id,
-        durable_instance_id=result.run.durable_instance_id,
-        orchestration_input=orchestration_input,
-    )
+    _record_studio_result(result, store)
     return result
 
 

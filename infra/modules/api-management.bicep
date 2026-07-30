@@ -5,18 +5,15 @@ param location string
 param tags object = {}
 param publisherName string
 param publisherEmail string
-param connectorBackendUrl string
 param tenantId string
 param apiPrincipalId string
 param foundryProjectPrincipalId string
 param logAnalyticsWorkspaceId string
-param enableMcpTools bool = false
 
-var connectorOpenApi = loadTextContent('../../packages/contracts/connector-adapter-openapi.json')
+var connectorOpenApi = loadTextContent('../../infra/provider-specs/authored/research_connectors.json')
 var connectorMcpDefinitions = loadJsonContent('../../infra/connector-mcp-catalog.json')
-var connectorMcpTools = loadJsonContent('../../infra/connector-mcp-tools.json')
+var connectorOperationPolicies = loadJsonContent('../../infra/connector-operation-policies.json')
 var connectorApiId = 'research-connectors-v1'
-var connectorMcpId = 'research-connectors-mcp-v1'
 var connectorMcpProductId = 'research-agent-tools'
 var connectorMcpSubscriptionId = 'foundry-agent-tools'
 var connectorPolicyTemplate = '''
@@ -36,10 +33,7 @@ var connectorPolicyTemplate = '''
       </required-claims>
     </validate-azure-ad-token>
     <rate-limit-by-key calls="60" renewal-period="60" counter-key="@(context.Variables.GetValueOrDefault&lt;Jwt&gt;(&quot;validated-token&quot;).Claims.GetValueOrDefault(&quot;appid&quot;, &quot;unknown&quot;))" />
-    <validate-content unspecified-content-type-action="ignore" max-size="32768" size-exceeded-action="prevent" errors-variable-name="connector-validation-errors">
-      <content type="application/json" validate-as="json" action="prevent" allow-additional-properties="false" />
-    </validate-content>
-    <authentication-managed-identity resource="__ARM_AUDIENCE__" />
+    <validate-parameters specified-parameter-action="prevent" unspecified-parameter-action="prevent" errors-variable-name="connector-validation-errors" />
   </inbound>
   <backend>
     <base />
@@ -138,19 +132,32 @@ resource connectorMcpSubscription 'Microsoft.ApiManagement/service/subscriptions
   }
 }
 
+resource connectorContact 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = {
+  parent: apiManagement
+  name: 'research-connector-contact'
+  properties: {
+    displayName: 'research-connector-contact'
+    value: publisherEmail
+    secret: false
+    tags: [
+      'connector'
+    ]
+  }
+}
+
 resource connectorApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apiManagement
   name: connectorApiId
   properties: {
     apiRevision: '1'
-    description: 'Narrow, allowlisted public research metadata operations.'
-    displayName: 'Research connector adapter'
+    description: 'Narrow normalized public research metadata operations implemented by APIM policies.'
+    displayName: 'Research connector facade'
     format: 'openapi+json'
     path: 'research-connectors'
     protocols: [
       'https'
     ]
-    serviceUrl: connectorBackendUrl
+    serviceUrl: 'https://normalized-connectors.invalid'
     subscriptionRequired: false
     type: 'http'
     value: connectorOpenApi
@@ -166,83 +173,24 @@ resource connectorApiPolicy 'Microsoft.ApiManagement/service/apis/policies@2024-
   }
 }
 
-resource connectorMcp 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' = {
-  parent: apiManagement
-  name: connectorMcpId
-  properties: {
-    type: 'mcp'
-    path: 'research-connectors-mcp'
-    displayName: 'Research connector MCP server'
-    description: 'Governed research metadata tools backed by the connector adapter API.'
-    protocols: [
-      'https'
+resource connectorPolicies 'Microsoft.ApiManagement/service/apis/operations/policies@2024-05-01' = [
+  for policy in connectorOperationPolicies: {
+    name: '${apiManagement.name}/${connectorApi.name}/${policy.operationId}/policy'
+    properties: {
+      format: 'rawxml'
+      value: policy.value
+    }
+    dependsOn: [
+      connectorContact
     ]
-    subscriptionRequired: true
   }
-  dependsOn: [
-    connectorApi
-  ]
-}
-
-resource literatureTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
-  parent: connectorMcp
-  name: 'searchLiteratureMetadata'
-  properties: {
-    displayName: 'searchLiteratureMetadata'
-    description: 'Search an allowlisted scholarly metadata source with a bounded public query.'
-    operationId: resourceId(
-      'Microsoft.ApiManagement/service/apis/operations',
-      apiManagement.name,
-      connectorApi.name,
-      'searchLiteratureMetadata'
-    )
-  }
-}
-
-resource grantTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
-  parent: connectorMcp
-  name: 'searchGrantOpportunities'
-  properties: {
-    displayName: 'searchGrantOpportunities'
-    description: 'Search an allowlisted public funding source for current grant opportunities or awards.'
-    operationId: resourceId(
-      'Microsoft.ApiManagement/service/apis/operations',
-      apiManagement.name,
-      connectorApi.name,
-      'searchGrantOpportunities'
-    )
-  }
-}
-
-resource matchingTool 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = if (enableMcpTools) {
-  parent: connectorMcp
-  name: 'searchMatchingMetadata'
-  properties: {
-    displayName: 'searchMatchingMetadata'
-    description: 'Search allowlisted public organization, researcher, facility, and award metadata for candidate discovery.'
-    operationId: resourceId(
-      'Microsoft.ApiManagement/service/apis/operations',
-      apiManagement.name,
-      connectorApi.name,
-      'searchMatchingMetadata'
-    )
-  }
-}
-
-resource connectorMcpPolicy 'Microsoft.ApiManagement/service/apis/policies@2025-09-01-preview' = {
-  parent: connectorMcp
-  name: 'policy'
-  properties: {
-    format: 'rawxml'
-    value: mcpPolicy
-  }
-}
+]
 
 resource sourceConnectorMcps 'Microsoft.ApiManagement/service/apis@2025-09-01-preview' = [
   for connector in connectorMcpDefinitions: {
     parent: apiManagement
     name: connector.apiId
-    properties: {
+  properties: {
       type: 'mcp'
       path: connector.path
       displayName: connector.displayName
@@ -258,25 +206,6 @@ resource sourceConnectorMcps 'Microsoft.ApiManagement/service/apis@2025-09-01-pr
   }
 ]
 
-resource sourceConnectorMcpTools 'Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview' = [
-  for tool in connectorMcpTools: {
-    name: '${apiManagement.name}/${tool.apiId}/${tool.name}'
-    properties: {
-      displayName: tool.displayName
-      description: tool.description
-      operationId: resourceId(
-        'Microsoft.ApiManagement/service/apis/operations',
-        apiManagement.name,
-        connectorApi.name,
-        tool.operationId
-      )
-    }
-    dependsOn: [
-      sourceConnectorMcps
-    ]
-  }
-]
-
 resource sourceConnectorMcpPolicies 'Microsoft.ApiManagement/service/apis/policies@2025-09-01-preview' = [
   for (connector, index) in connectorMcpDefinitions: {
     parent: sourceConnectorMcps[index]
@@ -287,11 +216,6 @@ resource sourceConnectorMcpPolicies 'Microsoft.ApiManagement/service/apis/polici
     }
   }
 ]
-
-resource connectorMcpProductApi 'Microsoft.ApiManagement/service/products/apis@2024-05-01' = {
-  parent: connectorMcpProduct
-  name: connectorMcp.name
-}
 
 resource sourceConnectorMcpProductApis 'Microsoft.ApiManagement/service/products/apis@2024-05-01' = [
   for (connector, index) in connectorMcpDefinitions: {
@@ -323,7 +247,6 @@ resource diagnostics 'Microsoft.Insights/diagnosticSettings@2021-05-01-preview' 
 output serviceName string = apiManagement.name
 output gatewayUrl string = apiManagement.properties.gatewayUrl
 output connectorApiUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors'
-output connectorMcpUrl string = '${apiManagement.properties.gatewayUrl}/research-connectors-mcp/mcp'
 output connectorMcpUrls array = [
   for connector in connectorMcpDefinitions: {
     id: connector.id

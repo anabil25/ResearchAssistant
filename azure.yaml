@@ -43,15 +43,6 @@ services:
             context: .
             image: research-assistant-api
             remoteBuild: true
-    connector-adapter:
-        project: .
-        host: containerapp
-        language: python
-        docker:
-            path: ./services/connector_adapter/Dockerfile
-            context: .
-            image: research-assistant-connector-adapter
-            remoteBuild: true
     dataset-agent:
         project: ./agents
         host: azure.ai.agent
@@ -121,15 +112,6 @@ services:
         language: js
         docker:
             path: ./Dockerfile
-            remoteBuild: true
-    worker:
-        project: .
-        host: containerapp
-        language: python
-        docker:
-            path: ./services/worker/Dockerfile
-            context: .
-            image: research-assistant-worker
             remoteBuild: true
 infra:
     provider: bicep

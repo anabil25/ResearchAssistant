@@ -58,7 +58,11 @@ def tracked_files(root: Path) -> list[str]:
         ["git", "ls-files", "-z"],
         cwd=root,
     )
-    return sorted(path for path in output.decode("utf-8").split("\0") if path)
+    return sorted(
+        path
+        for path in output.decode("utf-8").split("\0")
+        if path and (root / path).is_file()
+    )
 
 
 def _strip_reason(value: str) -> str:

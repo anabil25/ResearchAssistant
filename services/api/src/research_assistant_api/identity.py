@@ -54,7 +54,12 @@ def local_developer_identity(settings: Settings) -> IdentityContext:
         user_id="demo-researcher",
         display_name="Anonymous researcher",
         tenant_id=settings.workspace_tenant_id,
-        groups=("researchers", "research-admins", "grant-reviewers"),
+        groups=(
+            "researchers",
+            "research-admins",
+            "grant-reviewers",
+            project_group_name(settings.workspace_project_id),
+        ),
         source=LOCAL_DEVELOPMENT_SOURCE,
     )
 
@@ -183,9 +188,7 @@ def project_group_name(project_id: str) -> str:
 
 
 #: The interactive local/dev "demo sandbox" identity source (only ever issued
-#: when ``Settings.entra_auth_enforced`` is false). It never
-#: carries real Entra group claims and exists purely to exercise the API
-#: without a real identity provider, so it is exempt from project-membership
-#: group-claim checks. See ``research_assistant_api.agent_studio.authz`` for
-#: the actual membership-resolution policy this identity is exempted from.
+#: when ``Settings.entra_auth_enforced`` is false). It never carries real Entra
+#: group claims; ``local_developer_identity`` grants only the configured local
+#: workspace project through the same explicit group convention used by authz.
 DEMO_SANDBOX_SOURCE = LOCAL_DEVELOPMENT_SOURCE

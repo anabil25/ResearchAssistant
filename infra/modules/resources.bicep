@@ -55,14 +55,6 @@ param agenticGuardrailName string = 'research-agentic-guardrail'
 @description('Include an Azure Container Registry. Set true when any agent uses docker:.')
 param includeAcr bool = false
 
-@description('Maximum connector-adapter HTTP request body in bytes.')
-@minValue(65536)
-@maxValue(333398872)
-param connectorAdapterMaxRequestBodyBytes int = 5657944
-
-@description('Enable APIM MCP tool resources. Disabled by default because preview APIs can return transient 502 during provisioning.')
-param enableApimMcpTools bool = false
-
 @description('Object id of the developer running azd. When set, grants project data-plane roles. Empty disables the role assignments so headless / CI runs do not fail.')
 param principalId string = ''
 
@@ -248,7 +240,6 @@ module storage 'storage.bicep' = {
     location: location
     tags: tags
     apiPrincipalId: identities.outputs.apiPrincipalId
-    workerPrincipalId: identities.outputs.workerPrincipalId
     principalId: principalId
     principalType: principalType
   }
@@ -261,7 +252,6 @@ module search 'search.bicep' = {
     location: searchLocation
     tags: tags
     apiPrincipalId: identities.outputs.apiPrincipalId
-    workerPrincipalId: identities.outputs.workerPrincipalId
     principalId: principalId
     principalType: principalType
   }
@@ -274,7 +264,6 @@ module cosmos 'cosmos.bicep' = {
     location: location
     tags: tags
     apiPrincipalId: identities.outputs.apiPrincipalId
-    workerPrincipalId: identities.outputs.workerPrincipalId
   }
 }
 
@@ -295,18 +284,7 @@ module documentIntelligence 'document-intelligence.bicep' = {
     name: 'di-${resourceToken}'
     location: location
     tags: tags
-    workerPrincipalId: identities.outputs.workerPrincipalId
-  }
-}
-
-module durableTask 'durable-task.bicep' = {
-  name: 'durable-task'
-  params: {
-    name: 'dts-${resourceToken}'
-    location: location
-    tags: tags
     apiPrincipalId: identities.outputs.apiPrincipalId
-    workerPrincipalId: identities.outputs.workerPrincipalId
   }
 }
 
@@ -332,11 +310,11 @@ resource projectFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-resource workerModelUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(foundryAccount.id, 'id-worker-${resourceToken}', cognitiveServicesOpenAIUserRoleId)
+resource apiModelUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundryAccount.id, 'id-api-${resourceToken}', cognitiveServicesOpenAIUserRoleId)
   scope: foundryAccount
   properties: {
-    principalId: identities.outputs.workerPrincipalId
+    principalId: identities.outputs.apiPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: cognitiveServicesOpenAIUserRoleId
   }
@@ -356,10 +334,6 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     apiIdentityResourceId: identities.outputs.apiResourceId
     apiIdentityClientId: identities.outputs.apiClientId
     apiIdentityPrincipalId: identities.outputs.apiPrincipalId
-    foundryProjectPrincipalId: foundryAccount::project.identity.principalId
-    workerIdentityResourceId: identities.outputs.workerResourceId
-    workerIdentityClientId: identities.outputs.workerClientId
-    workerIdentityPrincipalId: identities.outputs.workerPrincipalId
     acrResourceId: acr!.outputs.resourceId
     searchEndpoint: search.outputs.endpoint
     searchIndexName: search.outputs.indexName
@@ -377,8 +351,6 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     agentStudioBundleContainerName: storage.outputs.agentStudioBundlesContainer
     documentIntelligenceEndpoint: documentIntelligence.outputs.endpoint
     embeddingDeploymentName: embeddingDeploymentName
-    durableTaskEndpoint: durableTask.outputs.endpoint
-    durableTaskHubName: durableTask.outputs.taskHubName
     workspaceTenantId: subscription().tenantId
     workspaceProjectId: foundryAccount::project.name
     connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors'
@@ -386,7 +358,6 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
-    connectorAdapterMaxRequestBodyBytes: connectorAdapterMaxRequestBodyBytes
   }
 }
 
@@ -398,12 +369,10 @@ module apiManagement 'api-management.bicep' = if (includeAcr) {
     tags: tags
     publisherName: apimPublisherName
     publisherEmail: apimPublisherEmail
-    connectorBackendUrl: containerApps!.outputs.connectorAdapterUrl
     tenantId: subscription().tenantId
     apiPrincipalId: identities.outputs.apiPrincipalId
     foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
-    enableMcpTools: enableApimMcpTools
   }
 }
 
@@ -416,19 +385,6 @@ resource apiTelemetryPublisher 'Microsoft.Authorization/roleAssignments@2022-04-
   scope: appInsightsForRbac
   properties: {
     principalId: identities.outputs.apiPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: monitoringMetricsPublisherRoleId
-  }
-  dependsOn: [
-    monitoring
-  ]
-}
-
-resource workerTelemetryPublisher 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(appInsightsForRbac.id, 'id-worker-${resourceToken}', monitoringMetricsPublisherRoleId)
-  scope: appInsightsForRbac
-  properties: {
-    principalId: identities.outputs.workerPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: monitoringMetricsPublisherRoleId
   }
@@ -499,7 +455,6 @@ output AZURE_FOUNDRY_MANAGED_ISOLATION_MODE string = ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceId
 output AZURE_MANAGED_IDENTITY_CLIENT_ID string = identities.outputs.apiClientId
-output AZURE_WORKER_MANAGED_IDENTITY_CLIENT_ID string = identities.outputs.workerClientId
 output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.accountName
 output AZURE_STORAGE_BLOB_ENDPOINT string = storage.outputs.blobEndpoint
 output AZURE_STORAGE_SOURCE_CONTAINER string = storage.outputs.sourcesContainer
@@ -517,18 +472,12 @@ output AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER string = cosmos.outputs.agentS
 output AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER string = cosmos.outputs.agentStudioAuditContainerName
 output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = cosmos.outputs.agentStudioCatalogContainerName
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = documentIntelligence.outputs.endpoint
-output AZURE_DURABLE_TASK_ENDPOINT string = durableTask.outputs.endpoint
-output AZURE_DURABLE_TASK_HUB string = durableTask.outputs.taskHubName
 output WEB_URL string = includeAcr ? containerApps!.outputs.webUrl : ''
 output API_URL string = includeAcr ? containerApps!.outputs.apiUrl : ''
 output API_NAME string = includeAcr ? containerApps!.outputs.apiName : ''
 output WEB_NAME string = includeAcr ? containerApps!.outputs.webName : ''
-output WORKER_NAME string = includeAcr ? containerApps!.outputs.workerName : ''
-output CONNECTOR_ADAPTER_NAME string = includeAcr ? containerApps!.outputs.connectorAdapterName : ''
-output CONNECTOR_ADAPTER_URL string = includeAcr ? containerApps!.outputs.connectorAdapterUrl : ''
 output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.serviceName : ''
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
-output AZURE_CONNECTOR_MCP_URL string = includeAcr ? apiManagement!.outputs.connectorMcpUrl : ''
 output AZURE_CONNECTOR_MCP_URLS string = includeAcr ? string(apiManagement!.outputs.connectorMcpUrls) : '[]'
 output AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID string = includeAcr ? apiManagement!.outputs.connectorMcpSubscriptionId : ''
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''

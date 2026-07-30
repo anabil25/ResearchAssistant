@@ -4,7 +4,6 @@ param name string
 param location string
 param tags object = {}
 param apiPrincipalId string
-param workerPrincipalId string
 param principalId string = ''
 param principalType string = 'User'
 
@@ -81,29 +80,11 @@ resource agentStudioBundles 'Microsoft.Storage/storageAccounts/blobServices/cont
   }
 }
 
-resource functionPackages 'Microsoft.Storage/storageAccounts/blobServices/containers@2026-04-01' = {
-  parent: blobService
-  name: 'connector-function-packages'
-  properties: {
-    publicAccess: 'None'
-  }
-}
-
 resource apiBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(account.id, apiPrincipalId, blobDataContributorRoleId)
   scope: account
   properties: {
     principalId: apiPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: blobDataContributorRoleId
-  }
-}
-
-resource workerBlobRole 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(account.id, workerPrincipalId, blobDataContributorRoleId)
-  scope: account
-  properties: {
-    principalId: workerPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: blobDataContributorRoleId
   }
@@ -125,4 +106,3 @@ output blobEndpoint string = account.properties.primaryEndpoints.blob
 output sourcesContainer string = sources.name
 output artifactsContainer string = artifacts.name
 output agentStudioBundlesContainer string = agentStudioBundles.name
-output functionPackagesContainer string = functionPackages.name

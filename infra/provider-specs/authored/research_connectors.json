@@ -990,7 +990,7 @@
   },
   "servers": [
     {
-      "url": "https://connector-functions.invalid/api"
+      "url": "https://normalized-connectors.invalid"
     }
   ]
 }

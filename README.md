@@ -2,7 +2,7 @@
 
 An evidence-governed Research Assistant accelerator for higher education,
 standardized on Microsoft Foundry, Microsoft Agent Framework, Azure AI Search,
-Document Intelligence, Durable Task Scheduler, and Azure Container Apps.
+Document Intelligence, and Azure Container Apps.
 
 The solution combines the strongest product ideas from Feynman and Vandalizer
 without mixing GPL code, and applies the repeatable `azd`, managed identity,
@@ -100,10 +100,10 @@ See [ARCHITECTURE.md](ARCHITECTURE.md) for the complete topology and data flows.
 | Azure CLI | 2.84+ |
 | Azure Developer CLI | 1.27+ |
 | `azure.ai.agents` azd extension | 1.0.0-beta.5+ |
-| Python | 3.12 for API/worker; Hosted Agent build uses Python 3.13 |
+| Python | 3.12 for API/ingestion; Hosted Agent build uses Python 3.13 |
 | uv | 0.10+ |
 | Node.js | 24 LTS |
-| Docker | Needed for web/API/worker deployment; not needed for direct-code agents |
+| Docker | Needed for web/API deployment; not needed for direct-code agents |
 
 The deployment plan and checked subscription/region capacity are recorded in
 [`.azure/deployment-plan.md`](.azure/deployment-plan.md).
@@ -134,24 +134,26 @@ npm run dev
 
 Open <http://localhost:3000>. Local execution uses a deterministic synthetic
 corpus, an anonymous identity-scoped workspace/blob sandbox, and makes no
-model calls. Azure uses Cosmos DB for operational state, Durable Task Scheduler
-for every new run, and Blob Storage through a private endpoint for uploaded
-source files. Personal projects and the active-project preference are stored in
-the already deployed tenant-partitioned Cosmos `research/projects` container;
-the feature does not add a SQLite, SQL, or other persistence resource.
+model calls. Azure uses Cosmos DB for operational state and Blob Storage through
+a private endpoint for uploaded source files. Library ingestion runs as a
+process-local API background task, without durable retry or restart recovery.
+Personal projects and the active-project preference are stored in the already
+deployed tenant-partitioned Cosmos `research/projects` container; the feature
+does not add a SQLite, SQL, or other persistence resource.
 
 ## Runtime ingestion
 
 Library uploads accept bounded PDF, text, Markdown, CSV, or JSON files up to
 20 MB. The API records the checksum, content type, access scope, license, and
-durable instance before scheduling:
+run identifier before submitting a process-local background task:
 
 `upload -> Blob -> layout extraction -> structural chunks -> embeddings -> Search`
 
 PDFs use Document Intelligence `prebuilt-layout` Markdown output. Text formats
-use deterministic paragraph-aware chunking. The worker writes embeddings to
-Azure AI Search and marks the Cosmos Library/run records ready only after every
-chunk is accepted.
+use deterministic paragraph-aware chunking. The API ingestion path writes
+embeddings to Azure AI Search and marks the Cosmos Library/run records ready
+only after every chunk is accepted. If the API process stops during ingestion,
+the task is not resumed automatically.
 
 ## Quality gates
 
@@ -255,7 +257,7 @@ reproducible proof of the path-isolation scheme.
 ## Azure deployment
 
 The project uses one `azure.yaml` lifecycle for infrastructure, nine Hosted
-Agents, and three Container Apps.
+Agents, and two Container Apps.
 
 ```powershell
 azd auth login
@@ -265,8 +267,8 @@ azd up
 
 On the first run, `azd up` prompts for a unique environment name, subscription,
 and Azure location. The selected location drives Foundry, models, Search,
-Container Apps, Document Intelligence, Cosmos DB, Storage, Durable Task, and
-monitoring; no deployment region is pinned in the repository.
+Container Apps, Document Intelligence, Cosmos DB, Storage, and monitoring; no
+deployment region is pinned in the repository.
 
 `azd up` performs:
 
@@ -276,7 +278,7 @@ monitoring; no deployment region is pinned in the repository.
 3. Search index creation, real Foundry embeddings, and synthetic corpus upload
    through an automatically created, isolated `.venv-provision`.
 4. Direct-code Hosted Agent deployment and immutable version creation.
-5. Container build/deployment for web, API, and worker.
+5. Container build/deployment for web and API.
 6. VNet-integrated Container Apps plus private Blob/Cosmos endpoints and DNS.
 
 Storage and Cosmos public access are disabled by the accelerator itself, so the

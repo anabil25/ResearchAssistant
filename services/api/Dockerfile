@@ -13,7 +13,7 @@ COPY packages/research_core ./packages/research_core
 COPY packages/research_connectors/pyproject.toml ./packages/research_connectors/pyproject.toml
 COPY services/api ./services/api
 COPY services/connector_adapter/pyproject.toml ./services/connector_adapter/pyproject.toml
-COPY services/worker/pyproject.toml ./services/worker/pyproject.toml
+COPY services/worker ./services/worker
 
 RUN uv sync --frozen --no-dev --no-editable --package research-assistant-api
 

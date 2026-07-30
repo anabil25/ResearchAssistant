@@ -81,14 +81,6 @@ param entraApiClientId string = ''
 @description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId.')
 param enableEntraAuth bool = false
 
-@description('Maximum connector-adapter HTTP request body in bytes. Default covers a 4 MiB base64 upload plus bounded JSON overhead; use streaming/upload sessions for larger files.')
-@minValue(65536)
-@maxValue(333398872)
-param connectorAdapterMaxRequestBodyBytes int = 5657944
-
-@description('Enable APIM MCP tool resources. Disabled by default because preview APIs can return transient 502 during provisioning.')
-param enableApimMcpTools bool = false
-
 // Resources
 
 resource resourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' = {
@@ -110,13 +102,11 @@ module resources 'modules/resources.bicep' = {
     includeAcr: includeAcr
     principalId: principalId
     principalType: principalType
-    connectorAdapterMaxRequestBodyBytes: connectorAdapterMaxRequestBodyBytes
     apimPublisherName: apimPublisherName
     apimPublisherEmail: apimPublisherEmail
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
-    enableApimMcpTools: enableApimMcpTools
   }
 }
 
@@ -138,7 +128,6 @@ output AZURE_FOUNDRY_MANAGED_ISOLATION_MODE string = resources.outputs.AZURE_FOU
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = resources.outputs.APPLICATIONINSIGHTS_CONNECTION_STRING
 output AZURE_LOG_ANALYTICS_WORKSPACE_ID string = resources.outputs.AZURE_LOG_ANALYTICS_WORKSPACE_ID
 output AZURE_MANAGED_IDENTITY_CLIENT_ID string = resources.outputs.AZURE_MANAGED_IDENTITY_CLIENT_ID
-output AZURE_WORKER_MANAGED_IDENTITY_CLIENT_ID string = resources.outputs.AZURE_WORKER_MANAGED_IDENTITY_CLIENT_ID
 output AZURE_STORAGE_ACCOUNT_NAME string = resources.outputs.AZURE_STORAGE_ACCOUNT_NAME
 output AZURE_STORAGE_BLOB_ENDPOINT string = resources.outputs.AZURE_STORAGE_BLOB_ENDPOINT
 output AZURE_STORAGE_SOURCE_CONTAINER string = resources.outputs.AZURE_STORAGE_SOURCE_CONTAINER
@@ -156,20 +145,14 @@ output AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER string = resources.outputs.AZU
 output AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER string = resources.outputs.AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER
 output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = resources.outputs.AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = resources.outputs.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
-output AZURE_DURABLE_TASK_ENDPOINT string = resources.outputs.AZURE_DURABLE_TASK_ENDPOINT
-output AZURE_DURABLE_TASK_HUB string = resources.outputs.AZURE_DURABLE_TASK_HUB
 output WEB_URL string = resources.outputs.WEB_URL
 output API_URL string = resources.outputs.API_URL
 output SERVICE_API_NAME string = resources.outputs.API_NAME
 output SERVICE_API_URI string = resources.outputs.API_URL
 output SERVICE_WEB_NAME string = resources.outputs.WEB_NAME
 output SERVICE_WEB_URI string = resources.outputs.WEB_URL
-output SERVICE_WORKER_NAME string = resources.outputs.WORKER_NAME
-output SERVICE_CONNECTOR_ADAPTER_NAME string = resources.outputs.CONNECTOR_ADAPTER_NAME
-output SERVICE_CONNECTOR_ADAPTER_URI string = resources.outputs.CONNECTOR_ADAPTER_URL
 output AZURE_API_MANAGEMENT_NAME string = resources.outputs.AZURE_API_MANAGEMENT_NAME
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = resources.outputs.AZURE_API_MANAGEMENT_GATEWAY_URL
-output AZURE_CONNECTOR_MCP_URL string = resources.outputs.AZURE_CONNECTOR_MCP_URL
 output AZURE_CONNECTOR_MCP_URLS string = resources.outputs.AZURE_CONNECTOR_MCP_URLS
 output AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID string = resources.outputs.AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = resources.outputs.AZURE_API_MANAGEMENT_PRINCIPAL_ID

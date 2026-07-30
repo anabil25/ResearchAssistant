@@ -4,15 +4,18 @@ import json
 from pathlib import Path
 
 from research_assistant_api.app import app
-from research_assistant_connector_adapter.app import app as connector_app
 from research_assistant_connector_adapter.provider_api import contract_app as provider_app
 from research_assistant_core.connector_catalog import connector_definitions
 
+from scripts.build_connector_apim_spec import (
+    connector_apim_openapi,
+    connector_operation_policies,
+)
+
 ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "packages" / "contracts" / "openapi.json"
-CONNECTOR_OUTPUT = (
-    ROOT / "packages" / "contracts" / "connector-adapter-openapi.json"
-)
+CONNECTOR_OUTPUT = ROOT / "infra" / "provider-specs" / "authored" / "research_connectors.json"
+CONNECTOR_POLICY_OUTPUT = ROOT / "infra" / "connector-operation-policies.json"
 PROVIDER_V7_OUTPUT = (
     ROOT / "packages" / "contracts" / "provider-adapter-openapi.v7.json"
 )
@@ -101,10 +104,15 @@ def main() -> None:
     )
     print(f"Wrote {OUTPUT.relative_to(ROOT)}")
     CONNECTOR_OUTPUT.write_text(
-        json.dumps(connector_app.openapi(), indent=2, sort_keys=True) + "\n",
+        json.dumps(connector_apim_openapi(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",
     )
     print(f"Wrote {CONNECTOR_OUTPUT.relative_to(ROOT)}")
+    CONNECTOR_POLICY_OUTPUT.write_text(
+        json.dumps(connector_operation_policies(), indent=2, sort_keys=True) + "\n",
+        encoding="utf-8",
+    )
+    print(f"Wrote {CONNECTOR_POLICY_OUTPUT.relative_to(ROOT)}")
     PROVIDER_V7_OUTPUT.write_text(
         json.dumps(provider_app.openapi(), indent=2, sort_keys=True) + "\n",
         encoding="utf-8",

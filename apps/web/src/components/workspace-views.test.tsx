@@ -126,7 +126,7 @@ function buildApprovalRecord(
     state: "pending",
     risk: "High",
     gated_action: "Activate graph v1.0.",
-    destination: "Durable Task Scheduler",
+    destination: "Application approval boundary",
     requested_by: "orchestration-agent",
     requested_at: "2026-07-16T12:00:00Z",
     evidence_summary: "Dry run passed.",
@@ -670,7 +670,7 @@ describe("RunsView", () => {
     expect(screen.queryByText("Plan evidence map")).not.toBeInTheDocument();
 
     await user.click(screen.getByRole("button", { name: /grant report/i }));
-    expect(screen.getByText("Durable Task Scheduler")).toBeInTheDocument();
+    expect(screen.getByText("Direct API execution")).toBeInTheDocument();
     expect(screen.getByText("Plan")).toBeInTheDocument();
     expect(screen.getByText("writer")).toBeInTheDocument();
 

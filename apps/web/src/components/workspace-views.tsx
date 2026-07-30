@@ -905,7 +905,7 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
                 </div>
                 <dl className="run-facts">
                   <div>
-                    <dt>Durable instance</dt>
+                    <dt>Run identifier</dt>
                     <dd>{selected.durable_instance_id}</dd>
                   </div>
                   <div>
@@ -918,11 +918,7 @@ export function RunsView({ data, onRefresh, focusRunId }: RunsViewProps) {
                   </div>
                   <div>
                     <dt>Runtime</dt>
-                    <dd>
-                      {selected.scheduler_managed
-                        ? "Durable Task Scheduler"
-                        : "Durable demo snapshot"}
-                    </dd>
+                    <dd>Direct API execution</dd>
                   </div>
                 </dl>
                 <div className="run-timeline">

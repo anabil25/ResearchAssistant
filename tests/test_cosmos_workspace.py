@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Callable
 from copy import deepcopy
 from datetime import UTC, datetime
 from threading import Barrier, Thread
@@ -7,9 +8,11 @@ from typing import Any
 
 import pytest
 import research_assistant_api.cosmos_workspace as cosmos_workspace
+import research_assistant_api.workspace as workspace
 from azure.core.credentials import AccessToken, TokenCredential
 from azure.core.exceptions import ServiceRequestError
 from azure.cosmos.exceptions import CosmosHttpResponseError
+from research_assistant_api.config import Settings
 from research_assistant_api.identity import IdentityContext
 from research_assistant_api.workspace import (
     ApprovalDecision,
@@ -19,20 +22,11 @@ from research_assistant_api.workspace import (
     DatasetApprovalDenialReason,
     DatasetApprovalError,
     LibraryIngestRecord,
-)
-from research_assistant_core.models import Capability, RunStatus
-from collections.abc import Callable
-import research_assistant_api.workspace as workspace
-from research_assistant_api.config import Settings
-from research_assistant_api.workspace import (
-    ApprovalDecision,
-    ApprovalState,
-    ConnectorUpdate,
-    LibraryIngestRecord,
     RunStage,
     RunSummary,
     WorkspaceStore,
 )
+from research_assistant_core.models import Capability, RunStatus
 
 
 class FakeCredential(TokenCredential):
@@ -217,54 +211,6 @@ def test_cosmos_workspace_seeds_and_reloads_operational_state(
     assert grant_run.progress == 100
     assert grant_run.current_stage == "Complete"
     assert grant_run.completed_at is not None
-
-
-def test_scheduling_reconciliation_preserves_worker_terminal_state(
-    monkeypatch: Any,
-) -> None:
-    fake_client = FakeCosmosClient()
-    monkeypatch.setattr(
-        cosmos_workspace,
-        "CosmosClient",
-        lambda _endpoint, credential: fake_client,
-    )
-    store = cosmos_workspace.CosmosWorkspaceStore(
-        "https://cosmos.example.test",
-        "research",
-        FakeCredential(),
-    )
-    run = store.add_run(
-        run_id="run-reconcile",
-        capability=Capability.LITERATURE,
-        title="Reconciliation run",
-        owner="Researcher",
-        status=RunStatus.RUNNING,
-        progress=10,
-        current_stage="Extract",
-        scheduler_managed=True,
-        orchestration_input={
-            "ui_status": "running",
-            "ui_progress": 10,
-            "ui_current_stage": "Extract",
-        },
-    )
-    store.mark_run_scheduling(run.id, "uncertain")
-    document = fake_client.database.containers["runs"].documents[run.id]
-    document["payload"].update(
-        {
-            "status": "completed",
-            "progress": 100,
-            "current_stage": "Complete",
-        }
-    )
-    store.runs()
-
-    reconciled = store.mark_run_scheduling(run.id, "scheduled")
-
-    assert reconciled is not None
-    assert reconciled.status == RunStatus.COMPLETED
-    assert reconciled.progress == 100
-    assert reconciled.current_stage == "Complete"
 
 
 def _reviewer_identity() -> IdentityContext:
@@ -1224,7 +1170,7 @@ def _make_store(
     return fake_client, store
 
 
-def _run_record(run_id: str, *, scheduler_managed: bool = False) -> RunSummary:
+def _run_record(run_id: str) -> RunSummary:
     now = workspace.utc_now()
     return RunSummary(
         id=run_id,
@@ -1238,8 +1184,6 @@ def _run_record(run_id: str, *, scheduler_managed: bool = False) -> RunSummary:
         owner="Researcher",
         started_at=now,
         artifact_count=1,
-        scheduler_managed=scheduler_managed,
-        scheduling_state="pending" if scheduler_managed else "not_managed",
         stages=[
             RunStage(
                 id="review",
@@ -1262,8 +1206,6 @@ def _add_run_from_record(store: WorkspaceStore, record: RunSummary) -> RunSummar
         current_stage=record.current_stage,
         stages=record.stages,
         artifact_count=record.artifact_count,
-        scheduler_managed=record.scheduler_managed,
-        orchestration_input=record.orchestration_input,
     )
 
 
@@ -1283,9 +1225,37 @@ def test_workspace_helper_functions_update_and_preserve_stage_state() -> None:
     assert pending_run.stages[0].completed_at is not None
 
 
+def test_workspace_complete_ingestion_updates_item_and_run() -> None:
+    store = WorkspaceStore()
+    ingested = store.ingest(_ingest_record(), _identity())
+
+    completed = store.complete_ingestion(
+        ingested.item.id,
+        ingested.run.id,
+        evidence_count=7,
+        needs_review=False,
+    )
+
+    assert completed is not None
+    assert completed.item.status == workspace.LibraryStatus.READY
+    assert completed.item.evidence_count == 7
+    assert completed.item.version == "1.0"
+    assert completed.run.status == RunStatus.COMPLETED
+    assert completed.run.progress == 100
+    assert completed.run.current_stage == "Indexed and ready"
+    assert completed.run.completed_at is not None
+    assert all(stage.status == "completed" for stage in completed.run.stages)
+    assert store.complete_ingestion(
+        "missing-item",
+        ingested.run.id,
+        evidence_count=0,
+        needs_review=True,
+    ) is None
+
+
 def test_workspace_failures_update_runs_items_and_pending_approvals() -> None:
     store = WorkspaceStore()
-    ingested = store.ingest(_ingest_record(), _identity(), scheduler_managed=True)
+    ingested = store.ingest(_ingest_record(), _identity())
 
     failed_ingestion = store.fail_ingestion(
         ingested.item.id,
@@ -1297,122 +1267,14 @@ def test_workspace_failures_update_runs_items_and_pending_approvals() -> None:
     assert failed_ingestion.item.status == workspace.LibraryStatus.BLOCKED
     assert "malware detected" in failed_ingestion.item.description
     assert failed_ingestion.run.status == RunStatus.FAILED
-    assert failed_ingestion.run.scheduling_state == "failed"
-    assert failed_ingestion.run.current_stage == "Scheduling failed"
+    assert failed_ingestion.run.scheduling_state == "not_managed"
+    assert failed_ingestion.run.current_stage == "Ingestion failed"
     assert failed_ingestion.run.completed_at is not None
     assert failed_ingestion.run.stages[1].status == "failed"
     assert store.fail_ingestion("missing-item", ingested.run.id, "ignored") is None
 
-    failed_run = store.fail_run("run-grant-001", "scheduler offline")
 
-    assert failed_run is not None
-    assert failed_run.status == RunStatus.FAILED
-    cancelled = store.approval("approval-grant-export")
-    assert cancelled is not None
-    assert cancelled.state == ApprovalState.CANCELLED
-    assert cancelled.rationale == "scheduler offline"
-    assert cancelled.decided_at is not None
-    assert store.fail_run("missing-run", "ignored") is None
-
-
-def test_workspace_scheduling_and_orchestration_validate_inputs() -> None:
-    store = WorkspaceStore()
-    local_run = store.add_run(
-        run_id="run-local",
-        capability=Capability.LITERATURE,
-        title="Local run",
-        owner="Researcher",
-        status=RunStatus.RUNNING,
-        progress=5,
-        current_stage="Plan",
-        scheduler_managed=False,
-    )
-    updated_local = store.set_run_orchestration(local_run.id, {"ui_status": "running"})
-    assert updated_local is not None
-    assert updated_local.scheduling_state == "not_managed"
-
-    managed_run = store.add_run(
-        run_id="run-managed",
-        capability=Capability.LITERATURE,
-        title="Managed run",
-        owner="Researcher",
-        status=RunStatus.RUNNING,
-        progress=35,
-        current_stage="Extract",
-        scheduler_managed=True,
-        orchestration_input={
-            "ui_status": 1,
-            "ui_current_stage": ["Extract"],
-            "ui_progress": "35",
-        },
-        stages=[
-            RunStage(
-                id="extract",
-                label="Extract evidence",
-                status="running",
-                owner="worker",
-            )
-        ],
-    )
-    updated_managed = store.set_run_orchestration(
-        managed_run.id,
-        {
-            "ui_status": 1,
-            "ui_current_stage": ["Extract"],
-            "ui_progress": "35",
-        },
-    )
-    assert updated_managed is not None
-    assert updated_managed.scheduling_state == "pending"
-
-    uncertain = store.mark_run_scheduling(managed_run.id, "uncertain")
-    assert uncertain is not None
-    assert uncertain.status == RunStatus.PLANNED
-    assert uncertain.current_stage == "Scheduling reconciliation required"
-
-    scheduled = store.mark_run_scheduling(managed_run.id, "scheduled")
-    assert scheduled is not None
-    assert scheduled.scheduling_state == "scheduled"
-    assert scheduled.status == RunStatus.PLANNED
-    assert scheduled.current_stage == "Scheduling reconciliation required"
-    assert scheduled.progress == 35
-
-    failed = store.mark_run_scheduling(managed_run.id, "failed")
-    assert failed is not None
-    assert failed.status == RunStatus.FAILED
-    assert failed.current_stage == "Scheduling failed"
-    assert failed.completed_at is not None
-    assert failed.stages[0].status == "failed"
-
-    reconciled_run = store.add_run(
-        run_id="run-reconciled",
-        capability=Capability.LITERATURE,
-        title="Reconciled run",
-        owner="Researcher",
-        status=RunStatus.RUNNING,
-        progress=22,
-        current_stage="Queue",
-        scheduler_managed=True,
-        orchestration_input={
-            "ui_status": "running",
-            "ui_current_stage": "Queue",
-            "ui_progress": 22,
-        },
-    )
-    store.mark_run_scheduling(reconciled_run.id, "uncertain")
-    restored = store.mark_run_scheduling(reconciled_run.id, "scheduled")
-    assert restored is not None
-    assert restored.status == RunStatus.RUNNING
-    assert restored.current_stage == "Queue"
-    assert restored.progress == 22
-
-    assert store.set_run_orchestration("missing-run", {"ui_status": "running"}) is None
-    assert store.mark_run_scheduling("missing-run", "scheduled") is None
-    with pytest.raises(ValueError, match="Unsupported run scheduling state"):
-        store.mark_run_scheduling(managed_run.id, "queued")
-
-
-def test_workspace_approval_paths_cover_idempotency_local_and_scheduler_managed_runs() -> None:
+def test_workspace_approval_paths_cover_idempotency_and_terminal_run_states() -> None:
     store = WorkspaceStore()
     with pytest.raises(ValueError, match="Decision must be approved or rejected"):
         ApprovalDecision(decision=ApprovalState.CANCELLED, rationale="No-op")
@@ -1461,24 +1323,6 @@ def test_workspace_approval_paths_cover_idempotency_local_and_scheduler_managed_
     assert repeated.approver_id == "reviewer-1"
     with pytest.raises(ValueError, match="already been decided differently"):
         store.decide_approval(local_approval.id, reject, _identity("reviewer-3", "Reviewer Three"))
-
-    managed_run = _add_run_from_record(store, _run_record("run-managed-approval", scheduler_managed=True))
-    managed_approval = store.add_approval(**_approval_payload(managed_run.id))
-    managed_result = store.decide_approval(managed_approval.id, approve, _identity("reviewer-4", "Reviewer Four"))
-    assert managed_result is not None
-    managed_stored = store.run(managed_run.id)
-    assert managed_stored is not None
-    assert managed_stored.status == RunStatus.RUNNING
-    assert managed_stored.current_stage == "Approved action queued"
-    assert managed_stored.completed_at is None
-
-    managed_reject_run = _add_run_from_record(store, _run_record("run-managed-reject", scheduler_managed=True))
-    managed_reject_approval = store.add_approval(**_approval_payload(managed_reject_run.id))
-    store.decide_approval(managed_reject_approval.id, reject, _identity("reviewer-5", "Reviewer Five"))
-    rejected_managed = store.run(managed_reject_run.id)
-    assert rejected_managed is not None
-    assert rejected_managed.status == RunStatus.BLOCKED
-    assert rejected_managed.current_stage == "Approval rejected"
 
     local_reject_run = _add_run_from_record(store, _run_record("run-local-reject"))
     local_reject_approval = store.add_approval(**_approval_payload(local_reject_run.id))
@@ -1597,29 +1441,22 @@ def test_cosmos_settings_and_persistence_wrappers_cover_missing_and_success_path
     assert replicated_run.status == RunStatus.FAILED
 
     run = store.add_run(
-        run_id="run-cosmos-orchestration",
+        run_id="run-cosmos-direct",
         capability=Capability.LITERATURE,
         title="Cosmos run",
         owner="Researcher",
-        status=RunStatus.RUNNING,
-        progress=15,
-        current_stage="Extract",
-        scheduler_managed=True,
+        status=RunStatus.WAITING_FOR_APPROVAL,
+        progress=80,
+        current_stage="Reviewer approval",
     )
-    assert store.set_run_orchestration("missing-run", {"ui_status": "running"}) is None
-    updated = store.set_run_orchestration(run.id, {"ui_status": "running"})
-    assert updated is not None
-    assert updated.orchestration_input == {"ui_status": "running"}
-    assert store.mark_run_scheduling("missing-run", "scheduled") is None
-    scheduled = store.mark_run_scheduling(run.id, "scheduled")
-    assert scheduled is not None
-    assert scheduled.scheduling_state == "scheduled"
-
     approval = store.add_approval(**_approval_payload(run.id))
     orphan_approval = store.add_approval(**_approval_payload("missing-cosmos-run"))
-    failed_run = store.fail_run(run.id, "scheduler down")
-    assert failed_run is not None
-    assert failed_run.status == RunStatus.FAILED
+    decided = store.decide_approval(
+        approval.id,
+        ApprovalDecision(decision=ApprovalState.APPROVED, rationale="Reviewed"),
+        _identity(),
+    )
+    assert decided is not None
 
     refreshed = cosmos_workspace.CosmosWorkspaceStore(
         "https://cosmos.example.test",
@@ -1629,12 +1466,12 @@ def test_cosmos_settings_and_persistence_wrappers_cover_missing_and_success_path
     refreshed_run = refreshed.run(run.id)
     assert refreshed_run is not None
     assert refreshed_run.approval_id == approval.id
+    assert refreshed_run.status == RunStatus.COMPLETED
     refreshed_approval = refreshed.approval(approval.id)
     assert refreshed_approval is not None
-    assert refreshed_approval.state == ApprovalState.CANCELLED
+    assert refreshed_approval.state == ApprovalState.APPROVED
     assert refreshed.approval(orphan_approval.id) is not None
     assert refreshed.run("missing-cosmos-run") is None
-    assert store.fail_run("missing-run", "ignored") is None
 
 
 def test_cosmos_decide_approval_handles_missing_idempotent_and_conflict_paths(

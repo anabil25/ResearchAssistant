@@ -87,17 +87,6 @@ def test_adapter_exposes_narrow_stable_openapi_operations(client: TestClient) ->
         for connector in connector_definitions()
         for operation in connector.operations
     }
-    committed = json.loads(
-        (
-            ROOT
-            / "packages"
-            / "contracts"
-            / "connector-adapter-openapi.json"
-        ).read_text(encoding="utf-8")
-    )
-    assert committed == specification.json()
-
-
 def test_literature_search_returns_typed_metadata_and_closes_client(
     client: TestClient,
 ) -> None:

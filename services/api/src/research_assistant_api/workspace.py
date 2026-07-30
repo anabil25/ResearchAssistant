@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 from research_assistant_core.connector_catalog import ConnectorDefinition, connector_definitions
 from research_assistant_core.models import Capability, RunStatus
 
-from research_assistant_api.identity import IdentityContext, LOCAL_DEVELOPMENT_SOURCE
+from research_assistant_api.identity import LOCAL_DEVELOPMENT_SOURCE, IdentityContext
 
 
 def utc_now() -> datetime:
@@ -613,8 +613,6 @@ class WorkspaceStore:
         self,
         payload: LibraryIngestRecord,
         identity: IdentityContext,
-        *,
-        scheduler_managed: bool = False,
     ) -> LibraryIngestResponse:
         item_id = payload.source_id
         item = LibraryItem(
@@ -648,7 +646,6 @@ class WorkspaceStore:
             progress=10,
             current_stage="Extract structure",
             artifact_count=0,
-            scheduler_managed=scheduler_managed,
             stages=[
                 RunStage(
                     id="receive",
@@ -680,6 +677,31 @@ class WorkspaceStore:
             self._library.insert(0, item)
         return LibraryIngestResponse(item=deepcopy(item), run=run)
 
+    def complete_ingestion(
+        self,
+        item_id: str,
+        run_id: str,
+        *,
+        evidence_count: int,
+        needs_review: bool,
+    ) -> LibraryIngestResponse | None:
+        with self._lock:
+            item = next((row for row in self._library if row.id == item_id), None)
+            run = next((row for row in self._runs if row.id == run_id), None)
+            if item is None or run is None:
+                return None
+            item.status = (
+                LibraryStatus.NEEDS_REVIEW if needs_review else LibraryStatus.READY
+            )
+            item.evidence_count = evidence_count
+            item.version = "1.0"
+            run.status = RunStatus.COMPLETED
+            run.progress = 100
+            run.current_stage = "Indexed and ready"
+            run.completed_at = utc_now()
+            _complete_stages(run)
+            return LibraryIngestResponse(item=deepcopy(item), run=deepcopy(run))
+
     def fail_ingestion(
         self,
         item_id: str,
@@ -695,78 +717,10 @@ class WorkspaceStore:
             item.description = f"{item.description} Ingestion blocked: {reason}"
             run.status = RunStatus.FAILED
             run.progress = 100
-            run.scheduling_state = "failed"
-            run.current_stage = "Scheduling failed"
+            run.current_stage = "Ingestion failed"
             run.completed_at = utc_now()
             _fail_active_stage(run)
             return LibraryIngestResponse(item=deepcopy(item), run=deepcopy(run))
-
-    def fail_run(self, run_id: str, reason: str) -> RunSummary | None:
-        with self._lock:
-            run = next((row for row in self._runs if row.id == run_id), None)
-            if run is None:
-                return None
-            run.status = RunStatus.FAILED
-            run.progress = 100
-            run.scheduling_state = "failed"
-            run.current_stage = "Scheduling failed"
-            run.completed_at = utc_now()
-            _fail_active_stage(run)
-            for approval in self._approvals:
-                if approval.run_id == run_id and approval.state == ApprovalState.PENDING:
-                    approval.state = ApprovalState.CANCELLED
-                    approval.rationale = reason
-                    approval.decided_at = utc_now()
-            return deepcopy(run)
-
-    def set_run_orchestration(
-        self,
-        run_id: str,
-        orchestration_input: dict[str, Any],
-    ) -> RunSummary | None:
-        with self._lock:
-            run = next((row for row in self._runs if row.id == run_id), None)
-            if run is None:
-                return None
-            run.orchestration_input = deepcopy(orchestration_input)
-            run.scheduling_state = "pending" if run.scheduler_managed else "not_managed"
-            return deepcopy(run)
-
-    def mark_run_scheduling(
-        self,
-        run_id: str,
-        state: str,
-    ) -> RunSummary | None:
-        if state not in {"scheduled", "uncertain", "failed"}:
-            raise ValueError("Unsupported run scheduling state.")
-        with self._lock:
-            run = next((row for row in self._runs if row.id == run_id), None)
-            if run is None:
-                return None
-            was_reconciliation_placeholder = (
-                run.status == RunStatus.PLANNED and run.current_stage == "Scheduling reconciliation required"
-            )
-            run.scheduling_state = state
-            if state == "uncertain":
-                run.status = RunStatus.PLANNED
-                run.current_stage = "Scheduling reconciliation required"
-            elif state == "failed":
-                run.status = RunStatus.FAILED
-                run.progress = 100
-                run.current_stage = "Scheduling failed"
-                run.completed_at = utc_now()
-                _fail_active_stage(run)
-            elif was_reconciliation_placeholder and run.orchestration_input:
-                original_status = run.orchestration_input.get("ui_status")
-                if isinstance(original_status, str):
-                    run.status = RunStatus(original_status)
-                original_stage = run.orchestration_input.get("ui_current_stage")
-                if isinstance(original_stage, str):
-                    run.current_stage = original_stage
-                original_progress = run.orchestration_input.get("ui_progress")
-                if isinstance(original_progress, int):
-                    run.progress = original_progress
-            return deepcopy(run)
 
     def runs(self) -> list[RunSummary]:
         with self._lock:
@@ -815,34 +769,22 @@ class WorkspaceStore:
             approval.decision_event_id = f"decision::{approval.id}"
             run = next((item for item in self._runs if item.id == approval.run_id), None)
             if run:
-                if run.scheduler_managed:
-                    run.status = (
-                        RunStatus.RUNNING
-                        if decision.decision == ApprovalState.APPROVED
-                        else RunStatus.BLOCKED
-                    )
-                    run.current_stage = (
-                        "Approved action queued"
-                        if decision.decision == ApprovalState.APPROVED
-                        else "Approval rejected"
-                    )
+                run.status = (
+                    RunStatus.COMPLETED
+                    if decision.decision == ApprovalState.APPROVED
+                    else RunStatus.BLOCKED
+                )
+                run.progress = 100
+                run.current_stage = (
+                    "Complete"
+                    if decision.decision == ApprovalState.APPROVED
+                    else "Approval rejected"
+                )
+                run.completed_at = utc_now()
+                if decision.decision == ApprovalState.APPROVED:
+                    _complete_stages(run)
                 else:
-                    run.status = (
-                        RunStatus.COMPLETED
-                        if decision.decision == ApprovalState.APPROVED
-                        else RunStatus.BLOCKED
-                    )
-                    run.progress = 100
-                    run.current_stage = (
-                        "Complete"
-                        if decision.decision == ApprovalState.APPROVED
-                        else "Approval rejected"
-                    )
-                    run.completed_at = utc_now()
-                    if decision.decision == ApprovalState.APPROVED:
-                        _complete_stages(run)
-                    else:
-                        _fail_active_stage(run)
+                    _fail_active_stage(run)
             return deepcopy(approval)
 
     def mark_approval_delivery(
@@ -1452,8 +1394,6 @@ class WorkspaceStore:
         current_stage: str = "Complete",
         stages: list[RunStage] | None = None,
         artifact_count: int = 1,
-        scheduler_managed: bool = False,
-        orchestration_input: dict[str, Any] | None = None,
     ) -> RunSummary:
         now = utc_now()
         record = RunSummary(
@@ -1469,9 +1409,6 @@ class WorkspaceStore:
             started_at=now,
             completed_at=now if status == RunStatus.COMPLETED else None,
             artifact_count=artifact_count,
-            scheduler_managed=scheduler_managed,
-            scheduling_state="pending" if scheduler_managed else "not_managed",
-            orchestration_input=deepcopy(orchestration_input),
             stages=stages or [],
         )
         with self._lock:

@@ -46,7 +46,3 @@ infra/*.arm.json
 Thumbs.db
 .vscode/
 .idea/
-
-# Generated Azure Functions deployment source
-services/connector_functions/research_assistant_connectors/
-services/connector_functions/research_assistant_core/

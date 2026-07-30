@@ -17,6 +17,8 @@ from research_assistant_core.models import Capability, RunStatus
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import IdentityContext
 from research_assistant_api.workspace import (
+    DEFAULT_PROJECT_DESCRIPTION,
+    DEFAULT_PROJECT_NAME,
     ApprovalDecision,
     ApprovalRecord,
     ApprovalState,
@@ -29,8 +31,6 @@ from research_assistant_api.workspace import (
     DatasetApprovalRequest,
     DatasetApprovalState,
     DatasetSendOutcome,
-    DEFAULT_PROJECT_DESCRIPTION,
-    DEFAULT_PROJECT_NAME,
     LibraryIngestRecord,
     LibraryIngestResponse,
     LibraryItem,
@@ -251,7 +251,11 @@ class CosmosWorkspaceStore(WorkspaceStore):
             tenant_id=tenant_id,
             project_id=project_id,
             project_name=initial_settings.name if initial_settings is not None else DEFAULT_PROJECT_NAME,
-            project_description=(initial_settings.description if initial_settings is not None else DEFAULT_PROJECT_DESCRIPTION),
+            project_description=(
+                initial_settings.description
+                if initial_settings is not None
+                else DEFAULT_PROJECT_DESCRIPTION
+            ),
             seed_demo_data=seed_demo_data,
         )
         if initial_settings is not None:
@@ -784,15 +788,28 @@ class CosmosWorkspaceStore(WorkspaceStore):
         self,
         payload: LibraryIngestRecord,
         identity: IdentityContext,
-        *,
-        scheduler_managed: bool = False,
     ) -> LibraryIngestResponse:
-        response = super().ingest(
-            payload,
-            identity,
-            scheduler_managed=scheduler_managed,
-        )
+        response = super().ingest(payload, identity)
         self._persist_library_item(response.item)
+        return response
+
+    def complete_ingestion(
+        self,
+        item_id: str,
+        run_id: str,
+        *,
+        evidence_count: int,
+        needs_review: bool,
+    ) -> LibraryIngestResponse | None:
+        response = super().complete_ingestion(
+            item_id,
+            run_id,
+            evidence_count=evidence_count,
+            needs_review=needs_review,
+        )
+        if response:
+            self._persist_library_item(response.item)
+            self._persist_run(response.run)
         return response
 
     def fail_ingestion(
@@ -806,35 +823,6 @@ class CosmosWorkspaceStore(WorkspaceStore):
             self._persist_library_item(response.item)
             self._persist_run(response.run)
         return response
-
-    def fail_run(self, run_id: str, reason: str) -> RunSummary | None:
-        run = super().fail_run(run_id, reason)
-        if run:
-            self._persist_run(run)
-            for approval in super().approvals():
-                if approval.run_id == run_id:
-                    self._persist_approval(approval)
-        return run
-
-    def set_run_orchestration(
-        self,
-        run_id: str,
-        orchestration_input: dict[str, Any],
-    ) -> RunSummary | None:
-        run = super().set_run_orchestration(run_id, orchestration_input)
-        if run:
-            self._persist_run(run)
-        return run
-
-    def mark_run_scheduling(
-        self,
-        run_id: str,
-        state: str,
-    ) -> RunSummary | None:
-        run = super().mark_run_scheduling(run_id, state)
-        if run:
-            self._persist_run(run)
-        return run
 
     def decide_approval(
         self,
@@ -999,8 +987,6 @@ class CosmosWorkspaceStore(WorkspaceStore):
         current_stage: str = "Complete",
         stages: list[RunStage] | None = None,
         artifact_count: int = 1,
-        scheduler_managed: bool = False,
-        orchestration_input: dict[str, Any] | None = None,
     ) -> RunSummary:
         run = super().add_run(
             run_id=run_id,
@@ -1012,8 +998,6 @@ class CosmosWorkspaceStore(WorkspaceStore):
             current_stage=current_stage,
             stages=stages,
             artifact_count=artifact_count,
-            scheduler_managed=scheduler_managed,
-            orchestration_input=orchestration_input,
         )
         self._persist_run(run)
         return run

@@ -16,7 +16,6 @@ from research_assistant_api.foundry import (
     HostedAgentNotReadyError,
     HostedAgentReply,
 )
-from research_assistant_api.orchestration import RunSchedulingError
 
 app_module = importlib.import_module("research_assistant_api.app")
 
@@ -256,91 +255,6 @@ def test_upload_rejects_empty_and_oversized_runtime_sources(
     assert oversized.json()["detail"] == "The runtime ingestion limit is 20 MB per source."
 
 
-def test_ingestion_scheduling_failure_marks_item_and_run_failed() -> None:
-    class FailingScheduler:
-        configured = True
-
-        def schedule(self, *, instance_id: str, payload: dict[str, Any]) -> str:
-            del instance_id, payload
-            raise RunSchedulingError("Scheduler rejected the ingest request.")
-
-        def approve(self, **kwargs: Any) -> None:
-            del kwargs
-
-        def close(self) -> None:
-            return None
-
-    with TestClient(app) as client:
-        app.state.scheduler = FailingScheduler()
-        before_ids = {item["id"] for item in client.get("/api/library").json()}
-        response = client.post(
-            "/api/library/ingest",
-            json={
-                "title": "Scheduling failure artifact",
-                "kind": "Policy",
-                "source": "Workspace upload",
-                "access": "internal",
-                "license": "Project supplied",
-                "description": "Exercise deterministic failure handling.",
-            },
-        )
-        after_library = client.get("/api/library").json()
-        created_item = next(item for item in after_library if item["id"] not in before_ids)
-        created_run = next(
-            run
-            for run in client.get("/api/runs").json()
-            if run["title"] == "Ingest Scheduling failure artifact"
-        )
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "Scheduler rejected the ingest request."
-    assert created_item["status"] == "blocked"
-    assert "Ingestion blocked: Scheduler rejected the ingest request." in created_item[
-        "description"
-    ]
-    assert created_run["status"] == "failed"
-    assert created_run["scheduling_state"] == "failed"
-
-
-def test_studio_scheduling_failure_marks_run_failed_and_cancels_approval() -> None:
-    class FailingScheduler:
-        configured = True
-
-        def schedule(self, *, instance_id: str, payload: dict[str, Any]) -> str:
-            del instance_id, payload
-            raise RunSchedulingError("Scheduler rejected the studio run.")
-
-        def approve(self, **kwargs: Any) -> None:
-            del kwargs
-
-        def close(self) -> None:
-            return None
-
-    with TestClient(app) as client:
-        app.state.scheduler = FailingScheduler()
-        before_run_ids = {run["id"] for run in client.get("/api/runs").json()}
-        before_approval_ids = {approval["id"] for approval in client.get("/api/approvals").json()}
-        response = client.post(
-            "/api/studios/grant/run",
-            json={"objective": "Create a scheduler failure that cancels approval"},
-        )
-        created_run = next(
-            run for run in client.get("/api/runs").json() if run["id"] not in before_run_ids
-        )
-        created_approval = next(
-            approval
-            for approval in client.get("/api/approvals").json()
-            if approval["id"] not in before_approval_ids
-        )
-
-    assert response.status_code == 503
-    assert response.json()["detail"] == "Scheduler rejected the studio run."
-    assert created_run["status"] == "failed"
-    assert created_run["scheduling_state"] == "failed"
-    assert created_approval["state"] == "cancelled"
-    assert created_approval["rationale"] == "Scheduler rejected the studio run."
-
-
 def test_update_connector_surfaces_success_validation_and_missing_cases() -> None:
     with TestClient(app) as client:
         connector_id = next(
@@ -423,13 +337,12 @@ def test_connector_test_surfaces_unavailable_conflict_and_missing_cases(
     assert vanished.json()["detail"] == "Connector not found."
 
 
-def test_approval_routes_handle_missing_records_delivery_failures_and_scheduler_errors(
+def test_approval_routes_handle_missing_records_and_runs(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     missing = None
     missing_after_decide = None
     missing_run = None
-    scheduler_failure = None
 
     with TestClient(app) as client:
         missing = client.post(
@@ -444,33 +357,7 @@ def test_approval_routes_handle_missing_records_delivery_failures_and_scheduler_
             json={"decision": "approved", "rationale": "Race lost"},
         )
 
-    class RecordingScheduler:
-        configured = True
-
-        def __init__(self, *, fail_on_approve: bool = False) -> None:
-            self.fail_on_approve = fail_on_approve
-
-        def schedule(self, *, instance_id: str, payload: dict[str, Any]) -> str:
-            del payload
-            return instance_id
-
-        def approve(
-            self,
-            *,
-            instance_id: str,
-            approval_id: str,
-            idempotency_key: str,
-            approved: bool,
-        ) -> None:
-            del instance_id, approval_id, idempotency_key, approved
-            if self.fail_on_approve:
-                raise RunSchedulingError("Approval event delivery failed.")
-
-        def close(self) -> None:
-            return None
-
     with TestClient(app) as client:
-        app.state.scheduler = RecordingScheduler()
         run_response = client.post(
             "/api/studios/grant/run",
             json={"objective": "Create an approval that loses its run"},
@@ -486,35 +373,12 @@ def test_approval_routes_handle_missing_records_delivery_failures_and_scheduler_
             json={"decision": "approved", "rationale": "Run disappeared."},
         )
 
-    with TestClient(app) as client:
-        scheduler = RecordingScheduler(fail_on_approve=True)
-        app.state.scheduler = scheduler
-        run_response = client.post(
-            "/api/studios/grant/run",
-            json={"objective": "Create an approval that fails delivery"},
-        )
-        approval_id = next(
-            item["id"]
-            for item in client.get("/api/approvals").json()
-            if item["run_id"] == run_response.json()["run"]["id"]
-        )
-        scheduler_failure = client.post(
-            f"/api/approvals/{approval_id}/decision",
-            json={"decision": "approved", "rationale": "Delivery should fail."},
-        )
-        stored = next(
-            item for item in client.get("/api/approvals").json() if item["id"] == approval_id
-        )
-
     assert missing is not None and missing.status_code == 404
     assert missing.json()["detail"] == "Approval not found."
     assert missing_after_decide is not None and missing_after_decide.status_code == 404
     assert missing_after_decide.json()["detail"] == "Approval not found."
     assert missing_run is not None and missing_run.status_code == 409
     assert missing_run.json()["detail"] == "Approval run no longer exists."
-    assert scheduler_failure is not None and scheduler_failure.status_code == 503
-    assert scheduler_failure.json()["detail"] == "Approval event delivery failed."
-    assert stored["event_delivery"] == "failed"
 
 
 def test_studio_route_surfaces_research_service_validation_errors(

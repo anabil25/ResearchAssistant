@@ -52,6 +52,8 @@ from research_assistant_api.identity import (
     _claim_values,
     _decode_client_principal,
     enforce_tenant_claim,
+    local_developer_identity,
+    project_group_name,
     resolve_identity,
 )
 
@@ -156,6 +158,19 @@ def test_resolve_identity_requires_authenticated_identity_when_demo_is_disabled(
 
     assert excinfo.value.status_code == 401
     assert excinfo.value.detail == "An authenticated platform identity is required."
+
+
+def test_local_developer_identity_is_scoped_to_configured_project() -> None:
+    settings = Settings(
+        workspace_tenant_id="tenant-local",
+        workspace_project_id="project-local",
+    )
+
+    identity = local_developer_identity(settings)
+
+    assert identity.tenant_id == "tenant-local"
+    assert project_group_name("project-local") in identity.groups
+    assert project_group_name("another-project") not in identity.groups
 
 
 def test_enforce_tenant_claim_rejects_mismatched_tenant() -> None:

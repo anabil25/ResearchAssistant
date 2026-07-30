@@ -27,15 +27,13 @@ flowchart LR
     API --> Search[(Azure AI Search)]
     Literature & Grant & Dataset --> Models[Foundry model deployments]
 
-    API --> DTS[Durable Task Scheduler]
-    DTS <--> Worker[Container Apps workflow worker]
-    Worker --> DocIntel[Document Intelligence v4]
-    Worker --> Search
-    Worker --> Blob[(Blob Storage)]
-    Worker --> Cosmos[(Cosmos DB)]
-    Worker --> Models
+    API --> DocIntel[Document Intelligence v4]
+    API --> Search
+    API --> Blob[(Blob Storage)]
+    API --> Cosmos[(Cosmos DB)]
+    API --> Models
 
-    Web & API & Worker -. OpenTelemetry .-> AppInsights[Application Insights]
+    Web & API -. OpenTelemetry .-> AppInsights[Application Insights]
 ```
 
 ## Hosted Agent contract
@@ -197,10 +195,10 @@ The six studios do not share one generic state machine:
 | Automation | Typed DAG, dependencies, retries, dry-run result | Activation/external steps |
 
 Library items, run stages, connector assignments, settings, and approvals are
-Cosmos-backed in Azure. Every new studio/ingestion run is scheduled under the
-same `durable_instance_id` displayed in the UI. Approval records bind actor,
-timestamp, rationale, exact action, destination, and idempotency key; approval
-events resume that same orchestration instance.
+Cosmos-backed in Azure. Every new studio/ingestion run receives a stable run
+identifier displayed in the UI. Approval records bind actor, timestamp,
+rationale, exact action, destination, and idempotency key; decisions update the
+associated run state directly.
 
 Personal workspaces reuse the deployed serverless Cosmos account's existing
 `research/projects` container, partitioned by tenant. Project catalog records
@@ -214,20 +212,18 @@ connector credentials. No SQLite file, Azure SQL resource, Cosmos container,
 or other Azure resource is introduced. The deployment's Foundry project is
 still a trusted runtime scope, not a user-selectable workspace.
 
-## Durable workflow
+## Direct workflow execution
 
-The worker uses the managed Durable Task Scheduler, not the legacy Durable
-Functions Storage backend. Activities exchange Blob/manifest references rather
-than payloads above the scheduler's 1 MB limit.
+Hosted research and studio operations execute through the API request path.
+Library ingestion is submitted to a FastAPI process-local background task after
+the upload response is created. There is no durable queue, automatic retry,
+pause/resume control, or restart recovery; an interrupted ingestion can remain
+in `processing` until it is submitted again or repaired operationally.
 
-The baseline research pipeline is:
-
-`ingest -> retrieve -> synthesize -> verify -> approval -> complete`
-
-Retries are bounded. External writes and large-scale compute remain blocked
-until an approval event is recorded. The `LargeScaleComputeAdapter` provides
-estimate, submit, idempotency, and status contracts without pretending that a
-raw-data platform is configured.
+External writes and large-scale compute remain blocked until an approval is
+recorded. The `LargeScaleComputeAdapter` provides estimate, submit,
+idempotency, and status contracts without pretending that a raw-data platform
+is configured.
 
 Runtime Library ingestion is:
 
@@ -236,8 +232,8 @@ chunking -> Foundry embeddings -> Azure AI Search -> Cosmos ready state`
 
 Microsoft's July 2026 guidance recommends Content Understanding for new managed
 Search skillsets. This accelerator retains direct Document Intelligence in its
-deterministic worker because Search is intentionally in a different region,
-the existing resource is already deployed, and the worker must preserve
+deterministic API ingestion path because Search is intentionally in a different
+region, the existing resource is already deployed, and the application must preserve
 checksum/ACL/version lineage. Content Understanding remains a gated upgrade,
 not an implicit behavior change.
 
@@ -253,21 +249,19 @@ not an implicit behavior change.
 - Document Intelligence S0, `prebuilt-layout` v4 GA
 - Blob Storage
 - Cosmos DB serverless
-- Durable Task Scheduler Consumption
 - Container Registry Basic
-- Container Apps environment with web/API/worker
+- Container Apps environment with web/API
 - Log Analytics and workspace-based Application Insights
-- separate API and worker user-assigned managed identities
+- API user-assigned managed identity
 - VNet-integrated Container Apps environment
 - Blob and Cosmos private endpoints and private DNS zone links
 
-The web and API remain warm for the demo profile; the worker keeps one small
-replica for the scheduler's push connection.
+The web and API remain warm for the demo profile.
 
 ## Deployment sequencing
 
 1. `preprovision` validates every required service/SKU and exact model in the
-   selected region, then registers Durable Task when needed.
+  selected region.
 2. Bicep provisions resources and data-plane roles.
 3. `postprovision` creates the Search index, uploads synthetic evidence,
    creates connector-specific Foundry project connections, and reconciles and

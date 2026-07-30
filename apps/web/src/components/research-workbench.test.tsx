@@ -1493,7 +1493,7 @@ describe("ResearchWorkbench", () => {
       state: "pending",
       risk: "High",
       gated_action: "Activate graph v1.0.",
-      destination: "Durable Task Scheduler",
+      destination: "Application approval boundary",
       requested_by: "orchestration-agent",
       requested_at: "2026-07-16T12:00:00Z",
       evidence_summary: "Dry run passed.",

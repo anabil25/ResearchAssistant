@@ -11,10 +11,6 @@ param openAIEndpoint string
 param apiIdentityResourceId string
 param apiIdentityClientId string
 param apiIdentityPrincipalId string
-param foundryProjectPrincipalId string
-param workerIdentityResourceId string
-param workerIdentityClientId string
-param workerIdentityPrincipalId string
 param acrResourceId string
 param searchEndpoint string
 param searchIndexName string
@@ -32,15 +28,10 @@ param artifactContainerName string
 param agentStudioBundleContainerName string
 param documentIntelligenceEndpoint string
 param embeddingDeploymentName string
-param durableTaskEndpoint string
-param durableTaskHubName string
 param workspaceTenantId string
 param workspaceProjectId string
 param connectorGatewayUrl string
 param connectorGatewayTokenScope string
-@minValue(65536)
-@maxValue(333398872)
-param connectorAdapterMaxRequestBodyBytes int = 5657944
 param warmReplicaCount int = 1
 
 @description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
@@ -84,146 +75,6 @@ resource environment 'Microsoft.App/managedEnvironments@2026-01-01' = {
     }
     zoneRedundant: false
   }
-}
-
-resource connectorAdapter 'Microsoft.App/containerApps@2026-01-01' = {
-  name: 'ca-connectors-${name}'
-  location: location
-  tags: union(tags, {
-    'azd-service-name': 'connector-adapter'
-  })
-  identity: {
-    type: 'SystemAssigned,UserAssigned'
-    userAssignedIdentities: {
-      '${apiIdentityResourceId}': {}
-    }
-  }
-  properties: {
-    environmentId: environment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: apiIdentityResourceId
-        }
-      ]
-      ingress: {
-        allowInsecure: false
-        external: true
-        targetPort: 8200
-        traffic: [
-          {
-            latestRevision: true
-            weight: 100
-          }
-        ]
-        transport: 'auto'
-      }
-    }
-    template: {
-      containers: [
-        {
-          name: 'connector-adapter'
-          image: placeholderImage
-          env: [
-            {
-              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-              value: appInsightsConnectionString
-            }
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: apiIdentityClientId
-            }
-            {
-              name: 'RESEARCH_WORKSPACE_TENANT_ID'
-              value: workspaceTenantId
-            }
-            {
-              name: 'RESEARCH_WORKSPACE_PROJECT_ID'
-              value: workspaceProjectId
-            }
-            {
-              name: 'RESEARCH_PROVIDER_CALLER_PRINCIPAL_IDS'
-              value: '${apiIdentityPrincipalId},${foundryProjectPrincipalId}'
-            }
-            {
-              name: 'FOUNDRY_PROJECT_ENDPOINT'
-              value: foundryProjectEndpoint
-            }
-            {
-              name: 'AZURE_SEARCH_ENDPOINT'
-              value: searchEndpoint
-            }
-            {
-              name: 'AZURE_STORAGE_BLOB_ENDPOINT'
-              value: storageBlobEndpoint
-            }
-            {
-              name: 'OTEL_SERVICE_NAME'
-              value: 'research-assistant-connector-adapter'
-            }
-            {
-              name: 'CONNECTOR_ADAPTER_MAX_REQUEST_BODY_BYTES'
-              value: string(connectorAdapterMaxRequestBodyBytes)
-            }
-          ]
-          probes: [
-            {
-              type: 'Startup'
-              httpGet: {
-                path: '/health'
-                port: 8200
-              }
-              periodSeconds: 5
-              failureThreshold: 36
-            }
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/health'
-                port: 8200
-              }
-              initialDelaySeconds: 10
-              periodSeconds: 30
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/ready'
-                port: 8200
-              }
-              initialDelaySeconds: 5
-              periodSeconds: 10
-              failureThreshold: 3
-            }
-          ]
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-        }
-      ]
-      scale: {
-        minReplicas: warmReplicaCount
-        maxReplicas: 5
-        rules: [
-          {
-            name: 'connector-http'
-            http: {
-              metadata: {
-                concurrentRequests: '30'
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-  dependsOn: [
-    apiIdentityAcrPull
-  ]
 }
 
 resource api 'Microsoft.App/containerApps@2026-01-01' = {
@@ -320,6 +171,14 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               value: searchIndexName
             }
             {
+              name: 'AZURE_AI_EMBEDDING_DEPLOYMENT_NAME'
+              value: embeddingDeploymentName
+            }
+            {
+              name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT'
+              value: documentIntelligenceEndpoint
+            }
+            {
               name: 'AZURE_COSMOS_ENDPOINT'
               value: cosmosEndpoint
             }
@@ -366,10 +225,6 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
             {
               name: 'AZURE_STORAGE_AGENT_STUDIO_BUNDLE_CONTAINER'
               value: agentStudioBundleContainerName
-            }
-            {
-              name: 'DURABLE_TASK_SCHEDULER_CONNECTION_STRING'
-              value: 'Endpoint=${durableTaskEndpoint};TaskHub=${durableTaskHubName};Authentication=ManagedIdentity;ClientID=${apiIdentityClientId}'
             }
             {
               name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
@@ -584,121 +439,6 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
   ]
 }
 
-resource worker 'Microsoft.App/containerApps@2026-01-01' = {
-  name: 'ca-worker-${name}'
-  location: location
-  tags: union(tags, {
-    'azd-service-name': 'worker'
-  })
-  identity: {
-    type: 'SystemAssigned,UserAssigned'
-    userAssignedIdentities: {
-      '${workerIdentityResourceId}': {}
-    }
-  }
-  properties: {
-    environmentId: environment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: workerIdentityResourceId
-        }
-      ]
-    }
-    template: {
-      containers: [
-        {
-          name: 'worker'
-          image: placeholderImage
-          env: [
-            {
-              name: 'AZURE_CLIENT_ID'
-              value: workerIdentityClientId
-            }
-            {
-              name: 'RESEARCH_WORKSPACE_TENANT_ID'
-              value: workspaceTenantId
-            }
-            {
-              name: 'RESEARCH_WORKSPACE_PROJECT_ID'
-              value: workspaceProjectId
-            }
-            {
-              name: 'FOUNDRY_PROJECT_ENDPOINT'
-              value: foundryProjectEndpoint
-            }
-            {
-              name: 'AZURE_OPENAI_ENDPOINT'
-              value: openAIEndpoint
-            }
-            {
-              name: 'AZURE_AI_MODEL_DEPLOYMENT_NAME'
-              value: 'gpt-5.4-mini'
-            }
-            {
-              name: 'AZURE_AI_EMBEDDING_DEPLOYMENT_NAME'
-              value: embeddingDeploymentName
-            }
-            {
-              name: 'AZURE_SEARCH_ENDPOINT'
-              value: searchEndpoint
-            }
-            {
-              name: 'AZURE_SEARCH_INDEX_NAME'
-              value: searchIndexName
-            }
-            {
-              name: 'AZURE_COSMOS_ENDPOINT'
-              value: cosmosEndpoint
-            }
-            {
-              name: 'AZURE_COSMOS_DATABASE'
-              value: cosmosDatabaseName
-            }
-            {
-              name: 'AZURE_STORAGE_ACCOUNT_NAME'
-              value: storageAccountName
-            }
-            {
-              name: 'AZURE_STORAGE_BLOB_ENDPOINT'
-              value: storageBlobEndpoint
-            }
-            {
-              name: 'AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT'
-              value: documentIntelligenceEndpoint
-            }
-            {
-              name: 'DURABLE_TASK_SCHEDULER_CONNECTION_STRING'
-              value: 'Endpoint=${durableTaskEndpoint};TaskHub=${durableTaskHubName};Authentication=ManagedIdentity;ClientID=${workerIdentityClientId}'
-            }
-            {
-              name: 'APPLICATIONINSIGHTS_CONNECTION_STRING'
-              value: appInsightsConnectionString
-            }
-            {
-              name: 'OTEL_SERVICE_NAME'
-              value: 'research-assistant-worker'
-            }
-          ]
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-        }
-      ]
-      scale: {
-        minReplicas: 1
-        maxReplicas: 3
-      }
-    }
-  }
-  dependsOn: [
-    workerIdentityAcrPull
-  ]
-}
-
 resource apiIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   name: guid(acr.id, apiIdentityPrincipalId, acrPullRoleId)
   scope: acr
@@ -709,17 +449,6 @@ resource apiIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01'
   }
 }
 
-resource workerIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, workerIdentityPrincipalId, acrPullRoleId)
-  scope: acr
-  properties: {
-    principalId: workerIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: acrPullRoleId
-  }
-}
-
-
 output environmentId string = environment.id
 output environmentName string = environment.name
 output webName string = web.name
@@ -727,6 +456,3 @@ output webUrl string = 'https://${web.properties.configuration.ingress.fqdn}'
 output webPrincipalId string = web.identity.principalId
 output apiName string = api.name
 output apiUrl string = 'https://${api.properties.configuration.ingress.fqdn}'
-output workerName string = worker.name
-output connectorAdapterName string = connectorAdapter.name
-output connectorAdapterUrl string = 'https://${connectorAdapter.properties.configuration.ingress.fqdn}'

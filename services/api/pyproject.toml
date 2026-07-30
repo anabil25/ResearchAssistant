@@ -16,13 +16,14 @@ dependencies = [
     "azure-monitor-query==2.0.0",
     "azure-search-documents==12.0.0",
     "azure-storage-blob>=12.27,<13",
-    "durabletask-azuremanaged==1.7.2",
+    "azure-ai-documentintelligence==1.0.2",
     "fastapi>=0.120,<1",
     "httpx>=0.28,<1",
     "openai==2.46.0",
     "pydantic-settings>=2.11,<3",
     "python-multipart>=0.0.20,<1",
     "research-assistant-core",
+    "research-assistant-worker",
     "uvicorn[standard]>=0.38,<1",
 ]
 
@@ -35,3 +36,4 @@ build-backend = "uv_build"
 
 [tool.uv.sources]
 research-assistant-core = { workspace = true }
+research-assistant-worker = { workspace = true }

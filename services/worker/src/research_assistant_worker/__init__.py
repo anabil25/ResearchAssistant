@@ -1,3 +1,1 @@
-from research_assistant_worker.runtime import main
-
-__all__ = ["main"]
+"""In-process ingestion support for the Research Assistant API."""

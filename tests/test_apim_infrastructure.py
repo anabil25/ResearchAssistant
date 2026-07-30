@@ -1,11 +1,20 @@
 from __future__ import annotations
 
-import json
 from pathlib import Path
+from xml.etree import ElementTree
 
 from research_assistant_core.connector_catalog import connector_definitions
-from scripts.export_contracts import connector_mcp_catalog, connector_mcp_tools
-from scripts.export_contracts import SPECIALIST_TOOLBOXES, specialist_toolbox_yaml
+
+from scripts.build_connector_apim_spec import (
+    connector_apim_openapi,
+    connector_operation_policies,
+)
+from scripts.export_contracts import (
+    SPECIALIST_TOOLBOXES,
+    connector_mcp_catalog,
+    connector_mcp_tools,
+    specialist_toolbox_yaml,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -67,28 +76,25 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     assert "virtualNetworkConfiguration" not in module
     assert "Microsoft.ApiManagement/service/apis@2025-09-01-preview" in module
     assert "type: 'mcp'" in module
-    assert module.count(
-        "Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview"
-    ) == 4
+    assert "Microsoft.ApiManagement/service/apis/tools@2025-09-01-preview" not in module
+    assert "loadTextContent('../../infra/provider-specs/authored/research_connectors.json')" in module
     assert "loadJsonContent('../../infra/connector-mcp-catalog.json')" in module
-    assert "loadJsonContent('../../infra/connector-mcp-tools.json')" in module
+    assert "loadJsonContent('../../infra/connector-mcp-tools.json')" not in module
+    assert "loadJsonContent('../../infra/connector-operation-policies.json')" in module
+    assert "resource connectorPolicies" in module
     assert "resource sourceConnectorMcps" in module
-    assert "resource sourceConnectorMcpTools" in module
+    assert "resource sourceConnectorMcpTools" not in module
     assert "resource sourceConnectorMcpPolicies" in module
     assert "resource connectorMcpProduct " in module
     assert "resource connectorMcpSubscription " in module
-    assert "resource connectorMcpProductApi " in module
     assert "resource sourceConnectorMcpProductApis " in module
     assert "var connectorMcpProductId = 'research-agent-tools'" in module
     assert "var connectorMcpSubscriptionId = 'foundry-agent-tools'" in module
     assert "scope: '/products/${connectorMcpProduct.name}'" in module
     assert "output connectorMcpUrls array" in module
     assert "output connectorMcpSubscriptionId string" in module
-    assert "searchLiteratureMetadata" in module
-    assert "searchGrantOpportunities" in module
-    assert "searchMatchingMetadata" in module
     assert "validate-azure-ad-token" in module
-    assert "validate-content" in module
+    assert "validate-parameters" in module
     assert "rate-limit-by-key" in module
     assert 'counter-key="@(context.Subscription.Id)"' in module
     assert "__APIM_PRINCIPAL_ID__" in module
@@ -98,17 +104,14 @@ def test_apim_module_uses_supported_mcp_resource_model_and_policies() -> None:
     )[0]
     assert "validate-azure-ad-token" not in mcp_policy
     assert "authentication-managed-identity" in mcp_policy
-    aggregate_mcp = module.split("resource connectorMcp ", maxsplit=1)[1].split(
-        "resource literatureTool ",
-        maxsplit=1,
-    )[0]
     source_mcps = module.split("resource sourceConnectorMcps ", maxsplit=1)[1].split(
-        "resource sourceConnectorMcpTools ",
+        "resource sourceConnectorMcpPolicies ",
         maxsplit=1,
     )[0]
-    assert "subscriptionRequired: true" in aggregate_mcp
     assert "subscriptionRequired: true" in source_mcps
-    assert "context.Response.Body" not in module
+    assert "context.Response.Body" not in mcp_policy
+    assert "connectorBackendUrl" not in module
+    assert "connector-adapter-openapi.json" not in module
     assert "Microsoft.Insights/diagnosticSettings@2021-05-01-preview" in module
     assert "categoryGroup: 'allLogs'" in module
     assert "path: 'research-connectors'" in module
@@ -143,18 +146,15 @@ def test_every_container_app_binds_acr_pull_to_a_preexisting_identity() -> None:
         encoding="utf-8"
     )
 
-    assert container_apps.count("server: acr.properties.loginServer") == 4
+    assert container_apps.count("server: acr.properties.loginServer") == 2
     app_blocks = {
         name: container_apps.split(f"resource {name} ", 1)[1].split("\nresource ", 1)[0]
-        for name in ("connectorAdapter", "api", "web", "worker")
+        for name in ("api", "web")
     }
-    for name in ("connectorAdapter", "api", "web"):
+    for name in ("api", "web"):
         assert "identity: apiIdentityResourceId" in app_blocks[name]
-    assert "identity: workerIdentityResourceId" in app_blocks["worker"]
     assert "principalId: apiIdentityPrincipalId" in container_apps
-    assert "principalId: workerIdentityPrincipalId" in container_apps
-    assert container_apps.count("apiIdentityAcrPull") == 4
-    assert container_apps.count("workerIdentityAcrPull") == 2
+    assert container_apps.count("apiIdentityAcrPull") == 3
 
 
 def test_foundry_project_assigns_deployer_data_plane_roles() -> None:
@@ -167,7 +167,7 @@ def test_foundry_project_assigns_deployer_data_plane_roles() -> None:
     assert "roleDefinitionId: foundryUserRoleId" in resources
 
 
-def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> None:
+def test_connectors_are_apim_native_without_a_connector_container_app() -> None:
     container_apps = (
         ROOT / "infra" / "modules" / "container-apps.bicep"
     ).read_text(encoding="utf-8")
@@ -176,65 +176,63 @@ def test_connector_adapter_is_identity_protected_and_wired_through_apim() -> Non
     ).read_text(encoding="utf-8")
     azure_yaml = (ROOT / "azure.yaml").read_text(encoding="utf-8")
 
-    assert "'azd-service-name': 'connector-adapter'" in container_apps
-    connector_resource = container_apps.split(
-        "resource connectorAdapter ",
-        maxsplit=1,
-    )[1].split("resource api ", maxsplit=1)[0]
-    assert "external: true" in connector_resource
-    assert "RESEARCH_WORKSPACE_TENANT_ID" in connector_resource
+    assert "connectorAdapter" not in container_apps
+    assert "ca-connectors-" not in container_apps
     assert "RESEARCH_CONNECTOR_GATEWAY_URL" in container_apps
     assert "RESEARCH_CONNECTOR_GATEWAY_TOKEN_SCOPE" in container_apps
-    assert "apiManagement!.outputs.connectorMcpUrl" in resources
     assert "apiManagement!.outputs.connectorMcpUrls" in resources
     assert "apiManagement!.outputs.connectorMcpSubscriptionId" in resources
-    assert "connector-adapter:" in azure_yaml
-    assert "services/connector_adapter/Dockerfile" in azure_yaml
+    assert "connector-adapter:" not in azure_yaml
+    assert "services/connector_adapter/Dockerfile" not in azure_yaml
     postprovision = (ROOT / "scripts" / "postprovision.py").read_text(
         encoding="utf-8"
     )
-    assert "configure_connector_adapter_identity" in postprovision
-    assert "RESEARCH_APIM_PRINCIPAL_ID" in postprovision
+    assert "configure_connector_adapter_identity" not in postprovision
+    assert "SERVICE_CONNECTOR_ADAPTER_NAME" not in postprovision
+    assert "configure_connector_mcp_tools" in postprovision
     assert "authentication-managed-identity" in (
         ROOT / "infra" / "modules" / "api-management.bicep"
     ).read_text(encoding="utf-8")
 
 
 def test_static_connector_openapi_is_bounded_for_apim_import() -> None:
-    specification = json.loads(
-        (
-            ROOT
-            / "packages"
-            / "contracts"
-            / "connector-adapter-openapi.json"
-        ).read_text(encoding="utf-8")
-    )
+    specification = connector_apim_openapi()
 
     operations = {
         operation["operationId"]
-        for path, path_item in specification["paths"].items()
-        if path.startswith("/v1/")
+        for path_item in specification["paths"].values()
         for method, operation in path_item.items()
-        if method in {"get", "post"}
+        if method == "get"
     }
     assert operations == {
-        "listResearchConnectors",
-        "searchLiteratureMetadata",
-        "searchGrantOpportunities",
-        "searchMatchingMetadata",
-    } | {
         operation.id
         for connector in connector_definitions()
         for operation in connector.operations
     }
-    for schema_name in (
-        "LiteratureSearchRequest",
-        "GrantSearchRequest",
-        "MatchingSearchRequest",
-    ):
-        assert specification["components"]["schemas"][schema_name][
-            "additionalProperties"
-        ] is False
+    assert len(specification["paths"]) == 20
+    assert all(set(path_item) == {"get"} for path_item in specification["paths"].values())
+    assert specification["components"]["schemas"]["ConnectorResult"]["additionalProperties"] is False
+
+
+def test_connector_operation_policies_cover_apim_native_transformations() -> None:
+    policies = {item["operationId"]: item["value"] for item in connector_operation_policies()}
+    expected = {
+        operation.id
+        for connector in connector_definitions()
+        for operation in connector.operations
+    }
+
+    assert set(policies) == expected
+    for value in policies.values():
+        ElementTree.fromstring(value)
+        assert 'name="Authorization" exists-action="delete"' in value
+        assert "set-backend-service" in value
+    assert "send-request" in policies["pubmedSearch"]
+    assert "xml-to-json" in policies["arxivSearch"]
+    assert "xml-to-json" in policies["arxivLookup"]
+    assert "<set-method>POST</set-method>" in policies["grantsGovSearch"]
+    assert "<set-method>POST</set-method>" in policies["nihReporterSearch"]
+    assert "context.Response.Body" in policies["crossrefSearch"]
 
 
 def test_api_container_never_enables_the_local_identity_opt_ins() -> None:
@@ -344,4 +342,4 @@ def test_main_bicep_defaults_entra_params_off_for_backward_compatibility() -> No
     assert "param enableEntraAuth bool = false" in main
     assert "param entraTenantId string = ''" in main
     assert "param entraApiClientId string = ''" in main
-    assert "param enableApimMcpTools bool = false" in main
+    assert "enableApimMcpTools" not in main

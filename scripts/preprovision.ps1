@@ -46,13 +46,12 @@ $requiredResourceTypes = @(
   @{ Provider = "Microsoft.App"; Type = "containerApps" },
   @{ Provider = "Microsoft.DocumentDB"; Type = "databaseAccounts" },
   @{ Provider = "Microsoft.Storage"; Type = "storageAccounts" },
-  @{ Provider = "Microsoft.DurableTask"; Type = "schedulers" },
   @{ Provider = "Microsoft.OperationalInsights"; Type = "workspaces" },
   @{ Provider = "Microsoft.Insights"; Type = "components" },
   @{ Provider = "Microsoft.ContainerRegistry"; Type = "registries" }
 )
 
-foreach ($provider in @("Microsoft.ApiManagement", "Microsoft.Web", "Microsoft.DurableTask")) {
+foreach ($provider in @("Microsoft.ApiManagement", "Microsoft.Web")) {
   $state = az provider show --namespace $provider --query registrationState --output tsv
   if ($state -ne "Registered") {
     Write-Host "Registering $provider..."

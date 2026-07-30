@@ -53,7 +53,9 @@ class FakeBlobService:
 def clear_credential_cache() -> Iterator[None]:
     ingestion.credential.cache_clear()
     yield
-    ingestion.credential.cache_clear()
+    cache_clear = getattr(ingestion.credential, "cache_clear", None)
+    if cache_clear is not None:
+        cache_clear()
 
 
 def settings() -> ingestion.IngestionSettings:

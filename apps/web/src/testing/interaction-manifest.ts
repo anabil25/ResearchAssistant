@@ -907,13 +907,13 @@ export const INTERACTION_MANIFEST: readonly InteractionContract[] = [
   {
     id: "workflow.run.manage",
     surface: "Workflow",
-    control: "Run status, inspect, clone, and unavailable scheduler controls",
-    behavior: "Displays API-backed durable run states, links inspection, clones a new draft, and keeps scheduler actions disabled when the control plane is unavailable.",
+    control: "Run status, inspect, clone, and unavailable lifecycle controls",
+    behavior: "Displays API-backed run states, links inspection, clones a new draft, and keeps lifecycle actions disabled in direct-execution mode.",
     baseline: "functional-covered",
     milestone: "M8",
     // Evidence: studio-components.tsx — the Pause/Resume/Retry/Cancel buttons
-    // are permanently `disabled` (Durable Task Scheduler control plane not
-    // exposed), and generated-api.ts RunStatus has 8 real values (planned,
+    // are permanently `disabled` in direct-execution mode, and generated-api.ts
+    // RunStatus has 8 real values (planned,
     // running, waiting_for_approval, partial, blocked, completed, cancelled,
     // failed), all reachable via `orchestrationRuns` (mockable through the
     // `data` prop). "paused"/"retrying" have no reachable code path and were

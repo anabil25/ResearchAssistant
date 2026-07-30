@@ -1,20 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
-from unittest.mock import MagicMock
-
-import pytest
-import research_assistant_api.telemetry as api_telemetry
-import research_assistant_worker.telemetry as worker_telemetry
-from research_assistant_api.telemetry import configure_telemetry as configure_api
-from research_assistant_worker.telemetry import (
-    configure_telemetry as configure_worker,
-)
 import socket
 import sys
 from types import ModuleType
+
+import pytest
+import research_assistant_api.telemetry as api_telemetry
 from opentelemetry import trace
-from research_assistant_api import telemetry as api_telemetry
 from research_assistant_core import telemetry as core_telemetry
 from research_assistant_core.telemetry import (
     CloseableCredential,
@@ -25,15 +17,6 @@ from research_assistant_core.telemetry import (
     resolve_telemetry_mode,
     validate_provider_ownership,
 )
-from research_assistant_worker import telemetry as worker_telemetry
-
-
-
-
-
-
-
-
 
 
 def test_local_telemetry_never_constructs_cloud_credential_or_exporter(
@@ -50,17 +33,18 @@ def test_local_telemetry_never_constructs_cloud_credential_or_exporter(
         "APPLICATIONINSIGHTS_CONNECTION_STRING",
         "InstrumentationKey=00000000-0000-0000-0000-000000000000",
     )
-    monkeypatch.setattr(worker_telemetry, "_configure_azure_monitor", forbidden)
-    monkeypatch.setattr(worker_telemetry, "_managed_identity_credential", forbidden)
+    monkeypatch.setattr(api_telemetry, "_controller", TelemetryController())
+    monkeypatch.setattr(api_telemetry, "_configure_azure_monitor", forbidden)
+    monkeypatch.setattr(api_telemetry, "_managed_identity_credential", forbidden)
 
     assert (
-        worker_telemetry.configure_telemetry(
-            "worker-test",
+        api_telemetry.configure_telemetry(
+            "api-test",
             environment="development",
         )
         == TelemetryMode.LOCAL
     )
-    runtime = worker_telemetry.telemetry_runtime()
+    runtime = api_telemetry.telemetry_runtime()
     assert runtime is not None
     assert runtime.span_exporter is not None
     runtime.span_exporter.clear()
@@ -307,18 +291,12 @@ def test_service_cloud_adapters_are_lazy_and_injectable(
     monkeypatch.setitem(sys.modules, "azure.monitor.opentelemetry", monitor)
 
     api_credential = api_telemetry._managed_identity_credential("api-client")
-    worker_credential = worker_telemetry._managed_identity_credential("worker-client")
     api_telemetry._configure_azure_monitor(service="api")
-    worker_telemetry._configure_azure_monitor(service="worker")
     api_credential.close()
-    worker_credential.close()
     assert api_telemetry.telemetry_runtime() is not None
     assert events == [
         "credential:api-client",
-        "credential:worker-client",
         "configure:api",
-        "configure:worker",
-        "credential:close",
         "credential:close",
     ]
 

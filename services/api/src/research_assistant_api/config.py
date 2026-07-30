@@ -44,10 +44,6 @@ class Settings(BaseSettings):
         default="research",
         validation_alias="AZURE_COSMOS_DATABASE",
     )
-    durable_task_connection_string: str | None = Field(
-        default=None,
-        validation_alias="DURABLE_TASK_SCHEDULER_CONNECTION_STRING",
-    )
     storage_blob_endpoint: str | None = Field(
         default=None,
         validation_alias="AZURE_STORAGE_BLOB_ENDPOINT",

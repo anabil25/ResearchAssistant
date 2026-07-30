@@ -1,1 +1,0 @@
-"""Azure Functions connector facade package."""
