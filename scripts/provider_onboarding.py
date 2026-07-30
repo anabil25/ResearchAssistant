@@ -16,6 +16,7 @@ from typing import Any
 import httpx
 from azure.core.credentials import TokenCredential
 from azure.identity import get_bearer_token_provider
+from research_assistant_core.connector_catalog import connector_definitions
 
 ROOT = Path(__file__).resolve().parents[1]
 MANIFEST = ROOT / "infra" / "provider-specs" / "manifest.json"
@@ -42,6 +43,7 @@ def mcp_endpoint(gateway_url: str, mcp_path: str) -> str:
 def shared_toolbox_payload(
     gateway_url: str,
     entries: list[dict[str, Any]],
+    connector_targets: dict[str, str],
     guardrail_id: str = "",
 ) -> dict[str, Any]:
     """Build the single immutable Toolbox version shared by every agent.
@@ -52,18 +54,24 @@ def shared_toolbox_payload(
     """
     if not entries:
         raise ValueError("The shared Toolbox requires at least one provider MCP server")
+    connectors = connector_definitions()
+    expected_connector_ids = {connector.id for connector in connectors}
+    if set(connector_targets) != expected_connector_ids:
+        raise ValueError("The shared Toolbox requires the complete governed connector catalog")
 
     tools: list[dict[str, Any]] = [
         {
             "type": "web_search",
             "name": "web_search",
             "description": "Search the public web for current information and citations.",
+            "tool_configs": {"*": {"pin": True}},
         },
         {
             "type": "code_interpreter",
             "name": "code_interpreter",
             "description": "Run Python to analyse, chart, and summarise research data.",
             "container": {"type": "auto"},
+            "tool_configs": {"*": {"pin": True}},
         },
         {
             "type": "file_search",
@@ -71,14 +79,31 @@ def shared_toolbox_payload(
             "description": "Search uploaded research documents supplied at run time.",
         },
     ]
+    for connector in connectors:
+        tools.append(
+            {
+                "type": "mcp",
+                "server_label": connector.id,
+                "server_url": connector_targets[connector.id],
+                "project_connection_id": connector.toolbox_connection_id,
+                "description": connector.description,
+                "require_approval": "never",
+                "tool_configs": {
+                    "*": {
+                        "pin": True,
+                        "additional_search_text": " ".join(connector.capabilities),
+                    }
+                },
+            }
+        )
     for entry in sorted(entries, key=lambda item: item["connectorId"]):
         tools.append(
             {
                 "type": "mcp",
-                "server_label": entry["serverLabel"],
+                "server_label": f"provider_{entry['serverLabel']}",
                 "server_url": mcp_endpoint(gateway_url, entry["mcpPath"]),
                 "project_connection_id": provider_connection_id(entry["connectorId"]),
-                "description": f"{entry['displayName']} operations exposed through API Management.",
+                "description": f"Raw {entry['displayName']} operations exposed through API Management.",
                 "require_approval": "never",
             }
         )

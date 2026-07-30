@@ -206,9 +206,13 @@ class ContractMiddleware(AgentMiddleware):
         configured_sources = set(self._manifest.knowledge_bindings[0].sources)
         unauthorized = set(connector_ids) - configured_sources
         if unauthorized:
+            error_context: dict[str, Any] = {
+                "agent": self._manifest.id,
+                "connectors": sorted(unauthorized),
+            }
             raise AuthorizationError(
                 "Online request names connectors outside the agent policy",
-                context={"agent": self._manifest.id, "connectors": sorted(unauthorized)},
+                context=error_context,
             )
         return connector_ids
 

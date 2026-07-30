@@ -11,9 +11,34 @@ from __future__ import annotations
 import ipaddress
 import socket
 from collections.abc import Iterator
+from pathlib import Path
+from typing import Any, cast
 
 import pytest
+import yaml
 from research_assistant_api.config import Settings
+
+ROOT = Path(__file__).parents[1]
+
+
+@pytest.fixture(scope="session")
+def azure_manifest() -> dict[str, Any]:
+    manifest = cast(
+        dict[str, Any],
+        yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8")),
+    )
+    manifest["services"] = {
+        name: {
+            **(
+                yaml.safe_load((ROOT / service["$ref"]).read_text(encoding="utf-8"))
+                if "$ref" in service
+                else {}
+            ),
+            **service,
+        }
+        for name, service in manifest["services"].items()
+    }
+    return manifest
 
 
 def pytest_configure(config: pytest.Config) -> None:

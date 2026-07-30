@@ -80,11 +80,6 @@ def _bearer_token(credential: TokenCredential, scope: str) -> str:
         by_scope[scope] = provider
     return provider()
 
-
-class ToolboxProjectUnavailable(RuntimeError):
-    pass
-
-
 def required_env(name: str) -> str:
     value = os.getenv(name)
     if not value:
@@ -845,11 +840,10 @@ def with_toolbox_project_retry[T](
     ) from last_error
 
 
-def configure_connector_toolboxes(
+def configure_connector_connections(
     credential: TokenCredential | None = None,
 ) -> dict[str, str]:
     project_id = required_env("AZURE_AI_PROJECT_ID")
-    project_endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
     mcp_targets = connector_mcp_targets(required_env("AZURE_CONNECTOR_MCP_URLS"))
     effective_credential = credential or DefaultAzureCredential()
     resource_manager_endpoint = _resource_manager_endpoint()
@@ -872,44 +866,7 @@ def configure_connector_toolboxes(
                 subscription_key=subscription_key,
             ),
         )
-
-    definitions = {
-        "research-literature": (
-            ROOT / "infra" / "toolboxes" / "literature-toolbox.yaml",
-            "TOOLBOX_LITERATURE_MCP_ENDPOINT",
-        ),
-        "research-grant": (
-            ROOT / "infra" / "toolboxes" / "grant-toolbox.yaml",
-            "TOOLBOX_GRANT_MCP_ENDPOINT",
-        ),
-        "research-matching": (
-            ROOT / "infra" / "toolboxes" / "matching-toolbox.yaml",
-            "TOOLBOX_MATCHING_MCP_ENDPOINT",
-        ),
-        "research-dataset": (
-            ROOT / "infra" / "toolboxes" / "dataset-toolbox.yaml",
-            "TOOLBOX_DATASET_MCP_ENDPOINT",
-        ),
-    }
-    endpoints: dict[str, str] = {}
-    for toolbox_name, (definition, environment_name) in definitions.items():
-        del definition
-
-        def reconcile(name: str = toolbox_name) -> str:
-            return _reconcile_toolbox(
-                effective_credential,
-                toolbox_name=name,
-                project_endpoint=project_endpoint,
-                mcp_targets=mcp_targets,
-            )
-
-        endpoint = with_toolbox_project_retry(toolbox_name, reconcile)
-        subprocess.run(
-            [AZD_CLI, "env", "set", environment_name, endpoint],
-            check=True,
-        )
-        endpoints[toolbox_name] = endpoint
-    return endpoints
+    return mcp_targets
 
 
 def _shared_toolbox_tool_names(
@@ -961,12 +918,30 @@ def _shared_toolbox_tool_names(
     )
 
 
+def expected_shared_tool_names() -> frozenset[str]:
+    return frozenset(
+        {
+            "tool_search",
+            "call_tool",
+            "web_search",
+            "code_interpreter",
+            *{
+                f"{connector.id}___{operation.mcp_tool_name}"
+                for connector in connector_definitions()
+                for operation in connector.operations
+                if operation.operation_class != "delete"
+            },
+        }
+    )
+
+
 def _reconcile_shared_toolbox(
     credential: TokenCredential,
     *,
     project_endpoint: str,
     gateway_url: str,
     entries: list[dict[str, Any]],
+    connector_targets: dict[str, str],
     guardrail_id: str = "",
 ) -> str:
     base_url = _toolbox_base_url(project_endpoint, SHARED_TOOLBOX_NAME)
@@ -974,7 +949,12 @@ def _reconcile_shared_toolbox(
         credential,
         method="POST",
         url=f"{base_url}/versions?api-version=v1",
-        payload=shared_toolbox_payload(gateway_url, entries, guardrail_id),
+        payload=shared_toolbox_payload(
+            gateway_url,
+            entries,
+            connector_targets,
+            guardrail_id,
+        ),
     )
     version = created.get("version")
     if not isinstance(version, str) or not version:
@@ -984,6 +964,11 @@ def _reconcile_shared_toolbox(
         project_endpoint=project_endpoint,
         version=version,
     )
+    missing = expected_shared_tool_names() - names
+    if missing:
+        raise RuntimeError(
+            f"Shared Toolbox version {version} is missing pinned tools: {sorted(missing)}"
+        )
     print(f"Shared Toolbox version {version} advertises {len(names)} tool(s).")
     _toolbox_json_request(
         credential,
@@ -994,13 +979,20 @@ def _reconcile_shared_toolbox(
     return f"{base_url}/mcp?api-version=v1"
 
 
-def configure_provider_apis(credential: TokenCredential | None = None) -> str:
+def configure_provider_apis(
+    credential: TokenCredential | None = None,
+    *,
+    connector_targets: dict[str, str] | None = None,
+) -> str:
     """Import provider specs into APIM, expose them as MCP, and share one Toolbox."""
     entries = provider_manifest()
     effective_credential = credential or DefaultAzureCredential()
     gateway_url = required_env("AZURE_API_MANAGEMENT_GATEWAY_URL")
     project_id = required_env("AZURE_AI_PROJECT_ID")
     project_endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
+    governed_targets = connector_targets or connector_mcp_targets(
+        required_env("AZURE_CONNECTOR_MCP_URLS")
+    )
 
     onboard_provider_apis(
         effective_credential,
@@ -1043,6 +1035,7 @@ def configure_provider_apis(credential: TokenCredential | None = None) -> str:
             project_endpoint=project_endpoint,
             gateway_url=gateway_url,
             entries=entries,
+            connector_targets=governed_targets,
             guardrail_id=optional_env("AZURE_AGENTIC_GUARDRAIL_ID"),
         ),
     )
@@ -1180,8 +1173,8 @@ def main() -> None:
     upload_search_documents(endpoint, index_name, documents, credential)
     upload_source_artifacts(credential)
     configure_connector_adapter_identity()
-    configure_connector_toolboxes(credential)
-    configure_provider_apis(credential)
+    connector_targets = configure_connector_connections(credential)
+    configure_provider_apis(credential, connector_targets=connector_targets)
     configure_agent_memory(credential)
     wait_for_acr_pull_roles()
     print(f"Provisioned {len(documents)} evidence records into {index_name}.")

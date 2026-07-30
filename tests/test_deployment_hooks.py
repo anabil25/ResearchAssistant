@@ -726,7 +726,7 @@ def test_acr_role_wait_continues_to_later_apps_if_retry_iterator_is_exhausted(
     assert identities == ["web", "api", "worker", "adapter"]
 
 
-def test_connector_toolboxes_require_active_cloud_arm_endpoint(
+def test_connector_connections_require_active_cloud_arm_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
@@ -741,10 +741,10 @@ def test_connector_toolboxes_require_active_cloud_arm_endpoint(
     )
 
     with pytest.raises(RuntimeError, match="no ARM endpoint"):
-        postprovision.configure_connector_toolboxes(object())
+        postprovision.configure_connector_connections(object())
 
 
-def test_connector_toolboxes_reuse_valid_existing_definitions(
+def test_connector_connections_are_idempotent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
@@ -752,30 +752,7 @@ def test_connector_toolboxes_reuse_valid_existing_definitions(
         "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example",
         "AZURE_CONNECTOR_MCP_URLS": _connector_mcp_urls(),
     }
-    commands: list[list[str]] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> Completed:
-        commands.append(command)
-        if command[1:3] == ["cloud", "show"]:
-            return Completed("https://management.azure.com/")
-        if command[1:3] == ["rest", "--method"]:
-            return Completed()
-        if command[1:4] == ["ai", "toolbox", "show"]:
-            return Completed(
-                json.dumps(
-                    {
-                        "endpoint": (
-                            f"https://foundry.example/toolboxes/{command[4]}/mcp"
-                        )
-                    }
-                )
-            )
-        if command[1:3] == ["env", "set"]:
-            return Completed()
-        raise AssertionError(f"Unexpected command: {command}")
-
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
-    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
     monkeypatch.setattr(
         postprovision,
         "_resource_manager_endpoint",
@@ -791,104 +768,32 @@ def test_connector_toolboxes_reuse_valid_existing_definitions(
         "_arm_json_request",
         lambda _credential, **_kwargs: {},
     )
-    reconciled: list[str] = []
-    monkeypatch.setattr(
-        postprovision,
-        "_reconcile_toolbox",
-        lambda _credential, *, toolbox_name, project_endpoint, mcp_targets: (
-            reconciled.append(toolbox_name)
-            or f"{project_endpoint}/toolboxes/{toolbox_name}/mcp?api-version=v1"
-        ),
-    )
+    targets = postprovision.configure_connector_connections(object())
 
-    endpoints = postprovision.configure_connector_toolboxes(object())
-
-    assert len(endpoints) == 4
-    assert reconciled == [
-        "research-literature",
-        "research-grant",
-        "research-matching",
-        "research-dataset",
-    ]
+    assert targets == {
+        connector.id: f"https://gateway.example/{connector.id}/mcp"
+        for connector in connector_definitions()
+    }
 
 
-def test_connector_toolboxes_retry_when_foundry_project_is_not_ready(
+def test_shared_toolbox_retries_when_foundry_project_is_not_ready(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    values = {
-        "AZURE_AI_PROJECT_ID": "/subscriptions/test/projects/research",
-        "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example",
-        "AZURE_CONNECTOR_MCP_URLS": _connector_mcp_urls(),
-    }
-    created: set[str] = set()
-    project_ready = False
     sleeps: list[int] = []
-
-    def fake_run(command: list[str], **_kwargs: object) -> Completed:
-        nonlocal project_ready
-        if command[1:3] == ["cloud", "show"]:
-            return Completed("https://management.azure.com/")
-        if command[1:3] == ["rest", "--method"]:
-            return Completed()
-        if command[1:4] == ["ai", "toolbox", "show"]:
-            toolbox_name = command[4]
-            if not project_ready:
-                project_ready = True
-                return Completed("Project not found", returncode=1)
-            if toolbox_name not in created:
-                return Completed(returncode=1)
-            return Completed(
-                json.dumps(
-                    {"endpoint": f"https://foundry.example/toolboxes/{toolbox_name}/mcp"}
-                )
-            )
-        if command[1:4] == ["ai", "toolbox", "create"]:
-            created.add(command[4])
-            return Completed()
-        if command[1:3] == ["env", "set"]:
-            return Completed()
-        raise AssertionError(f"Unexpected command: {command}")
-
-    monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
-    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
-    monkeypatch.setattr(
-        postprovision,
-        "_resource_manager_endpoint",
-        lambda: "https://management.azure.com",
-    )
-    monkeypatch.setattr(
-        postprovision,
-        "apim_mcp_subscription_key",
-        lambda _credential, *, resource_manager_endpoint: "secret-key",
-    )
-    monkeypatch.setattr(
-        postprovision,
-        "_arm_json_request",
-        lambda _credential, **_kwargs: {},
-    )
     monkeypatch.setattr(postprovision, "TOOLBOX_PROJECT_RETRY_DELAYS", (0, 2))
     monkeypatch.setattr("scripts.postprovision.time.sleep", sleeps.append)
     attempts = 0
 
-    def reconcile(
-        _credential: object,
-        *,
-        toolbox_name: str,
-        project_endpoint: str,
-        mcp_targets: dict[str, str],
-    ) -> str:
+    def reconcile() -> str:
         nonlocal attempts
-        del mcp_targets
         attempts += 1
         if attempts == 1:
             raise postprovision.ToolboxProjectUnavailable("project not ready")
-        return f"{project_endpoint}/toolboxes/{toolbox_name}/mcp?api-version=v1"
+        return "https://foundry.example/toolboxes/research-shared/mcp?api-version=v1"
 
-    monkeypatch.setattr(postprovision, "_reconcile_toolbox", reconcile)
+    endpoint = postprovision.with_toolbox_project_retry("research-shared", reconcile)
 
-    endpoints = postprovision.configure_connector_toolboxes(object())
-
-    assert len(endpoints) == 4
+    assert endpoint.endswith("/research-shared/mcp?api-version=v1")
     assert sleeps == [2]
 
 
@@ -897,7 +802,7 @@ def test_toolbox_project_retry_budget_covers_fresh_foundry_provisioning() -> Non
     assert postprovision.TOOLBOX_PROJECT_RETRY_DELAYS[-1] >= 300
 
 
-def test_connector_toolboxes_reject_non_https_endpoint(
+def test_connector_connections_reject_non_https_endpoint(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
@@ -912,7 +817,7 @@ def test_connector_toolboxes_reject_non_https_endpoint(
     monkeypatch.setattr(postprovision, "required_env", values.__getitem__)
 
     with pytest.raises(RuntimeError, match="must be an HTTPS URL"):
-        postprovision.configure_connector_toolboxes(object())
+        postprovision.configure_connector_connections(object())
 
 
 def test_connector_adapter_identity_updates_only_expected_environment(
@@ -996,11 +901,18 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     def configure_adapter() -> None:
         calls.append("adapter")
 
-    def configure_toolboxes(_credential: object) -> dict[str, str]:
-        calls.append("toolboxes")
-        return {}
+    connector_targets = {"pubmed": "https://gateway.example/pubmed/mcp"}
 
-    def configure_providers(_credential: object) -> str:
+    def configure_connections(_credential: object) -> dict[str, str]:
+        calls.append("connector-connections")
+        return connector_targets
+
+    def configure_providers(
+        _credential: object,
+        *,
+        connector_targets: dict[str, str],
+    ) -> str:
+        assert connector_targets == {"pubmed": "https://gateway.example/pubmed/mcp"}
         calls.append("provider-apis")
         return "https://provider.example/mcp"
 
@@ -1030,8 +942,8 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     )
     monkeypatch.setattr(
         postprovision,
-        "configure_connector_toolboxes",
-        configure_toolboxes,
+        "configure_connector_connections",
+        configure_connections,
     )
     monkeypatch.setattr(
         postprovision,
@@ -1061,7 +973,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
         ),
         ("blob-upload", credential),
         "adapter",
-        "toolboxes",
+        "connector-connections",
         "provider-apis",
         "acr-roles",
     ]

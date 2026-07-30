@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
-import yaml
 from agent_framework import WorkflowAgent
 from agent_framework_foundry_hosting import ResponsesHostServer
 from coordinator.factory import MANIFEST
@@ -53,7 +53,7 @@ def test_coordinator_starts_without_custom_provider_or_release_attestation() -> 
 def test_toolbox_agent_starts_without_custom_provider_or_release_attestation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    toolbox = object()
+    toolbox = SimpleNamespace()
     constructed: list[dict[str, object]] = []
     monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
     monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: toolbox)
@@ -73,11 +73,12 @@ def test_toolbox_agent_starts_without_custom_provider_or_release_attestation(
     assert constructed[0]["tools"] is toolbox
 
 
-def test_hosted_agents_use_platform_managed_tool_configuration() -> None:
-    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
+def test_hosted_agents_use_platform_managed_tool_configuration(
+    azure_manifest: dict[str, Any],
+) -> None:
     hosted_services = (
         service
-        for service in manifest["services"].values()
+        for service in azure_manifest["services"].values()
         if service.get("host") == "azure.ai.agent"
     )
 

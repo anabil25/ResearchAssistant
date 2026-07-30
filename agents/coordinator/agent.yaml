@@ -1,0 +1,45 @@
+codeConfiguration:
+    dependencyResolution: remote_build
+    entryPoint: coordinator/main.py
+    runtime: python_3_13
+container:
+    resources:
+        cpu: "1"
+        memory: 2Gi
+description: Routes research work to bounded specialist agents and preserves their evidence.
+environmentVariables:
+    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+      value: gpt-5.4-mini
+    - name: RESEARCH_WORKSPACE_TENANT_ID
+      value: ${AZURE_TENANT_ID}
+    - name: RESEARCH_WORKSPACE_PROJECT_ID
+      value: ${AZURE_AI_PROJECT_NAME}
+    - name: RESEARCH_LITERATURE_AGENT_NAME
+      value: literature-agent
+    - name: RESEARCH_GRANT_AGENT_NAME
+      value: grant-agent
+    - name: RESEARCH_MATCHING_AGENT_NAME
+      value: matching-agent
+    - name: RESEARCH_DATASET_AGENT_NAME
+      value: dataset-agent
+    - name: RESEARCH_INSTITUTION_AGENT_NAME
+      value: institution-agent
+    - name: RESEARCH_LITERATURE_ONLINE_AGENT_NAME
+      value: literature-online-agent
+    - name: RESEARCH_GRANT_ONLINE_AGENT_NAME
+      value: grant-online-agent
+    - name: RESEARCH_MATCHING_ONLINE_AGENT_NAME
+      value: matching-online-agent
+    - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+      value: "false"
+kind: hosted
+metadata:
+    tags:
+        - Agent Framework
+        - Research
+        - Coordinator
+        - Responses Protocol
+name: research-coordinator
+protocols:
+    - protocol: responses
+      version: 2.0.0

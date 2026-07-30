@@ -1,11 +1,12 @@
 from __future__ import annotations
 
+import json
+import os
 from typing import Annotated, Any
 
 from agent_framework import tool
 from agent_framework_foundry_hosting import FoundryToolbox  # type: ignore[import-untyped]
 from azure.ai.projects import AIProjectClient
-from openai import APIStatusError
 from pydantic import Field
 from research_assistant_core.connector_catalog import connector_definition
 
@@ -15,9 +16,6 @@ from .errors import ConfigurationError
 from .invocation import RetryingResponsesInvoker
 from .settings import HarnessSettings
 from .workflows import CoordinatorRouter
-import json
-import os
-import time
 
 
 def delegated_agent_name(capability: str, sensitivity: str) -> str | None:
@@ -31,6 +29,15 @@ def delegated_agent_name(capability: str, sensitivity: str) -> str | None:
 
 def _invoke_specialist(client: Any, request: str, agent_name: str) -> str:
     return RetryingResponsesInvoker().invoke(client, request, agent_name).content
+
+
+def _bound_tool_names(profile: AgentManifest) -> frozenset[str]:
+    prefix = "foundry.toolbox."
+    return frozenset(
+        binding.operation_ref.id.removeprefix(prefix)
+        for binding in profile.capability_bindings
+        if binding.operation_ref.id.startswith(prefix)
+    )
 
 
 def tools_for_profile(
@@ -54,11 +61,13 @@ def tools_for_profile(
     if requires_toolbox:
         if profile.online:
             return []
-        return FoundryToolbox(
+        toolbox = FoundryToolbox(
             get_credential(settings.managed_identity_client_id if settings is not None else None),
             url=toolbox_endpoint,
             timeout=settings.default_timeout_seconds if settings is not None else 120,
         )
+        toolbox.allowed_tools = _bound_tool_names(profile)
+        return toolbox
     return []
 
 
@@ -80,9 +89,13 @@ async def request_tools_for_profile(
     configured_sources = set(profile.knowledge_bindings[0].sources)
     unauthorized = set(connector_ids) - configured_sources
     if unauthorized:
+        error_context: dict[str, Any] = {
+            "agent": profile.id,
+            "connectors": sorted(unauthorized),
+        }
         raise ConfigurationError(
             "Request names connectors outside the profile Toolbox surface",
-            context={"agent": profile.id, "connectors": sorted(unauthorized)},
+            context=error_context,
         )
     toolbox = FoundryToolbox(
         get_credential(settings.managed_identity_client_id),
@@ -99,6 +112,7 @@ async def request_tools_for_profile(
             if operation.operation_class != "delete"
         },
     }
+    toolbox.allowed_tools = frozenset(allowed_names)
     try:
         await toolbox.connect()
         await toolbox.load_tools()
@@ -110,9 +124,13 @@ async def request_tools_for_profile(
         }
         missing = allowed_names - set(functions_by_name)
         if missing:
+            missing_context: dict[str, Any] = {
+                "agent": profile.id,
+                "tools": sorted(missing),
+            }
             raise ConfigurationError(
                 "Configured Foundry Toolbox is missing authorized tools",
-                context={"agent": profile.id, "tools": sorted(missing)},
+                context=missing_context,
             )
         return toolbox, tuple(functions_by_name[name] for name in sorted(allowed_names))
     except BaseException:

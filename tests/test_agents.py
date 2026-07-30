@@ -10,8 +10,11 @@ import httpx
 import pytest
 import yaml
 from openai import APIStatusError
+from research_assistant_core.connector_catalog import connector_definitions
 from shared import credentials, runtime
+from shared.errors import ConfigurationError
 from shared.profiles import get_profile, list_profiles
+from shared.settings import HarnessSettings
 from shared.tools import (
     _invoke_specialist,
     build_delegate_tool,
@@ -19,10 +22,6 @@ from shared.tools import (
     request_tools_for_profile,
     tools_for_profile,
 )
-from shared.errors import ConfigurationError
-from shared.settings import HarnessSettings
-from scripts.build_agent_source_tree import source_tree_digest
-from research_assistant_core.connector_catalog import connector_definitions
 
 ROOT = Path(__file__).parents[1]
 
@@ -76,9 +75,10 @@ def test_coordinator_routes_public_only_to_online_specialists() -> None:
     assert delegated_agent_name("institutional_qa", "restricted") == "institution-agent"
 
 
-def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
-    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
-    services = manifest["services"]
+def test_azure_manifest_uses_current_hosted_agent_contract(
+    azure_manifest: dict[str, Any],
+) -> None:
+    services = azure_manifest["services"]
     agent_services = {name: config for name, config in services.items() if config.get("host") == "azure.ai.agent"}
 
     assert len(agent_services) == 9
@@ -90,9 +90,8 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
         entry_point = ROOT / "agents" / config["codeConfiguration"]["entryPoint"]
         source = entry_point.read_text(encoding="utf-8")
         assert "sys.path.insert" in source, name
-        assert source.index("sys.path.insert") < source.index(
-            "from shared.runtime import run_profile"
-        ), name
+        factory_import = f"from {entry_point.parent.name}.factory import run"
+        assert source.index("sys.path.insert") < source.index(factory_import), name
     toolbox_variables = {
         name: next(
             (
@@ -106,17 +105,20 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
         if name.endswith("-online-agent") or name == "dataset-agent"
     }
     assert toolbox_variables == {
-        "literature-online-agent": "${TOOLBOX_LITERATURE_MCP_ENDPOINT}",
-        "grant-online-agent": "${TOOLBOX_GRANT_MCP_ENDPOINT}",
-        "matching-online-agent": "${TOOLBOX_MATCHING_MCP_ENDPOINT}",
-        "dataset-agent": "${TOOLBOX_DATASET_MCP_ENDPOINT}",
+        "literature-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
+        "grant-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
+        "matching-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
+        "dataset-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
     }
 
 
 def test_online_agents_defer_toolbox_attachment_until_request_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    marker = object()
+    class FakeToolbox:
+        allowed_tools: frozenset[str] | None = None
+
+    marker = FakeToolbox()
     settings = HarnessSettings(
         foundry_project_endpoint="https://project.example",
         model_deployment_name="gpt-5.4-mini",
@@ -129,6 +131,7 @@ def test_online_agents_defer_toolbox_attachment_until_request_validation(
 
     assert tools_for_profile(get_profile("grant_online"), settings=settings) == []
     assert tools_for_profile(get_profile("dataset"), settings=settings) is marker
+    assert marker.allowed_tools == frozenset({"code_interpreter"})
 
 
 @pytest.mark.asyncio
@@ -184,6 +187,9 @@ async def test_online_request_tools_are_limited_to_authorized_connectors(
 
     assert toolbox is constructed[0]
     assert tools == ("pubmed___lookup", "pubmed___search", "web_search")
+    assert toolbox.allowed_tools == frozenset(
+        {"pubmed___lookup", "pubmed___search", "web_search"}
+    )
     assert toolbox.connected is True
     assert toolbox.loaded is True
     with pytest.raises(ConfigurationError, match="outside the profile Toolbox surface"):
@@ -194,11 +200,14 @@ async def test_online_request_tools_are_limited_to_authorized_connectors(
         )
 
 
-def test_bicep_model_parameters_match_azure_manifest() -> None:
-    manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
+def test_bicep_model_parameters_match_azure_manifest(
+    azure_manifest: dict[str, Any],
+) -> None:
     parameters = json.loads((ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8"))
 
-    assert parameters["parameters"]["deployments"]["value"] == (manifest["services"]["ai-project"]["deployments"])
+    assert parameters["parameters"]["deployments"]["value"] == (
+        azure_manifest["services"]["ai-project"]["deployments"]
+    )
     assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
     assert parameters["parameters"]["resourceGroupName"]["value"] == "rg-${AZURE_ENV_NAME}"
     assert parameters["parameters"]["foundryProjectName"]["value"] == "${AZURE_ENV_NAME}"
@@ -258,27 +267,32 @@ def test_accelerator_uses_one_environment_scoped_durable_task_hub() -> None:
     assert "output taskHubName string = taskHub.name" in module
 
 
-def test_azd_up_deploys_every_service_sequentially() -> None:
-    """One-click `azd up` must deploy services one per step.
-
-    azd deploys in parallel by default, but the Foundry agent extension
-    read-modify-writes azure.yaml per agent; concurrent agents truncate it and
-    the deploy fails with "unable to parse azure.yaml file. File is empty."
-    azd rewrites a plain ``azd: deploy api`` step into ``{args: [...]}``, so
-    accept either spelling.
-    """
+def test_azd_up_deploys_every_service_in_parallel_without_manifest_writes() -> None:
     manifest = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
 
-    steps = []
-    for step in manifest["workflows"]["up"]["steps"]:
-        command = step["azd"]
-        steps.append(command.split() if isinstance(command, str) else command["args"])
+    steps = [step["azd"]["args"] for step in manifest["workflows"]["up"]["steps"]]
+    assert steps == [["provision"], ["deploy", "--all"]]
+    assert manifest["requiredVersions"]["extensions"]["azure.ai.agents"] == ">=1.0.0-beta.7"
+    assert manifest["requiredVersions"]["extensions"]["azure.ai.projects"] == ">=1.0.0-beta.3"
 
-    assert steps[0] == ["provision"]
-    deployed = [service for verb, service in steps[1:] if verb == "deploy"]
-    assert "--all" not in deployed
-    assert len(deployed) == len(set(deployed))
-    assert set(deployed) == set(manifest["services"])
+    agent_services = {
+        name: service
+        for name, service in manifest["services"].items()
+        if service.get("host") == "azure.ai.agent"
+    }
+    assert len(agent_services) == 9
+    for name, service in agent_services.items():
+        assert set(service) == {"$ref", "host", "language", "project", "uses"}, name
+        assert service["uses"] == ["ai-project"], name
+        definition = yaml.safe_load((ROOT / service["$ref"]).read_text(encoding="utf-8"))
+        assert not {"docker", "image", "language", "project"} & definition.keys(), name
+        assert definition["kind"] == "hosted", name
+        assert definition["name"] == name, name
+        assert definition["codeConfiguration"] == {
+            "dependencyResolution": "remote_build",
+            "entryPoint": definition["codeConfiguration"]["entryPoint"],
+            "runtime": "python_3_13",
+        }, name
 
 
 def test_coordinator_specialist_invocation_retries_transient_shapes(

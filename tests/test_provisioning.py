@@ -17,9 +17,10 @@ from scripts.postprovision import (
     RETRY_DELAYS,
     _reconcile_toolbox,
     apim_mcp_subscription_key,
-    configure_connector_toolboxes,
+    configure_connector_connections,
     connector_connection_payload,
     connector_mcp_targets,
+    expected_shared_tool_names,
     expected_toolbox_tool_names,
     load_documents,
     toolbox_version_payload,
@@ -311,7 +312,22 @@ def test_toolbox_version_payloads_match_the_governed_connector_catalog() -> None
     ]
 
 
-def test_postprovision_creates_and_persists_toolbox_endpoints(
+def test_shared_toolbox_promotion_requires_every_pinned_governed_tool() -> None:
+    assert expected_shared_tool_names() == {
+        "tool_search",
+        "call_tool",
+        "web_search",
+        "code_interpreter",
+        *{
+            f"{connector.id}___{operation.mcp_tool_name}"
+            for connector in connector_definitions()
+            for operation in connector.operations
+            if operation.operation_class != "delete"
+        },
+    }
+
+
+def test_postprovision_creates_connector_connections_for_shared_toolbox(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     values = {
@@ -319,8 +335,6 @@ def test_postprovision_creates_and_persists_toolbox_endpoints(
         "FOUNDRY_PROJECT_ENDPOINT": "https://foundry.example/api/projects/research",
         "AZURE_CONNECTOR_MCP_URLS": _connector_mcp_urls(),
     }
-    created: set[str] = set()
-    environment_updates: dict[str, str] = {}
     arm_requests: list[dict[str, object]] = []
 
     class Completed:
@@ -328,31 +342,7 @@ def test_postprovision_creates_and_persists_toolbox_endpoints(
             self.returncode = returncode
             self.stdout = stdout
 
-    def fake_run(command: list[str], **_kwargs: object) -> Completed:
-        if command[1:4] == ["ai", "toolbox", "create"]:
-            created.add(command[4])
-            return Completed()
-        if command[1:4] == ["ai", "toolbox", "show"]:
-            name = command[4]
-            if name not in created:
-                return Completed(returncode=1)
-            return Completed(
-                stdout=json.dumps(
-                    {
-                        "endpoint": (
-                            "https://foundry.example/api/projects/research/"
-                            f"toolboxes/{name}/mcp?api-version=v1"
-                        )
-                    }
-                )
-            )
-        if command[1:3] == ["env", "set"]:
-            environment_updates[command[3]] = command[4]
-            return Completed()
-        raise AssertionError(f"Unexpected command: {command}")
-
     monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
-    monkeypatch.setattr("scripts.postprovision.subprocess.run", fake_run)
     monkeypatch.setattr(
         "scripts.postprovision._resource_manager_endpoint",
         lambda: "https://management.azure.com",
@@ -365,26 +355,11 @@ def test_postprovision_creates_and_persists_toolbox_endpoints(
         "scripts.postprovision._arm_json_request",
         lambda _credential, **kwargs: arm_requests.append(kwargs) or {},
     )
-    monkeypatch.setattr(
-        "scripts.postprovision._reconcile_toolbox",
-        lambda _credential, *, toolbox_name, project_endpoint, mcp_targets: (
-            f"{project_endpoint}/toolboxes/{toolbox_name}/mcp?api-version=v1"
-        ),
-    )
+    targets = configure_connector_connections(object())
 
-    endpoints = configure_connector_toolboxes(object())
-
-    assert set(endpoints) == {
-        "research-literature",
-        "research-grant",
-        "research-matching",
-        "research-dataset",
-    }
-    assert set(environment_updates) == {
-        "TOOLBOX_LITERATURE_MCP_ENDPOINT",
-        "TOOLBOX_GRANT_MCP_ENDPOINT",
-        "TOOLBOX_MATCHING_MCP_ENDPOINT",
-        "TOOLBOX_DATASET_MCP_ENDPOINT",
+    assert targets == {
+        connector.id: f"https://gateway.example/{connector.id}/mcp"
+        for connector in connector_definitions()
     }
     assert len(arm_requests) == len(connector_definitions())
     for request in arm_requests:
