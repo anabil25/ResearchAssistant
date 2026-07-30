@@ -105,9 +105,6 @@ def test_azure_manifest_uses_current_hosted_agent_contract(
         if any(item["name"] == "TOOLBOX_ENDPOINT" for item in config["environmentVariables"])
     }
     assert toolbox_variables == {
-        "literature-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
-        "grant-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
-        "matching-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "literature-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "grant-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
         "matching-online-agent": "${TOOLBOX_SHARED_MCP_ENDPOINT}",
@@ -772,9 +769,6 @@ def test_missing_toolbox_never_falls_back_to_web_search() -> None:
 
 def test_toolbox_bindings_match_deployed_operation_names() -> None:
     expected = {
-        "literature": {"code_interpreter"},
-        "grant": {"code_interpreter"},
-        "matching": {"code_interpreter"},
         "dataset": {"code_interpreter"},
     }
     for profile_id, agent_id in {

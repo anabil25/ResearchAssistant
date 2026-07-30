@@ -1,4 +1,4 @@
-"""The agent-side half of chat attachments."""
+"""The agent-side half of chat attachments (dataset only for now)."""
 
 from __future__ import annotations
 
@@ -10,6 +10,8 @@ from shared.profiles import get_manifest
 from shared.settings import HarnessSettings
 from shared.tools import tools_for_profile
 
+# Only dataset has a toolbox binding; literature/grant/matching run without one.
+TOOLBOX_PROFILES = ("dataset",)
 CHAT_PROFILES = ("literature", "grant", "matching", "dataset")
 
 
@@ -24,14 +26,14 @@ def settings() -> HarnessSettings:
     )
 
 
-@pytest.mark.parametrize("profile_id", CHAT_PROFILES)
-def test_chat_studios_fail_closed_without_the_toolbox_endpoint(profile_id: str) -> None:
+@pytest.mark.parametrize("profile_id", TOOLBOX_PROFILES)
+def test_dataset_fails_closed_without_the_toolbox_endpoint(profile_id: str) -> None:
     with pytest.raises(ConfigurationError, match="Toolbox endpoint"):
         tools_for_profile(get_manifest(profile_id))
 
 
-@pytest.mark.parametrize("profile_id", CHAT_PROFILES)
-def test_chat_studios_use_only_the_shared_code_interpreter(
+@pytest.mark.parametrize("profile_id", TOOLBOX_PROFILES)
+def test_dataset_uses_only_the_shared_code_interpreter(
     profile_id: str,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -60,8 +62,8 @@ def test_chat_studios_use_only_the_shared_code_interpreter(
     assert toolbox.allowed_tools == frozenset({"code_interpreter"})
 
 
-@pytest.mark.parametrize("profile_id", ("institution", "coordinator"))
-def test_agents_without_a_chat_surface_get_no_file_toolbox(profile_id: str) -> None:
+@pytest.mark.parametrize("profile_id", ("literature", "grant", "matching", "institution", "coordinator"))
+def test_agents_without_a_toolbox_get_no_tools(profile_id: str) -> None:
     assert tools_for_profile(get_manifest(profile_id)) == []
 
 

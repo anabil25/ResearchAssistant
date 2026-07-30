@@ -53,9 +53,6 @@ def test_coordinator_starts_without_custom_provider_or_release_attestation() -> 
 @pytest.mark.parametrize(
     ("profile_id", "agent_name"),
     [
-        ("literature", "literature-agent"),
-        ("grant", "grant-agent"),
-        ("matching", "matching-agent"),
         ("dataset", "dataset-agent"),
     ],
 )
