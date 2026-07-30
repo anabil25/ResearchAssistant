@@ -55,22 +55,24 @@ def test_data_services_use_the_minimal_private_network() -> None:
     assert "api-management" not in private_network
 
 
-def test_every_container_app_binds_acr_pull_to_its_system_identity() -> None:
-    """Each app needs a registries entry or azd's real image push fails to pull.
-
-    ``identity: 'system'`` is the documented value for a system-assigned
-    identity, and it must match the principal the AcrPull assignment targets
-    (``<app>.identity.principalId`` resolves to the system principal even on
-    the apps that also carry a user-assigned identity).
-    """
+def test_every_container_app_binds_acr_pull_to_a_preexisting_identity() -> None:
+    """Registry RBAC must exist before Container App creation."""
     container_apps = (ROOT / "infra" / "modules" / "container-apps.bicep").read_text(
         encoding="utf-8"
     )
 
-    assert container_apps.count("identity: 'system'") == 4
     assert container_apps.count("server: acr.properties.loginServer") == 4
-    for app in ("web", "api", "worker", "connectorAdapter"):
-        assert f"principalId: {app}.identity.principalId" in container_apps
+    app_blocks = {
+        name: container_apps.split(f"resource {name} ", 1)[1].split("\nresource ", 1)[0]
+        for name in ("connectorAdapter", "api", "web", "worker")
+    }
+    for name in ("connectorAdapter", "api", "web"):
+        assert "identity: apiIdentityResourceId" in app_blocks[name]
+    assert "identity: workerIdentityResourceId" in app_blocks["worker"]
+    assert "principalId: apiIdentityPrincipalId" in container_apps
+    assert "principalId: workerIdentityPrincipalId" in container_apps
+    assert container_apps.count("apiIdentityAcrPull") == 4
+    assert container_apps.count("workerIdentityAcrPull") == 2
 
 
 def test_foundry_project_assigns_deployer_data_plane_roles() -> None:

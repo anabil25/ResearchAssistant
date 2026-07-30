@@ -333,6 +333,7 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     foundryProjectPrincipalId: foundryAccount::project.identity.principalId
     workerIdentityResourceId: identities.outputs.workerResourceId
     workerIdentityClientId: identities.outputs.workerClientId
+    workerIdentityPrincipalId: identities.outputs.workerPrincipalId
     acrResourceId: acr!.outputs.resourceId
     searchEndpoint: search.outputs.endpoint
     searchIndexName: search.outputs.indexName
