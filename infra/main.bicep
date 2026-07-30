@@ -81,12 +81,6 @@ param entraApiClientId string = ''
 @description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId.')
 param enableEntraAuth bool = false
 
-@description('Provision a Key Vault so an operator can deliver the Agent Studio ReleaseAttestation signing key to the api container app via Container Apps secrets.')
-param includeAttestationKeyVault bool = false
-
-@description('Whether an operator has already populated the attestation signing key secret versions in the provisioned Key Vault (an explicit out-of-band step). Only takes effect when includeAttestationKeyVault is true.')
-param attestationSigningSecretsProvisioned bool = false
-
 @description('Maximum connector-adapter HTTP request body in bytes. Default covers a 4 MiB base64 upload plus bounded JSON overhead; use streaming/upload sessions for larger files.')
 @minValue(65536)
 @maxValue(333398872)
@@ -119,8 +113,6 @@ module resources 'modules/resources.bicep' = {
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
-    includeAttestationKeyVault: includeAttestationKeyVault
-    attestationSigningSecretsProvisioned: attestationSigningSecretsProvisioned
   }
 }
 
@@ -161,8 +153,6 @@ output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = resources.outputs.AZ
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = resources.outputs.AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT
 output AZURE_DURABLE_TASK_ENDPOINT string = resources.outputs.AZURE_DURABLE_TASK_ENDPOINT
 output AZURE_DURABLE_TASK_HUB string = resources.outputs.AZURE_DURABLE_TASK_HUB
-output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI string = resources.outputs.AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI
-output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME string = resources.outputs.AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME
 output WEB_URL string = resources.outputs.WEB_URL
 output API_URL string = resources.outputs.API_URL
 output SERVICE_API_NAME string = resources.outputs.API_NAME
@@ -175,4 +165,5 @@ output SERVICE_CONNECTOR_ADAPTER_URI string = resources.outputs.CONNECTOR_ADAPTE
 output AZURE_API_MANAGEMENT_NAME string = resources.outputs.AZURE_API_MANAGEMENT_NAME
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = resources.outputs.AZURE_API_MANAGEMENT_GATEWAY_URL
 output AZURE_CONNECTOR_MCP_URL string = resources.outputs.AZURE_CONNECTOR_MCP_URL
+output AZURE_CONNECTOR_MCP_URLS string = resources.outputs.AZURE_CONNECTOR_MCP_URLS
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = resources.outputs.AZURE_API_MANAGEMENT_PRINCIPAL_ID

@@ -4,56 +4,8 @@ from functools import lru_cache
 from typing import Literal
 from urllib.parse import urlsplit
 
-from pydantic import AliasChoices, Field, field_validator, model_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-#: Environment names (case-insensitive, whitespace-trimmed) in which the
-#: interactive local/dev "demo sandbox" identity (see
-#: ``research_assistant_api.identity.DEMO_SANDBOX_SOURCE``) may be enabled.
-#: Any other environment name -- including unrecognized ones -- is treated
-#: as production-like and refuses to start with demo identity enabled, so
-#: the bypass can never be silently carried into a production deployment
-#: through an unset or misconfigured ``RESEARCH_ALLOW_DEMO_IDENTITY``.
-#: ``Settings.allow_demo_identity`` defaults to ``False``: even in a safe
-#: environment, demo identity must be explicitly opted into via
-#: ``RESEARCH_ALLOW_DEMO_IDENTITY=true`` -- it is never enabled by default.
-DEMO_IDENTITY_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
-
-#: Environment names (case-insensitive, whitespace-trimmed) in which a
-#: ``ReleaseAttestation`` may fall back to an unkeyed SHA-256 content digest
-#: (``signature_algorithm == "sha256-digest"``) instead of a genuine keyed
-#: signature. That fallback is honestly labeled (see
-#: ``research_assistant_api.agent_studio.release_attestation``) but it is
-#: integrity labeling, not authentication -- a third party cannot trust it
-#: without also trusting "nobody else could compute a SHA-256 hash". Outside
-#: these environments, ``Settings`` refuses to start at all unless a real,
-#: versioned HMAC signing key (``AGENT_STUDIO_ATTESTATION_SIGNING_KEY`` +
-#: ``AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION``) is configured. This is a
-#: deliberately independent constant from ``DEMO_IDENTITY_SAFE_ENVIRONMENTS``
-#: (even though the values currently match) so the two unrelated security
-#: controls can never accidentally share, or be coupled through, one name.
-ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
-
-#: Environment names (case-insensitive, whitespace-trimmed) in which
-#: ``Settings.trust_platform_identity_headers`` may be enabled without a
-#: confirmed ``entra_auth_enforced=True``. ``resolve_identity`` trusts the
-#: platform-injected ``x-ms-client-principal`` header outright -- by design,
-#: because Azure Container Apps' built-in authentication (EasyAuth /
-#: ``authConfigs``) is meant to have already validated the incoming
-#: ``Authorization`` bearer token and rejected unauthenticated requests
-#: before this process ever sees them; this process deliberately does not
-#: re-parse the bearer token itself. That trust is only sound once
-#: Container Apps ``authConfigs`` is actually deployed and enforcing.
-#: ``entra_auth_enforced`` is populated from the infra-controlled
-#: ``RESEARCH_ENTRA_AUTH_ENFORCED`` env var (set by
-#: ``infra/modules/container-apps.bicep``'s ``enableEntraAuth`` parameter),
-#: letting the running app self-report whether that infra boundary is
-#: really active rather than assuming it on faith. This is a deliberately
-#: independent constant from ``DEMO_IDENTITY_SAFE_ENVIRONMENTS`` /
-#: ``ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS`` (even though the values
-#: currently match) so the three unrelated security controls can never
-#: accidentally share, or be coupled through, one name.
-ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS = frozenset({"development", "dev", "local", "test", "testing"})
 
 
 class Settings(BaseSettings):
@@ -128,29 +80,6 @@ class Settings(BaseSettings):
         default="agentStudioCatalogV1",
         validation_alias="AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER",
     )
-    agent_studio_attestation_signing_key: str | None = Field(
-        default=None,
-        validation_alias="AGENT_STUDIO_ATTESTATION_SIGNING_KEY",
-        description=(
-            "Shared secret used to HMAC-sign ReleaseAttestation objects. When unset, "
-            "ReleaseAttestation falls back to an unkeyed SHA-256 content digest and reports "
-            "signature_algorithm='sha256-digest' rather than claiming a keyed signature it "
-            "cannot actually provide -- this digest-only fallback is refused at startup "
-            "outside ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS. Must be paired with "
-            "agent_studio_attestation_signing_key_version whenever set."
-        ),
-    )
-    agent_studio_attestation_signing_key_version: str | None = Field(
-        default=None,
-        validation_alias="AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION",
-        description=(
-            "Version label (e.g. a rotation date or a Key Vault secret version) for "
-            "agent_studio_attestation_signing_key, embedded in every ReleaseAttestation it "
-            "signs. Required whenever agent_studio_attestation_signing_key is configured, so "
-            "a verifier that retains multiple historical secrets (key rotation) can look up "
-            "the exact secret an older attestation was actually signed with."
-        ),
-    )
     agent_studio_app_insights_resource_id: str | None = Field(
         default=None,
         validation_alias=AliasChoices(
@@ -184,29 +113,19 @@ class Settings(BaseSettings):
         default_factory=lambda: ["http://localhost:3000"],
         validation_alias="RESEARCH_ALLOWED_ORIGINS",
     )
-    allow_demo_identity: bool = Field(
-        default=False,
-        validation_alias="RESEARCH_ALLOW_DEMO_IDENTITY",
-    )
-    trust_platform_identity_headers: bool = Field(
-        default=False,
-        validation_alias="RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS",
-    )
     entra_auth_enforced: bool = Field(
         default=False,
         validation_alias="RESEARCH_ENTRA_AUTH_ENFORCED",
         description=(
-            "Self-reported confirmation that Azure Container Apps built-in "
-            "authentication (EasyAuth / authConfigs) is actually deployed and "
-            "enforcing Entra ID bearer tokens ahead of this process. Set from the "
-            "infra-controlled RESEARCH_ENTRA_AUTH_ENFORCED env var (see "
-            "infra/modules/container-apps.bicep's enableEntraAuth parameter), never "
-            "asserted by this process itself. resolve_identity's trust of the "
-            "platform-injected x-ms-client-principal header (gated on "
-            "trust_platform_identity_headers) is only sound when this is true; "
-            "outside ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS, enabling "
-            "trust_platform_identity_headers without this confirmed is refused at "
-            "startup -- see _forbid_unenforced_platform_identity_trust_outside_safe_environments."
+            "The single authentication switch. True means an authenticating gateway "
+            "(Azure Container Apps built-in authentication / APIM) validates the Entra "
+            "bearer token and injects x-ms-client-principal ahead of this process, so "
+            "identity.resolve_identity trusts that header and rejects any request "
+            "without it. False means nothing is in front of the API: the header is "
+            "ignored outright (a forged one grants nothing) and the local developer "
+            "identity is issued instead. Set from the infra-controlled "
+            "RESEARCH_ENTRA_AUTH_ENFORCED env var (see infra/modules/container-apps.bicep's "
+            "enableEntraAuth parameter), never asserted by this process itself."
         ),
     )
     workspace_tenant_id: str = Field(
@@ -402,105 +321,6 @@ class Settings(BaseSettings):
         if parsed.username or parsed.password or parsed.query or parsed.fragment:
             raise ValueError("Capability provider URL must not contain credentials, query, or fragment")
         return value.rstrip("/")
-
-    @model_validator(mode="after")
-    def _forbid_demo_identity_outside_safe_environments(self) -> Settings:
-        """Fail closed at startup, not at request time.
-
-        ``allow_demo_identity`` issues a fixed, unauthenticated identity
-        (``research_assistant_api.identity.DEMO_SANDBOX_SOURCE``) with a
-        fabricated researcher/admin group membership. That bypass must be
-        an explicit, impossible-to-misconfigure-into-production test/dev
-        adapter: refuse to construct ``Settings`` at all if it is enabled
-        while ``environment`` is not one of the known-safe local/dev/test
-        names, rather than allowing a bad or missing ``RESEARCH_ENVIRONMENT``
-        to silently carry the bypass into a production deployment.
-        """
-        if self.allow_demo_identity and self.environment.strip().lower() not in DEMO_IDENTITY_SAFE_ENVIRONMENTS:
-            raise ValueError(
-                "RESEARCH_ALLOW_DEMO_IDENTITY may only be enabled when environment is one of "
-                f"{sorted(DEMO_IDENTITY_SAFE_ENVIRONMENTS)}; refusing to start with "
-                f"environment={self.environment!r} and demo identity enabled."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _forbid_unversioned_or_missing_attestation_signing_key(self) -> Settings:
-        """Fail closed at startup, not at request time.
-
-        A ``ReleaseAttestation`` signed with an unkeyed SHA-256 digest
-        (``signature_algorithm == "sha256-digest"``) is honestly labeled as
-        integrity-only, never as authentication -- a third party can only
-        trust it by also trusting "nobody else could compute a SHA-256
-        hash". That is acceptable for local development/tests, but must
-        never become the silent production default: refuse to construct
-        ``Settings`` at all when no signing key is configured and
-        ``environment`` is not one of the known-safe local/dev/test names,
-        rather than allowing a bad or missing ``RESEARCH_ENVIRONMENT`` to
-        silently carry an unauthenticated attestation into production.
-
-        A configured signing key must also always carry an explicit
-        ``agent_studio_attestation_signing_key_version``: an unversioned
-        managed secret cannot be rotated or audited, so this is refused
-        regardless of environment.
-        """
-        if self.agent_studio_attestation_signing_key and not self.agent_studio_attestation_signing_key_version:
-            raise ValueError(
-                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION must be set whenever "
-                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY is configured, so signed "
-                "ReleaseAttestations can be rotated and audited by version."
-            )
-        if (
-            not self.agent_studio_attestation_signing_key
-            and self.environment.strip().lower() not in ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS
-        ):
-            raise ValueError(
-                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY (with "
-                "AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION) must be configured outside of "
-                f"{sorted(ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS)} environments; refusing "
-                "to start with an unauthenticated sha256-digest-only ReleaseAttestation and "
-                f"environment={self.environment!r}."
-            )
-        return self
-
-    @model_validator(mode="after")
-    def _forbid_unenforced_platform_identity_trust_outside_safe_environments(self) -> Settings:
-        """Fail closed at startup, not at request time.
-
-        ``trust_platform_identity_headers=True`` tells
-        ``identity.resolve_identity`` to trust the platform-injected
-        ``x-ms-client-principal`` header outright, without independently
-        re-parsing or validating the incoming ``Authorization`` bearer token
-        itself -- by design, because Azure Container Apps' built-in
-        authentication (EasyAuth / ``authConfigs``) is meant to have already
-        validated that token and rejected unauthenticated requests before
-        this process ever sees them. That design is only sound once
-        Container Apps ``authConfigs`` is actually deployed and enforcing; if
-        it is not (e.g. missing infra wiring, or the deployment is reachable
-        by a path that bypasses it), a forged ``x-ms-client-principal``
-        header would be trusted as if it were a real Entra identity.
-        ``entra_auth_enforced`` lets the running app self-report whether that
-        infra-level enforcement is really active, sourced from the
-        infra-controlled ``RESEARCH_ENTRA_AUTH_ENFORCED`` env var rather than
-        asserted by this process itself. Refuse to construct ``Settings`` at
-        all when platform identity headers are trusted but Entra enforcement
-        is not confirmed and ``environment`` is not one of the known-safe
-        local/dev/test names -- the same fail-closed shape as the
-        demo-identity and attestation-signing-key guards above.
-        """
-        if (
-            self.trust_platform_identity_headers
-            and not self.entra_auth_enforced
-            and self.environment.strip().lower() not in ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS
-        ):
-            raise ValueError(
-                "RESEARCH_ENTRA_AUTH_ENFORCED must be true whenever "
-                "RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS is enabled outside of "
-                f"{sorted(ENTRA_AUTH_UNENFORCED_SAFE_ENVIRONMENTS)} environments; refusing to "
-                "start with an unconfirmed Container Apps authConfigs boundary and "
-                f"environment={self.environment!r}."
-            )
-        return self
 
 
 @lru_cache

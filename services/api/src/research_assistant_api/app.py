@@ -15,9 +15,11 @@ from research_assistant_core import (
     WORKFLOW_BLUEPRINTS,
     Capability,
     CapabilitySpec,
+    HostedPublicAgentRequest,
     ResearchRequest,
     ResearchResult,
 )
+from research_assistant_core.connector_catalog import connector_definition
 from research_assistant_core.models import RunStatus
 from research_assistant_core.service import ResearchService
 from research_assistant_core.studio_models import (
@@ -53,6 +55,8 @@ from research_assistant_api.agent_studio.capability_registry import build_regist
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
 from research_assistant_api.agent_studio.evaluation_runner import build_evaluation_runner
+from research_assistant_api.agent_studio.foundry_agent_inventory import build_foundry_agent_inventory
+from research_assistant_api.agent_studio.foundry_prompt_publisher import build_prompt_agent_publisher
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
 from research_assistant_api.agent_studio.memory_service import (
     MemoryService,
@@ -79,7 +83,11 @@ from research_assistant_api.connector_gateway import (
     ConnectorGatewayNotConfiguredError,
     build_connector_gateway,
 )
-from research_assistant_api.cosmos_workspace import build_workspace_store
+from research_assistant_api.cosmos_workspace import (
+    WorkspaceProjectProvider,
+    WorkspaceProjectUnavailableError,
+    build_workspace_project_provider,
+)
 from research_assistant_api.dataset_execution import (
     build_dataset_agent_message,
     validate_dataset_execution,
@@ -93,6 +101,7 @@ from research_assistant_api.foundry import (
 from research_assistant_api.identity import (
     IdentityContext,
     enforce_tenant_claim,
+    local_developer_identity,
     resolve_identity,
 )
 from research_assistant_api.orchestration import (
@@ -103,6 +112,7 @@ from research_assistant_api.orchestration import (
 from research_assistant_api.public_research import (
     ConnectorAuthorizationError,
     resolve_authorized_sources,
+    select_authorized_sources,
     retrieve_public_metadata,
 )
 from research_assistant_api.schemas import (
@@ -129,6 +139,8 @@ from research_assistant_api.workspace import (
     LibraryIngestRecord,
     LibraryIngestRequest,
     LibraryIngestResponse,
+    PersonalProjectCreate,
+    PersonalProjectUpdate,
     LibraryItem,
     ProjectSettings,
     RunStage,
@@ -206,15 +218,20 @@ async def lifespan(application: FastAPI) -> AsyncIterator[None]:
     application.state.research = build_research_service(settings)
     application.state.studios = StudioService(application.state.research)
     application.state.hosted = HostedAgentGateway(settings)
-    application.state.workspace = build_workspace_store(settings)
+    application.state.workspace_projects = build_workspace_project_provider(settings)
+    if not settings.cosmos_endpoint:
+        # Compatibility alias for local test hooks; every request still
+        # resolves its own workspace through ``workspace_projects``.
+        application.state.workspace = application.state.workspace_projects.workspace_for(
+            local_developer_identity(settings),
+            None,
+        )
     application.state.scheduler = build_run_scheduler(settings)
     application.state.source_blobs = build_source_blob_store(settings)
     application.state.connector_gateway = build_connector_gateway(settings)
     await _init_agent_studio(application, settings)
-    _reconcile_pending_runs(
-        application.state.workspace,
-        application.state.scheduler,
-    )
+    for workspace_store in application.state.workspace_projects.stores_for_reconciliation():
+        _reconcile_pending_runs(workspace_store, application.state.scheduler)
     try:
         yield
     finally:
@@ -273,6 +290,8 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     application.state.agent_studio_membership_resolver = ClaimsGroupMembershipResolver()
     model_discovery = build_model_discovery(settings)
     application.state.agent_studio_model_discovery = model_discovery
+    application.state.agent_studio_foundry_agent_inventory = build_foundry_agent_inventory(settings)
+    application.state.agent_studio_prompt_agent_publisher = build_prompt_agent_publisher(settings)
     # Platform-owned governed template catalog (see ``template_catalog``
     # module docstring for why a built-in seed is legitimate here, unlike
     # the capability registry above).
@@ -336,19 +355,10 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         # closing the "API never supplies trusted approval_id/invocation_id"
         # gap without requiring a caller to guess or invent either value.
         application.state.agent_studio_approval_context_resolver = StoreBackedApprovalContextResolver(store)
-        # Default release-attestation adapter: signs (HMAC-SHA256 when
-        # ``agent_studio_attestation_signing_key``/``..._signing_key_version``
-        # are configured, otherwise an honestly-labeled unkeyed SHA-256
-        # digest -- refused at Settings-construction time outside
-        # ATTESTATION_UNSIGNED_DIGEST_SAFE_ENVIRONMENTS) a read-derived
-        # projection of a release's own immutable ReleaseGateReport, for
-        # harness/runtime startup to verify hard gates passed before
-        # trusting a release -- advisory evaluations never affect this.
-        application.state.agent_studio_release_attestation_port = StoreBackedReleaseAttestationPort(
-            store,
-            signing_key=settings.agent_studio_attestation_signing_key,
-            key_version=settings.agent_studio_attestation_signing_key_version,
-        )
+        # Read-derived projection of a release's own immutable ReleaseGateReport,
+        # for harness/runtime startup to verify hard gates passed before trusting
+        # a release -- advisory evaluations never affect this.
+        application.state.agent_studio_release_attestation_port = StoreBackedReleaseAttestationPort(store)
     try:
         memory_store = build_memory_store(settings)
     except MemoryStoreUnavailableError as exc:
@@ -477,12 +487,15 @@ def _workspace_access(
 ) -> tuple[WorkspaceStore, IdentityContext]:
     settings = cast(Settings, request.app.state.settings)
     identity = resolve_identity(request, settings)
-    store = cast(WorkspaceStore, request.app.state.workspace)
-    if identity.tenant_id != store.tenant_id:
+    provider = cast(WorkspaceProjectProvider, request.app.state.workspace_projects)
+    requested_project_id = request.headers.get("X-Research-Project-ID")
+    try:
+        store = provider.workspace_for(identity, requested_project_id)
+    except WorkspaceProjectUnavailableError as exc:
         raise HTTPException(
-            status_code=403,
-            detail="The authenticated tenant is not onboarded to this workspace.",
-        )
+            status_code=404,
+            detail="The requested project is unavailable.",
+        ) from exc
     if required_groups and not required_groups.intersection(identity.groups):
         raise HTTPException(
             status_code=403,
@@ -603,17 +616,100 @@ def workflows() -> list[dict[str, Any]]:
     tags=["projects"],
 )
 def projects(request: Request) -> list[ProjectSummary]:
-    store, _ = _workspace_access(request)
-    summary = store.summary()
-    return [
-        ProjectSummary(
-            id=summary.project.project_id,
-            name=summary.project.name,
-            description=summary.project.description,
-            active_runs=summary.active_runs,
-            source_count=summary.library_items,
-        ),
-    ]
+    settings = cast(Settings, request.app.state.settings)
+    identity = resolve_identity(request, settings)
+    provider = cast(WorkspaceProjectProvider, request.app.state.workspace_projects)
+    active_project_id = provider.active_project_id(identity)
+    summaries: list[ProjectSummary] = []
+    for project in provider.list_projects(identity):
+        summary = provider.workspace_for(identity, project.project_id).summary()
+        summaries.append(
+            ProjectSummary(
+                id=project.project_id,
+                name=project.name,
+                description=project.description,
+                active_runs=summary.active_runs,
+                source_count=summary.library_items,
+                is_active=project.project_id == active_project_id,
+            )
+        )
+    return summaries
+
+
+def _project_summary(
+    provider: WorkspaceProjectProvider,
+    identity: IdentityContext,
+    project_id: str,
+) -> ProjectSummary:
+    workspace_store = provider.workspace_for(identity, project_id)
+    summary = workspace_store.summary()
+    return ProjectSummary(
+        id=summary.project.project_id,
+        name=summary.project.name,
+        description=summary.project.description,
+        active_runs=summary.active_runs,
+        source_count=summary.library_items,
+        is_active=provider.active_project_id(identity) == project_id,
+    )
+
+
+@app.post(
+    "/api/projects",
+    response_model=ProjectSummary,
+    status_code=201,
+    tags=["projects"],
+)
+def create_project(payload: PersonalProjectCreate, request: Request) -> ProjectSummary:
+    settings = cast(Settings, request.app.state.settings)
+    identity = resolve_identity(request, settings)
+    provider = cast(WorkspaceProjectProvider, request.app.state.workspace_projects)
+    project = provider.create_project(identity, payload)
+    return _project_summary(provider, identity, project.project_id)
+
+
+@app.post(
+    "/api/projects/{project_id}/activate",
+    response_model=ProjectSummary,
+    tags=["projects"],
+)
+def activate_project(project_id: str, request: Request) -> ProjectSummary:
+    settings = cast(Settings, request.app.state.settings)
+    identity = resolve_identity(request, settings)
+    provider = cast(WorkspaceProjectProvider, request.app.state.workspace_projects)
+    try:
+        project = provider.select_project(identity, project_id)
+    except WorkspaceProjectUnavailableError as exc:
+        raise HTTPException(status_code=404, detail="The requested project is unavailable.") from exc
+    return _project_summary(provider, identity, project.project_id)
+
+
+@app.patch(
+    "/api/projects/{project_id}",
+    response_model=ProjectSummary,
+    tags=["projects"],
+)
+def update_project(
+    project_id: str,
+    payload: PersonalProjectUpdate,
+    request: Request,
+) -> ProjectSummary:
+    settings = cast(Settings, request.app.state.settings)
+    identity = resolve_identity(request, settings)
+    provider = cast(WorkspaceProjectProvider, request.app.state.workspace_projects)
+    try:
+        project = provider.update_project(identity, project_id, payload)
+    except WorkspaceProjectUnavailableError as exc:
+        raise HTTPException(status_code=404, detail="The requested project is unavailable.") from exc
+    if payload.archive:
+        return ProjectSummary(
+            id=project.project_id,
+            name=project.name,
+            description=project.description,
+            active_runs=0,
+            source_count=0,
+            is_active=False,
+        )
+    return _project_summary(provider, identity, project.project_id)
 
 
 @app.get("/api/workspace", response_model=WorkspaceSummary, tags=["workspace"])
@@ -952,10 +1048,11 @@ async def _probe_connector(
     connector_id: str,
 ) -> str:
     try:
+        probe_query = connector_definition(connector_id).probe_query
         result = await gateway.search(
             capability,
             connector_id,
-            "research reproducibility",
+            probe_query,
             limit=1,
         )
         return "ready_with_key" if result.warnings else "ready"
@@ -1330,6 +1427,43 @@ def _agent_message(
     )
 
 
+def _hosted_agent_message(
+    capability: Capability,
+    payload: StudioRunRequest,
+    generic: ResearchResult,
+    identity: IdentityContext,
+    *,
+    authorized_connector_ids: tuple[str, ...] = (),
+    public_metadata: list[dict[str, Any]] | None = None,
+    dataset_grant: DatasetSendGrant | None = None,
+) -> str:
+    """Create the only authority-bearing input accepted by online agents."""
+    if not payload.online_research:
+        return _agent_message(
+            capability,
+            payload,
+            generic,
+            public_metadata,
+            dataset_grant=dataset_grant,
+        )
+    public_context = _agent_message(
+        capability,
+        payload,
+        generic,
+        public_metadata,
+        dataset_grant=dataset_grant,
+    )
+    return HostedPublicAgentRequest(
+        query=payload.objective,
+        tenant_id=identity.tenant_id,
+        project_id=generic.run.project_id,
+        principal_id=identity.user_id,
+        session_id=generic.run.id,
+        authorized_connector_ids=authorized_connector_ids,
+        public_context=public_context[:40_000],
+    ).model_dump_json()
+
+
 def _record_studio_result(
     result: STUDIO_RESULT,
     store: WorkspaceStore,
@@ -1686,23 +1820,31 @@ async def run_studio(
     hosted_content: str | None = None
     hosted_agent_name: str | None = None
     public_metadata: list[dict[str, Any]] = []
+    authorized_connector_ids: tuple[str, ...] = ()
     if current.execution_mode == "hosted" and (payload.online_research or generic.citations):
         if payload.online_research:
+            connectors = store.connectors()
+            requested_sources = _authorize_requested_sources(
+                capability,
+                payload.inputs,
+                connectors,
+                tenant_id=identity.tenant_id,
+                project_id=store.project_id,
+            )
+            authorized_connector_ids = select_authorized_sources(
+                capability,
+                requested_sources,
+                connectors,
+            )
             public_metadata = await retrieve_public_metadata(
                 capability,
                 str(payload.inputs["public_search_query"]),
-                store.connectors(),
+                connectors,
                 gateway=cast(
                     ConnectorGateway,
                     request.app.state.connector_gateway,
                 ),
-                requested_sources=_authorize_requested_sources(
-                    capability,
-                    payload.inputs,
-                    store.connectors(),
-                    tenant_id=identity.tenant_id,
-                    project_id=store.project_id,
-                ),
+                requested_sources=list(authorized_connector_ids),
             )
         gateway = cast(HostedAgentGateway, request.app.state.hosted)
         # Authoritative single-use transition, immediately before the send: no
@@ -1713,17 +1855,18 @@ async def run_studio(
         try:
             reply = await run_in_threadpool(
                 gateway.invoke,
-                _agent_message(
+                _hosted_agent_message(
                     capability,
                     payload,
                     generic,
-                    public_metadata,
+                    identity,
+                    authorized_connector_ids=authorized_connector_ids,
+                    public_metadata=public_metadata,
                     dataset_grant=dataset_grant,
                 ),
                 agent_name=(
                     CAPABILITY_ONLINE_AGENTS[capability] if payload.online_research else CAPABILITY_AGENTS[capability]
                 ),
-                allow_tools=payload.online_research,
             )
         except DatasetApprovalError as exc:
             _record_dataset_send_outcome(store, dataset_grant, identity, delivered=False)
@@ -1854,26 +1997,32 @@ async def run_capability(
         return result
 
     gateway = cast(HostedAgentGateway, request.app.state.hosted)
-    public_metadata = (
-        await retrieve_public_metadata(
+    public_metadata: list[dict[str, Any]] = []
+    authorized_connector_ids: tuple[str, ...] = ()
+    if online:
+        connectors = store.connectors()
+        requested_sources = _authorize_requested_sources(
+            capability,
+            studio_request.inputs,
+            connectors,
+            tenant_id=identity.tenant_id,
+            project_id=store.project_id,
+        )
+        authorized_connector_ids = select_authorized_sources(
+            capability,
+            requested_sources,
+            connectors,
+        )
+        public_metadata = await retrieve_public_metadata(
             capability,
             str(studio_request.inputs["public_search_query"]),
-            store.connectors(),
+            connectors,
             gateway=cast(
                 ConnectorGateway,
                 request.app.state.connector_gateway,
             ),
-            requested_sources=_authorize_requested_sources(
-                capability,
-                studio_request.inputs,
-                store.connectors(),
-                tenant_id=identity.tenant_id,
-                project_id=store.project_id,
-            ),
+            requested_sources=list(authorized_connector_ids),
         )
-        if online
-        else []
-    )
     # Central hosted-gateway boundary: the authoritative single-use consumption
     # happens here, immediately before any csv_text can be embedded in a
     # hosted-agent message. Fails closed (no gateway call) if unauthorized. This
@@ -1883,15 +2032,16 @@ async def run_capability(
     try:
         reply = await run_in_threadpool(
             gateway.invoke,
-            _agent_message(
+            _hosted_agent_message(
                 capability,
                 studio_request,
                 result,
-                public_metadata,
+                identity,
+                authorized_connector_ids=authorized_connector_ids,
+                public_metadata=public_metadata,
                 dataset_grant=dataset_grant,
             ),
             agent_name=(CAPABILITY_ONLINE_AGENTS[capability] if online else CAPABILITY_AGENTS[capability]),
-            allow_tools=online,
         )
     except DatasetApprovalError as exc:
         _record_dataset_send_outcome(store, dataset_grant, identity, delivered=False)

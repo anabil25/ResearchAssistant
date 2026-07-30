@@ -78,12 +78,6 @@ param entraApiClientId string = ''
 @description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false; see modules/container-apps.bicep for the full trust-boundary rationale.')
 param enableEntraAuth bool = false
 
-@description('Provision a Key Vault (see modules/keyvault.bicep) so an operator can deliver the Agent Studio ReleaseAttestation signing key to the api container app via Container Apps secrets, instead of a plaintext env var.')
-param includeAttestationKeyVault bool = false
-
-@description('Whether an operator has already populated the attestation signing key secret versions in the provisioned Key Vault (an explicit out-of-band step). Only takes effect when includeAttestationKeyVault is true.')
-param attestationSigningSecretsProvisioned bool = false
-
 // Variables
 
 var resourceToken = empty(resourceTokenSalt)
@@ -249,18 +243,6 @@ module cosmos 'cosmos.bicep' = {
   }
 }
 
-module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault) {
-  name: 'research-attestation-keyvault'
-  params: {
-    name: 'kv-${take(resourceToken, 17)}'
-    location: location
-    tags: tags
-    apiPrincipalId: identities.outputs.apiPrincipalId
-    principalId: principalId
-    principalType: principalType
-  }
-}
-
 module documentIntelligence 'document-intelligence.bicep' = {
   name: 'document-intelligence'
   params: {
@@ -344,8 +326,6 @@ module containerApps 'container-apps.bicep' = if (includeAcr) {
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
-    attestationKeyVaultUri: includeAttestationKeyVault ? keyVault!.outputs.vaultUri : ''
-    attestationSigningSecretsProvisioned: includeAttestationKeyVault && attestationSigningSecretsProvisioned
     connectorAdapterMaxRequestBodyBytes: connectorAdapterMaxRequestBodyBytes
   }
 }
@@ -467,8 +447,6 @@ output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = cosmos.outputs.agent
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = documentIntelligence.outputs.endpoint
 output AZURE_DURABLE_TASK_ENDPOINT string = durableTask.outputs.endpoint
 output AZURE_DURABLE_TASK_HUB string = durableTask.outputs.taskHubName
-output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_URI string = includeAttestationKeyVault ? keyVault!.outputs.vaultUri : ''
-output AZURE_AGENT_STUDIO_ATTESTATION_KEY_VAULT_NAME string = includeAttestationKeyVault ? keyVault!.outputs.vaultName : ''
 output WEB_URL string = includeAcr ? containerApps!.outputs.webUrl : ''
 output API_URL string = includeAcr ? containerApps!.outputs.apiUrl : ''
 output API_NAME string = includeAcr ? containerApps!.outputs.apiName : ''
@@ -479,4 +457,5 @@ output CONNECTOR_ADAPTER_URL string = includeAcr ? containerApps!.outputs.connec
 output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.serviceName : ''
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
 output AZURE_CONNECTOR_MCP_URL string = includeAcr ? apiManagement!.outputs.connectorMcpUrl : ''
+output AZURE_CONNECTOR_MCP_URLS string = includeAcr ? string(apiManagement!.outputs.connectorMcpUrls) : '[]'
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''

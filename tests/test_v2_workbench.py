@@ -98,29 +98,31 @@ def test_demo_identity_uses_the_configured_workspace_tenant() -> None:
         request,
         Settings(
             workspace_tenant_id="accelerator-tenant",
-            allow_demo_identity=True,
         ),
     )
 
     assert identity.tenant_id == "accelerator-tenant"
 
 
-def test_demo_identity_cannot_satisfy_platform_owner_groups_even_when_enabled() -> None:
-    """Least privilege: even when explicitly opted into
-    (``allow_demo_identity=True``), the demo/local-dev sandbox identity must
-    never carry platform-owner rights. Agent Studio's
-    ``PLATFORM_OWNER_GROUPS`` gates system-agent versioning and other
-    elevated operations; a demo session that satisfied it would let any
-    unauthenticated caller impersonate a platform owner.
+def test_local_developer_identity_is_confined_to_local_environments() -> None:
+    """Least privilege, enforced by reachability rather than group shaping.
+
+    The local developer identity is deliberately privileged -- it carries
+    ``research-admins`` so an offline run exercises the same role-gated
+    routes a real admin reaches, and ``research-admins`` is a member of
+    Agent Studio's ``PLATFORM_OWNER_GROUPS``. What keeps that safe is that
+    it is issued only when ``entra_auth_enforced`` is false; with a gateway
+    enforced an unauthenticated caller gets nothing.
     """
-    from research_assistant_api.agent_studio.router import PLATFORM_OWNER_GROUPS
-    from research_assistant_api.identity import resolve_identity
+    from fastapi import HTTPException
+    from research_assistant_api.identity import LOCAL_DEVELOPMENT_SOURCE, resolve_identity
 
     request = type("Request", (), {"headers": {}})()
-    identity = resolve_identity(request, Settings(allow_demo_identity=True))
+    assert resolve_identity(request, Settings()).source == LOCAL_DEVELOPMENT_SOURCE
 
-    assert identity.source == "demo-sandbox"
-    assert not PLATFORM_OWNER_GROUPS.intersection(identity.groups)
+    with pytest.raises(HTTPException) as unauthenticated:
+        resolve_identity(request, Settings(entra_auth_enforced=True))
+    assert unauthenticated.value.status_code == 401
 
 
 def test_workspace_operational_surfaces_are_populated(client: TestClient) -> None:
@@ -151,7 +153,7 @@ def test_connector_test_uses_the_connector_implementation(
     authenticate explicitly as an admin via the header-based identity path
     rather than relying on the ambient demo identity.
     """
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
     calls: list[tuple[str, str, int]] = []
 
@@ -194,7 +196,7 @@ def test_connector_test_distinguishes_missing_gateway_configuration(
     route requires explicit ``research-admins`` authentication now that the
     demo identity no longer carries that group by default.
     """
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
     with TestClient(app) as test_client:
@@ -305,8 +307,7 @@ def test_untrusted_principal_header_cannot_override_demo_identity(
 def test_non_onboarded_tenant_cannot_read_operational_state(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
-    monkeypatch.setenv("RESEARCH_ALLOW_DEMO_IDENTITY", "false")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     with TestClient(app) as client:
         app.state.settings = Settings()
         response = client.get(
@@ -325,8 +326,7 @@ def test_non_onboarded_tenant_cannot_read_operational_state(
 def test_settings_and_approvals_require_authorized_groups(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
-    monkeypatch.setenv("RESEARCH_ALLOW_DEMO_IDENTITY", "false")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["researchers"])}
     with TestClient(app) as client:
         app.state.settings = Settings()
@@ -977,7 +977,7 @@ def test_approval_decision_records_actor_rationale_and_action(client: TestClient
 
     assert response.status_code == 200
     decision = response.json()
-    assert decision["approver_id"] == "demo-researcher"
+    assert decision["approver_id"] == "local-developer"
     assert decision["approver_name"] == "Dr. Maya Chen"
     assert decision["decided_at"]
     assert decision["gated_action"]
@@ -991,7 +991,7 @@ def test_settings_cannot_enable_global_online_research(
     """``PUT /api/settings`` requires ``research-admins``; authenticate
     explicitly since the demo identity no longer carries that group.
     """
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
     with TestClient(app) as test_client:
@@ -1142,7 +1142,7 @@ def test_run_studio_rejects_disabled_connector_source_as_403(
     project) is a 403, not a 422 -- and it is rejected even though the
     caller only ever saw an already-filtered connector list in the UI.
     """
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     admin_headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["research-admins"])}
 
     with TestClient(app) as test_client:
@@ -1286,8 +1286,7 @@ def test_dataset_approval_decision_route_404s_for_unknown_request(client: TestCl
 def test_dataset_approval_decision_route_requires_reviewer_role(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setenv("RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS", "true")
-    monkeypatch.setenv("RESEARCH_ALLOW_DEMO_IDENTITY", "false")
+    monkeypatch.setenv("RESEARCH_ENTRA_AUTH_ENFORCED", "true")
     headers = {"X-MS-CLIENT-PRINCIPAL": _principal("demo", ["researchers"])}
     with TestClient(app) as test_client:
         app.state.settings = Settings()

@@ -16,12 +16,13 @@ from shared.tools import (
     _invoke_specialist,
     build_delegate_tool,
     delegated_agent_name,
+    request_tools_for_profile,
     tools_for_profile,
 )
 from shared.errors import ConfigurationError
 from shared.settings import HarnessSettings
-from shared.tools import _invoke_specialist, delegated_agent_name, tools_for_profile
 from scripts.build_agent_source_tree import source_tree_digest
+from research_assistant_core.connector_catalog import connector_definitions
 
 ROOT = Path(__file__).parents[1]
 
@@ -45,24 +46,27 @@ def test_offline_and_public_online_agent_profiles_are_packaged() -> None:
         assert "untrusted data" in profile.instructions
         assert profile.workflow_steps
         assert profile.output_contract.endswith("V2")
-        expected_tools = 1 if profile.id == "coordinator" else 0
-        assert len(tools_for_profile(profile)) == expected_tools
+        has_toolbox_binding = any(
+            binding.operation_ref.id.startswith("foundry.toolbox.")
+            for binding in profile.capability_bindings
+        )
+        if has_toolbox_binding:
+            with pytest.raises(ConfigurationError, match="Toolbox endpoint"):
+                tools_for_profile(profile)
+        else:
+            assert tools_for_profile(profile) == []
     assert len({profile.output_contract for profile in profiles}) == len(profiles)
     assert len({profile.workflow_steps for profile in profiles}) == len(profiles)
 
 
-def test_web_search_is_enabled_only_for_current_source_agents() -> None:
-    class FakeClient:
-        def get_web_search_tool(self, **kwargs: Any) -> dict[str, Any]:
-            return {"kind": "web_search", **kwargs}
-
+def test_web_search_is_declared_only_for_current_source_agents() -> None:
     enabled = {"literature_online", "grant_online", "matching_online"}
     for profile in list_profiles():
-        tools = tools_for_profile(profile, FakeClient())
-        has_web = any(isinstance(item, dict) and item.get("kind") == "web_search" for item in tools)
+        has_web = any(
+            binding.operation_ref.id == "foundry.toolbox.web_search"
+            for binding in profile.capability_bindings
+        )
         assert has_web is (profile.id in enabled)
-        expected_count = 1 if profile.id == "coordinator" or profile.id in enabled else 0
-        assert len(tools) == expected_count
 
 
 def test_coordinator_routes_public_only_to_online_specialists() -> None:
@@ -109,16 +113,85 @@ def test_azure_manifest_uses_current_hosted_agent_contract() -> None:
     }
 
 
-def test_online_agents_use_foundry_toolbox_when_configured(
+def test_online_agents_defer_toolbox_attachment_until_request_validation(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     marker = object()
-    monkeypatch.setenv("TOOLBOX_ENDPOINT", "https://foundry.example/toolboxes/test/mcp?api-version=v1")
-    monkeypatch.setattr("shared.tools.get_credential", lambda: object())
-    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda _credential: marker)
+    settings = HarnessSettings(
+        foundry_project_endpoint="https://project.example",
+        model_deployment_name="gpt-5.4-mini",
+        model_deployment_version="2026-03-17",
+        source_tree_digest="0" * 64,
+        toolbox_endpoint="https://foundry.example/toolboxes/test/mcp?api-version=v1",
+    )
+    monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
+    monkeypatch.setattr("shared.tools.FoundryToolbox", lambda *_args, **_kwargs: marker)
 
-    assert tools_for_profile(get_profile("grant_online")) is marker
-    assert tools_for_profile(get_profile("dataset")) is marker
+    assert tools_for_profile(get_profile("grant_online"), settings=settings) == []
+    assert tools_for_profile(get_profile("dataset"), settings=settings) is marker
+
+
+@pytest.mark.asyncio
+async def test_online_request_tools_are_limited_to_authorized_connectors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    constructed: list[object] = []
+
+    class FakeToolbox:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            self._functions = (
+                "pubmed___search",
+                "pubmed___lookup",
+                "crossref___search",
+                "web_search",
+            )
+            self.connected = False
+            self.loaded = False
+
+        @property
+        def functions(self) -> list[str]:
+            return list(self._functions)
+
+        async def connect(self) -> None:
+            self.connected = True
+
+        async def load_tools(self) -> None:
+            self.loaded = True
+
+        async def close(self) -> None:
+            return None
+
+    def build_toolbox(*_args: object, **_kwargs: object) -> FakeToolbox:
+        toolbox = FakeToolbox()
+        constructed.append(toolbox)
+        return toolbox
+
+    monkeypatch.setattr("shared.tools.get_credential", lambda _client_id=None: object())
+    monkeypatch.setattr("shared.tools.FoundryToolbox", build_toolbox)
+    settings = HarnessSettings(
+        foundry_project_endpoint="https://project.example",
+        model_deployment_name="gpt-5.4-mini",
+        model_deployment_version="2026-03-17",
+        source_tree_digest="0" * 64,
+        toolbox_endpoint="https://toolbox.example/mcp?api-version=v1",
+    )
+
+    toolbox, tools = await request_tools_for_profile(
+        get_profile("literature_online"),
+        settings,
+        ("pubmed",),
+    )
+
+    assert toolbox is constructed[0]
+    assert tools == ("pubmed___lookup", "pubmed___search", "web_search")
+    assert toolbox.connected is True
+    assert toolbox.loaded is True
+    with pytest.raises(ConfigurationError, match="outside the profile Toolbox surface"):
+        await request_tools_for_profile(
+            get_profile("literature_online"),
+            settings,
+            ("grants_gov",),
+        )
 
 
 def test_bicep_model_parameters_match_azure_manifest() -> None:
@@ -135,23 +208,7 @@ def test_accelerator_infrastructure_has_no_region_or_migration_pin() -> None:
 
     assert "searchLocation" not in parameters["parameters"]
     assert "-v2" not in container_apps
-    # ``resources.bicep`` intentionally re-introduces a Key Vault module, but
-    # only as an explicit, RBAC-authorized, opt-in delivery mechanism for the
-    # Agent Studio release-attestation signing key (see
-    # ``tests/test_apim_infrastructure.py::
-    # test_resources_module_wires_key_vault_and_threads_entra_params_through``
-    # and ``infra/modules/keyvault.bicep``). Guard against a regression back
-    # to an unconditional/default template Key Vault by requiring exactly one
-    # module declaration, gated on ``includeAttestationKeyVault`` (default
-    # false), with every other reference limited to that same symbol's
-    # conditional outputs.
-    assert resources.count("module keyVault ") == 1
-    assert "module keyVault 'keyvault.bicep' = if (includeAttestationKeyVault)" in resources
-    assert all(
-        "keyVault!.outputs." in line or "module keyVault " in line
-        for line in resources.splitlines()
-        if "keyVault" in line
-    )
+    assert "keyVault" not in resources
 
 
 def test_accelerator_public_poc_data_and_ci_principal_contracts() -> None:
@@ -615,12 +672,22 @@ def test_missing_toolbox_never_falls_back_to_web_search() -> None:
 
 
 def test_toolbox_bindings_match_deployed_operation_names() -> None:
-    expected = {
-        "dataset": {"code_interpreter"},
-        "literature_online": {"web_search", "searchLiteratureMetadata"},
-        "grant_online": {"web_search", "searchGrantOpportunities"},
-        "matching_online": {"web_search", "searchMatchingMetadata"},
-    }
+    expected = {"dataset": {"code_interpreter"}}
+    for profile_id, agent_id in {
+        "literature_online": "literature",
+        "grant_online": "grant",
+        "matching_online": "matching",
+    }.items():
+        expected[profile_id] = {
+            "web_search",
+            *{
+                f"{connector.id}___{operation.mcp_tool_name}"
+                for connector in connector_definitions()
+                if agent_id in connector.assigned_agents
+                for operation in connector.operations
+                if operation.operation_class != "delete"
+            },
+        }
     for profile_id, tool_names in expected.items():
         manifest = get_profile(profile_id)
         assert {binding.operation_ref.id.rsplit(".", 1)[-1] for binding in manifest.capability_bindings} == tool_names

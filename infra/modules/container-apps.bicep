@@ -50,45 +50,6 @@ param entraApiClientId string = ''
 @description('Enable Azure Container Apps built-in authentication (EasyAuth), enforcing a valid Entra ID bearer token on every ingress request to the api container app before it is invoked. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId. The api container always reports the true value of this flag to itself via RESEARCH_ENTRA_AUTH_ENFORCED, rather than assuming enforcement is active on faith.')
 param enableEntraAuth bool = false
 
-@description('Key Vault URI (e.g. https://<vault>.vault.azure.net/) from which the api container sources the attestation signing key/version as Container Apps Key-Vault-backed secrets. Required when attestationSigningSecretsProvisioned is true.')
-param attestationKeyVaultUri string = ''
-
-@description('Whether an operator has already populated the attestation signing key secret versions in the Key Vault referenced by attestationKeyVaultUri (an explicit out-of-band step -- see modules/keyvault.bicep). When false (default) the api container runs without a signing key, and research_assistant_api.config\'s fail-closed startup validator refuses to boot with the unsigned sha256-digest fallback outside its known-safe local/dev/test environments.')
-param attestationSigningSecretsProvisioned bool = false
-
-// Container Apps Key-Vault-backed secret references for the attestation
-// signing key/version, only emitted once an operator has confirmed (via
-// attestationSigningSecretsProvisioned) that real secret values exist at
-// these Key Vault secret names -- otherwise the api container app would be
-// pinned to a non-existent secret version and fail to start.
-var attestationSecretRefs = attestationSigningSecretsProvisioned
-  ? [
-      {
-        name: 'agent-studio-attestation-signing-key'
-        keyVaultUrl: '${attestationKeyVaultUri}secrets/agent-studio-attestation-signing-key'
-        identity: apiIdentityResourceId
-      }
-      {
-        name: 'agent-studio-attestation-signing-key-version'
-        keyVaultUrl: '${attestationKeyVaultUri}secrets/agent-studio-attestation-signing-key-version'
-        identity: apiIdentityResourceId
-      }
-    ]
-  : []
-
-var attestationEnvVars = attestationSigningSecretsProvisioned
-  ? [
-      {
-        name: 'AGENT_STUDIO_ATTESTATION_SIGNING_KEY'
-        secretRef: 'agent-studio-attestation-signing-key'
-      }
-      {
-        name: 'AGENT_STUDIO_ATTESTATION_SIGNING_KEY_VERSION'
-        secretRef: 'agent-studio-attestation-signing-key-version'
-      }
-    ]
-  : []
-
 var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
 var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
@@ -267,7 +228,6 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
     environmentId: environment.id
     configuration: {
       activeRevisionsMode: 'Single'
-      secrets: attestationSecretRefs
       ingress: {
         allowInsecure: false
         external: false
@@ -286,11 +246,10 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
         {
           name: 'api'
           image: placeholderImage
-          env: concat(
-            [
-              {
-                name: 'RESEARCH_ENVIRONMENT'
-                value: '${name}-azure'
+          env: [
+            {
+              name: 'RESEARCH_ENVIRONMENT'
+              value: '${name}-azure'
             }
             {
               name: 'RESEARCH_EXECUTION_MODE'
@@ -404,23 +363,7 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               name: 'RESEARCH_ENTRA_AUTH_ENFORCED'
               value: string(enableEntraAuth)
             }
-            {
-              // The API only trusts the platform-injected `x-ms-client-principal`
-              // header when Container Apps built-in authentication (EasyAuth) is
-              // actually enforcing on ingress. Deriving this flag from the same
-              // `enableEntraAuth` toggle that gates the `authConfigs` resource
-              // keeps the two in lockstep: the header is trusted exactly when,
-              // and only when, the platform is validating tokens and injecting
-              // it. This also satisfies the app's fail-closed startup guard
-              // (config._forbid_unenforced_platform_identity_trust_outside_safe_environments),
-              // which refuses trust_platform_identity_headers=True unless
-              // entra_auth_enforced (RESEARCH_ENTRA_AUTH_ENFORCED) is also True.
-              name: 'RESEARCH_TRUST_PLATFORM_IDENTITY_HEADERS'
-              value: string(enableEntraAuth)
-            }
-            ],
-            attestationEnvVars
-          )
+          ]
           probes: [
             {
               type: 'Startup'

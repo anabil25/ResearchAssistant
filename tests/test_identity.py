@@ -49,9 +49,13 @@ import pytest
 from fastapi import HTTPException
 from research_assistant_api.config import Settings
 from research_assistant_api.identity import (
+    GATEWAY_SOURCE,
+    LOCAL_DEVELOPMENT_GROUPS,
+    LOCAL_DEVELOPMENT_SOURCE,
     _claim_values,
     _decode_client_principal,
     enforce_tenant_claim,
+    project_group_name,
     resolve_identity,
 )
 
@@ -103,7 +107,7 @@ def test_resolve_identity_prefers_platform_headers_when_enabled(
     claims: list[dict[str, str]],
     expected_tenant: str,
 ) -> None:
-    settings = Settings(trust_platform_identity_headers=True, allow_demo_identity=False)
+    settings = Settings(entra_auth_enforced=True)
     request = _request(
         {
             "x-ms-client-principal": _principal(
@@ -122,42 +126,25 @@ def test_resolve_identity_prefers_platform_headers_when_enabled(
     assert identity.display_name == "Ada Lovelace"
     assert identity.tenant_id == expected_tenant
     assert identity.groups == ("researchers",)
-    assert identity.source == "container-apps-auth"
+    assert identity.source == GATEWAY_SOURCE
 
 
-def test_resolve_identity_falls_back_to_demo_identity_for_invalid_or_incomplete_headers() -> None:
-    settings = Settings(
-        trust_platform_identity_headers=True,
-        allow_demo_identity=True,
-        workspace_tenant_id="demo-tenant",
-    )
+def test_resolve_identity_issues_the_local_identity_without_a_gateway() -> None:
+    settings = Settings(workspace_tenant_id="demo-tenant", workspace_project_id="demo-project")
 
-    malformed = resolve_identity(
-        _request({"x-ms-client-principal": "broken"}),
-        settings,
-    )
-    missing_claims = resolve_identity(
-        _request(
-            {
-                "x-ms-client-principal": _principal(
-                    {
-                        "userId": "",
-                        "claims": [{"typ": "tid", "val": "tenant-1"}],
-                    }
-                )
-            }
-        ),
-        settings,
-    )
+    # Without a gateway the header is ignored outright, so even a forged or
+    # malformed one grants nothing beyond the local developer identity.
+    identity = resolve_identity(_request({"x-ms-client-principal": "broken"}), settings)
 
-    assert malformed.source == "demo-sandbox"
-    assert malformed.tenant_id == "demo-tenant"
-    assert malformed.groups == ("researchers", "grant-reviewers", "research-admins")
-    assert missing_claims.user_id == "demo-researcher"
+    assert identity.source == LOCAL_DEVELOPMENT_SOURCE
+    assert identity.user_id == "local-developer"
+    assert identity.tenant_id == "demo-tenant"
+    assert identity.display_name == "Local developer"
+    assert identity.groups == (*LOCAL_DEVELOPMENT_GROUPS, project_group_name("demo-project"))
 
 
-def test_resolve_identity_requires_authenticated_identity_when_demo_is_disabled() -> None:
-    settings = Settings(trust_platform_identity_headers=True, allow_demo_identity=False)
+def test_resolve_identity_requires_authenticated_identity_when_gateway_is_enforced() -> None:
+    settings = Settings(entra_auth_enforced=True)
 
     with pytest.raises(HTTPException, match="platform identity is required") as excinfo:
         resolve_identity(_request({}), settings)

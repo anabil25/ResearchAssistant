@@ -22,28 +22,21 @@ package's ``manifest_hash`` are the same digest (they are computed over
 different canonical encodings and are not byte-comparable).
 
 The "signature" is deliberately honest about what it actually is: a keyed
-HMAC-SHA256 digest when an operator has configured an attestation-signing
-key (``Settings.agent_studio_attestation_signing_key``), or a plain
-(unkeyed) SHA-256 content digest when none is configured. Both are
+HMAC-SHA256 digest when a caller supplies an attestation-signing key, or a
+plain (unkeyed) SHA-256 content digest when none is given. Both are
 reproducible/tamper-evident, but only the keyed form is a genuine signature
 a third party can trust without also trusting "nobody else could compute a
 SHA-256 hash" -- ``signature_algorithm`` always says which one a caller
 actually received, so nothing here is ever presented as more than it is (no
 fake production success).
 
-A configured signing key must always carry an explicit ``key_version``
-label (``Settings.agent_studio_attestation_signing_key_version``): this is
-the "managed secret with version/rotation" the unkeyed digest is explicitly
-*not* a substitute for. ``key_version`` is embedded in the signed payload
+A supplied signing key must always carry an explicit ``key_version``
+label. ``key_version`` is embedded in the signed payload
 itself (so it cannot be swapped after the fact) and on the resulting
 ``ReleaseAttestation``, so a verifier that retains multiple historical
 secrets (because the active signing key has since been rotated) can look up
 the one specific secret an older attestation was actually signed with,
-rather than guessing. ``Settings`` itself refuses to start in a
-non-test/dev environment with no signing key configured at all (see
-``research_assistant_api.config._forbid_unversioned_or_missing_attestation_signing_key``),
-so the honest-but-unauthenticated digest form can never silently become the
-production default.
+rather than guessing.
 """
 
 from __future__ import annotations
@@ -176,7 +169,7 @@ def build_release_attestation(
     if signing_key and not key_version:
         raise ReleaseAttestationError(
             "A configured attestation signing key must have an explicit key_version "
-            "(Settings.agent_studio_attestation_signing_key_version) so signed "
+            "so signed "
             "ReleaseAttestations can be rotated and audited by version; refusing to "
             "sign with an unversioned key."
         )
