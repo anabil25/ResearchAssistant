@@ -431,53 +431,42 @@
   const ARCH_MERMAID_SRC = `
 flowchart TB
     Researcher(["Researcher"])
+    Web["<b>Next.js Workbench</b><br/>6 studios · Library · Runs &amp; Approvals"]
+    API["<b>FastAPI Research API</b><br/>tenant authz · citations · scoring · approval gates"]
 
-    subgraph L1 ["APPLICATION &nbsp;·&nbsp; Azure Container Apps (VNet-integrated)"]
-        direction LR
-        Web["Next.js Workbench<br/><i>6 studios · Library · Runs &amp; Approvals</i>"]
-        API["FastAPI Research API<br/><i>tenant authz · citations · scoring · approval gates</i>"]
-    end
+    Coord["<b>research-coordinator</b><br/>routes bounded tasks"]
+    Offline["<b>5 offline specialists</b><br/>literature · grant · matching<br/>dataset · institution"]
+    Online["<b>3 online specialists</b><br/>literature · grant · matching"]
 
-    subgraph L2 ["REASONING &nbsp;·&nbsp; Foundry Hosted Agents (direct-code, 1 identity each)"]
-        direction LR
-        Coord["research-coordinator<br/><i>routes bounded tasks</i>"]
-        Offline["5 offline specialists<br/><i>literature · grant · matching<br/>dataset · institution</i>"]
-        Online["3 online specialists<br/><i>literature · grant · matching</i>"]
-    end
+    Search[("<b>Azure AI Search</b><br/>tenant-filtered index")]
+    Cosmos[("<b>Cosmos DB</b><br/>projects · runs · approvals")]
+    Blob[("<b>Blob Storage</b><br/>private endpoint")]
+    DocI["<b>Document Intelligence</b><br/>prebuilt-layout"]
 
-    subgraph L3 ["KNOWLEDGE &amp; DURABLE STATE"]
-        direction LR
-        Search[("Azure AI Search<br/><i>tenant-filtered index</i>")]
-        Cosmos[("Cosmos DB<br/><i>projects · runs · approvals</i>")]
-        Blob[("Blob Storage<br/><i>private endpoint</i>")]
-        DocI["Document Intelligence<br/><i>prebuilt-layout</i>"]
-    end
-
-    Models[("Foundry model deployments<br/><i>gpt-5.6-sol · gpt-5.4-mini · embeddings</i>")]
-    Sources["Public research connectors<br/><i>PubMed · Crossref · OpenAlex · arXiv<br/>ClinicalTrials · Grants.gov · ORCID · ROR</i>"]
-    Obs["Application Insights"]
+    Models[("<b>Foundry model deployments</b><br/>gpt-5.6-sol · gpt-5.4-mini · embeddings")]
+    Sources["<b>Public research connectors</b><br/>PubMed · Crossref · OpenAlex · arXiv<br/>ClinicalTrials · Grants.gov · ORCID · ROR"]
+    Obs["<b>Application Insights</b>"]
 
     Researcher --> Web
-    Web -->|"internal only"| API
+    Web -->|"internal ingress"| API
     API -->|"bounded task"| Coord
+    API --> Search
+    API --> Cosmos
+    API --> Blob
+    API --> DocI
     Coord --> Offline
     Coord --> Online
     Offline --> Models
     Online --> Models
     Online -.->|"opt-in · off by default"| Sources
-    API --> Search
-    API --> Cosmos
-    API --> Blob
-    API --> DocI
-    Web -.-> Obs
     API -.->|"OpenTelemetry"| Obs
 
-    classDef app     fill:#dbeafe,stroke:#2563eb,stroke-width:1.2px,color:#12243d
-    classDef agent   fill:#ede9fe,stroke:#7c3aed,stroke-width:1.2px,color:#2b1a4d
-    classDef data    fill:#dcfce7,stroke:#16a34a,stroke-width:1.2px,color:#0f2e1c
-    classDef ext     fill:#ffedd5,stroke:#ea8a1f,stroke-width:1.2px,color:#3d2a0d
-    classDef obs     fill:#e5e7eb,stroke:#6b7280,stroke-width:1.2px,color:#1f2937
-    classDef person  fill:#ffffff,stroke:#0f172a,stroke-width:1.6px,color:#0f172a
+    classDef app    fill:#dbeafe,stroke:#2563eb,stroke-width:1.3px,color:#12243d
+    classDef agent  fill:#ede9fe,stroke:#7c3aed,stroke-width:1.3px,color:#2b1a4d
+    classDef data   fill:#dcfce7,stroke:#16a34a,stroke-width:1.3px,color:#0f2e1c
+    classDef ext    fill:#ffedd5,stroke:#ea8a1f,stroke-width:1.3px,color:#3d2a0d
+    classDef obs    fill:#e5e7eb,stroke:#6b7280,stroke-width:1.3px,color:#1f2937
+    classDef person fill:#ffffff,stroke:#0f172a,stroke-width:1.8px,color:#0f172a
 
     class Researcher person
     class Web,API app
@@ -485,10 +474,6 @@ flowchart TB
     class Search,Cosmos,Blob,DocI,Models data
     class Sources ext
     class Obs obs
-
-    style L1 fill:#f3f8ff,stroke:#bfdbfe,stroke-width:1px,color:#1e3a5f
-    style L2 fill:#f8f5ff,stroke:#ddd0fb,stroke-width:1px,color:#3b2764
-    style L3 fill:#f4fdf7,stroke:#c3ebd2,stroke-width:1px,color:#14532d
 `;
   const $  = (s, r = document) => r.querySelector(s);
   const el = {
