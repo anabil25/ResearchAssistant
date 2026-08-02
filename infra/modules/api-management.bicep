@@ -12,10 +12,6 @@ param logAnalyticsWorkspaceId string
 
 var connectorOpenApi = loadTextContent('../../infra/provider-specs/authored/research_connectors.json')
 var connectorMcpDefinitions = loadJsonContent('../../infra/connector-mcp-catalog.json')
-var connectorCredentialNames = filter(
-  map(connectorMcpDefinitions, connector => connector.credentialNamedValue),
-  name => !empty(name)
-)
 var connectorOperationPolicies = loadJsonContent('../../infra/connector-operation-policies.json')
 var connectorApiId = 'research-connectors-v1'
 var connectorMcpProductId = 'research-agent-tools'
@@ -149,43 +145,6 @@ resource connectorContact 'Microsoft.ApiManagement/service/namedValues@2024-05-0
   }
 }
 
-resource connectorCredentials 'Microsoft.ApiManagement/service/namedValues@2024-05-01' = [
-  for credential in connectorCredentialNames: {
-    parent: apiManagement
-    name: credential
-    properties: {
-      displayName: credential
-      // Seeded unconfigured; operators set the real key from Settings so it never lands in IaC or azd env.
-      value: 'unset'
-      secret: true
-      tags: [
-        'connector'
-      ]
-    }
-  }
-]
-
-// Scoped to the individual named values so the API can rotate connector keys and nothing else.
-resource connectorCredentialWriter 'Microsoft.Authorization/roleAssignments@2022-04-01' = [
-  for (credential, index) in connectorCredentialNames: {
-    scope: connectorCredentials[index]
-    name: guid(
-      apiManagement.id,
-      credential,
-      apiPrincipalId,
-      '312a565d-c81f-4fd8-895a-4e21e48d571c'
-    )
-    properties: {
-      principalId: apiPrincipalId
-      principalType: 'ServicePrincipal'
-      roleDefinitionId: subscriptionResourceId(
-        'Microsoft.Authorization/roleDefinitions',
-        '312a565d-c81f-4fd8-895a-4e21e48d571c'
-      )
-    }
-  }
-]
-
 resource connectorApi 'Microsoft.ApiManagement/service/apis@2024-05-01' = {
   parent: apiManagement
   name: connectorApiId
@@ -223,7 +182,6 @@ resource connectorPolicies 'Microsoft.ApiManagement/service/apis/operations/poli
     }
     dependsOn: [
       connectorContact
-      connectorCredentials
     ]
   }
 ]

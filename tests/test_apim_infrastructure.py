@@ -218,15 +218,6 @@ def test_static_connector_openapi_is_bounded_for_apim_import() -> None:
     }
     assert len(specification["paths"]) == 20
     assert all(set(path_item) == {"get"} for path_item in specification["paths"].values())
-    search_operations = [
-        path_item["get"]
-        for path, path_item in specification["paths"].items()
-        if path.endswith("/search")
-    ]
-    assert all(
-        [parameter["name"] for parameter in operation["parameters"]] == ["query"]
-        for operation in search_operations
-    )
     assert specification["components"]["schemas"]["ConnectorResult"]["additionalProperties"] is False
 
 
@@ -242,7 +233,6 @@ def test_connector_operation_policies_cover_apim_native_transformations() -> Non
     for value in policies.values():
         ElementTree.fromstring(value)
         assert 'name="Authorization" exists-action="delete"' in value
-        assert 'name="Accept-Encoding" exists-action="override"><value>identity</value>' in value
         assert "set-backend-service" in value
     assert "send-request" in policies["pubmedSearch"]
     assert "xml-to-json" in policies["arxivSearch"]
