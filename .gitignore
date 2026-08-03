@@ -51,3 +51,11 @@ infra/*.arm.json
 Thumbs.db
 .vscode/
 .idea/
+
+# Tests
+tests/
+**/tests/
+**/tests/**
+
+# Sample data
+sample_data/

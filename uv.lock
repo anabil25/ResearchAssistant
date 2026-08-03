@@ -2936,6 +2936,7 @@ name = "research-assistant-core"
 version = "0.1.0"
 source = { editable = "packages/research_core" }
 dependencies = [
+    { name = "azure-identity" },
     { name = "duckdb" },
     { name = "nbformat" },
     { name = "opentelemetry-sdk" },
@@ -2948,6 +2949,7 @@ dependencies = [
 
 [package.metadata]
 requires-dist = [
+    { name = "azure-identity", specifier = ">=1.25,<2" },
     { name = "duckdb", specifier = ">=1.4,<2" },
     { name = "nbformat", specifier = ">=5.10,<6" },
     { name = "opentelemetry-sdk", specifier = "==1.43.0" },
