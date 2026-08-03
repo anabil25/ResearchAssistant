@@ -19,6 +19,67 @@ Foundry Hosted Agents across six research studios.
 > — this README and the architecture docs with a left-nav menu and interactive
 > diagram.
 
+## Quick start
+
+Choose one path:
+
+- **Deploy everything to Azure (one click):** [Deploy (the one-click path)](#deploy-the-one-click-path)
+- **Run locally for development:** [Local development](#local-development)
+
+### 60-second preflight
+
+Run these before either path:
+
+```powershell
+azd version
+az version
+python --version
+uv --version
+node --version
+```
+
+If `uv` is missing, install it first:
+
+- Docs: https://docs.astral.sh/uv/getting-started/installation/
+- Windows (winget): `winget install --id AstralSh.uv -e`
+
+### Quick path A: one-click Azure deploy
+
+```powershell
+git clone https://github.com/anabil25/ResearchAssistant.git
+Set-Location ResearchAssistant
+azd auth login
+az login
+azd up
+```
+
+### Quick path B: local development run
+
+```powershell
+git clone https://github.com/anabil25/ResearchAssistant.git
+Set-Location ResearchAssistant
+uv sync --all-packages --group dev
+Set-Location apps\web
+npm ci
+```
+
+Start the API (terminal 1):
+
+```powershell
+Set-Location <repo-root>
+uv run --package research-assistant-api uvicorn research_assistant_api.app:app --reload --port 8100
+```
+
+Start the web app (terminal 2):
+
+```powershell
+Set-Location apps\web
+$env:INTERNAL_API_URL = "http://127.0.0.1:8100"
+npm run dev
+```
+
+Open <http://localhost:3000>.
+
 ## What it is
 
 ### The 6 studios (and what they do)
@@ -327,6 +388,10 @@ Run each sample prompt in the workbench and confirm the expected result:
 
 ## Local development
 
+> Important: Local development in this repository requires `uv`.
+> If `uv` is not installed, dependency installation will fail.
+> Check first with `uv --version`.
+
 Install dependencies:
 
 ```powershell
@@ -334,6 +399,11 @@ uv sync --all-packages --group dev
 Set-Location apps\web
 npm ci
 ```
+
+If `uv` is missing, install it first:
+
+- Docs: https://docs.astral.sh/uv/getting-started/installation/
+- Windows (winget): `winget install --id AstralSh.uv -e`
 
 Start the API:
 
