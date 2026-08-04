@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 from time import time
 
+import httpx
 import pytest
 from azure.core.credentials import AccessToken
 from research_assistant_core.connector_catalog import connector_definitions
@@ -19,16 +20,20 @@ from scripts.postprovision import (
     apim_mcp_subscription_key,
     configure_agent_memory,
     configure_connector_connections,
-    configure_connector_mcp_tools,
+    configure_connector_gateway,
     connector_connection_payload,
     connector_mcp_targets,
-    connector_mcp_tool_catalog,
     expected_shared_tool_names,
     expected_toolbox_tool_names,
     load_documents,
     toolbox_version_payload,
     upload_source_artifacts,
     wait_for_acr_pull_roles,
+)
+from scripts.provider_onboarding import (
+    APIM_READY_RETRY_DELAYS,
+    ApimOnboarder,
+    ApimRequestError,
 )
 
 
@@ -107,6 +112,11 @@ def test_postprovision_writes_local_env_and_repoints_a_stale_checkout(
 def test_postprovision_allows_five_minutes_for_data_plane_rbac() -> None:
     assert RETRY_DELAYS[0] == 0
     assert sum(RETRY_DELAYS) >= 300
+
+
+def test_apim_fresh_service_readiness_budget_exceeds_ten_minutes() -> None:
+    assert APIM_READY_RETRY_DELAYS[0] == 0
+    assert sum(APIM_READY_RETRY_DELAYS) >= 600
 
 
 @pytest.mark.parametrize(
@@ -248,6 +258,497 @@ def test_connector_toolbox_connection_uses_apim_subscription_key() -> None:
     }
 
 
+def test_connector_gateway_preserves_existing_api_keys(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.provider_onboarding as onboarding
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "semantic_scholar",
+                    "apiId": "research-semantic-scholar-mcp-v1",
+                    "path": "research-semantic-scholar-mcp",
+                    "displayName": "Semantic Scholar MCP",
+                    "description": "Literature metadata",
+                    "credentialNamedValue": "research-semantic-scholar-key",
+                    "tools": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    openapi = tmp_path / "openapi.json"
+    openapi.write_text('{"openapi":"3.0.1","info":{"title":"test","version":"1"},"paths":{}}', encoding="utf-8")
+    policies = tmp_path / "policies.json"
+    policies.write_text("[]", encoding="utf-8")
+    tools = tmp_path / "tools.json"
+    tools.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(onboarding, "CONNECTOR_MCP_CATALOG", catalog)
+    monkeypatch.setattr(onboarding, "CONNECTOR_OPENAPI", openapi)
+    monkeypatch.setattr(onboarding, "CONNECTOR_OPERATION_POLICIES", policies)
+    monkeypatch.setattr(onboarding, "CONNECTOR_MCP_TOOLS", tools)
+
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    writes: list[str] = []
+    events: list[tuple[str, str]] = []
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        lambda *_args, **_kwargs: {
+            "properties": {
+                "publisherEmail": "publisher@example.test",
+                "gatewayUrl": "https://gateway.example.test",
+            }
+        },
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_exists",
+        lambda path, **_kwargs: path == "/namedValues/research-semantic-scholar-key",
+    )
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+    def put(path: str, _body: object, **_kwargs: object) -> Response:
+        writes.append(path)
+        events.append(("put", path))
+        return Response()
+
+    monkeypatch.setattr(onboarder, "_put", put)
+    monkeypatch.setattr(
+        onboarder,
+        "_await_async_operation",
+        lambda _response, label: events.append(("await-async", label)),
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_await_api",
+        lambda api_id: events.append(("await-api", api_id)),
+    )
+    monkeypatch.setattr(onboarder, "_await_operations", lambda *_args: None)
+    monkeypatch.setattr(onboarder, "_reconcile_connector_tools", lambda *_args: {})
+
+    result = onboarder.reconcile_connector_gateway(
+        tenant_id="tenant",
+        api_principal_id="api-principal",
+        foundry_principal_id="foundry-principal",
+        apim_principal_id="apim-principal",
+    )
+
+    assert "/namedValues/research-semantic-scholar-key" not in writes
+    assert writes.index("/apis/research-connectors-v1") < writes.index(
+        "/apis/research-semantic-scholar-mcp-v1"
+    )
+    assert events.index(("await-api", "research-semantic-scholar-mcp-v1")) < events.index(
+        ("put", "/apis/research-semantic-scholar-mcp-v1/policies/policy")
+    )
+    assert result["subscriptionId"] == "foundry-agent-tools"
+
+
+def test_connector_tools_precede_mcp_policy_and_product_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.provider_onboarding as onboarding
+
+    catalog = tmp_path / "catalog.json"
+    catalog.write_text(
+        json.dumps(
+            [
+                {
+                    "id": "pubmed",
+                    "apiId": "research-pubmed-mcp-v1",
+                    "path": "research-pubmed-mcp",
+                    "displayName": "PubMed MCP",
+                    "description": "PubMed",
+                    "credentialNamedValue": "",
+                    "tools": [],
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    openapi = tmp_path / "openapi.json"
+    openapi.write_text(
+        '{"openapi":"3.0.1","info":{"title":"test","version":"1"},"paths":{}}',
+        encoding="utf-8",
+    )
+    policies = tmp_path / "policies.json"
+    policies.write_text("[]", encoding="utf-8")
+    monkeypatch.setattr(onboarding, "CONNECTOR_MCP_CATALOG", catalog)
+    monkeypatch.setattr(onboarding, "CONNECTOR_OPENAPI", openapi)
+    monkeypatch.setattr(onboarding, "CONNECTOR_OPERATION_POLICIES", policies)
+
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    events: list[str] = []
+
+    class Response:
+        def __init__(self) -> None:
+            self.headers: dict[str, str] = {}
+
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        lambda *_args, **_kwargs: {
+            "properties": {
+                "publisherEmail": "publisher@example.test",
+                "gatewayUrl": "https://gateway.example.test",
+            }
+        },
+    )
+    monkeypatch.setattr(onboarder, "_exists", lambda *_args, **_kwargs: False)
+    monkeypatch.setattr(
+        onboarder,
+        "_put",
+        lambda path, *_args, **_kwargs: events.append(f"put:{path}") or Response(),
+    )
+    monkeypatch.setattr(onboarder, "_await_async_operation", lambda *_args: None)
+    monkeypatch.setattr(onboarder, "_await_api", lambda *_args: None)
+    monkeypatch.setattr(onboarder, "_await_operations", lambda *_args: None)
+    repairs: list[str] = []
+    monkeypatch.setattr(
+        onboarder,
+        "_repair_obsolete_connector_facade",
+        lambda *_args: repairs.append("facade"),
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_reconcile_connector_tools",
+        lambda *_args: events.append("tools") or {"research-pubmed-mcp-v1": 1},
+    )
+
+    onboarder.reconcile_connector_gateway(
+        tenant_id="tenant",
+        api_principal_id="api",
+        foundry_principal_id="foundry",
+        apim_principal_id="apim",
+    )
+
+    assert repairs == ["facade"]
+    assert events.index("tools") < events.index(
+        "put:/apis/research-pubmed-mcp-v1/policies/policy"
+    )
+    assert events.index("tools") < events.index(
+        "put:/products/research-agent-tools/apis/research-pubmed-mcp-v1"
+    )
+
+
+def test_connector_tool_reconcile_targets_mcp_compatible_operations(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.provider_onboarding as onboarding
+
+    tools = tmp_path / "tools.json"
+    tools.write_text(
+        json.dumps(
+            [
+                {
+                    "apiId": "research-pubmed-mcp-v1",
+                    "name": "pubmedSearch",
+                    "displayName": "search",
+                    "description": "PubMed search",
+                    "operationId": "pubmedSearch",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(onboarding, "CONNECTOR_MCP_TOOLS", tools)
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    writes: list[tuple[str, dict[str, object]]] = []
+    deletes: list[tuple[str, str]] = []
+    reads = 0
+
+    def get_inventory(*_args: object, **_kwargs: object) -> dict[str, object]:
+        nonlocal reads
+        reads += 1
+        return {"value": [] if reads == 1 else [{"name": "pubmedSearch"}]}
+    monkeypatch.setattr(
+        onboarder,
+        "_put_with_retry",
+        lambda path, body, **_kwargs: writes.append((path, body)),
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        get_inventory,
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_delete_resource",
+        lambda path, **kwargs: deletes.append((path, kwargs["api_version"])),
+    )
+
+    result = onboarder._reconcile_connector_tools(
+        [{"apiId": "research-pubmed-mcp-v1"}],
+    )
+
+    assert result == {"research-pubmed-mcp-v1": 1}
+    assert writes == [
+        (
+            "/apis/research-pubmed-mcp-v1/tools/pubmedSearch",
+            {
+                "properties": {
+                    "displayName": "search",
+                    "description": "PubMed search",
+                    "operationId": (
+                        "https://management.azure.com/subscriptions/sub/"
+                        "resourceGroups/rg/providers/Microsoft.ApiManagement/"
+                        "service/apim/apis/research-connectors-v1/operations/"
+                        "pubmedSearch"
+                    ),
+                }
+            },
+        )
+    ]
+    assert deletes == []
+
+
+def test_complete_connector_tool_inventory_is_a_noop(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    import scripts.provider_onboarding as onboarding
+
+    tools = tmp_path / "tools.json"
+    tools.write_text(
+        json.dumps(
+            [
+                {
+                    "apiId": "research-pubmed-mcp-v1",
+                    "name": "pubmedSearch",
+                    "displayName": "search",
+                    "description": "PubMed search",
+                    "operationId": "pubmedSearch",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(onboarding, "CONNECTOR_MCP_TOOLS", tools)
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        lambda *_args, **_kwargs: {"value": [{"name": "pubmedSearch"}]},
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_delete_resource",
+        lambda *_args, **_kwargs: pytest.fail("complete inventory must not delete policies"),
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_put_with_retry",
+        lambda *_args, **_kwargs: pytest.fail("complete inventory must not rewrite tools"),
+    )
+
+    assert onboarder._reconcile_connector_tools(
+        [{"apiId": "research-pubmed-mcp-v1"}],
+    ) == {"research-pubmed-mcp-v1": 1}
+
+
+@pytest.mark.parametrize("exists", [True, False])
+def test_superseded_backing_api_is_removed_after_its_tools(
+    monkeypatch: pytest.MonkeyPatch,
+    exists: bool,
+) -> None:
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    calls: list[str] = []
+    monkeypatch.setattr(onboarder, "_exists", lambda *_args, **_kwargs: exists)
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        lambda *_args, **_kwargs: {"value": [{"name": "pubmedSearch"}]},
+    )
+    monkeypatch.setattr(
+        onboarder,
+        "_delete_resource",
+        lambda path, **_kwargs: calls.append(f"tool:{path}"),
+    )
+    monkeypatch.setattr(onboarder, "_delete_api", lambda api: calls.append(f"api:{api}"))
+
+    onboarder._remove_obsolete_backing_api([{"apiId": "research-pubmed-mcp-v1"}])
+
+    if not exists:
+        assert calls == []
+    else:
+        assert calls == [
+            "tool:/apis/research-pubmed-mcp-v1/tools/pubmedSearch",
+            "api:research-connectors-mcp-backing-v1",
+        ]
+
+
+@pytest.mark.parametrize(
+    ("operations", "deleted"),
+    [
+        ([{"name": "pubmedSearch", "properties": {"urlTemplate": "/search"}}], False),
+        ([{"name": "pubmedSearchHttp", "properties": {"urlTemplate": "/search"}}], True),
+        ([{"name": "pubmedSearch", "properties": {"urlTemplate": "/mcp/search"}}], True),
+    ],
+)
+def test_only_obsolete_connector_facades_are_repaired(
+    monkeypatch: pytest.MonkeyPatch,
+    operations: list[dict[str, object]],
+    deleted: bool,
+) -> None:
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    deletions: list[str] = []
+    monkeypatch.setattr(onboarder, "_exists", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(
+        onboarder,
+        "_get",
+        lambda *_args, **_kwargs: {"value": operations},
+    )
+    monkeypatch.setattr(onboarder, "_delete_api", deletions.append)
+    monkeypatch.setattr(onboarder, "_delete_connector_tools", lambda *_args: None)
+
+    onboarder._repair_obsolete_connector_facade([])
+
+    assert deletions == (["research-connectors-v1"] if deleted else [])
+
+
+@pytest.mark.parametrize(("status", "retries"), [(400, False), (502, True)])
+def test_apim_tool_retry_classifies_failures(
+    monkeypatch: pytest.MonkeyPatch,
+    status: int,
+    retries: bool,
+) -> None:
+    import scripts.provider_onboarding as onboarding
+
+    onboarder = ApimOnboarder(
+        object(),  # type: ignore[arg-type]
+        subscription_id="sub",
+        resource_group="rg",
+        service_name="apim",
+        client=object(),  # type: ignore[arg-type]
+    )
+    request = httpx.Request("PUT", "https://management.azure.com/tool")
+    failed = httpx.Response(
+        status,
+        headers={"x-ms-request-id": "request-1"},
+        text="failure",
+        request=request,
+    )
+    error = ApimRequestError("PUT", "/tool", failed)
+    attempts = 0
+    sleeps: list[int] = []
+
+    def put(*_args: object, **_kwargs: object) -> httpx.Response:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise error
+        return httpx.Response(200, request=request)
+
+    monkeypatch.setattr(onboarding, "APIM_TOOL_RETRY_DELAYS", (0, 5))
+    monkeypatch.setattr(onboarding.time, "sleep", sleeps.append)
+    monkeypatch.setattr(onboarder, "_put", put)
+
+    if not retries:
+        with pytest.raises(ApimRequestError, match="request-id=request-1"):
+            onboarder._put_with_retry("/tool", {}, label="tool")
+        assert attempts == 1
+        assert sleeps == []
+    else:
+        assert onboarder._put_with_retry("/tool", {}, label="tool").status_code == 200
+        assert attempts == 2
+        assert sleeps == [5]
+
+
+def test_configure_connector_gateway_publishes_reconciled_outputs(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    values = {
+        "AZURE_SUBSCRIPTION_ID": "sub",
+        "AZURE_RESOURCE_GROUP": "rg",
+        "AZURE_API_MANAGEMENT_NAME": "apim",
+        "AZURE_TENANT_ID": "tenant",
+        "AZURE_API_MANAGED_IDENTITY_PRINCIPAL_ID": "api-principal",
+        "AZURE_FOUNDRY_PROJECT_PRINCIPAL_ID": "foundry-principal",
+        "AZURE_API_MANAGEMENT_PRINCIPAL_ID": "apim-principal",
+    }
+    calls: list[list[str]] = []
+    result = {
+        "subscriptionId": "foundry-agent-tools",
+        "mcpUrls": [{"id": "pubmed", "endpoint": "https://gateway.example/pubmed/mcp"}],
+    }
+    monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
+    monkeypatch.setattr(
+        "scripts.postprovision._resource_manager_endpoint",
+        lambda: "https://management.azure.com",
+    )
+    monkeypatch.setattr(
+        "scripts.postprovision.reconcile_connector_gateway",
+        lambda *_args, **_kwargs: result,
+    )
+    monkeypatch.setattr(
+        "scripts.postprovision.subprocess.run",
+        lambda command, **_kwargs: calls.append(command),
+    )
+
+    assert configure_connector_gateway(object()) == result  # type: ignore[arg-type]
+    assert calls == [
+        [
+            "azd.exe",
+            "env",
+            "set",
+            "AZURE_CONNECTOR_MCP_URLS",
+            '[{"id":"pubmed","endpoint":"https://gateway.example/pubmed/mcp"}]',
+        ],
+        [
+            "azd.exe",
+            "env",
+            "set",
+            "AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID",
+            "foundry-agent-tools",
+        ],
+    ]
+
+
 def test_apim_mcp_subscription_key_uses_list_secrets(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -295,60 +796,6 @@ def test_connector_mcp_targets_require_the_complete_governed_catalog() -> None:
         connector_mcp_targets("[]")
 
 
-def test_connector_mcp_tools_are_reconciled_sequentially_and_verified(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    values = {
-        "AZURE_SUBSCRIPTION_ID": "subscription-id",
-        "AZURE_RESOURCE_GROUP": "resource-group",
-        "AZURE_API_MANAGEMENT_NAME": "apim-name",
-    }
-    tools = connector_mcp_tool_catalog()
-    expected_by_api: dict[str, list[str]] = {}
-    for tool in tools:
-        expected_by_api.setdefault(tool["apiId"], []).append(tool["name"])
-    requests: list[dict[str, object]] = []
-
-    def arm_request(_credential: object, **kwargs: object) -> dict[str, object]:
-        requests.append(kwargs)
-        if kwargs["method"] == "GET":
-            api_id = str(kwargs["url"]).split("/apis/", 1)[1].split("/tools", 1)[0]
-            return {"value": [{"name": name} for name in expected_by_api[api_id]]}
-        return {}
-
-    monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
-    monkeypatch.setattr(
-        "scripts.postprovision._resource_manager_endpoint",
-        lambda: "https://management.azure.com",
-    )
-    monkeypatch.setattr("scripts.postprovision._arm_json_request", arm_request)
-
-    result = configure_connector_mcp_tools(object())
-
-    puts = [request for request in requests if request["method"] == "PUT"]
-    gets = [request for request in requests if request["method"] == "GET"]
-    assert len(puts) == len(tools) == 20
-    assert len(gets) == len(expected_by_api) == 12
-    assert requests[: len(tools)] == puts
-    assert result == {api_id: len(names) for api_id, names in expected_by_api.items()}
-    for request, tool in zip(puts, tools, strict=True):
-        assert str(request["url"]).endswith(
-            f"/apis/{tool['apiId']}/tools/{tool['name']}?api-version=2025-09-01-preview"
-        )
-        assert request["payload"] == {
-            "properties": {
-                "displayName": tool["displayName"],
-                "description": tool["description"],
-                "operationId": (
-                    "/subscriptions/subscription-id/"
-                    "resourceGroups/resource-group/providers/Microsoft.ApiManagement/"
-                    "service/apim-name/apis/research-connectors-v1/operations/"
-                    f"{tool['operationId']}"
-                ),
-            }
-        }
-
-
 def test_agent_memory_reuses_the_existing_named_store(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -390,53 +837,6 @@ def test_agent_memory_does_not_hide_unrelated_bad_requests(
 
     with pytest.raises(RuntimeError, match="invalid model"):
         configure_agent_memory(object())
-
-
-@pytest.mark.parametrize("status", [400, 502])
-def test_connector_mcp_tool_write_retries_only_transient_failures(
-    monkeypatch: pytest.MonkeyPatch,
-    status: int,
-) -> None:
-    values = {
-        "AZURE_SUBSCRIPTION_ID": "subscription-id",
-        "AZURE_RESOURCE_GROUP": "resource-group",
-        "AZURE_API_MANAGEMENT_NAME": "apim-name",
-    }
-    tool = {
-        "apiId": "research-pubmed-mcp-v1",
-        "name": "search",
-        "displayName": "search",
-        "description": "PubMed search",
-        "operationId": "pubmedSearch",
-    }
-    calls = 0
-    sleeps: list[int] = []
-
-    def arm_request(_credential: object, **kwargs: object) -> dict[str, object]:
-        nonlocal calls
-        calls += 1
-        if kwargs["method"] == "PUT" and calls == 1:
-            raise RuntimeError(f"ARM request failed with HTTP {status}")
-        return {"value": [{"name": "search"}]} if kwargs["method"] == "GET" else {}
-
-    monkeypatch.setattr("scripts.postprovision.required_env", values.__getitem__)
-    monkeypatch.setattr(
-        "scripts.postprovision._resource_manager_endpoint",
-        lambda: "https://management.azure.com",
-    )
-    monkeypatch.setattr("scripts.postprovision.connector_mcp_tool_catalog", lambda: (tool,))
-    monkeypatch.setattr("scripts.postprovision._arm_json_request", arm_request)
-    monkeypatch.setattr("scripts.postprovision.time.sleep", sleeps.append)
-
-    if status == 400:
-        with pytest.raises(RuntimeError, match="HTTP 400"):
-            configure_connector_mcp_tools(object())
-        assert calls == 1
-        assert sleeps == []
-    else:
-        assert configure_connector_mcp_tools(object()) == {"research-pubmed-mcp-v1": 1}
-        assert calls == 3
-        assert sleeps == [5]
 
 
 def test_toolbox_version_payloads_match_the_governed_connector_catalog() -> None:

@@ -146,6 +146,20 @@ flowchart LR
   APIM exposes each connector as a separate MCP server and applies its
   managed-identity, Entra validation, content-validation, rate-limit, and
   diagnostics policy before the adapter reaches the public provider.
+- A single APIM REST API (`research-connectors-v1`) holds every connector
+  operation and its deterministic provider policy. Each connector MCP server
+  exposes tools that reference those operations directly, which is the
+  documented "expose a REST API as an MCP server" model. Tool ids are
+  snake_case (`arxiv_search`); APIM rejects tool ids that collide with its own
+  operation identifiers (`arxivSearch`) or the bare action names
+  (`search`/`lookup`) with a persistent 502. Raw provider specifications
+  are not included in the production Toolbox because the normalized connector
+  catalog is the reviewed, bounded authority.
+- Bicep owns the durable APIM service, identity, diagnostics, and narrowly
+  scoped credential-writer role. Idempotent postprovision code owns connector
+  APIs, policies, MCP surfaces, products, and missing secret slots. The
+  Settings API alone sets or clears real connector keys, so repeat deployments
+  cannot overwrite administrator-managed credentials.
 - Literature, grant, and matching each consume a stable Foundry Toolbox
   consumer endpoint. Toolbox versions are immutable; provisioning creates a
   complete candidate version, validates its version-specific MCP `tools/list`

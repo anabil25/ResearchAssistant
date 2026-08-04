@@ -144,18 +144,13 @@ def test_api_identifiers_are_derived_without_underscores() -> None:
     assert provider.is_published is False
 
 
-def test_shared_toolbox_exposes_every_provider_behind_tool_search() -> None:
-    entries = _manifest()
+def test_shared_toolbox_exposes_only_governed_connectors_behind_tool_search() -> None:
     connector_targets = {
         connector.id: f"https://gateway.example/{connector.apim_mcp_path}/mcp"
         for connector in connector_definitions()
     }
 
-    payload = shared_toolbox_payload(
-        "https://gateway.example",
-        entries,
-        connector_targets,
-    )
+    payload = shared_toolbox_payload(connector_targets)
     tools = payload["tools"]
     types = [tool["type"] for tool in tools]
     mcp_labels = {tool["server_label"] for tool in tools if tool["type"] == "mcp"}
@@ -169,27 +164,21 @@ def test_shared_toolbox_exposes_every_provider_behind_tool_search() -> None:
     unnamed = [tool for tool in tools if "name" not in tool and "server_label" not in tool]
     assert [tool["type"] for tool in unnamed] == ["toolbox_search"]
     connector_labels = {connector.id for connector in connector_definitions()}
-    provider_labels = {f"provider_{entry['serverLabel']}" for entry in entries}
-    assert mcp_labels == connector_labels | provider_labels
+    assert mcp_labels == connector_labels
     assert tools[0]["tool_configs"] == {"*": {"pin": True}}
     assert tools[1]["tool_configs"] == {"*": {"pin": True}}
     for tool in tools:
         if tool["type"] != "mcp":
             continue
         assert tool["server_url"].endswith("/mcp")
-        if tool["server_label"] in connector_labels:
-            assert tool["server_url"] == connector_targets[tool["server_label"]]
-            assert tool["project_connection_id"].startswith("research-connector-")
-            assert tool["tool_configs"]["*"]["pin"] is True
-        else:
-            assert tool["server_url"].startswith("https://gateway.example/provider-")
-            assert tool["project_connection_id"].startswith("provider-")
-            assert "tool_configs" not in tool
+        assert tool["server_url"] == connector_targets[tool["server_label"]]
+        assert tool["project_connection_id"].startswith("research-connector-")
+        assert tool["tool_configs"]["*"]["pin"] is True
 
 
-def test_shared_toolbox_requires_at_least_one_provider() -> None:
-    with pytest.raises(ValueError, match="at least one provider"):
-        shared_toolbox_payload("https://gateway.example", [], {})
+def test_shared_toolbox_requires_complete_connector_catalog() -> None:
+    with pytest.raises(ValueError, match="complete governed connector catalog"):
+        shared_toolbox_payload({})
 
 
 def test_shared_toolbox_identifiers_are_stable() -> None:

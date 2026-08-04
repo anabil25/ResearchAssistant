@@ -3,140 +3,140 @@
     "apiId": "research-pubmed-mcp-v1",
     "description": "Biomedical citations and abstracts from NCBI.",
     "displayName": "search",
-    "name": "researchPubmedSearch",
+    "name": "pubmed_search",
     "operationId": "pubmedSearch"
   },
   {
     "apiId": "research-pubmed-mcp-v1",
     "description": "Biomedical citations and abstracts from NCBI.",
     "displayName": "lookup",
-    "name": "researchPubmedLookup",
+    "name": "pubmed_lookup",
     "operationId": "pubmedLookup"
   },
   {
     "apiId": "research-europe-pmc-mcp-v1",
     "description": "Life-sciences publications, grants, and links.",
     "displayName": "search",
-    "name": "researchEuropePmcSearch",
+    "name": "europe_pmc_search",
     "operationId": "europePmcSearch"
   },
   {
     "apiId": "research-europe-pmc-mcp-v1",
     "description": "Life-sciences publications, grants, and links.",
     "displayName": "lookup",
-    "name": "researchEuropePmcLookup",
+    "name": "europe_pmc_lookup",
     "operationId": "europePmcLookup"
   },
   {
     "apiId": "research-crossref-mcp-v1",
     "description": "DOI metadata and scholarly work resolution.",
     "displayName": "search",
-    "name": "researchCrossrefSearch",
+    "name": "crossref_search",
     "operationId": "crossrefSearch"
   },
   {
     "apiId": "research-crossref-mcp-v1",
     "description": "DOI metadata and scholarly work resolution.",
     "displayName": "lookup",
-    "name": "researchCrossrefLookup",
+    "name": "crossref_lookup",
     "operationId": "crossrefLookup"
   },
   {
     "apiId": "research-openalex-mcp-v1",
     "description": "Open catalog of works, people, venues, and institutions.",
     "displayName": "search",
-    "name": "researchOpenalexSearch",
+    "name": "openalex_search",
     "operationId": "openalexSearch"
   },
   {
     "apiId": "research-openalex-mcp-v1",
     "description": "Open catalog of works, people, venues, and institutions.",
     "displayName": "lookup",
-    "name": "researchOpenalexLookup",
+    "name": "openalex_lookup",
     "operationId": "openalexLookup"
   },
   {
     "apiId": "research-arxiv-mcp-v1",
     "description": "Preprint metadata for supported disciplines.",
     "displayName": "search",
-    "name": "researchArxivSearch",
+    "name": "arxiv_search",
     "operationId": "arxivSearch"
   },
   {
     "apiId": "research-arxiv-mcp-v1",
     "description": "Preprint metadata for supported disciplines.",
     "displayName": "lookup",
-    "name": "researchArxivLookup",
+    "name": "arxiv_lookup",
     "operationId": "arxivLookup"
   },
   {
     "apiId": "research-clinical-trials-mcp-v1",
     "description": "Clinical study records from the U.S. NLM.",
     "displayName": "search",
-    "name": "researchClinicalTrialsSearch",
+    "name": "clinical_trials_search",
     "operationId": "clinicalTrialsSearch"
   },
   {
     "apiId": "research-clinical-trials-mcp-v1",
     "description": "Clinical study records from the U.S. NLM.",
     "displayName": "lookup",
-    "name": "researchClinicalTrialsLookup",
+    "name": "clinical_trials_lookup",
     "operationId": "clinicalTrialsLookup"
   },
   {
     "apiId": "research-grants-gov-mcp-v1",
     "description": "Authoritative U.S. federal opportunity records.",
     "displayName": "search",
-    "name": "researchGrantsGovSearch",
+    "name": "grants_gov_search",
     "operationId": "grantsGovSearch"
   },
   {
     "apiId": "research-nih-reporter-mcp-v1",
     "description": "NIH funded-project and investigator metadata.",
     "displayName": "search",
-    "name": "researchNihReporterSearch",
+    "name": "nih_reporter_search",
     "operationId": "nihReporterSearch"
   },
   {
     "apiId": "research-datacite-mcp-v1",
     "description": "DOI metadata for datasets and research outputs.",
     "displayName": "search",
-    "name": "researchDataciteSearch",
+    "name": "datacite_search",
     "operationId": "dataciteSearch"
   },
   {
     "apiId": "research-datacite-mcp-v1",
     "description": "DOI metadata for datasets and research outputs.",
     "displayName": "lookup",
-    "name": "researchDataciteLookup",
+    "name": "datacite_lookup",
     "operationId": "dataciteLookup"
   },
   {
     "apiId": "research-orcid-mcp-v1",
     "description": "Public researcher identifier records.",
     "displayName": "search",
-    "name": "researchOrcidSearch",
+    "name": "orcid_search",
     "operationId": "orcidSearch"
   },
   {
     "apiId": "research-ror-mcp-v1",
     "description": "Open identifiers for research organizations.",
     "displayName": "search",
-    "name": "researchRorSearch",
+    "name": "ror_search",
     "operationId": "rorSearch"
   },
   {
     "apiId": "research-ror-mcp-v1",
     "description": "Open identifiers for research organizations.",
     "displayName": "lookup",
-    "name": "researchRorLookup",
+    "name": "ror_lookup",
     "operationId": "rorLookup"
   },
   {
     "apiId": "research-semantic-scholar-mcp-v1",
     "description": "Paper and citation graph metadata.",
     "displayName": "search",
-    "name": "researchSemanticScholarSearch",
+    "name": "semantic_scholar_search",
     "operationId": "semanticScholarSearch"
   }
 ]

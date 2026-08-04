@@ -850,9 +850,9 @@ def test_postprovision_main_orchestrates_in_dependency_order(
         calls.append(("blob-upload", received))
         return True
 
-    def configure_tools(_credential: object) -> dict[str, int]:
-        calls.append("connector-tools")
-        return {"research-pubmed-mcp-v1": 2}
+    def configure_gateway(_credential: object) -> dict[str, object]:
+        calls.append("connector-gateway")
+        return {"mcpUrls": [], "subscriptionId": "foundry-agent-tools"}
 
     connector_targets = {"pubmed": "https://gateway.example/pubmed/mcp"}
 
@@ -890,8 +890,8 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     )
     monkeypatch.setattr(
         postprovision,
-        "configure_connector_mcp_tools",
-        configure_tools,
+        "configure_connector_gateway",
+        configure_gateway,
     )
     monkeypatch.setattr(
         postprovision,
@@ -900,7 +900,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
     )
     monkeypatch.setattr(
         postprovision,
-        "configure_provider_apis",
+        "configure_shared_toolbox",
         configure_providers,
     )
     monkeypatch.setattr(
@@ -925,7 +925,7 @@ def test_postprovision_main_orchestrates_in_dependency_order(
             ("https://search.example", "research-index", documents, credential),
         ),
         ("blob-upload", credential),
-        "connector-tools",
+        "connector-gateway",
         "connector-connections",
         "provider-apis",
         "acr-roles",

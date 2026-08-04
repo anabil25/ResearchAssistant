@@ -8,7 +8,6 @@ if [ -z "$subscription" ] || [ -z "$location" ]; then
   echo "AZURE_SUBSCRIPTION_ID and AZURE_LOCATION must be set." >&2
   exit 1
 fi
-
 account_type="$(az account show --query user.type --output tsv)"
 if [ "$account_type" = "user" ]; then
   principal_type="User"

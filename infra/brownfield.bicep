@@ -83,14 +83,14 @@ resource foundryAccountPreview 'Microsoft.CognitiveServices/accounts@2025-04-01-
   }
 }
 
-// Container registry for the hosted container agent. Premium SKU mirrors the
-// greenfield acr.bicep.
+// Container registry for the hosted container agent. Basic mirrors the
+// greenfield path; raise the SKU only when premium features are required.
 resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = if (includeAcr) {
   name: acrName
   location: location
   tags: tags
   sku: {
-    name: 'Premium'
+    name: 'Basic'
   }
   identity: {
     type: 'SystemAssigned'

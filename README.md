@@ -117,9 +117,10 @@ retrieving bounded public metadata:
 | Datasets and identifiers | DataCite, ORCID, ROR |
 
 Connectors return bounded metadata and canonical URLs, not bulk copyrighted
-full text. `NCBI_API_KEY` and `SEMANTIC_SCHOLAR_API_KEY` are optional; supply
-them only through an approved secret connection. Run the live transport check
-with `uv run python scripts/smoke_connectors.py`.
+full text. A deployed administrator can add the optional Semantic Scholar key
+in **Settings > Connections**; the API writes it directly to APIM and never
+stores or returns it. Run the local live transport check with
+`uv run python scripts/smoke_connectors.py`.
 
 ## Architecture
 
@@ -170,7 +171,7 @@ flows.
 |------|----------------|-------|---------|
 | Azure Developer CLI (`azd`) | 1.27+ | `azd version` | https://aka.ms/azd-install |
 | Azure CLI (`az`) | 2.84+ | `az version` | https://aka.ms/azure-cli |
-| `azure.ai.agents` azd extension | 1.0.0-beta.5+ | `azd extension list` | `azd extension add azure.ai.agents` |
+| `azure.ai.agents` azd extension | 1.0.0-beta.7+ | `azd extension list` | `azd extension add azure.ai.agents` |
 | Python | 3.12 (API/ingestion); 3.13 (agent build) | `python --version` | https://www.python.org/downloads/ |
 | `uv` | 0.10+ | `uv --version` | https://docs.astral.sh/uv/getting-started/installation/ |
 | Node.js | 24 LTS | `node --version` | https://nodejs.org/ |
@@ -297,16 +298,16 @@ subscription](#deploying-into-a-governed--network-restricted-subscription).
 
 ### 6. Optional API keys
 
-These keys are **optional** but raise rate limits for their respective sources:
+No API key is required for `azd up`.
 
-| Key | Environment variable | Where to get |
-|-----|---------------------|--------------|
-| NCBI E-utilities key | `NCBI_API_KEY` | https://www.ncbi.nlm.nih.gov/account/ |
-| Semantic Scholar key | `SEMANTIC_SCHOLAR_API_KEY` | https://www.semanticscholar.org/product/api |
+For the deployed app, a research administrator can add or clear the optional
+Semantic Scholar key in **Settings > Connections** after deployment. The API
+stores it as an APIM secret named value. Bicep and repeat deployments never
+own or overwrite its value.
 
-Supply them as azd environment variables (`azd env set NCBI_API_KEY <key>`)
-before `azd up`, or add them to Key Vault after deployment. Never check them
-into source control.
+For the local direct-connector smoke check only, `NCBI_API_KEY` and
+`SEMANTIC_SCHOLAR_API_KEY` can be set in the current shell before running
+`uv run python scripts/smoke_connectors.py`. Never commit either key.
 
 ### 7. Cost note (not free)
 
@@ -357,12 +358,15 @@ azd up
 - `postprovision` hook then:
   1. Creates Search indexes and uploads the synthetic corpus (via isolated
      `.venv-provision`).
-  2. Deploys all nine direct-code Hosted Agents and creates immutable
-     versions.
-  3. Writes agent IDs back to the azd environment. (Idempotent — safe to
-     re-run.)
-- `azd deploy` builds and pushes Container images for the FastAPI API and
-  Next.js web app.
+  2. Reconciles mutable APIM connector APIs, policies, MCP surfaces, and
+     missing optional secret slots without overwriting user-managed keys.
+  3. Reconciles Foundry connections, Toolboxes, memory, and deployment data.
+- `azd deploy --all` deploys all nine direct-code Hosted Agents and remotely
+  builds the FastAPI and Next.js Container App images.
+- `postdeploy` publishes Hosted Agent IDs and grants each runtime identity its
+  required Foundry role. Provisioning fails closed before deployment if any
+  required Search, APIM, Toolbox, memory, or ACR-readiness step does not
+  complete, so agents never deploy with missing generated inputs.
 
 Open the workbench — when `azd up` finishes it prints the Container App URL.
 You can also fetch it any time:
@@ -525,7 +529,7 @@ same checkout.
 | `postprovision` warns `KB blob upload skipped (AuthorizationFailure)` | Storage Blob Data Contributor role assignment hadn't propagated when `postprovision` ran | Non-fatal — `postprovision` retries with backoff. Re-run `azd provision` once the role has propagated. |
 | Hosted Agent setup fails with `cannot import name '…'` | Drifted package in the deployer's Python environment | `postprovision` builds an isolated `.venv-provision/` with exact pins — ensure Python 3.12+ is on `PATH` and re-run `azd provision`. |
 | Workbench loads but chat errors | `postprovision` didn't finish (no index / agents), or the web app cannot reach the API | Re-run `azd provision` (idempotent), verify `INTERNAL_API_URL` app setting, and check `azd env get-value SERVICE_WEB_URI`. |
-| Connectors return empty results | `NCBI_API_KEY` / `SEMANTIC_SCHOLAR_API_KEY` absent and rate limit hit | Supply the optional keys (Prerequisites §6) via `azd env set`, then `azd provision`. |
+| Semantic Scholar returns limited/empty results | Anonymous provider quota is exhausted | Add the optional key in **Settings > Connections**, then run the connector test. |
 | `pip-audit` flags a vulnerability | Dependency CVE in the lockfile | Run `uv lock --upgrade-package <pkg>` and re-run the quality gate. |
 
 ### Deploying into a governed / network-restricted subscription

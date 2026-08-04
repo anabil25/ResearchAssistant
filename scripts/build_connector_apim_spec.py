@@ -209,10 +209,18 @@ def _policy_expression(code: str) -> str:
     return escape(code.strip(), quote=False)
 
 
-def _set_variable(name: str, query_name: str, default: str) -> str:
+def _set_variable(
+    name: str,
+    query_name: str,
+    default: str,
+) -> str:
+    expression = (
+        "@(context.Request.Url.Query.GetValueOrDefault(&quot;"
+        f"{query_name}&quot;, &quot;{default}&quot;))"
+    )
     return (
         f'<set-variable name="{name}" '
-        f'value="@(context.Request.Url.Query.GetValueOrDefault(&quot;{query_name}&quot;, &quot;{default}&quot;))" />'
+        f'value="{expression}" />'
     )
 
 
@@ -290,14 +298,21 @@ def _policy(inbound: list[str], outbound: list[str]) -> str:
     return value
 
 
-def _common_inbound(*, lookup: bool = False) -> list[str]:
+def _common_inbound(
+    *,
+    lookup: bool = False,
+) -> list[str]:
     result = [
         _set_variable(
             "normalizedIdentifier" if lookup else "normalizedQuery",
             "identifier" if lookup else "query",
             "",
         ),
-        _set_variable("normalizedLimit", "limit", "1" if lookup else "5"),
+        _set_variable(
+            "normalizedLimit",
+            "limit",
+            "1" if lookup else "5",
+        ),
         '<set-header name="Authorization" exists-action="delete" />',
         '<set-header name="Accept-Encoding" exists-action="override"><value>identity</value></set-header>',
     ]
@@ -494,7 +509,7 @@ def _lookup_policy(source: str) -> str:
     return _policy(inbound, outbound)
 
 
-def connector_operation_policies() -> list[dict[str, str]]:
+def _connector_operation_policy_map() -> dict[str, str]:
     policies: dict[str, str] = {"pubmedSearch": _pubmed_policy(lookup=False)}
     for source in PROVIDERS:
         policies[f"{source.split('_')[0]}{''.join(part.capitalize() for part in source.split('_')[1:])}Search"] = (
@@ -529,6 +544,11 @@ def connector_operation_policies() -> list[dict[str, str]]:
             f"Connector APIM policy coverage mismatch: missing={sorted(expected - set(policies))}, "
             f"unexpected={sorted(set(policies) - expected)}"
         )
+    return policies
+
+
+def connector_operation_policies() -> list[dict[str, str]]:
+    policies = _connector_operation_policy_map()
     return [
         {"operationId": operation_id, "value": policies[operation_id]}
         for operation_id in sorted(policies)

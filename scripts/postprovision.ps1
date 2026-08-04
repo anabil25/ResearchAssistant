@@ -20,8 +20,5 @@ Push-Location $repoRoot
 $exitCode = $LASTEXITCODE
 Pop-Location
 if ($exitCode -ne 0) {
-  # Warn rather than throw: a failing postprovision step (e.g. APIM/Toolbox not
-  # ready) must not abort `azd up` before `azd deploy --all` runs. Re-run
-  # `python -m scripts.postprovision` once the deployment is live.
-  Write-Warning "Postprovision exited $exitCode — re-run 'python -m scripts.postprovision' after deploy completes."
+  throw "Postprovision failed before required deployment inputs were ready."
 }

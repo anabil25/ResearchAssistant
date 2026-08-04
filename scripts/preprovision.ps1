@@ -6,7 +6,6 @@ $location = azd env get-value AZURE_LOCATION
 if (-not $subscription -or -not $location) {
   throw "AZURE_SUBSCRIPTION_ID and AZURE_LOCATION must be set in the azd environment."
 }
-
 $accountUser = az account show --query user --output json | ConvertFrom-Json
 $principalType = if ($accountUser.type -eq "user") { "User" } else { "ServicePrincipal" }
 $accessToken = az account get-access-token `

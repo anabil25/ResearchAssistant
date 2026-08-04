@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 import time
 from collections.abc import Callable
@@ -36,11 +35,9 @@ from research_assistant_core.connector_catalog import connector_definitions
 
 from scripts.azd_env import sync_canonical_azd_outputs
 from scripts.provider_onboarding import (
+    CONNECTOR_SUBSCRIPTION_ID,
     SHARED_TOOLBOX_NAME,
-    mcp_endpoint,
-    onboard_provider_apis,
-    provider_connection_id,
-    provider_manifest,
+    reconcile_connector_gateway,
     shared_toolbox_payload,
 )
 
@@ -51,14 +48,8 @@ AZ_CLI = "az.cmd" if os.name == "nt" else "az"
 AZD_CLI = "azd.exe" if os.name == "nt" else "azd"
 FOUNDRY_TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 APIM_API_VERSION = "2024-05-01"
-APIM_MCP_API_VERSION = "2025-09-01-preview"
 FOUNDRY_CONNECTION_API_VERSION = "2025-04-01-preview"
 APIM_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
-CONNECTOR_API_ID = "research-connectors-v1"
-CONNECTOR_MCP_TOOLS_PATH = ROOT / "infra" / "connector-mcp-tools.json"
-# A tool write that fails twice is a contract defect, not a transient fault.
-APIM_TOOL_RETRY_DELAYS = (0, 5)
-APIM_TOOL_VERIFY_DELAYS = (0, 5, 15)
 # The memory store API is versioned separately from the agents API.
 FOUNDRY_MEMORY_API_VERSION = "2025-11-15-preview"
 MEMORY_STORE_NAME = "research_shared_memory"
@@ -188,154 +179,32 @@ def apim_mcp_subscription_key(
     return key
 
 
-def connector_mcp_tool_catalog() -> tuple[dict[str, str], ...]:
-    payload = json.loads(CONNECTOR_MCP_TOOLS_PATH.read_text(encoding="utf-8"))
-    if not isinstance(payload, list):
-        raise RuntimeError("Connector MCP tool catalog must be a JSON array")
-    required = {"apiId", "name", "displayName", "description", "operationId"}
-    tools: list[dict[str, str]] = []
-    identities: set[tuple[str, str]] = set()
-    for item in payload:
-        if not isinstance(item, dict) or set(item) != required:
-            raise RuntimeError("Connector MCP tool catalog contains an invalid entry")
-        if not all(isinstance(item[field], str) and item[field] for field in required):
-            raise RuntimeError("Connector MCP tool catalog fields must be non-empty strings")
-        tool = {field: item[field] for field in required}
-        identity = (tool["apiId"], tool["name"])
-        if identity in identities:
-            raise RuntimeError(f"Connector MCP tool catalog duplicates {identity[0]}/{identity[1]}")
-        identities.add(identity)
-        tools.append(tool)
-    expected = {
-        (
-            connector.apim_mcp_api_id,
-            operation.apim_tool_name,
-            operation.mcp_tool_name,
-            operation.id,
-        )
-        for connector in connector_definitions()
-        for operation in connector.operations
-        if operation.operation_class != "delete"
-    }
-    actual = {(tool["apiId"], tool["name"], tool["displayName"], tool["operationId"]) for tool in tools}
-    if actual != expected:
-        raise RuntimeError("Connector MCP tool catalog does not match the governed connector catalog")
-    return tuple(tools)
-
-
-def _retryable_arm_error(error: RuntimeError) -> bool:
-    match = re.search(r"HTTP (\d{3})", str(error))
-    if match is None:
-        return False
-    status = int(match.group(1))
-    return status in {409, 429} or status >= 500
-
-
-def _upsert_connector_mcp_tool(
-    credential: TokenCredential,
-    *,
-    url: str,
-    resource_manager_endpoint: str,
-    payload: dict[str, Any],
-    label: str,
-) -> None:
-    last_error: RuntimeError | None = None
-    for attempt, delay in enumerate(APIM_TOOL_RETRY_DELAYS, start=1):
-        if delay:
-            print(
-                f"{label}: waiting {delay}s after a transient APIM failure "
-                f"({attempt}/{len(APIM_TOOL_RETRY_DELAYS)})."
-            )
-            time.sleep(delay)
-        try:
-            _arm_json_request(
-                credential,
-                method="PUT",
-                url=url,
-                resource_manager_endpoint=resource_manager_endpoint,
-                payload=payload,
-                if_match=True,
-            )
-            return
-        except RuntimeError as exc:
-            if not _retryable_arm_error(exc):
-                raise
-            last_error = exc
-    raise RuntimeError(f"{label} failed after bounded APIM retries") from last_error
-
-
-def configure_connector_mcp_tools(
+def configure_connector_gateway(
     credential: TokenCredential | None = None,
-) -> dict[str, int]:
-    """Upsert preview APIM tool children sequentially and verify inventory."""
+) -> dict[str, Any]:
+    """Reconcile mutable APIM connector configuration and publish its outputs."""
     effective_credential = credential or DefaultAzureCredential()
     resource_manager_endpoint = _resource_manager_endpoint()
-    service_resource_id = (
-        f"/subscriptions/{required_env('AZURE_SUBSCRIPTION_ID')}"
-        f"/resourceGroups/{required_env('AZURE_RESOURCE_GROUP')}"
-        "/providers/Microsoft.ApiManagement/service/"
-        f"{required_env('AZURE_API_MANAGEMENT_NAME')}"
+    result = reconcile_connector_gateway(
+        effective_credential,
+        subscription_id=required_env("AZURE_SUBSCRIPTION_ID"),
+        resource_group=required_env("AZURE_RESOURCE_GROUP"),
+        service_name=required_env("AZURE_API_MANAGEMENT_NAME"),
+        tenant_id=required_env("AZURE_TENANT_ID"),
+        api_principal_id=required_env("AZURE_API_MANAGED_IDENTITY_PRINCIPAL_ID"),
+        foundry_principal_id=required_env("AZURE_FOUNDRY_PROJECT_PRINCIPAL_ID"),
+        apim_principal_id=required_env("AZURE_API_MANAGEMENT_PRINCIPAL_ID"),
+        resource_manager_endpoint=resource_manager_endpoint,
     )
-    service_base = f"{resource_manager_endpoint}{service_resource_id}"
-    tools = connector_mcp_tool_catalog()
-    expected: dict[str, set[str]] = {}
-    for tool in tools:
-        expected.setdefault(tool["apiId"], set()).add(tool["name"])
-        _upsert_connector_mcp_tool(
-            effective_credential,
-            url=(
-                f"{service_base}/apis/{tool['apiId']}/tools/{tool['name']}"
-                f"?api-version={APIM_MCP_API_VERSION}"
-            ),
-            resource_manager_endpoint=resource_manager_endpoint,
-            payload={
-                "properties": {
-                    "displayName": tool["displayName"],
-                    "description": tool["description"],
-                    "operationId": (
-                        f"{service_resource_id}/apis/{CONNECTOR_API_ID}/operations/"
-                        f"{tool['operationId']}"
-                    ),
-                }
-            },
-            label=f"APIM MCP tool {tool['apiId']}/{tool['name']}",
-        )
-
-    last_missing: dict[str, list[str]] = {}
-    for attempt, delay in enumerate(APIM_TOOL_VERIFY_DELAYS, start=1):
-        if delay:
-            print(
-                f"Waiting {delay}s for APIM MCP tool inventory "
-                f"({attempt}/{len(APIM_TOOL_VERIFY_DELAYS)})."
-            )
-            time.sleep(delay)
-        missing: dict[str, list[str]] = {}
-        for api_id, expected_names in expected.items():
-            try:
-                response = _arm_json_request(
-                    effective_credential,
-                    method="GET",
-                    url=f"{service_base}/apis/{api_id}/tools?api-version={APIM_MCP_API_VERSION}",
-                    resource_manager_endpoint=resource_manager_endpoint,
-                )
-            except RuntimeError:
-                missing[api_id] = sorted(expected_names)
-                continue
-            items = response.get("value")
-            actual_names = {
-                item["name"]
-                for item in items
-                if isinstance(items, list)
-                and isinstance(item, dict)
-                and isinstance(item.get("name"), str)
-            } if isinstance(items, list) else set()
-            absent = expected_names - actual_names
-            if absent:
-                missing[api_id] = sorted(absent)
-        if not missing:
-            return {api_id: len(names) for api_id, names in expected.items()}
-        last_missing = missing
-    raise RuntimeError(f"APIM MCP tool inventory did not converge: {last_missing}")
+    mcp_urls = json.dumps(result["mcpUrls"], separators=(",", ":"))
+    outputs = {
+        "AZURE_CONNECTOR_MCP_URLS": mcp_urls,
+        "AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID": CONNECTOR_SUBSCRIPTION_ID,
+    }
+    for key, value in outputs.items():
+        os.environ[key] = value
+        subprocess.run([AZD_CLI, "env", "set", key, value], check=True)
+    return result
 
 
 def with_rbac_retry[T](label: str, operation: Callable[[], T]) -> T:
@@ -716,22 +585,6 @@ def connector_connection_payload(
     }
 
 
-def provider_connection_payload(*, target: str) -> dict[str, Any]:
-    """Anonymous connection for the public provider APIs fronted by APIM.
-
-    Foundry rejects the ARM audience for non-ARM hosts, and these gateway MCP
-    servers expose read-only public research APIs with no subscription key.
-    """
-    return {
-        "properties": {
-            "authType": "None",
-            "category": "RemoteTool",
-            "target": target,
-            "metadata": {"type": "generic_mcp"},
-        }
-    }
-
-
 def connector_mcp_targets(serialized: str) -> dict[str, str]:
     try:
         payload = json.loads(serialized)
@@ -1101,8 +954,6 @@ def _reconcile_shared_toolbox(
     credential: TokenCredential,
     *,
     project_endpoint: str,
-    gateway_url: str,
-    entries: list[dict[str, Any]],
     connector_targets: dict[str, str],
     guardrail_id: str = "",
 ) -> str:
@@ -1112,8 +963,6 @@ def _reconcile_shared_toolbox(
         method="POST",
         url=f"{base_url}/versions?api-version=v1",
         payload=shared_toolbox_payload(
-            gateway_url,
-            entries,
             connector_targets,
             guardrail_id,
         ),
@@ -1141,62 +990,23 @@ def _reconcile_shared_toolbox(
     return f"{base_url}/mcp?api-version=v1"
 
 
-def configure_provider_apis(
+def configure_shared_toolbox(
     credential: TokenCredential | None = None,
     *,
     connector_targets: dict[str, str] | None = None,
 ) -> str:
-    """Import provider specs into APIM, expose them as MCP, and share one Toolbox."""
-    entries = provider_manifest()
+    """Publish the bounded connector MCP surface through one shared Toolbox."""
     effective_credential = credential or DefaultAzureCredential()
-    gateway_url = required_env("AZURE_API_MANAGEMENT_GATEWAY_URL")
-    project_id = required_env("AZURE_AI_PROJECT_ID")
     project_endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
     governed_targets = connector_targets or connector_mcp_targets(
         required_env("AZURE_CONNECTOR_MCP_URLS")
     )
-
-    onboard_provider_apis(
-        effective_credential,
-        subscription_id=required_env("AZURE_SUBSCRIPTION_ID"),
-        resource_group=required_env("AZURE_RESOURCE_GROUP"),
-        service_name=required_env("AZURE_API_MANAGEMENT_NAME"),
-        entries=entries,
-    )
-
-    for entry in entries:
-        connection_url = (
-            f"{project_id}/connections/{provider_connection_id(entry['connectorId'])}"
-            "?api-version=2025-04-01-preview"
-        )
-        subprocess.run(
-            [
-                AZ_CLI,
-                "rest",
-                "--method",
-                "put",
-                "--url",
-                connection_url,
-                "--body",
-                json.dumps(
-                    provider_connection_payload(
-                        target=mcp_endpoint(gateway_url, entry["mcpPath"]),
-                    ),
-                    separators=(",", ":"),
-                ),
-                "--output",
-                "none",
-            ],
-            check=True,
-        )
 
     endpoint = with_toolbox_project_retry(
         SHARED_TOOLBOX_NAME,
         lambda: _reconcile_shared_toolbox(
             effective_credential,
             project_endpoint=project_endpoint,
-            gateway_url=gateway_url,
-            entries=entries,
             connector_targets=governed_targets,
             guardrail_id=optional_env("AZURE_AGENTIC_GUARDRAIL_ID"),
         ),
@@ -1223,30 +1033,35 @@ def configure_agent_memory(credential: TokenCredential | None = None) -> str:
         f"{project_endpoint.rstrip('/')}/memory_stores"
         f"?api-version={FOUNDRY_MEMORY_API_VERSION}"
     )
-    _toolbox_json_request(
-        effective_credential,
-        method="POST",
-        url=url,
-        payload={
-            "name": MEMORY_STORE_NAME,
-            "description": "Shared research memory for user profile, chat summary, and procedural recall.",
-            "definition": {
-                "kind": "default",
-                "chat_model": chat_deployment,
-                "embedding_model": embedding_deployment,
-                "options": {
-                    "chat_summary_enabled": True,
-                    "user_profile_enabled": True,
-                    "procedural_memory_enabled": True,
-                    "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
-                    "user_profile_details": (
-                        "Store research interests and workflow preferences only. "
-                        "Never store credentials, precise location, financial, or health data."
-                    ),
+    try:
+        _toolbox_json_request(
+            effective_credential,
+            method="POST",
+            url=url,
+            payload={
+                "name": MEMORY_STORE_NAME,
+                "description": "Shared research memory for user profile, chat summary, and procedural recall.",
+                "definition": {
+                    "kind": "default",
+                    "chat_model": chat_deployment,
+                    "embedding_model": embedding_deployment,
+                    "options": {
+                        "chat_summary_enabled": True,
+                        "user_profile_enabled": True,
+                        "procedural_memory_enabled": True,
+                        "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
+                        "user_profile_details": (
+                            "Store research interests and workflow preferences only. "
+                            "Never store credentials, precise location, financial, or health data."
+                        ),
+                    },
                 },
             },
-        },
-    )
+        )
+    except RuntimeError as exc:
+        expected = f"Memory Store with Name {MEMORY_STORE_NAME} already exists"
+        if expected not in str(exc):
+            raise
     subprocess.run([AZD_CLI, "env", "set", "MEMORY_STORE_NAME", MEMORY_STORE_NAME], check=True)
     print(f"Memory store {MEMORY_STORE_NAME} is configured.")
     return MEMORY_STORE_NAME
@@ -1308,9 +1123,9 @@ def main() -> None:
     embed_documents(documents, credential)
     upload_search_documents(endpoint, index_name, documents, credential)
     upload_source_artifacts(credential)
-    configure_connector_mcp_tools(credential)
+    configure_connector_gateway(credential)
     connector_targets = configure_connector_connections(credential)
-    configure_provider_apis(credential, connector_targets=connector_targets)
+    configure_shared_toolbox(credential, connector_targets=connector_targets)
     configure_agent_memory(credential)
     wait_for_acr_pull_roles()
     print(f"Provisioned {len(documents)} evidence records into {index_name}.")

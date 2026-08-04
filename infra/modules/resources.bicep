@@ -70,6 +70,9 @@ param apimPublisherName string
 @description('Publisher contact email for API Management.')
 param apimPublisherEmail string
 
+@description('Custom role that permits only governed APIM named-value updates.')
+param apimNamedValueWriterRoleId string
+
 @description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
 param entraTenantId string = ''
 
@@ -401,9 +404,8 @@ module apiManagement 'api-management.bicep' = if (includeAcr) {
     tags: tags
     publisherName: apimPublisherName
     publisherEmail: apimPublisherEmail
-    tenantId: subscription().tenantId
     apiPrincipalId: identities.outputs.apiPrincipalId
-    foundryProjectPrincipalId: foundryAccount::project.identity.principalId
+    namedValueWriterRoleDefinitionId: apimNamedValueWriterRoleId
     logAnalyticsWorkspaceId: monitoring.outputs.workspaceId
   }
 }
@@ -510,7 +512,7 @@ output API_NAME string = includeAcr ? containerApps!.outputs.apiName : ''
 output WEB_NAME string = includeAcr ? containerApps!.outputs.webName : ''
 output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.serviceName : ''
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
-output AZURE_CONNECTOR_MCP_URLS string = includeAcr ? string(apiManagement!.outputs.connectorMcpUrls) : '[]'
-output AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID string = includeAcr ? apiManagement!.outputs.connectorMcpSubscriptionId : ''
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''
+output AZURE_API_MANAGED_IDENTITY_PRINCIPAL_ID string = identities.outputs.apiPrincipalId
+output AZURE_FOUNDRY_PROJECT_PRINCIPAL_ID string = foundryAccount::project.identity.principalId
 output AZURE_AGENTIC_GUARDRAIL_ID string = agenticGuardrail.id

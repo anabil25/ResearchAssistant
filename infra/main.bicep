@@ -92,6 +92,15 @@ resource resourceGroup 'Microsoft.Resources/resourceGroups@2021-04-01' = {
   tags: tags
 }
 
+module apimNamedValueWriterRole 'modules/apim-named-value-writer-role.bicep' = if (includeAcr) {
+  name: 'apim-named-value-writer-${uniqueString(resourceGroup.id)}'
+  scope: subscription()
+  params: {
+    roleName: 'Research Assistant APIM Credential Writer ${uniqueString(resourceGroup.id)}'
+    assignableScope: resourceGroup.id
+  }
+}
+
 module resources 'modules/resources.bicep' = {
   name: 'foundry-resources'
   scope: resourceGroup
@@ -108,6 +117,7 @@ module resources 'modules/resources.bicep' = {
     principalType: principalType
     apimPublisherName: apimPublisherName
     apimPublisherEmail: apimPublisherEmail
+    apimNamedValueWriterRoleId: includeAcr ? apimNamedValueWriterRole!.outputs.roleDefinitionId : ''
     entraTenantId: entraTenantId
     entraApiClientId: entraApiClientId
     enableEntraAuth: enableEntraAuth
@@ -157,7 +167,7 @@ output SERVICE_WEB_NAME string = resources.outputs.WEB_NAME
 output SERVICE_WEB_URI string = resources.outputs.WEB_URL
 output AZURE_API_MANAGEMENT_NAME string = resources.outputs.AZURE_API_MANAGEMENT_NAME
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = resources.outputs.AZURE_API_MANAGEMENT_GATEWAY_URL
-output AZURE_CONNECTOR_MCP_URLS string = resources.outputs.AZURE_CONNECTOR_MCP_URLS
-output AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID string = resources.outputs.AZURE_API_MANAGEMENT_MCP_SUBSCRIPTION_ID
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = resources.outputs.AZURE_API_MANAGEMENT_PRINCIPAL_ID
+output AZURE_API_MANAGED_IDENTITY_PRINCIPAL_ID string = resources.outputs.AZURE_API_MANAGED_IDENTITY_PRINCIPAL_ID
+output AZURE_FOUNDRY_PROJECT_PRINCIPAL_ID string = resources.outputs.AZURE_FOUNDRY_PROJECT_PRINCIPAL_ID
 output AZURE_AGENTIC_GUARDRAIL_ID string = resources.outputs.AZURE_AGENTIC_GUARDRAIL_ID

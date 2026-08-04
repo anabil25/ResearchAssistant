@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -35,8 +36,14 @@ class ConnectorOperation:
 
     @property
     def apim_tool_name(self) -> str:
-        """APIM requires tool resource names to be unique across the whole service."""
-        return f"research{self.id[:1].upper()}{self.id[1:]}"
+        """Return the MCP tool id exposed to agents.
+
+        MCP tools are conventionally snake_case. APIM also rejects tool ids that
+        collide with its own operation identifiers (``arxivSearch``) or the bare
+        action names (``search``/``lookup``) with a persistent 502, so snake_case
+        keeps the tool namespace disjoint from the APIM operation namespace.
+        """
+        return re.sub(r"(?<!^)(?=[A-Z])", "_", self.id).lower()
 
 
 @dataclass(frozen=True, slots=True)
