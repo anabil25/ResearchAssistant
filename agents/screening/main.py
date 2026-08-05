@@ -29,6 +29,8 @@ from agent_framework import (
     AgentLoopMiddleware,
     AgentMiddleware,
     AgentResponse,
+    ChatContext,
+    ChatMiddleware,
     InlineSkill,
     InMemoryHistoryProvider,
     Message,
@@ -550,11 +552,39 @@ def request_mode(request: ScreeningRequest) -> RequestMode:
     return RequestMode.EXTERNAL_DISCOVERY
 
 
+class DiscoveryModelMiddleware(ChatMiddleware):
+    """Use the efficient model for read-only discovery, not adjudication."""
+
+    async def process(
+        self,
+        context: ChatContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        for message in reversed(context.messages):
+            if message.role != "user":
+                continue
+            try:
+                payload = json.loads(message.text)
+            except json.JSONDecodeError:
+                break
+            if payload.get("mode") == RequestMode.EXTERNAL_DISCOVERY:
+                context.options = {
+                    **(context.options or {}),
+                    "model": os.environ.get(
+                        "SCREENING_DISCOVERY_MODEL",
+                        os.environ.get("SCREENING_SCREENER_MODEL", "gpt-5.4-mini"),
+                    ),
+                }
+            break
+        await call_next()
+
+
 def _client(model: str) -> FoundryChatClient:
     return FoundryChatClient(
         project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
         model=model,
         credential=get_async_credential(),
+        middleware=[DiscoveryModelMiddleware()],
     )
 
 
