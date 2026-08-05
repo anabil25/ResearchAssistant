@@ -403,6 +403,11 @@ class EnvelopeMiddleware(AgentMiddleware):
 
     Reduces the lead model's input to identifiers and titles, keeping abstracts
     server-side, and assembles the final report from what the runtime observed.
+
+    The hosting layer supplies prior conversation turns, including server-issued
+    reasoning and tool-call items. The inner Foundry client cannot replay those
+    items without their encrypted service state, so prior turns are compacted as
+    text before each run. Current-turn tool execution is unaffected.
     """
 
     async def process(
@@ -418,7 +423,7 @@ class EnvelopeMiddleware(AgentMiddleware):
             _LEDGER.set({})
             _OUTSTANDING.set(None)
             context.messages = [
-                *context.messages[:-1],
+                *self._compact_history(context.messages[:-1]),
                 Message(role="user", contents=[self._digest(request)]),
             ]
         await call_next()
@@ -450,6 +455,32 @@ class EnvelopeMiddleware(AgentMiddleware):
             },
             separators=(",", ":"),
         )
+
+    @classmethod
+    def _compact_history(cls, messages: list[Message]) -> list[Message]:
+        """Retain conversational text while dropping non-replayable tool groups."""
+        compacted: list[Message] = []
+        for message in messages:
+            if message.role == "user":
+                try:
+                    previous_request = ScreeningRequest.model_validate_json(message.text)
+                except ValidationError:
+                    pass
+                else:
+                    compacted.append(
+                        Message(role="user", contents=[cls._digest(previous_request)])
+                    )
+                    continue
+            text = [
+                content.text
+                for content in message.contents
+                if content.type == "text" and content.text
+            ]
+            if text:
+                compacted.append(
+                    Message(role=message.role, contents=text, author_name=message.author_name)
+                )
+        return compacted
 
     @staticmethod
     def _reconcile(response: AgentResponse[Any], corpus: dict[str, Paper]) -> AgentResponse[Any]:
