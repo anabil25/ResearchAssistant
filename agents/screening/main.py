@@ -27,6 +27,7 @@ from agent_framework import (
     AgentMiddleware,
     AgentResponse,
     InlineSkill,
+    InMemoryHistoryProvider,
     Message,
     SkillFrontmatter,
     SkillsProvider,
@@ -542,6 +543,9 @@ def build_agent(lead: Any | None = None, screener: Any | None = None, **override
         # asking permission to start the work it was invoked to do.
         "disable_mode": True,
         "disable_todo": True,
+        # ResponsesHostServer manages history itself and rejects a provider that
+        # loads messages, so the harness default cannot be used when hosted.
+        "history_provider": InMemoryHistoryProvider(load_messages=False),
         "skills_provider": _skills(),
         # The loop runs inside the envelope binding, so every iteration and the
         # sufficiency gate observe the same corpus and ledger.
