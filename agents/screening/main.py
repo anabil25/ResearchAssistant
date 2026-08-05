@@ -546,6 +546,9 @@ def build_agent(lead: Any | None = None, screener: Any | None = None, **override
         # ResponsesHostServer manages history itself and rejects a provider that
         # loads messages, so the harness default cannot be used when hosted.
         "history_provider": InMemoryHistoryProvider(load_messages=False),
+        # Every tool here is `never_require`, and the approval middleware demands
+        # an AgentSession the hosted Responses path does not attach.
+        "disable_tool_auto_approval": True,
         "skills_provider": _skills(),
         # The loop runs inside the envelope binding, so every iteration and the
         # sufficiency gate observe the same corpus and ledger.
