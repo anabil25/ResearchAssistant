@@ -13,7 +13,9 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from azure.identity import DefaultAzureCredential, get_bearer_token_provider
+from azure.identity import get_bearer_token_provider
+
+from .credentials import get_credential
 
 TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 TOOLBOX_FEATURE_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
@@ -51,7 +53,9 @@ def shared_toolbox(
     resolved_endpoint = endpoint or os.environ["FOUNDRY_PROJECT_ENDPOINT"]
     resolved_name = name or os.environ.get("TOOLBOX_NAME", DEFAULT_TOOLBOX_NAME)
     resolved_version = version or os.environ.get("TOOLBOX_VERSION", DEFAULT_TOOLBOX_VERSION)
-    cred = credential or DefaultAzureCredential()
+    # Managed identity directly where one exists: the full DefaultAzureCredential
+    # chain probes sources a hosted container does not have, and blocks.
+    cred = credential or get_credential()
     http_client = httpx.AsyncClient(
         auth=_BearerRefresh(get_bearer_token_provider(cred, TOOLBOX_SCOPE)),
         headers=dict(TOOLBOX_FEATURE_HEADER),
