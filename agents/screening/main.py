@@ -557,7 +557,9 @@ def build_agent(lead: Any | None = None, screener: Any | None = None, **override
         # The loop runs inside the envelope binding, so every iteration and the
         # sufficiency gate observe the same corpus and ledger.
         "middleware": [EnvelopeMiddleware(), _loop()],
-        "default_options": {"store": False, "response_format": ScreeningReport},
+        # `store` is left to the platform: the hosting layer owns the conversation,
+        # and opting out drops the function call whose output is sent back.
+        "default_options": {"response_format": ScreeningReport},
     }
     options.update(overrides)
     return create_harness_agent(lead, **options)
