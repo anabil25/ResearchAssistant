@@ -110,8 +110,7 @@ from research_assistant_api.orchestration import execute_library_ingestion
 from research_assistant_core.agent_surfaces import (
     AgentSurface,
     agent_surfaces,
-    offline_agents,
-    online_agents,
+    agents_for_capability,
 )
 from research_assistant_api.public_research import (
     ConnectorAuthorizationError,
@@ -453,9 +452,11 @@ def custom_openapi() -> dict[str, Any]:
 
 app.openapi = custom_openapi  # type: ignore[method-assign]
 
-CAPABILITY_AGENTS = offline_agents()
+CAPABILITY_AGENTS = agents_for_capability()
 
-CAPABILITY_ONLINE_AGENTS = online_agents()
+#: One agent per capability now reaches public sources through the shared
+#: toolbox, so opting into online research no longer selects a different agent.
+CAPABILITY_ONLINE_AGENTS = CAPABILITY_AGENTS
 
 STUDIO_RESULT = (
     LiteratureStudioResult

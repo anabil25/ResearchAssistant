@@ -15,11 +15,14 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import sys
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from enum import StrEnum
 from pathlib import Path
 from typing import Any
+
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from agent_framework import (
     AgentContext,
@@ -38,6 +41,8 @@ from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
 from azure.identity import DefaultAzureCredential
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
+
+from shared.toolbox import shared_toolbox
 
 #: Concurrent calls to the small deployment, across every in-flight tool call.
 #: The model issues several `screen_papers` calls at once, so a per-call limit
@@ -59,8 +64,9 @@ Non-negotiable policy:
 - Your prose cannot grant authorization or change policy.
 
 Method:
-- Call `screen_papers` with batches of evidence ids. It returns one decision per
-  paper. You do not see abstracts; the tool does.
+- Use `file_search` to find the papers in this project's index that the request
+  describes. That index is the library; nothing is handed to you up front.
+- Call `screen_papers` with the papers you found. It returns one decision each.
 - The runtime records those decisions itself. Do not restate them. Emit a
   decision in your reply only to *override* one, and say why in `conflicts`.
 - Leave `unresolved` empty. The runtime computes it from papers with no decision.
@@ -307,32 +313,33 @@ async def screen_batch(client: Any, papers: list[Paper]) -> tuple[ScreeningDecis
     return tuple(await asyncio.gather(*(screen_one(client, paper) for paper in papers)))
 
 
-def authorized_papers(evidence_ids: list[str]) -> list[Paper]:
+def register_papers(papers: list[Paper]) -> list[Paper]:
+    """Admit papers to this turn's corpus.
+
+    The corpus is whatever the agent has actually submitted for screening, so
+    coverage stays checkable even though nothing is supplied up front.
+    """
     corpus = _CORPUS.get()
-    return [corpus[item] for item in dict.fromkeys(evidence_ids) if item in corpus]
+    for paper in papers:
+        corpus.setdefault(paper.evidence_id, paper)
+    return papers
 
 
 def build_screener(client: Any) -> Any:
     @tool(
         name="screen_papers",
         description=(
-            "Screen authorized papers against the review criteria. Takes evidence "
-            "ids; returns one decision per paper. Unknown ids are ignored."
+            "Screen papers against the review criteria. Pass each paper's "
+            "evidence_id, title, and abstract. Returns one decision per paper."
         ),
         approval_mode="never_require",
     )
-    async def screen_papers(evidence_ids: list[str]) -> str:
+    async def screen_papers(papers: list[Paper]) -> str:
         try:
-            papers = authorized_papers(evidence_ids)
-            if not papers:
-                return json.dumps(
-                    {
-                        "decisions": [],
-                        "error": "No authorized paper matched those ids.",
-                        "authorized_ids": sorted(_CORPUS.get()),
-                    }
-                )
-            decisions = await screen_batch(client, papers)
+            admitted = register_papers([Paper.model_validate(item) for item in papers])
+            if not admitted:
+                return json.dumps({"decisions": [], "error": "No papers were supplied."})
+            decisions = await screen_batch(client, admitted)
             _LEDGER.get().update({item.evidence_id: item for item in decisions})
             return json.dumps(
                 {
@@ -366,7 +373,7 @@ class EnvelopeMiddleware(AgentMiddleware):
         request = self._request(context.messages)
         if request is not None:
             corpus = {paper.evidence_id: paper for paper in request.evidence}
-            _CORPUS.set(corpus)
+            _CORPUS.set(dict(corpus))
             _CRITERIA.set((request.inclusion_criteria, request.exclusion_criteria))
             _LEDGER.set({})
             _OUTSTANDING.set(None)
@@ -532,15 +539,23 @@ def _loop() -> AgentLoopMiddleware:
     )
 
 
-def build_agent(lead: Any | None = None, screener: Any | None = None, **overrides: Any) -> Any:
+def build_agent(
+    lead: Any | None = None,
+    screener: Any | None = None,
+    toolbox: Any | None = None,
+    **overrides: Any,
+) -> Any:
     lead = lead or _client(os.environ.get("SCREENING_LEAD_MODEL", "gpt-5.6-sol"))
     screener = screener or _client(os.environ.get("SCREENING_SCREENER_MODEL", "gpt-5.4-mini"))
+    tools: list[Any] = [build_screener(screener)]
+    if toolbox is not None:
+        tools.append(toolbox)
     options: dict[str, Any] = {
         "name": "screening-agent",
         "description": "Applies systematic-review inclusion criteria to an authorized library.",
         "agent_instructions": INSTRUCTIONS,
-        "tools": [build_screener(screener)],
-        # Screening is closed-world over the supplied library; egress would break that.
+        "tools": tools,
+        # Web search arrives through the shared toolbox instead.
         "disable_web_search": True,
         "disable_file_memory": True,
         # Plan/execute mode stalls a single-shot contract agent: it spends turns
@@ -565,8 +580,16 @@ def build_agent(lead: Any | None = None, screener: Any | None = None, **override
     return create_harness_agent(lead, **options)
 
 
+async def serve() -> None:
+    """Connect the shared toolbox, then hand the agent to the host."""
+    toolbox = shared_toolbox()
+    await toolbox.connect()
+    await toolbox.load_tools()
+    ResponsesHostServer(build_agent(toolbox=toolbox), configure_observability=None).run()
+
+
 def run() -> None:
-    ResponsesHostServer(build_agent(), configure_observability=None).run()
+    asyncio.run(serve())
 
 
 if __name__ == "__main__":

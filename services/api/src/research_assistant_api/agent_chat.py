@@ -45,7 +45,6 @@ from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.agent_surfaces import (
     chat_capabilities,
     endpoint_for,
-    evidence_grounded_capabilities,
     find_surface,
 )
 from research_assistant_core.models import Capability
@@ -81,10 +80,6 @@ router = APIRouter(prefix="/api/agent-chat", tags=["agent-chat"])
 #: version-and-abstain surface and workflow automation keeps its DAG editor,
 #: so neither is offered here.
 CHAT_CAPABILITIES = chat_capabilities()
-
-#: Capabilities whose offline contract answers from the project library. Dataset
-#: turns operate on session files, so corpus retrieval would only add noise.
-EVIDENCE_GROUNDED_CAPABILITIES = evidence_grounded_capabilities()
 
 #: Chunks resolved per offline turn. A Hosted Agent cannot retrieve for itself,
 #: so this is the entire evidence set the turn will ever see.
@@ -329,7 +324,8 @@ def _capability_agents(capability: Capability) -> tuple[AgentChoice, ...]:
             name=endpoint.name,
             label=endpoint.label,
             description=endpoint.description,
-            online=endpoint.web_access,
+            # Every agent reaches public sources through the shared toolbox.
+            online=True,
         )
         for endpoint in surface.agents
     )
@@ -535,13 +531,6 @@ async def send_chat_message(
         created_at=utc_now(),
         attachments=list(pending),
     )
-    evidence = await _turn_evidence(
-        request,
-        thread=thread,
-        identity=identity,
-        project_id=store.project_id,
-        query=payload.text,
-    )
     try:
         reply = await run_in_threadpool(
             gateway.send,
@@ -555,7 +544,6 @@ async def send_chat_message(
                 settings=cast(Settings, request.app.state.settings),
                 text=payload.text,
                 attachments=pending,
-                evidence=evidence,
             ),
         )
     except (
@@ -565,7 +553,7 @@ async def send_chat_message(
     ) as exc:
         raise _gateway_failure(exc) from exc
     content = _render_agent_reply(reply.content)
-    follow_up = _next_steps(thread, reply.content, evidence_count=len(evidence))
+    follow_up = _next_steps(thread, reply.content, evidence_count=0)
     assistant_message = ChatMessage(
         id=f"msg-{uuid4().hex[:16]}",
         role="assistant",
@@ -647,13 +635,33 @@ def _bullet(value: object) -> str:
     return str(value)
 
 
+def _final_payload(raw: str) -> dict[str, object] | None:
+    """The last typed payload in a reply.
+
+    A hosted turn that called a tool returns every assistant message joined, so
+    the transcript is several JSON documents back to back rather than one.
+    """
+    decoder = json.JSONDecoder()
+    text = raw.strip()
+    index = 0
+    found: dict[str, object] | None = None
+    while index < len(text):
+        try:
+            value, offset = decoder.raw_decode(text, index)
+        except ValueError:
+            break
+        if isinstance(value, dict) and "summary" in value:
+            found = value
+        index = offset
+        while index < len(text) and text[index].isspace():
+            index += 1
+    return found
+
+
 def _render_agent_reply(raw: str) -> str:
     """Turn a typed contract response into readable Markdown, or pass prose through."""
-    try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError):
-        return raw
-    if not isinstance(payload, dict) or "summary" not in payload:
+    payload = _final_payload(raw)
+    if payload is None:
         return raw
 
     lines: list[str] = [str(payload.get("summary") or "").strip()]
@@ -711,11 +719,8 @@ def _agent_connector_ids(agent_name: str) -> tuple[str, ...]:
 
 def _resolved_nothing(raw: str) -> bool:
     """True when a typed reply supported no claim at all."""
-    try:
-        payload = json.loads(raw)
-    except (TypeError, ValueError):
-        return False
-    if not isinstance(payload, dict) or "summary" not in payload:
+    payload = _final_payload(raw)
+    if payload is None:
         return False
     claims = payload.get("claims")
     if not isinstance(claims, list):
@@ -732,79 +737,16 @@ def _next_steps(thread: ChatThread, raw: str, *, evidence_count: int) -> str:
     researcher is told what could not be answered and nothing about what to do.
     """
     endpoint = endpoint_for(thread.agent_name)
-    if endpoint is None or endpoint.web_access or endpoint.evidence == "none":
+    if endpoint is None:
         return ""
     if not _resolved_nothing(raw):
         return ""
-    online = next(
-        (choice for choice in _capability_agents(thread.capability) if choice.online),
-        None,
-    )
-    if evidence_count:
-        lines = [
-            f"**Next steps** — {evidence_count} source(s) were retrieved from this "
-            "project's library, but none supported a claim.",
-            "- Name the specific paper, metric, or population you want compared.",
+    return "\n".join(
+        [
+            "**Next steps** — nothing in this turn could be supported.",
+            "- Add sources in **Library** so the agent can search them, then ask again.",
+            "- Or name the specific paper, metric, or population you want assessed.",
         ]
-    else:
-        lines = [
-            "**Next steps** — this project's library returned no sources for this question.",
-            "- Add sources in **Library**, then ask again.",
-        ]
-    if online is not None:
-        lines.append(
-            f"- Or switch the **Agent** selector to **{online.label}** to search "
-            "allowlisted public sources."
-        )
-    return "\n".join(lines)
-
-
-def _authorized_evidence(
-    research: ResearchService,
-    *,
-    query: str,
-    identity: IdentityContext,
-    project_id: str,
-    full_text: bool = False,
-) -> tuple[dict[str, object], ...]:
-    """Resolve a turn's evidence set under the caller's tenant/project/group ACL."""
-    chunks = research.repository.search(
-        query,
-        tenant_id=identity.tenant_id,
-        project_id=project_id,
-        group_ids=list(identity.groups),
-        limit=CHAT_EVIDENCE_LIMIT,
-    )
-    return tuple(
-        {
-            "evidence_id": chunk.id,
-            "title": chunk.title,
-            "version": chunk.version,
-            **({"abstract": chunk.content} if full_text else {}),
-        }
-        for chunk in chunks
-    )
-
-
-async def _turn_evidence(
-    request: Request,
-    *,
-    thread: ChatThread,
-    identity: IdentityContext,
-    project_id: str,
-    query: str,
-) -> tuple[dict[str, object], ...]:
-    endpoint = endpoint_for(thread.agent_name)
-    if endpoint is None or endpoint.evidence == "none":
-        return ()
-    research = cast(ResearchService, request.app.state.research)
-    return await run_in_threadpool(
-        _authorized_evidence,
-        research,
-        query=query,
-        identity=identity,
-        project_id=project_id,
-        full_text=endpoint.evidence == "full_text",
     )
 
 
@@ -815,7 +757,6 @@ def _contract_envelope(
     settings: Settings,
     text: str,
     attachments: list[ChatAttachment],
-    evidence: tuple[dict[str, object], ...] = (),
 ) -> str:
     # Agents pin themselves to this deployment's tenant/project and reject any other
     # scope, so the envelope carries the deployment scope; the caller is carried by
@@ -826,16 +767,8 @@ def _contract_envelope(
         "project_id": settings.workspace_project_id,
         "principal_id": identity.user_id,
         "session_id": thread.id,
+        "sensitivity": _INTERNAL_SENSITIVITY,
     }
-    endpoint = endpoint_for(thread.agent_name)
-    if endpoint is not None and endpoint.web_access:
-        # Contracts that reach public sources pin sensitivity themselves and
-        # refuse caller-supplied evidence.
-        envelope["authorized_connector_ids"] = list(_agent_connector_ids(thread.agent_name))
-    else:
-        envelope["sensitivity"] = _INTERNAL_SENSITIVITY
-        if evidence:
-            envelope["evidence"] = list(evidence)
     if thread.capability == Capability.DATASET:
         latest = attachments[-1] if attachments else None
         envelope["dataset_id"] = latest.path if latest else f"{thread.id}-session-dataset"

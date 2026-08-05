@@ -158,19 +158,18 @@ def open_thread(
 
 
 class TestAgentCatalog:
-    def test_offline_and_online_agents_are_listed_for_online_capable_studios(
-        self, client: TestClient
-    ) -> None:
+    def test_each_capability_offers_exactly_one_agent(self, client: TestClient) -> None:
+        """Web access comes from the shared toolbox, so there is nothing to choose."""
         agents = client.get("/api/agent-chat/agents", params={"capability": "literature"}).json()
-        assert [agent["name"] for agent in agents] == [
-            "literature-agent",
-            "literature-online-agent",
-        ]
-        assert [agent["online"] for agent in agents] == [False, True]
+        assert [agent["name"] for agent in agents] == ["literature-agent"]
 
-    def test_dataset_offers_only_its_offline_agent(self, client: TestClient) -> None:
+    def test_dataset_offers_its_own_agent(self, client: TestClient) -> None:
         agents = client.get("/api/agent-chat/agents", params={"capability": "dataset"}).json()
         assert [agent["name"] for agent in agents] == ["dataset-agent"]
+
+    def test_screening_is_offered(self, client: TestClient) -> None:
+        agents = client.get("/api/agent-chat/agents", params={"capability": "screening"}).json()
+        assert [agent["name"] for agent in agents] == ["screening-agent"]
 
     @pytest.mark.parametrize("capability", ["institutional_qa", "orchestration"])
     def test_non_chat_capabilities_are_rejected(self, client: TestClient, capability: str) -> None:
@@ -578,47 +577,29 @@ class TestAttachments:
             "session_id",
         }
 
-    def test_an_online_turn_authorizes_connectors_instead_of_sensitivity(
+    def test_a_turn_carries_no_pre_fetched_evidence(
         self, client: TestClient, gateway: _RecordingGateway
     ) -> None:
-        thread = open_thread(
-            client,
-            capability="literature",
-            agent_name="literature-online-agent",
-        )
-        client.post(
-            f"/api/agent-chat/threads/{thread['id']}/messages",
-            json={"text": "find current work"},
-        )
-        envelope = json.loads(gateway.sent[0]["text"])
-        # Public contracts pin sensitivity themselves and forbid caller evidence.
-        assert "sensitivity" not in envelope
-        assert "evidence" not in envelope
-        assert envelope["authorized_connector_ids"]
-
-    def test_an_offline_turn_carries_the_projects_authorized_evidence(
-        self, client: TestClient, gateway: _RecordingGateway
-    ) -> None:
-        """A hosted agent cannot retrieve for itself, so the turn must supply the set."""
+        """Agents retrieve from the project index themselves via the shared toolbox."""
         thread = open_thread(client)
         client.post(
             f"/api/agent-chat/threads/{thread['id']}/messages",
             json={"text": "retrieval augmented generation"},
         )
         envelope = json.loads(gateway.sent[0]["text"])
-        assert envelope["evidence"]
-        assert all(item["evidence_id"] for item in envelope["evidence"])
+        assert "evidence" not in envelope
+        assert "authorized_connector_ids" not in envelope
+        assert envelope["sensitivity"] == "internal"
 
-    def test_a_dataset_turn_carries_no_corpus_evidence(
+    def test_a_dataset_turn_carries_its_dataset_id(
         self, client: TestClient, gateway: _RecordingGateway
     ) -> None:
-        """Dataset turns reason over session files, so corpus chunks are only noise."""
         thread = open_thread(client, capability="dataset", agent_name="dataset-agent")
         client.post(
             f"/api/agent-chat/threads/{thread['id']}/messages",
-            json={"text": "retrieval augmented generation"},
+            json={"text": "profile this"},
         )
-        assert "evidence" not in json.loads(gateway.sent[0]["text"])
+        assert json.loads(gateway.sent[0]["text"])["dataset_id"]
 
     def test_a_turn_that_supports_nothing_names_the_next_step(
         self, client: TestClient, gateway: _RecordingGateway
@@ -637,7 +618,7 @@ class TestAttachments:
         )
         content = response.json()["content"]
         assert "**Next steps**" in content
-        assert "Public research" in content
+        assert "**Library**" in content
 
     def test_a_supported_turn_is_left_alone(
         self, client: TestClient, gateway: _RecordingGateway

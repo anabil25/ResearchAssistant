@@ -10,24 +10,17 @@ literals encoded, and a parity test pins them to it.
 
 from __future__ import annotations
 
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
 from research_assistant_core.models import Capability, CapabilitySpec
 
-#: How much of a retrieved chunk a surface's contract can accept.
-#:
-#: ``citations`` sends identifiers only; ``full_text`` adds the chunk body for
-#: agents that must read it; ``none`` skips retrieval entirely.
-EvidenceProjection = Literal["none", "citations", "full_text"]
-
-
 class AgentEndpoint(BaseModel):
     """One deployed agent a researcher can talk to.
 
-    Everything the runtime needs is declared here. Nothing infers behaviour from
-    the agent's name.
+    Every agent reaches the same shared Foundry toolbox, so there is nothing to
+    declare about tools, web access, or retrieval: an agent searches the project
+    index with ``file_search`` and public sources with the connector tools.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -35,11 +28,6 @@ class AgentEndpoint(BaseModel):
     name: str
     label: str
     description: str
-    #: Reaches allowlisted public sources through the governed connector surface.
-    web_access: bool = False
-    #: How much of a retrieved chunk this agent's contract accepts. Contracts
-    #: that reach public sources refuse caller-supplied evidence outright.
-    evidence: EvidenceProjection = "none"
 
 
 class AgentSurface(BaseModel):
@@ -90,20 +78,13 @@ class AgentSurface(BaseModel):
         )
 
 
-def _library_and_web(stem: str) -> tuple[AgentEndpoint, ...]:
-    """The standard pair: answer from the project library, or from public sources."""
+def _agent(stem: str, description: str) -> tuple[AgentEndpoint, ...]:
+    """One agent per capability, reaching the same shared toolbox as every other."""
     return (
         AgentEndpoint(
             name=f"{stem}-agent",
-            label="Authorized evidence",
-            description="Answers only from the sources stored in this project's library.",
-            evidence="citations",
-        ),
-        AgentEndpoint(
-            name=f"{stem}-online-agent",
-            label="Public research",
-            description="Also searches allowlisted public metadata sources.",
-            web_access=True,
+            label="Research agent",
+            description=description,
         ),
     )
 
@@ -111,7 +92,7 @@ def _library_and_web(stem: str) -> tuple[AgentEndpoint, ...]:
 AGENT_SURFACES: tuple[AgentSurface, ...] = (
     AgentSurface(
         capability=Capability.LITERATURE,
-        agents=_library_and_web("literature"),
+        agents=_agent("literature", "Synthesizes from the project library and public research sources."),
         chat=True,
         title="Literature review synthesis",
         short_title="Synthesize literature",
@@ -137,7 +118,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
     ),
     AgentSurface(
         capability=Capability.GRANT,
-        agents=_library_and_web("grant"),
+        agents=_agent("grant", "Maps funding requirements from the library and public opportunity sources."),
         chat=True,
         title="Grant application studio",
         short_title="Draft a grant",
@@ -161,7 +142,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
     ),
     AgentSurface(
         capability=Capability.MATCHING,
-        agents=_library_and_web("matching"),
+        agents=_agent("matching", "Matches experts and resources from the library and public registries."),
         chat=True,
         title="PI and resource matching",
         short_title="Find collaborators",
@@ -190,7 +171,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         agents=(
             AgentEndpoint(
                 name="dataset-agent",
-                label="Authorized evidence",
+                label="Research agent",
                 description="Analyses only the files attached to this session.",
             ),
         ),
@@ -222,9 +203,8 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         agents=(
             AgentEndpoint(
                 name="screening-agent",
-                label="Authorized evidence",
-                description="Screens the papers stored in this project's library.",
-                evidence="full_text",
+                label="Research agent",
+                description="Screens the papers in this project's index.",
             ),
         ),
         chat=True,
@@ -257,7 +237,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         agents=(
             AgentEndpoint(
                 name="institution-agent",
-                label="Authorized evidence",
+                label="Research agent",
                 description="Answers from stored institutional policy with versioned citations.",
             ),
         ),
@@ -274,7 +254,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         agents=(
             AgentEndpoint(
                 name="research-coordinator",
-                label="Authorized evidence",
+                label="Research agent",
                 description="Routes work to pinned specialist agents.",
             ),
         ),
@@ -308,17 +288,8 @@ def capability_specs() -> tuple[CapabilitySpec, ...]:
     return tuple(surface.spec for surface in AGENT_SURFACES)
 
 
-def offline_agents() -> dict[Capability, str]:
+def agents_for_capability() -> dict[Capability, str]:
     return {surface.capability: surface.primary.name for surface in AGENT_SURFACES}
-
-
-def online_agents() -> dict[Capability, str]:
-    return {
-        surface.capability: endpoint.name
-        for surface in AGENT_SURFACES
-        for endpoint in surface.agents
-        if endpoint.web_access
-    }
 
 
 def endpoint_for(agent_name: str) -> AgentEndpoint | None:
@@ -328,14 +299,6 @@ def endpoint_for(agent_name: str) -> AgentEndpoint | None:
 
 def chat_capabilities() -> tuple[Capability, ...]:
     return tuple(surface.capability for surface in AGENT_SURFACES if surface.chat)
-
-
-def evidence_grounded_capabilities() -> tuple[Capability, ...]:
-    return tuple(
-        surface.capability
-        for surface in AGENT_SURFACES
-        if any(endpoint.evidence != "none" for endpoint in surface.agents)
-    )
 
 
 def studio_capabilities() -> tuple[Capability, ...]:

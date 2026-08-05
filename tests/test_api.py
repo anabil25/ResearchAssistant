@@ -447,9 +447,9 @@ def test_studio_route_uses_hosted_agent_for_online_runs(
         )
 
     assert response.status_code == 200
-    assert response.json()["insight"]["agent_name"] == "literature-online-agent"
+    assert response.json()["insight"]["agent_name"] == "literature-agent"
     assert response.json()["insight"]["online_research_used"] is True
-    assert calls["invoke"]["agent_name"] == "literature-online-agent"
+    assert calls["invoke"]["agent_name"] == "literature-agent"
     envelope = json.loads(calls["invoke"]["message"])
     assert envelope["query"] == "Compare public reproducibility guidance"
     assert envelope["authorized_connector_ids"] == ["pubmed"]
@@ -611,7 +611,7 @@ def test_research_route_fetches_public_metadata_for_online_hosted_runs(
 
     assert response.status_code == 200, response.json()
     assert response.json()["metadata"]["online_research"] is True
-    assert calls["invoke"]["agent_name"] == "literature-online-agent"
+    assert calls["invoke"]["agent_name"] == "literature-agent"
     envelope = json.loads(calls["invoke"]["message"])
     assert envelope["query"] == "Compare public guidance"
     assert envelope["authorized_connector_ids"] == ["pubmed"]
@@ -689,7 +689,7 @@ def test_research_route_deselecting_all_grant_sources_makes_zero_gateway_calls()
 
     assert response.status_code == 200
     assert response.json()["metadata"]["online_research"] is True
-    assert calls["invoke"]["agent_name"] == "grant-online-agent"
+    assert calls["invoke"]["agent_name"] == "grant-agent"
 
 
 def test_research_route_rejects_conflicting_sources_and_legacy_funding_sources() -> None:
