@@ -157,7 +157,9 @@ def test_shared_toolbox_exposes_only_governed_connectors_behind_tool_search() ->
 
     assert types.count("web_search") == 1
     assert types.count("code_interpreter") == 1
-    assert types.count("file_search") == 1
+    # An unbound File Search tool never fails fast: Foundry accepts the call and
+    # never answers it, stalling the agent run until the request times out.
+    assert types.count("file_search") == 0
     # Tool Search keeps agent context flat across a tool surface larger than the 128-tool agent cap.
     assert types.count("toolbox_search") == 1
     # Foundry rejects a version with more than one tool lacking a name or server_label.
@@ -174,6 +176,24 @@ def test_shared_toolbox_exposes_only_governed_connectors_behind_tool_search() ->
         assert tool["server_url"] == connector_targets[tool["server_label"]]
         assert tool["project_connection_id"].startswith("research-connector-")
         assert tool["tool_configs"]["*"]["pin"] is True
+
+
+def test_shared_toolbox_binds_file_search_only_to_named_vector_stores() -> None:
+    connector_targets = {
+        connector.id: f"https://gateway.example/{connector.apim_mcp_path}/mcp"
+        for connector in connector_definitions()
+    }
+
+    payload = shared_toolbox_payload(connector_targets, vector_store_ids=["vs_research"])
+    file_search = [tool for tool in payload["tools"] if tool["type"] == "file_search"]
+
+    assert len(file_search) == 1
+    assert file_search[0]["vector_store_ids"] == ["vs_research"]
+    assert file_search[0]["name"] == "file_search"
+
+    for empty in (None, []):
+        without = shared_toolbox_payload(connector_targets, vector_store_ids=empty)
+        assert [tool for tool in without["tools"] if tool["type"] == "file_search"] == []
 
 
 def test_shared_toolbox_requires_complete_connector_catalog() -> None:

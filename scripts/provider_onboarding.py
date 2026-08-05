@@ -71,12 +71,18 @@ def mcp_endpoint(gateway_url: str, mcp_path: str) -> str:
 def shared_toolbox_payload(
     connector_targets: dict[str, str],
     guardrail_id: str = "",
+    vector_store_ids: list[str] | None = None,
 ) -> dict[str, Any]:
     """Build the governed immutable Toolbox version shared by every agent.
 
     Tool Search is mandatory rather than optional here: Foundry caps an agent at
     128 registered tools, so the toolbox exposes ``tool_search``/``call_tool``
     instead of flattening every connector operation into agent context.
+
+    ``file_search`` is only registered when ``vector_store_ids`` names at least
+    one store. An unbound File Search tool does not fail fast -- Foundry accepts
+    the call and never answers it, so the agent run stalls until the request
+    times out. This mirrors the invariant the Studio compiler already enforces.
     """
     connectors = connector_definitions()
     expected_connector_ids = {connector.id for connector in connectors}
@@ -97,12 +103,16 @@ def shared_toolbox_payload(
             "container": {"type": "auto"},
             "tool_configs": {"*": {"pin": True}},
         },
-        {
-            "type": "file_search",
-            "name": "file_search",
-            "description": "Search uploaded research documents supplied at run time.",
-        },
     ]
+    if vector_store_ids:
+        tools.append(
+            {
+                "type": "file_search",
+                "name": "file_search",
+                "description": "Search the project's indexed research documents.",
+                "vector_store_ids": list(vector_store_ids),
+            }
+        )
     for connector in connectors:
         tools.append(
             {

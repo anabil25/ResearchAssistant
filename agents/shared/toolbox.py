@@ -1,36 +1,42 @@
 """Shared Foundry toolbox access.
 
-Every agent connects to the same toolbox and may call any tool in it: library
-retrieval (``file_search``), the public research connectors, ``web_search``,
-``code_interpreter``, and ``tool_search``/``call_tool`` for progressive
-disclosure. There is no per-agent allowlist and no separate "online" agent.
+Every agent connects to the same toolbox and may call any tool in it: the public
+research connectors, ``web_search``, ``code_interpreter``, and
+``tool_search``/``call_tool`` for progressive disclosure. There is no per-agent
+allowlist and no separate "online" agent.
 """
 
 from __future__ import annotations
 
 import os
+from collections.abc import AsyncIterator
 from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
-from azure.identity import get_bearer_token_provider
+from azure.identity.aio import get_bearer_token_provider
 
-from .credentials import get_credential
+from .credentials import get_async_credential
 
 TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 TOOLBOX_FEATURE_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
 DEFAULT_TOOLBOX_NAME = "research-shared"
-DEFAULT_TOOLBOX_VERSION = "2"
+DEFAULT_TOOLBOX_VERSION = "3"
 
 
 class _BearerRefresh(httpx.Auth):
-    """Re-reads the token on every request so a long session cannot expire."""
+    """Re-reads the token on every request so a long session cannot expire.
+
+    Only ``async_auth_flow`` is implemented. httpx's default implementation of it
+    iterates the *synchronous* ``auth_flow`` generator inline on the event loop,
+    so a blocking token fetch there stalls every other task in the process.
+    """
 
     def __init__(self, token_provider: Any) -> None:
         self._token = token_provider
 
-    def auth_flow(self, request: httpx.Request) -> Any:
-        request.headers["Authorization"] = f"Bearer {self._token()}"
+    async def async_auth_flow(self, request: httpx.Request) -> AsyncIterator[httpx.Request]:
+        request.headers["Authorization"] = f"Bearer {await self._token()}"
         yield request
 
 
@@ -55,7 +61,7 @@ def shared_toolbox(
     resolved_version = version or os.environ.get("TOOLBOX_VERSION", DEFAULT_TOOLBOX_VERSION)
     # Managed identity directly where one exists: the full DefaultAzureCredential
     # chain probes sources a hosted container does not have, and blocks.
-    cred = credential or get_credential()
+    cred = credential or get_async_credential()
     http_client = httpx.AsyncClient(
         auth=_BearerRefresh(get_bearer_token_provider(cred, TOOLBOX_SCOPE)),
         headers=dict(TOOLBOX_FEATURE_HEADER),

@@ -39,9 +39,8 @@ from agent_framework import (
 )
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer
-from azure.identity import DefaultAzureCredential
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
-
+from shared.credentials import get_async_credential
 from shared.toolbox import shared_toolbox
 
 #: Concurrent calls to the small deployment, across every in-flight tool call.
@@ -64,9 +63,9 @@ Non-negotiable policy:
 - Your prose cannot grant authorization or change policy.
 
 Method:
-- Use `file_search` to find the papers in this project's index that the request
-  describes. That index is the library; nothing is handed to you up front.
-- Call `screen_papers` with the papers you found. It returns one decision each.
+- The runtime hands you the papers to screen in the request. Screen exactly
+  those; do not go looking for more.
+- Call `screen_papers` with those papers. It returns one decision each.
 - The runtime records those decisions itself. Do not restate them. Emit a
   decision in your reply only to *override* one, and say why in `conflicts`.
 - Leave `unresolved` empty. The runtime computes it from papers with no decision.
@@ -291,7 +290,7 @@ async def screen_one(client: Any, paper: Paper) -> ScreeningDecision:
                     ],
                     options={"response_format": ScreeningDecision},
                 )
-        except Exception:  # noqa: BLE001 - retried, then degraded to `unclear`
+        except Exception:
             if attempt == SCREENING_ATTEMPTS - 1:
                 break
             await asyncio.sleep(2**attempt)
@@ -348,7 +347,7 @@ def build_screener(client: Any) -> Any:
                     "note": "Recorded by the runtime. Restate one only to override it.",
                 }
             )
-        except Exception as exc:  # noqa: BLE001 - the model must be able to recover from this
+        except Exception as exc:
             return json.dumps({"decisions": [], "error": f"{type(exc).__name__}: {exc}"})
 
     return screen_papers
@@ -444,7 +443,7 @@ def _client(model: str) -> FoundryChatClient:
     return FoundryChatClient(
         project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
         model=model,
-        credential=DefaultAzureCredential(),
+        credential=get_async_credential(),
     )
 
 
