@@ -18,6 +18,7 @@ from research_assistant_api.agent_chat import (
     AgentChatGateway,
     LocalAgentChatGateway,
     ThreadHandle,
+    _next_steps,
     _safe_upload_path,
     build_agent_chat_gateway,
     delegated_user_identity_for,
@@ -44,6 +45,8 @@ class _RecordingGateway:
         self.open_error: Exception | None = None
         self.send_error: Exception | None = None
         self.upload_error: Exception | None = None
+        #: Overrides the canned prose when a test needs a typed contract reply.
+        self.reply_content: str | None = None
 
     def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle:
         if self.open_error:
@@ -74,7 +77,7 @@ class _RecordingGateway:
         )
         return HostedAgentReply(
             agent_name=agent_name,
-            content=f"Reply {len(self.sent)}",
+            content=self.reply_content or f"Reply {len(self.sent)}",
             response_id=f"resp-{len(self.sent)}",
         )
 
@@ -590,7 +593,92 @@ class TestAttachments:
         envelope = json.loads(gateway.sent[0]["text"])
         # Public contracts pin sensitivity themselves and forbid caller evidence.
         assert "sensitivity" not in envelope
+        assert "evidence" not in envelope
         assert envelope["authorized_connector_ids"]
+
+    def test_an_offline_turn_carries_the_projects_authorized_evidence(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        """A hosted agent cannot retrieve for itself, so the turn must supply the set."""
+        thread = open_thread(client)
+        client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "retrieval augmented generation"},
+        )
+        envelope = json.loads(gateway.sent[0]["text"])
+        assert envelope["evidence"]
+        assert all(item["evidence_id"] for item in envelope["evidence"])
+
+    def test_a_dataset_turn_carries_no_corpus_evidence(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        """Dataset turns reason over session files, so corpus chunks are only noise."""
+        thread = open_thread(client, capability="dataset", agent_name="dataset-agent")
+        client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "retrieval augmented generation"},
+        )
+        assert "evidence" not in json.loads(gateway.sent[0]["text"])
+
+    def test_a_turn_that_supports_nothing_names_the_next_step(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        """Abstention is correct but terminal; the researcher needs a route forward."""
+        gateway.reply_content = json.dumps(
+            {
+                "summary": "Nothing here supports an answer.",
+                "claims": [{"text": "Unknown.", "support": "unsupported", "evidence_ids": []}],
+            }
+        )
+        thread = open_thread(client)
+        response = client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "retrieval augmented generation"},
+        )
+        content = response.json()["content"]
+        assert "**Next steps**" in content
+        assert "Public research" in content
+
+    def test_a_supported_turn_is_left_alone(
+        self, client: TestClient, gateway: _RecordingGateway
+    ) -> None:
+        gateway.reply_content = json.dumps(
+            {
+                "summary": "Two methods differ.",
+                "claims": [
+                    {"text": "A beats B.", "support": "supported", "evidence_ids": ["paper-rag-method"]}
+                ],
+                "evidence": [{"evidence_id": "paper-rag-method", "title": "RAG"}],
+            }
+        )
+        thread = open_thread(client)
+        response = client.post(
+            f"/api/agent-chat/threads/{thread['id']}/messages",
+            json={"text": "compare these"},
+        )
+        assert "**Next steps**" not in response.json()["content"]
+
+    def test_an_empty_library_points_at_ingestion(self) -> None:
+        thread = ChatThread(
+            id="chat-1",
+            project_id="project-1",
+            tenant_id="demo",
+            capability=Capability.LITERATURE,
+            agent_name="literature-agent",
+            owner_principal_id="user-a",
+            conversation_id="conv-1",
+            session_id="sess-1",
+            delegated_user_identity="ra:user-a",
+            created_at=utc_now(),
+            updated_at=utc_now(),
+        )
+        raw = json.dumps(
+            {
+                "summary": "No sources.",
+                "claims": [{"text": "Unknown.", "support": "unsupported", "evidence_ids": []}],
+            }
+        )
+        assert "**Library**" in _next_steps(thread, raw, evidence_count=0)
 
     def test_the_attachment_is_attributed_to_the_turn_that_announced_it(
         self, client: TestClient

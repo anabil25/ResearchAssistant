@@ -28,58 +28,10 @@ from research_assistant_core.repositories import (
     EvidenceRepository,
     InMemoryEvidenceRepository,
 )
+from research_assistant_core.agent_surfaces import capability_specs
 from research_assistant_core.security import enforce_safe_source
 
-CAPABILITIES: tuple[CapabilitySpec, ...] = (
-    CapabilitySpec(
-        id=Capability.LITERATURE,
-        title="Literature review synthesis",
-        short_title="Synthesize literature",
-        description="Compare methods, findings, limitations, and open questions with claim-level evidence.",
-        example_prompt="Compare recent approaches to auditable retrieval-augmented research synthesis.",
-        accent="sage",
-    ),
-    CapabilitySpec(
-        id=Capability.GRANT,
-        title="Grant application studio",
-        short_title="Draft a grant",
-        description="Extract requirements, shape specific aims, and flag unsupported or missing content.",
-        example_prompt="Draft three specific aims for an open research infrastructure project.",
-        accent="amber",
-    ),
-    CapabilitySpec(
-        id=Capability.MATCHING,
-        title="PI and resource matching",
-        short_title="Find collaborators",
-        description="Match experts, cores, equipment, methods, and templates with transparent rationale.",
-        example_prompt="Find genomics expertise, sequencing equipment, and data-management resources.",
-        accent="indigo",
-    ),
-    CapabilitySpec(
-        id=Capability.DATASET,
-        title="Dataset and notebook summary",
-        short_title="Summarize a dataset",
-        description="Compute deterministic profiles before explaining metrics, quality, and next analyses.",
-        example_prompt="Summarize the sample outcome dataset and identify the strongest data-quality caveat.",
-        accent="blue",
-    ),
-    CapabilitySpec(
-        id=Capability.INSTITUTIONAL_QA,
-        title="Institution-grounded Q&A",
-        short_title="Ask institution",
-        description="Answer from policies and guidance with versioned page and section citations.",
-        example_prompt="When must AI use be disclosed in an IRB protocol?",
-        accent="rose",
-    ),
-    CapabilitySpec(
-        id=Capability.ORCHESTRATION,
-        title="Research workflow orchestration",
-        short_title="Run a workflow",
-        description="Plan, queue, retry, approve, cancel, and audit repeatable research pipelines.",
-        example_prompt="Plan an ingest, compare, review, and export workflow for a new paper set.",
-        accent="slate",
-    ),
-)
+CAPABILITIES: tuple[CapabilitySpec, ...] = capability_specs()
 
 
 class CitationValidationError(ValueError):
@@ -111,7 +63,10 @@ class ResearchService:
             Capability.INSTITUTIONAL_QA: self._institutional_qa,
             Capability.ORCHESTRATION: self._orchestration,
         }
-        result = handlers[capability](request)
+        handler = handlers.get(capability)
+        if handler is None:
+            raise ValueError(f"{capability} is a conversational capability with no studio workflow")
+        result = handler(request)
         self._validate_result(result)
         return result
 

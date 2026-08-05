@@ -6,6 +6,7 @@ import {
   BookOpen,
   CheckCircle2,
   CircleDashed,
+  ClipboardCheck,
   Clock3,
   FileSearch2,
   FileText,
@@ -2016,6 +2017,18 @@ export const CAPABILITY_CARDS: CapabilityCard[] = [
     accent: "blue-card",
     artifact: "Profile + analysis plan",
     stages: ["Validate", "Profile", "Compute", "Interpret"],
+  },
+  {
+    id: "screening",
+    title: "Systematic review screening",
+    shortTitle: "Screening Studio",
+    description:
+      "Criteria-led screening with one recorded decision per paper and honest unclears.",
+    eyebrow: "Evidence review",
+    icon: ClipboardCheck,
+    accent: "sage-card",
+    artifact: "Screening decisions",
+    stages: ["Criteria", "Screen", "Adjudicate", "Report"],
   },
   {
     id: "institutional_qa",

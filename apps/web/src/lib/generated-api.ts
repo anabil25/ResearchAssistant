@@ -1287,6 +1287,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-surfaces": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Agent Surface Catalog
+         * @description Everything the browser needs to render a studio, so it hardcodes nothing.
+         */
+        get: operations["agent_surface_catalog_api_agent_surfaces_get"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agents": {
         parameters: {
             query?: never;
@@ -1399,6 +1419,23 @@ export interface paths {
         get?: never;
         /** Update Connector */
         put: operations["update_connector_api_connectors__connector_id__put"];
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/api/connectors/{connector_id}/credential": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        /** Update Connector Credential */
+        put: operations["update_connector_credential_api_connectors__connector_id__credential_put"];
         post?: never;
         delete?: never;
         options?: never;
@@ -1792,6 +1829,32 @@ export interface components {
             capability_views?: components["schemas"]["CapabilityBindingView"][];
             draft: components["schemas"]["AgentDraft"];
         };
+        /**
+         * AgentEndpoint
+         * @description One deployed agent a researcher can talk to.
+         *
+         *     Everything the runtime needs is declared here. Nothing infers behaviour from
+         *     the agent's name.
+         */
+        AgentEndpoint: {
+            /** Description */
+            description: string;
+            /**
+             * Evidence
+             * @default none
+             * @enum {string}
+             */
+            evidence: "none" | "citations" | "full_text";
+            /** Label */
+            label: string;
+            /** Name */
+            name: string;
+            /**
+             * Web Access
+             * @default false
+             */
+            web_access: boolean;
+        };
         /** AgentInsight */
         AgentInsight: {
             /** Agent Name */
@@ -2020,6 +2083,48 @@ export interface components {
             /** Updated By */
             updated_by: string;
             visibility: components["schemas"]["AgentVisibility"];
+        };
+        /**
+         * AgentSurface
+         * @description One studio, and the agents behind it.
+         */
+        AgentSurface: {
+            /** Accent */
+            accent: string;
+            /** Agents */
+            agents: components["schemas"]["AgentEndpoint"][];
+            capability: components["schemas"]["Capability"];
+            /**
+             * Chat
+             * @default false
+             */
+            chat: boolean;
+            /** Chat Description */
+            chat_description?: string | null;
+            /** Chat Title */
+            chat_title?: string | null;
+            /** Description */
+            description: string;
+            /** Example Prompt */
+            example_prompt: string;
+            /** Eyebrow */
+            eyebrow?: string | null;
+            /** Icon */
+            icon?: string | null;
+            /** Short Title */
+            short_title: string;
+            /**
+             * Studio
+             * @default true
+             */
+            studio: boolean;
+            /**
+             * Suggestions
+             * @default []
+             */
+            suggestions: string[];
+            /** Title */
+            title: string;
         };
         /**
          * AgentTemplate
@@ -2637,7 +2742,7 @@ export interface components {
          * Capability
          * @enum {string}
          */
-        Capability: "literature" | "grant" | "matching" | "dataset" | "institutional_qa" | "orchestration";
+        Capability: "literature" | "grant" | "matching" | "dataset" | "screening" | "institutional_qa" | "orchestration";
         /** CapabilityApprovalRequest */
         CapabilityApprovalRequest: {
             /** Descriptor Id */
@@ -3291,6 +3396,11 @@ export interface components {
             estimated_minutes: number | null;
             /** Stages */
             stages: string[];
+        };
+        /** ConnectorCredentialUpdate */
+        ConnectorCredentialUpdate: {
+            /** Api Key */
+            api_key?: string | null;
         };
         /** ConnectorSetting */
         ConnectorSetting: {
@@ -7957,6 +8067,26 @@ export interface operations {
             };
         };
     };
+    agent_surface_catalog_api_agent_surfaces_get: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AgentSurface"][];
+                };
+            };
+        };
+    };
     agents_api_agents_get: {
         parameters: {
             query?: never;
@@ -8117,6 +8247,41 @@ export interface operations {
         requestBody: {
             content: {
                 "application/json": components["schemas"]["ConnectorUpdate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ConnectorSetting"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    update_connector_credential_api_connectors__connector_id__credential_put: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                connector_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ConnectorCredentialUpdate"];
             };
         };
         responses: {

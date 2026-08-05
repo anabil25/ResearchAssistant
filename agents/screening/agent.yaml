@@ -1,0 +1,27 @@
+codeConfiguration:
+    dependencyResolution: remote_build
+    entryPoint: screening/main.py
+    runtime: python_3_13
+container:
+    resources:
+        cpu: "0.5"
+        memory: 1Gi
+description: Applies systematic-review inclusion criteria to an authorized library.
+environmentVariables:
+    - name: SCREENING_LEAD_MODEL
+      value: gpt-5.6-sol
+    - name: SCREENING_SCREENER_MODEL
+      value: gpt-5.4-mini
+    - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
+      value: "false"
+kind: hosted
+metadata:
+    tags:
+        - Agent Framework
+        - Research
+        - Screening
+        - Responses Protocol
+name: screening-agent
+protocols:
+    - protocol: responses
+      version: 2.0.0

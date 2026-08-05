@@ -130,6 +130,45 @@
         "title": "AgentDraftView",
         "type": "object"
       },
+      "AgentEndpoint": {
+        "description": "One deployed agent a researcher can talk to.\n\nEverything the runtime needs is declared here. Nothing infers behaviour from\nthe agent's name.",
+        "properties": {
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "evidence": {
+            "default": "none",
+            "enum": [
+              "none",
+              "citations",
+              "full_text"
+            ],
+            "title": "Evidence",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "web_access": {
+            "default": false,
+            "title": "Web Access",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "label",
+          "description"
+        ],
+        "title": "AgentEndpoint",
+        "type": "object"
+      },
       "AgentInsight": {
         "properties": {
           "agent_name": {
@@ -701,6 +740,114 @@
           "updated_by"
         ],
         "title": "AgentSummary",
+        "type": "object"
+      },
+      "AgentSurface": {
+        "description": "One studio, and the agents behind it.",
+        "properties": {
+          "accent": {
+            "title": "Accent",
+            "type": "string"
+          },
+          "agents": {
+            "items": {
+              "$ref": "#/components/schemas/AgentEndpoint"
+            },
+            "title": "Agents",
+            "type": "array"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "chat": {
+            "default": false,
+            "title": "Chat",
+            "type": "boolean"
+          },
+          "chat_description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Description"
+          },
+          "chat_title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Chat Title"
+          },
+          "description": {
+            "title": "Description",
+            "type": "string"
+          },
+          "example_prompt": {
+            "title": "Example Prompt",
+            "type": "string"
+          },
+          "eyebrow": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Eyebrow"
+          },
+          "icon": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Icon"
+          },
+          "short_title": {
+            "title": "Short Title",
+            "type": "string"
+          },
+          "studio": {
+            "default": true,
+            "title": "Studio",
+            "type": "boolean"
+          },
+          "suggestions": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Suggestions",
+            "type": "array"
+          },
+          "title": {
+            "title": "Title",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "agents",
+          "title",
+          "short_title",
+          "description",
+          "example_prompt",
+          "accent"
+        ],
+        "title": "AgentSurface",
         "type": "object"
       },
       "AgentTemplate": {
@@ -2122,6 +2269,7 @@
           "grant",
           "matching",
           "dataset",
+          "screening",
           "institutional_qa",
           "orchestration"
         ],
@@ -12708,6 +12856,32 @@
         "summary": "Publish Prompt Agent",
         "tags": [
           "agent-studio"
+        ]
+      }
+    },
+    "/api/agent-surfaces": {
+      "get": {
+        "description": "Everything the browser needs to render a studio, so it hardcodes nothing.",
+        "operationId": "agent_surface_catalog_api_agent_surfaces_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/AgentSurface"
+                  },
+                  "title": "Response Agent Surface Catalog Api Agent Surfaces Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "Agent Surface Catalog",
+        "tags": [
+          "research"
         ]
       }
     },

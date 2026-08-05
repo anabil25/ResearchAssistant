@@ -107,6 +107,12 @@ from research_assistant_api.identity import (
     resolve_identity,
 )
 from research_assistant_api.orchestration import execute_library_ingestion
+from research_assistant_core.agent_surfaces import (
+    AgentSurface,
+    agent_surfaces,
+    offline_agents,
+    online_agents,
+)
 from research_assistant_api.public_research import (
     ConnectorAuthorizationError,
     resolve_authorized_sources,
@@ -447,20 +453,9 @@ def custom_openapi() -> dict[str, Any]:
 
 app.openapi = custom_openapi  # type: ignore[method-assign]
 
-CAPABILITY_AGENTS = {
-    Capability.LITERATURE: "literature-agent",
-    Capability.GRANT: "grant-agent",
-    Capability.MATCHING: "matching-agent",
-    Capability.DATASET: "dataset-agent",
-    Capability.INSTITUTIONAL_QA: "institution-agent",
-    Capability.ORCHESTRATION: "research-coordinator",
-}
+CAPABILITY_AGENTS = offline_agents()
 
-CAPABILITY_ONLINE_AGENTS = {
-    Capability.LITERATURE: "literature-online-agent",
-    Capability.GRANT: "grant-online-agent",
-    Capability.MATCHING: "matching-online-agent",
-}
+CAPABILITY_ONLINE_AGENTS = online_agents()
 
 STUDIO_RESULT = (
     LiteratureStudioResult
@@ -543,6 +538,12 @@ def ready(request: Request) -> HealthResponse:
 def capabilities(request: Request) -> tuple[CapabilitySpec, ...]:
     service = cast(ResearchService, request.app.state.research)
     return service.capabilities
+
+
+@app.get("/api/agent-surfaces", tags=["research"])
+def agent_surface_catalog() -> tuple[AgentSurface, ...]:
+    """Everything the browser needs to render a studio, so it hardcodes nothing."""
+    return agent_surfaces()
 
 
 @app.get("/api/workflows", tags=["research"])

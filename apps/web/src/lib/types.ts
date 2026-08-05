@@ -2,6 +2,22 @@ import type { components } from "@/lib/generated-api";
 
 export type CapabilityId = components["schemas"]["Capability"];
 
+/**
+ * A studio surface as the server declares it. Hand-written rather than
+ * generated because `/api/agent-surfaces` post-dates the committed OpenAPI
+ * snapshot; regenerate and switch to the generated shape when contracts are
+ * next exported.
+ */
+export interface AgentSurfaceView {
+  capability: CapabilityId;
+  chat: boolean;
+  icon?: string | null;
+  eyebrow?: string | null;
+  chat_title?: string | null;
+  chat_description?: string | null;
+  suggestions?: string[];
+}
+
 export interface Capability {
   id: CapabilityId;
   title: string;

@@ -10,6 +10,7 @@ from fastapi.testclient import TestClient
 from research_assistant_api.app import app
 from research_assistant_api.config import Settings
 from research_assistant_api.connector_gateway import ConnectorGatewayError
+from research_assistant_core.models import Capability
 from research_assistant_api.foundry import (
     HostedAgentConfigurationError,
     HostedAgentInvocationError,
@@ -51,7 +52,7 @@ def test_capabilities_and_research_endpoint() -> None:
         )
 
     assert capabilities.status_code == 200
-    assert len(capabilities.json()) == 6
+    assert len(capabilities.json()) == len(Capability)
     assert result.status_code == 200
     assert result.json()["run"]["capability"] == "literature"
     assert result.json()["citations"]

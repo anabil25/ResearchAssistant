@@ -106,6 +106,13 @@ services:
         uses:
             - ai-project
         $ref: ./agents/coordinator/agent.yaml
+    screening-agent:
+        project: ./agents
+        host: azure.ai.agent
+        language: python
+        uses:
+            - ai-project
+        $ref: ./agents/screening/agent.yaml
     web:
         project: ./apps/web
         host: containerapp

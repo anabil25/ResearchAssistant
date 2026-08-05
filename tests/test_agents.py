@@ -81,7 +81,7 @@ def test_azure_manifest_uses_current_hosted_agent_contract(
     services = azure_manifest["services"]
     agent_services = {name: config for name, config in services.items() if config.get("host") == "azure.ai.agent"}
 
-    assert len(agent_services) == 9
+    assert len(agent_services) == 10
     for name, config in agent_services.items():
         assert config["kind"] == "hosted", name
         assert config["codeConfiguration"]["runtime"] == "python_3_13"
@@ -89,8 +89,11 @@ def test_azure_manifest_uses_current_hosted_agent_contract(
         assert "agent_reference" not in str(config)
         entry_point = ROOT / "agents" / config["codeConfiguration"]["entryPoint"]
         source = entry_point.read_text(encoding="utf-8")
-        assert "sys.path.insert" in source, name
+        # Self-contained agents carry no shared factory, so there is no path to bootstrap.
         factory_import = f"from {entry_point.parent.name}.factory import run"
+        if factory_import not in source:
+            continue
+        assert "sys.path.insert" in source, name
         assert source.index("sys.path.insert") < source.index(factory_import), name
     toolbox_variables = {
         name: next(
@@ -336,7 +339,7 @@ def test_azd_up_deploys_every_service_in_parallel_without_manifest_writes() -> N
         for name, service in manifest["services"].items()
         if service.get("host") == "azure.ai.agent"
     }
-    assert len(agent_services) == 9
+    assert len(agent_services) == 10
     for name, service in agent_services.items():
         assert set(service) == {"$ref", "host", "language", "project", "uses"}, name
         assert service["uses"] == ["ai-project"], name

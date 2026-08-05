@@ -4,6 +4,7 @@ import {
   BookOpen,
   Bot,
   CircleDashed,
+  ClipboardCheck,
   FileText,
   FlaskConical,
   Globe2,
@@ -36,6 +37,11 @@ import {
   uploadChatFile,
 } from "@/lib/api";
 import { classifyAsyncError } from "@/components/async-state";
+import {
+  agentSurface,
+  ensureAgentSurfaces,
+  isChatCapability as surfaceIsChat,
+} from "@/lib/agent-surfaces";
 import type {
   CapabilityId,
   ChatAgentChoice,
@@ -62,10 +68,19 @@ export const CHAT_CAPABILITIES = [
 
 export type ChatCapabilityId = (typeof CHAT_CAPABILITIES)[number];
 
+/** Icons cannot cross the wire, so the server sends a name and this resolves it. */
+const ICONS: Record<string, LucideIcon> = {
+  BookOpen,
+  ClipboardCheck,
+  FileText,
+  Users,
+  FlaskConical,
+};
+
 export function isChatCapability(
   capability: CapabilityId,
 ): capability is ChatCapabilityId {
-  return (CHAT_CAPABILITIES as readonly string[]).includes(capability);
+  return surfaceIsChat(capability);
 }
 
 interface CapabilityCopy {
@@ -76,56 +91,16 @@ interface CapabilityCopy {
   suggestions: string[];
 }
 
-const CAPABILITY_COPY: Record<ChatCapabilityId, CapabilityCopy> = {
-  literature: {
-    icon: BookOpen,
-    eyebrow: "Evidence review",
-    title: "Literature Studio",
-    description:
-      "Ask for a synthesis, a screening decision, or an extraction. Attach the papers you want it to work from.",
-    suggestions: [
-      "Compare the methods used across the papers I attached and flag where they disagree.",
-      "Screen these abstracts against an inclusion criterion of randomised trials since 2020.",
-      "Build an extraction matrix of population, method, outcome, and limitation.",
-    ],
-  },
-  grant: {
-    icon: FileText,
-    eyebrow: "Application lifecycle",
-    title: "Grant Studio",
-    description:
-      "Attach the funding notice and your project facts, then ask for a requirement matrix, a draft, or a red-team review.",
-    suggestions: [
-      "Turn the attached notice into a requirement matrix with owners and evidence gaps.",
-      "Draft the specific aims section from the attached project facts.",
-      "Red-team this draft against the sponsor's review criteria.",
-    ],
-  },
-  matching: {
-    icon: Users,
-    eyebrow: "Discovery",
-    title: "Matching Explorer",
-    description:
-      "Describe the eligibility bar and what you need. Attach a roster or facility list to search within it.",
-    suggestions: [
-      "Shortlist investigators with wet-lab capacity and prior NIH funding.",
-      "Resolve duplicate entries in the attached roster before ranking.",
-      "Explain which stored factors drove the top three matches.",
-    ],
-  },
-  dataset: {
-    icon: FlaskConical,
-    eyebrow: "Data analysis",
-    title: "Dataset Lab",
-    description:
-      "Attach a CSV or notebook output and ask what you want computed. Compute stays inside the approved sandbox.",
-    suggestions: [
-      "Profile the attached CSV: schema, missingness, and obvious quality problems.",
-      "Propose an analysis plan for the outcome column and say what it cannot support.",
-      "Compute descriptive statistics per group and show the code you ran.",
-    ],
-  },
-};
+function capabilityCopy(capability: CapabilityId): CapabilityCopy {
+  const surface = agentSurface(capability);
+  return {
+    icon: ICONS[surface?.icon ?? ""] ?? BookOpen,
+    eyebrow: surface?.eyebrow ?? "Agent",
+    title: surface?.chat_title ?? "Agent",
+    description: surface?.chat_description ?? "",
+    suggestions: surface?.suggestions ?? [],
+  };
+}
 
 function formatBytes(value: number): string {
   if (value < 1024) return `${value} B`;
@@ -160,7 +135,19 @@ export function AgentChat({
   capability: ChatCapabilityId;
   projectId?: string | null;
 }) {
-  const copy = CAPABILITY_COPY[capability];
+  const copy = capabilityCopy(capability);
+  const [, setSurfacesLoaded] = useState(false);
+
+  useEffect(() => {
+    let active = true;
+    void ensureAgentSurfaces().then(() => {
+      if (active) setSurfacesLoaded(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
+
   const [agents, setAgents] = useState<ChatAgentChoice[]>([]);
   const [agentsLoading, setAgentsLoading] = useState(true);
   const [agentName, setAgentName] = useState<string | null>(null);

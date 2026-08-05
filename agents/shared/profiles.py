@@ -24,6 +24,7 @@ from .contracts import (
     EvaluationPolicy,
     EvidencePolicy,
     KnowledgeBinding,
+    LoopPolicy,
     MemoryPolicy,
     ModelPolicy,
     PinnedSpecialist,
@@ -77,6 +78,7 @@ def _manifest(
     specialist_policy: SpecialistPolicy | None = None,
     workflow_checkpointing: bool = False,
     session_files: bool = False,
+    loop: LoopPolicy | None = None,
 ) -> AgentManifest:
     input_schema = SCHEMA_REFERENCES[input_contract]
     output_schema = SCHEMA_REFERENCES[output_contract]
@@ -126,6 +128,7 @@ def _manifest(
         workflow_steps=workflow_steps,
         memory=MemoryPolicy(),
         evaluation=EvaluationPolicy(suite=f"{id}-smoke"),
+        loop=loop or LoopPolicy(),
     )
 
 
@@ -402,6 +405,7 @@ _MANIFESTS: dict[str, AgentManifest] = {
         model_version="2026-07-09",
         workflow_steps=("protocol", "screen", "extract", "synthesize", "audit"),
         session_files=True,
+        loop=LoopPolicy(enabled=True, max_iterations=3),
     ),
     "grant": _manifest(
         id="grant",

@@ -49,6 +49,7 @@ from .errors import (
     error_from_exception,
 )
 from .idempotency import IdempotencyStore
+from .loop import loop_middleware_for_manifest
 from .settings import HarnessSettings
 from .state import (
     ConversationRecord,
@@ -867,7 +868,10 @@ def middleware_for_manifest(
     effective_audit_sink = audit_sink or (
         OpenTelemetryGovernanceAuditSink() if release_id is not None else None
     )
+    # The loop sits outermost so it wraps contract normalization and halts the
+    # turn when an iteration returns a pending tool approval.
     middleware: list[AgentMiddleware | FunctionMiddleware] = [
+        *loop_middleware_for_manifest(manifest),
         ContractMiddleware(
             manifest,
             settings,
@@ -876,7 +880,7 @@ def middleware_for_manifest(
             conversation_store=conversation_store,
             trusted_tenant_id=trusted_tenant_id,
             trusted_project_id=trusted_project_id,
-        )
+        ),
     ]
     if manifest.online:
         middleware.append(ConnectorToolAuthorizationMiddleware(manifest))

@@ -16,6 +16,7 @@ class Capability(StrEnum):
     GRANT = "grant"
     MATCHING = "matching"
     DATASET = "dataset"
+    SCREENING = "screening"
     INSTITUTIONAL_QA = "institutional_qa"
     ORCHESTRATION = "orchestration"
 

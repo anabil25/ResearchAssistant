@@ -8,6 +8,7 @@ import type {
   AgentReleaseSummary,
   AgentSetting,
   AgentSummary,
+  AgentSurfaceView,
   AgentTraceSummary,
   ApprovalRecord,
   CapabilityDescriptor,
@@ -125,6 +126,10 @@ async function apiFetch<T>(
   projectId?: string,
 ): Promise<T> {
   return backendFetch<T>(`${API_BASE}${path}`, init, projectId);
+}
+
+export async function getAgentSurfaces(): Promise<AgentSurfaceView[]> {
+  return apiFetch<AgentSurfaceView[]>("/agent-surfaces");
 }
 
 export interface WorkspaceData {

@@ -42,7 +42,14 @@ from azure.core.credentials import TokenCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
 from research_assistant_core.azure_auth import azure_credential
+from research_assistant_core.agent_surfaces import (
+    chat_capabilities,
+    endpoint_for,
+    evidence_grounded_capabilities,
+    find_surface,
+)
 from research_assistant_core.models import Capability
+from research_assistant_core.service import ResearchService
 from starlette.concurrency import run_in_threadpool
 
 from research_assistant_api.config import Settings
@@ -73,12 +80,15 @@ router = APIRouter(prefix="/api/agent-chat", tags=["agent-chat"])
 #: Capabilities that render the chat template. Institutional Q&A keeps its
 #: version-and-abstain surface and workflow automation keeps its DAG editor,
 #: so neither is offered here.
-CHAT_CAPABILITIES = (
-    Capability.LITERATURE,
-    Capability.GRANT,
-    Capability.MATCHING,
-    Capability.DATASET,
-)
+CHAT_CAPABILITIES = chat_capabilities()
+
+#: Capabilities whose offline contract answers from the project library. Dataset
+#: turns operate on session files, so corpus retrieval would only add noise.
+EVIDENCE_GROUNDED_CAPABILITIES = evidence_grounded_capabilities()
+
+#: Chunks resolved per offline turn. A Hosted Agent cannot retrieve for itself,
+#: so this is the entire evidence set the turn will ever see.
+CHAT_EVIDENCE_LIMIT = 8
 
 MAX_UPLOAD_BYTES = 20_000_000
 MAX_MESSAGE_CHARS = 8_000
@@ -310,32 +320,19 @@ class LocalAgentChatGateway:
 
 
 def _capability_agents(capability: Capability) -> tuple[AgentChoice, ...]:
-    """Deployed agents for a capability, offline first.
-
-    Imported lazily so this module stays importable from ``app`` without a
-    circular import at definition time.
-    """
-    from research_assistant_api.app import CAPABILITY_AGENTS, CAPABILITY_ONLINE_AGENTS
-
-    choices = [
+    """Deployed agents for a capability, in registry order."""
+    surface = find_surface(capability)
+    if surface is None:
+        return ()
+    return tuple(
         AgentChoice(
-            name=CAPABILITY_AGENTS[capability],
-            label="Authorized evidence",
-            description="Answers only from the sources stored in this project's library.",
-            online=False,
+            name=endpoint.name,
+            label=endpoint.label,
+            description=endpoint.description,
+            online=endpoint.web_access,
         )
-    ]
-    online_agent = CAPABILITY_ONLINE_AGENTS.get(capability)
-    if online_agent:
-        choices.append(
-            AgentChoice(
-                name=online_agent,
-                label="Public research",
-                description="Also searches allowlisted public metadata sources.",
-                online=True,
-            )
-        )
-    return tuple(choices)
+        for endpoint in surface.agents
+    )
 
 
 def _workspace_access(request: Request) -> tuple[WorkspaceStore, IdentityContext]:
@@ -538,6 +535,13 @@ async def send_chat_message(
         created_at=utc_now(),
         attachments=list(pending),
     )
+    evidence = await _turn_evidence(
+        request,
+        thread=thread,
+        identity=identity,
+        project_id=store.project_id,
+        query=payload.text,
+    )
     try:
         reply = await run_in_threadpool(
             gateway.send,
@@ -551,6 +555,7 @@ async def send_chat_message(
                 settings=cast(Settings, request.app.state.settings),
                 text=payload.text,
                 attachments=pending,
+                evidence=evidence,
             ),
         )
     except (
@@ -559,10 +564,12 @@ async def send_chat_message(
         HostedAgentInvocationError,
     ) as exc:
         raise _gateway_failure(exc) from exc
+    content = _render_agent_reply(reply.content)
+    follow_up = _next_steps(thread, reply.content, evidence_count=len(evidence))
     assistant_message = ChatMessage(
         id=f"msg-{uuid4().hex[:16]}",
         role="assistant",
-        content=_render_agent_reply(reply.content),
+        content=f"{content}\n\n{follow_up}" if follow_up else content,
         created_at=utc_now(),
         agent_name=reply.agent_name,
     )
@@ -702,6 +709,105 @@ def _agent_connector_ids(agent_name: str) -> tuple[str, ...]:
     )
 
 
+def _resolved_nothing(raw: str) -> bool:
+    """True when a typed reply supported no claim at all."""
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    if not isinstance(payload, dict) or "summary" not in payload:
+        return False
+    claims = payload.get("claims")
+    if not isinstance(claims, list):
+        return False
+    return not any(
+        isinstance(claim, dict) and claim.get("support") == "supported" for claim in claims
+    )
+
+
+def _next_steps(thread: ChatThread, raw: str, *, evidence_count: int) -> str:
+    """Name the route forward when a turn resolves nothing.
+
+    Abstaining on absent evidence is correct, but on its own it is terminal: the
+    researcher is told what could not be answered and nothing about what to do.
+    """
+    endpoint = endpoint_for(thread.agent_name)
+    if endpoint is None or endpoint.web_access or endpoint.evidence == "none":
+        return ""
+    if not _resolved_nothing(raw):
+        return ""
+    online = next(
+        (choice for choice in _capability_agents(thread.capability) if choice.online),
+        None,
+    )
+    if evidence_count:
+        lines = [
+            f"**Next steps** — {evidence_count} source(s) were retrieved from this "
+            "project's library, but none supported a claim.",
+            "- Name the specific paper, metric, or population you want compared.",
+        ]
+    else:
+        lines = [
+            "**Next steps** — this project's library returned no sources for this question.",
+            "- Add sources in **Library**, then ask again.",
+        ]
+    if online is not None:
+        lines.append(
+            f"- Or switch the **Agent** selector to **{online.label}** to search "
+            "allowlisted public sources."
+        )
+    return "\n".join(lines)
+
+
+def _authorized_evidence(
+    research: ResearchService,
+    *,
+    query: str,
+    identity: IdentityContext,
+    project_id: str,
+    full_text: bool = False,
+) -> tuple[dict[str, object], ...]:
+    """Resolve a turn's evidence set under the caller's tenant/project/group ACL."""
+    chunks = research.repository.search(
+        query,
+        tenant_id=identity.tenant_id,
+        project_id=project_id,
+        group_ids=list(identity.groups),
+        limit=CHAT_EVIDENCE_LIMIT,
+    )
+    return tuple(
+        {
+            "evidence_id": chunk.id,
+            "title": chunk.title,
+            "version": chunk.version,
+            **({"abstract": chunk.content} if full_text else {}),
+        }
+        for chunk in chunks
+    )
+
+
+async def _turn_evidence(
+    request: Request,
+    *,
+    thread: ChatThread,
+    identity: IdentityContext,
+    project_id: str,
+    query: str,
+) -> tuple[dict[str, object], ...]:
+    endpoint = endpoint_for(thread.agent_name)
+    if endpoint is None or endpoint.evidence == "none":
+        return ()
+    research = cast(ResearchService, request.app.state.research)
+    return await run_in_threadpool(
+        _authorized_evidence,
+        research,
+        query=query,
+        identity=identity,
+        project_id=project_id,
+        full_text=endpoint.evidence == "full_text",
+    )
+
+
 def _contract_envelope(
     thread: ChatThread,
     *,
@@ -709,6 +815,7 @@ def _contract_envelope(
     settings: Settings,
     text: str,
     attachments: list[ChatAttachment],
+    evidence: tuple[dict[str, object], ...] = (),
 ) -> str:
     # Agents pin themselves to this deployment's tenant/project and reject any other
     # scope, so the envelope carries the deployment scope; the caller is carried by
@@ -720,11 +827,15 @@ def _contract_envelope(
         "principal_id": identity.user_id,
         "session_id": thread.id,
     }
-    if thread.agent_name.endswith("-online-agent"):
-        # Public contracts pin sensitivity themselves and forbid caller evidence.
+    endpoint = endpoint_for(thread.agent_name)
+    if endpoint is not None and endpoint.web_access:
+        # Contracts that reach public sources pin sensitivity themselves and
+        # refuse caller-supplied evidence.
         envelope["authorized_connector_ids"] = list(_agent_connector_ids(thread.agent_name))
     else:
         envelope["sensitivity"] = _INTERNAL_SENSITIVITY
+        if evidence:
+            envelope["evidence"] = list(evidence)
     if thread.capability == Capability.DATASET:
         latest = attachments[-1] if attachments else None
         envelope["dataset_id"] = latest.path if latest else f"{thread.id}-session-dataset"

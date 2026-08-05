@@ -826,12 +826,35 @@ class EvaluationPolicy(BaseModel):
         return self
 
 
+class LoopPolicy(BaseModel):
+    """Bounds deterministic re-invocation of an agent within one turn.
+
+    ``max_iterations`` is a safety cap, never the stopping rule: the loop halts as
+    soon as the deterministic sufficiency predicate is satisfied. A judge may only
+    advise continuation -- it can never widen evidence, authority, or scope.
+    """
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    enabled: bool = False
+    max_iterations: int = Field(default=3, ge=1, le=10)
+    judge_enabled: bool = False
+    criteria: tuple[str, ...] = ()
+
+    @model_validator(mode="after")
+    def judge_requires_a_loop(self) -> LoopPolicy:
+        if self.judge_enabled and not self.enabled:
+            raise ValueError("a judge requires the loop to be enabled")
+        if self.criteria and not self.enabled:
+            raise ValueError("loop criteria require the loop to be enabled")
+        return self
+
+
 class DeploymentScope(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     tenant_id: str = Field(min_length=1, max_length=256)
     project_id: str = Field(min_length=1, max_length=512)
-
     @field_validator("tenant_id", "project_id")
     @classmethod
     def reject_template_sentinels(cls, value: str) -> str:
@@ -863,6 +886,7 @@ class AgentManifest(BaseModel):
     workflow_steps: tuple[str, ...] = Field(min_length=1)
     memory: MemoryPolicy
     evaluation: EvaluationPolicy
+    loop: LoopPolicy = LoopPolicy()
 
     @model_validator(mode="after")
     def manifest_policy(self) -> AgentManifest:
