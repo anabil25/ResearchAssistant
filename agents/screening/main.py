@@ -580,16 +580,12 @@ def build_agent(
     return create_harness_agent(lead, **options)
 
 
-async def serve() -> None:
-    """Connect the shared toolbox, then hand the agent to the host."""
-    toolbox = shared_toolbox()
-    await toolbox.connect()
-    await toolbox.load_tools()
-    ResponsesHostServer(build_agent(toolbox=toolbox), configure_observability=None).run()
-
-
 def run() -> None:
-    asyncio.run(serve())
+    # The toolbox connects lazily on first use; `ResponsesHostServer.run()` calls
+    # `asyncio.run()` itself, so nothing here may be awaited.
+    ResponsesHostServer(
+        build_agent(toolbox=shared_toolbox()), configure_observability=None
+    ).run()
 
 
 if __name__ == "__main__":
