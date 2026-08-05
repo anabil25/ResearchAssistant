@@ -1,3 +1,5 @@
+import { useEffect, useState } from "react";
+
 import { getAgentSurfaces } from "@/lib/api";
 import type { AgentSurfaceView, CapabilityId } from "@/lib/types";
 
@@ -107,4 +109,18 @@ export function chatCapabilities(): CapabilityId[] {
   return [...registry.values()]
     .filter((surface) => surface.chat)
     .map((surface) => surface.capability);
+}
+
+/** Re-renders once the server registry lands, so routing sees new capabilities. */
+export function useAgentSurfaces(): void {
+  const [, setLoaded] = useState(false);
+  useEffect(() => {
+    let active = true;
+    void ensureAgentSurfaces().then(() => {
+      if (active) setLoaded(true);
+    });
+    return () => {
+      active = false;
+    };
+  }, []);
 }

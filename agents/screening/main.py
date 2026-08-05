@@ -26,7 +26,9 @@ from agent_framework import (
     AgentLoopMiddleware,
     AgentMiddleware,
     AgentResponse,
+    InlineSkill,
     Message,
+    SkillFrontmatter,
     SkillsProvider,
     create_harness_agent,
     tool,
@@ -438,15 +440,67 @@ def _client(model: str) -> FoundryChatClient:
     )
 
 
-def _skills() -> SkillsProvider:
-    """Skills ship in this repo, so reading one needs no approval.
+_SCREENING_PROTOCOL = """\
+## Order of work
 
-    Left on the default, the first ``load_skill`` returns an approval request that
-    a hosted agent has no human to satisfy -- and the Foundry payload rejects it.
-    Script execution stays gated.
+1. Read the criteria and the paper list from the request digest.
+2. Call `screen_papers` in batches of 10-20 evidence ids.
+3. Reconcile the returned decisions against the paper list.
+
+## Deciding
+
+Apply exclusion criteria before inclusion criteria. A paper that trips any
+exclusion criterion is excluded regardless of how well it fits inclusion.
+
+Name exactly one criterion per decision -- the one that settled it. If two
+criteria would each settle it, cite the exclusion criterion.
+
+## When to answer `unclear`
+
+`unclear` is correct, not a failure, when:
+
+- the abstract does not report the population, design, or outcome a criterion asks about;
+- the paper is a protocol, editorial, or conference abstract with no results;
+- the criterion needs full text and only an abstract was supplied.
+
+Do not infer a study design from the title. Do not treat the absence of an
+exclusion signal as evidence of inclusion.
+
+## Conflicts
+
+Re-screen a paper only when two passes disagree. Record the disagreement in
+`conflicts` with both readings and the criterion at issue. If re-screening does
+not settle it, leave the paper `unclear` and say why.
+
+## Reporting
+
+`summary` states the counts, the criteria applied, and what the screen cannot
+settle. It never claims a paper was assessed that carries no decision.
+"""
+
+
+def _skills() -> SkillsProvider:
+    """Defined in code, not Markdown.
+
+    ``build_agent_source_tree.py`` packages only ``.py`` and ``requirements.txt``
+    into the hosted agent's source identity, so a ``SKILL.md`` on disk never
+    reaches the container and loading it there would fail at startup.
+
+    Reading a skill needs no approval either: a hosted agent has no human to
+    grant one, and the resulting approval request is rejected by the Foundry
+    payload. Script execution stays gated.
     """
-    return SkillsProvider.from_paths(
-        Path(__file__).parent / "skills",
+    return SkillsProvider(
+        InlineSkill(
+            frontmatter=SkillFrontmatter(
+                name="screening-protocol",
+                description=(
+                    "How to run a screening pass: batching, conflict handling, "
+                    "and when to answer `unclear`."
+                ),
+            ),
+            instructions=_SCREENING_PROTOCOL,
+        ),
         disable_load_skill_approval=True,
         disable_read_skill_resource_approval=True,
     )

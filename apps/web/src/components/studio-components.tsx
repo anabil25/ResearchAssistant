@@ -32,6 +32,7 @@ import { createPortal } from "react-dom";
 
 import type { WorkspaceData } from "@/lib/api";
 import { AgentChat, isChatCapability } from "@/components/agent-chat";
+import { useAgentSurfaces } from "@/lib/agent-surfaces";
 import { openBlockingModal } from "@/lib/blocking-modal";
 import { isConnectorRunnable } from "@/lib/connector-availability";
 import type {
@@ -1491,9 +1492,12 @@ export function StudioForCapability({
   capability,
   ...props
 }: StudioProps & { capability: CapabilityId }) {
-  // The four evidence/analysis capabilities share one chat surface: their
-  // agents already carry the instructions, tools, and boundary that the old
-  // multi-step forms re-stated in the browser. Institutional Q&A keeps its
+  // Routing depends on the server-declared surface registry, so prime it here:
+  // a capability the bundle never heard of has no other way to resolve.
+  useAgentSurfaces();
+  // The evidence/analysis capabilities share one chat surface: their agents
+  // already carry the instructions, tools, and boundary that the old multi-step
+  // forms re-stated in the browser. Institutional Q&A keeps its
   // version-and-abstain workflow and orchestration keeps its DAG editor,
   // because neither is a conversation.
   if (isChatCapability(capability)) {
