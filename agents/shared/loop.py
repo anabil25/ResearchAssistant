@@ -13,7 +13,7 @@ fabrication is manufactured.
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from agent_framework import AgentLoopMiddleware
@@ -60,7 +60,9 @@ def _claim_count(raw: str) -> int | None:
     return len(claims) if isinstance(claims, list) else 0
 
 
-def sufficiency_predicate(manifest: AgentManifest):
+def sufficiency_predicate(
+    manifest: AgentManifest,
+) -> Callable[..., tuple[bool, str | None]]:
     """Build the ``should_continue`` predicate for one manifest.
 
     Returns ``(continue, feedback)`` so the next iteration is told which gap to
@@ -86,7 +88,7 @@ def sufficiency_predicate(manifest: AgentManifest):
     return should_continue
 
 
-def revision_message(manifest: AgentManifest):
+def revision_message(manifest: AgentManifest) -> Callable[..., str | None]:
     """Build the next iteration's input for one manifest.
 
     ``ContractMiddleware`` re-validates the typed input contract on every

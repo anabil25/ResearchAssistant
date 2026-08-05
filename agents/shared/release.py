@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import importlib.metadata
 import os
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal, Protocol
 
@@ -50,9 +50,7 @@ class ReleaseAttestation(BaseModel):
     contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     idempotency_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     approval_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
-    release_attestation_contract_schema_digest: str = Field(
-        pattern=r"^[0-9a-f]{64}$"
-    )
+    release_attestation_contract_schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     source_tree_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
     model_deployment_ref: str = Field(min_length=1, max_length=2048)
     model_version: str = Field(min_length=1, max_length=128)
@@ -255,9 +253,7 @@ def build_release_metadata(
         "manifest_digest": manifest_hash,
         "parent_manifest_hash": manifest.parent_manifest_hash,
         "deployment_scope": (
-            manifest.deployment_scope.model_dump(mode="json")
-            if manifest.deployment_scope is not None
-            else None
+            manifest.deployment_scope.model_dump(mode="json") if manifest.deployment_scope is not None else None
         ),
         "input_schema_hash": manifest.input_schema.sha256,
         "output_schema_hash": manifest.output_schema.sha256,
@@ -321,9 +317,7 @@ def validate_release_attestation(
     allow_test_attestor: bool = False,
     now: datetime | None = None,
 ) -> ReleaseAttestation:
-    if attestor is None or (
-        not getattr(attestor, "is_durable", False) and not allow_test_attestor
-    ):
+    if attestor is None or (not getattr(attestor, "is_durable", False) and not allow_test_attestor):
         raise ReleaseAttestationError(
             "Hosted serving requires an app-owned durable release attestor",
             context={"agent": manifest.id},
@@ -347,12 +341,9 @@ def validate_release_attestation(
         or attestation.manifest_digest != release.manifest_digest
         or attestation.deployment_scope != release.deployment_scope
         or attestation.contract_schema_digest != release.contract_schema_digest
-        or attestation.idempotency_contract_schema_digest
-        != release.idempotency_contract_schema_digest
-        or attestation.approval_contract_schema_digest
-        != release.approval_contract_schema_digest
-        or attestation.release_attestation_contract_schema_digest
-        != release.release_attestation_contract_schema_digest
+        or attestation.idempotency_contract_schema_digest != release.idempotency_contract_schema_digest
+        or attestation.approval_contract_schema_digest != release.approval_contract_schema_digest
+        or attestation.release_attestation_contract_schema_digest != release.release_attestation_contract_schema_digest
         or attestation.source_tree_digest != release.source_tree_digest
         or attestation.model_deployment_ref != release.model_deployment_ref
         or attestation.model_version != release.model_version
@@ -375,50 +366,3 @@ def validate_release_attestation(
             context={"agent": manifest.id},
         )
     return attestation
-
-
-class InMemoryReleaseAttestor:
-    is_durable = False
-    is_test_only = True
-
-    def __init__(self, objective_gates: tuple[ObjectiveGate, ...]) -> None:
-        self._objective_gates = tuple(sorted(objective_gates))
-
-    def attest(self, release: ReleaseMetadata) -> ReleaseAttestation:
-        issued_at = datetime.now(UTC)
-        return ReleaseAttestation(
-            attestation_id=f"local:{release.release_id}",
-            issuer="local-test-harness",
-            version="1",
-            release_id=release.release_id,
-            manifest_digest=release.manifest_digest,
-            deployment_scope=release.deployment_scope,
-            contract_schema_digest=release.contract_schema_digest,
-            idempotency_contract_schema_digest=(
-                release.idempotency_contract_schema_digest
-            ),
-            approval_contract_schema_digest=release.approval_contract_schema_digest,
-            release_attestation_contract_schema_digest=(
-                release.release_attestation_contract_schema_digest
-            ),
-            source_tree_digest=release.source_tree_digest,
-            model_deployment_ref=release.model_deployment_ref,
-            model_version=release.model_version,
-            provider_contracts=release.provider_contracts,
-            provider_artifacts=release.provider_artifacts,
-            objective_gates=tuple(
-                ObjectiveGateAttestation(
-                    gate=gate,
-                    passed=True,
-                    evidence_digest=canonical_digest(
-                        {
-                            "gate": gate.value,
-                            "release_id": release.release_id,
-                        }
-                    ),
-                )
-                for gate in self._objective_gates
-            ),
-            issued_at=issued_at,
-            expires_at=issued_at + timedelta(hours=1),
-        )

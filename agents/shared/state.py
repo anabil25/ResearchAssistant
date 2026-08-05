@@ -6,7 +6,6 @@ from typing import Any, Protocol
 from pydantic import BaseModel, ConfigDict, Field
 
 from .contracts import Sensitivity
-from .errors import IsolationError
 
 
 class ConversationRecord(BaseModel):
@@ -38,28 +37,6 @@ class ConversationStore(Protocol):
     async def save(self, record: ConversationRecord) -> None: ...
 
 
-class InMemoryConversationStore:
-    is_durable = False
-    is_test_only = True
-
-    def __init__(self) -> None:
-        self._records: dict[tuple[str, str], ConversationRecord] = {}
-        self._session_tenants: dict[str, str] = {}
-
-    async def load(self, tenant_id: str, session_id: str) -> ConversationRecord | None:
-        owner = self._session_tenants.get(session_id)
-        if owner is not None and owner != tenant_id:
-            raise IsolationError("Session belongs to another tenant")
-        return self._records.get((tenant_id, session_id))
-
-    async def save(self, record: ConversationRecord) -> None:
-        owner = self._session_tenants.get(record.session_id)
-        if owner is not None and owner != record.tenant_id:
-            raise IsolationError("Cannot overwrite another tenant's session")
-        self._session_tenants[record.session_id] = record.tenant_id
-        self._records[(record.tenant_id, record.session_id)] = record
-
-
 class LongTermMemoryStore(Protocol):
     is_durable: bool
 
@@ -75,33 +52,6 @@ class LongTermMemoryStore(Protocol):
         tenant_id: str,
         principal_id: str,
     ) -> tuple[MemoryRecord, ...]: ...
-
-
-class InMemoryLongTermMemory:
-    is_durable = False
-    is_test_only = True
-
-    def __init__(self, *, max_records: int = 100) -> None:
-        if max_records < 1:
-            raise ValueError("max_records must be positive")
-        self._max_records = max_records
-        self._records: dict[tuple[str, str], list[MemoryRecord]] = {}
-
-    async def remember(
-        self,
-        record: MemoryRecord,
-        *,
-        allowed_sensitivities: tuple[Sensitivity, ...],
-    ) -> None:
-        if record.sensitivity not in allowed_sensitivities:
-            raise IsolationError("Memory policy rejects this sensitivity")
-        key = (record.tenant_id, record.principal_id)
-        items = self._records.setdefault(key, [])
-        items.append(record)
-        del items[: -self._max_records]
-
-    async def recall(self, tenant_id: str, principal_id: str) -> tuple[MemoryRecord, ...]:
-        return tuple(self._records.get((tenant_id, principal_id), ()))
 
 
 def to_agent_session(record: ConversationRecord) -> Any:

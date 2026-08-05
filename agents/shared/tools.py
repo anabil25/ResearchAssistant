@@ -8,8 +8,8 @@ from agent_framework import tool
 from agent_framework_foundry_hosting import FoundryToolbox  # type: ignore[import-untyped]
 from azure.ai.projects import AIProjectClient
 from pydantic import Field
-from .connector_catalog import connector_definition
 
+from .connector_catalog import connector_definition
 from .contracts import AgentManifest, Sensitivity, SpecialistCapability
 from .credentials import get_credential
 from .errors import ConfigurationError

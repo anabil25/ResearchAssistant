@@ -9,7 +9,7 @@ allowlist and no separate "online" agent.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncIterator
+from collections.abc import AsyncGenerator
 from typing import Any
 
 import httpx
@@ -35,7 +35,9 @@ class _BearerRefresh(httpx.Auth):
     def __init__(self, token_provider: Any) -> None:
         self._token = token_provider
 
-    async def async_auth_flow(self, request: httpx.Request) -> AsyncIterator[httpx.Request]:
+    async def async_auth_flow(
+        self, request: httpx.Request
+    ) -> AsyncGenerator[httpx.Request, httpx.Response]:
         request.headers["Authorization"] = f"Bearer {await self._token()}"
         yield request
 

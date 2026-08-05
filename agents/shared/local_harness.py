@@ -21,8 +21,8 @@ from .contracts import (
     ResearchRequest,
     ResearchResponse,
     bind_contracts,
-    resolve_authorized_evidence,
     lenient_output_model,
+    resolve_authorized_evidence,
 )
 from .errors import ContractError, ErrorDetail, error_from_exception
 from .idempotency import IdempotencyStore

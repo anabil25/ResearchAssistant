@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
-import secrets
-from collections.abc import Callable
-from datetime import UTC, datetime
+from datetime import datetime
 from enum import StrEnum
-from typing import Protocol, cast
+from typing import Protocol
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
@@ -150,133 +147,6 @@ class ApprovalGrant(BaseModel):
         if (self.state == ApprovalGrantState.CONSUMED) != (self.receipt is not None):
             raise ValueError("only consumed approval grants carry a receipt")
         return self
-
-
-class InMemoryApprovalBackend:
-    def __init__(self) -> None:
-        self.grants: dict[str, ApprovalGrant] = {}
-        self.lock = asyncio.Lock()
-
-
-class InMemoryApprovalConsumptionAdapter:
-    is_durable = False
-
-    def __init__(
-        self,
-        backend: InMemoryApprovalBackend | None = None,
-        *,
-        clock: Callable[[], datetime] | None = None,
-    ) -> None:
-        self._backend = backend or InMemoryApprovalBackend()
-        self._clock = clock or (lambda: datetime.now(UTC))
-
-    async def issue(self, grant: ApprovalGrant) -> None:
-        async with self._backend.lock:
-            if grant.request.approval_decision_id in self._backend.grants:
-                raise ValueError("approval grant already exists")
-            self._backend.grants[grant.request.approval_decision_id] = grant
-
-    async def consume(
-        self,
-        request: ApprovalConsumptionRequest,
-    ) -> ApprovalConsumptionResult:
-        async with self._backend.lock:
-            grant = self._backend.grants.get(request.approval_decision_id)
-            if grant is None:
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.NOT_FOUND,
-                    "approval_not_found",
-                )
-            if grant.request_digest != request.digest:
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.MISMATCH,
-                    "approval_binding_mismatch",
-                    version=grant.version,
-                )
-            if grant.state == ApprovalGrantState.CONSUMED:
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.ALREADY_CONSUMED,
-                    "approval_already_consumed",
-                    version=grant.version,
-                )
-            if grant.state == ApprovalGrantState.DENIED:
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.DENIED,
-                    cast(str, grant.denial_reason),
-                    version=grant.version,
-                )
-            if grant.state == ApprovalGrantState.REVOKED:
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.REVOKED,
-                    "approval_revoked",
-                    version=grant.version,
-                )
-            now = self._clock()
-            if grant.state == ApprovalGrantState.EXPIRED or grant.expires_at <= now:
-                if grant.state != ApprovalGrantState.EXPIRED:
-                    grant = grant.model_copy(
-                        update={
-                            "state": ApprovalGrantState.EXPIRED,
-                            "version": self._next_version(grant.version),
-                        }
-                    )
-                    self._backend.grants[request.approval_decision_id] = grant
-                return self._terminal_result(
-                    request,
-                    ApprovalConsumptionDisposition.EXPIRED,
-                    "approval_expired",
-                    version=grant.version,
-                )
-            receipt = ApprovalReceipt(
-                approval_decision_id=request.approval_decision_id,
-                request_digest=request.digest,
-                approval_version=grant.version,
-                consumption_id=secrets.token_hex(32),
-                consumption_version=self._next_version(grant.version),
-                approver_id=grant.approver_id,
-                consumed_at=now,
-                expires_at=grant.expires_at,
-            )
-            consumed = grant.model_copy(
-                update={
-                    "state": ApprovalGrantState.CONSUMED,
-                    "version": receipt.consumption_version,
-                    "receipt": receipt,
-                }
-            )
-            self._backend.grants[request.approval_decision_id] = consumed
-            return ApprovalConsumptionResult(
-                disposition=ApprovalConsumptionDisposition.CONSUMED,
-                approval_decision_id=request.approval_decision_id,
-                request_digest=request.digest,
-                approval_version=receipt.approval_version,
-                receipt=receipt,
-            )
-
-    @staticmethod
-    def _terminal_result(
-        request: ApprovalConsumptionRequest,
-        disposition: ApprovalConsumptionDisposition,
-        reason_code: str,
-        *,
-        version: str | None = None,
-    ) -> ApprovalConsumptionResult:
-        return ApprovalConsumptionResult(
-            disposition=disposition,
-            approval_decision_id=request.approval_decision_id,
-            request_digest=request.digest,
-            approval_version=version,
-            reason_code=reason_code,
-        )
-
-    @staticmethod
-    def _next_version(version: str) -> str:
-        return str(int(version) + 1)
 
 
 def canonical_approval_digest(payload: object) -> str:

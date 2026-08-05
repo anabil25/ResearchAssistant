@@ -2,8 +2,6 @@ from __future__ import annotations
 
 from typing import Literal
 
-from .connector_catalog import connector_definitions
-
 from .capabilities import (
     PROVIDER_CONTRACT_SCHEMA_DIGEST,
     PROVIDER_CONTRACT_VERSION,
@@ -17,6 +15,7 @@ from .capabilities import (
     PolicyReference,
     template_instance_fingerprint,
 )
+from .connector_catalog import connector_definitions
 from .contracts import (
     SCHEMA_REFERENCES,
     AgentManifest,
