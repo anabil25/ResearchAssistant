@@ -525,6 +525,10 @@ def _loop() -> AgentLoopMiddleware:
         max_iterations=3,
         record_feedback=_record_gap,
         return_final_only=True,
+        # Each pass restarts from the original envelope plus the progress log.
+        # Carrying the previous turn forward leaves a tool result whose matching
+        # call is no longer in the request, which the Responses API rejects.
+        fresh_context=True,
     )
 
 

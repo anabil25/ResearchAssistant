@@ -8,6 +8,5 @@ with AIProjectClient(endpoint=ep, credential=DefaultAzureCredential(), allow_pre
     c = p.get_openai_client(agent_name="screening-agent")
     r = c.responses.create(input=json.dumps(REQUEST))
     d = r.model_dump()
-    print("status:", d.get("status"))
-    print("error:", json.dumps(d.get("error"))[:800])
-    print("incomplete:", json.dumps(d.get("incomplete_details"))[:300])
+    print("status:", d.get("status"), "| error:", json.dumps(d.get("error"))[:300])
+    print(r.output_text[:1200])
