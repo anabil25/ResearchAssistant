@@ -6,6 +6,11 @@ import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
 
 import type { Citation } from "@/lib/types";
+import {
+  APPROVED_RESEARCH_SOURCE_HOSTS,
+  evaluateExternalUrlPolicy,
+  RESEARCH_SOURCE_URL_POLICY,
+} from "@/lib/url-policy";
 
 const HardenedMarkdown = hardenReactMarkdown(ReactMarkdown);
 const MAX_CODE_CHARACTERS = 20_000;
@@ -32,6 +37,10 @@ const SAFE_CODE_LANGUAGES = new Set([
   "xml",
   "yaml",
 ]);
+const ALLOWED_RESEARCH_LINK_PREFIXES = Array.from(
+  APPROVED_RESEARCH_SOURCE_HOSTS,
+  (host) => `https://${host}/`,
+);
 
 function codeLanguage(className: string | undefined): string {
   const candidate = className?.match(/language-([a-z0-9+#-]+)/i)?.[1]?.toLowerCase();
@@ -65,7 +74,7 @@ const researchMarkdownComponents = {
     children?: React.ReactNode;
     href?: string;
   }) =>
-    href ? (
+    href && evaluateExternalUrlPolicy(href, RESEARCH_SOURCE_URL_POLICY).allowed ? (
       <a
         href={href}
         target="_blank"
@@ -114,7 +123,7 @@ export function ResearchMarkdown({
     <section className="research-markdown" aria-label={label}>
       <HardenedMarkdown
         allowedImagePrefixes={[]}
-        allowedLinkPrefixes={[]}
+        allowedLinkPrefixes={ALLOWED_RESEARCH_LINK_PREFIXES}
         allowDataImages={false}
         defaultOrigin="https://research-assistant.invalid"
         imageBlockPolicy="indicator"

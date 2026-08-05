@@ -34,30 +34,6 @@ class SourceBlobStore(Protocol):
     ) -> StoredSource: ...
 
 
-class InMemorySourceBlobStore:
-    def __init__(self) -> None:
-        self.items: dict[str, bytes] = {}
-
-    def put(
-        self,
-        *,
-        tenant_id: str,
-        project_id: str,
-        source_id: str,
-        filename: str,
-        content_type: str,
-        content: bytes,
-    ) -> StoredSource:
-        key = f"{tenant_id}/{project_id}/{source_id}/{_safe_filename(filename)}"
-        self.items[key] = content
-        return StoredSource(
-            uri=f"memory://{key}",
-            checksum=f"sha256:{sha256(content).hexdigest()}",
-            size_bytes=len(content),
-            content_type=content_type,
-        )
-
-
 class AzureSourceBlobStore:
     def __init__(
         self,
@@ -107,8 +83,6 @@ def _safe_filename(value: str) -> str:
 
 
 def build_source_blob_store(settings: Settings) -> SourceBlobStore:
-    if not settings.storage_blob_endpoint:
-        return InMemorySourceBlobStore()
     return AzureSourceBlobStore(
         settings.storage_blob_endpoint,
         settings.storage_source_container,

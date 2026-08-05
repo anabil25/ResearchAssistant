@@ -51,6 +51,38 @@
         "title": "AgentChoice",
         "type": "object"
       },
+      "AgentClaimView": {
+        "properties": {
+          "evidence_ids": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Evidence Ids",
+            "type": "array"
+          },
+          "support": {
+            "enum": [
+              "supported",
+              "unsupported",
+              "conflicting"
+            ],
+            "title": "Support",
+            "type": "string"
+          },
+          "text": {
+            "maxLength": 20000,
+            "minLength": 1,
+            "title": "Text",
+            "type": "string"
+          }
+        },
+        "required": [
+          "text",
+          "support"
+        ],
+        "title": "AgentClaimView",
+        "type": "object"
+      },
       "AgentDraft": {
         "additionalProperties": false,
         "description": "A mutable, in-progress edit of a manifest prior to cutting a version.\n\n``etag`` changes on every ``save_draft`` (see ``store.py``), giving\ncallers optimistic concurrency: a client that read an older ``etag`` and\nsubmits an update built against stale state can be rejected rather than\nsilently clobbering a concurrent edit.",
@@ -131,20 +163,10 @@
         "type": "object"
       },
       "AgentEndpoint": {
-        "description": "One deployed agent a researcher can talk to.\n\nEverything the runtime needs is declared here. Nothing infers behaviour from\nthe agent's name.",
+        "description": "One deployed agent a researcher can talk to.\n\nEvery agent reaches the same shared Foundry toolbox, so there is nothing to\ndeclare about tools, web access, or retrieval: an agent searches the project\nindex with ``file_search`` and public sources with the connector tools.",
         "properties": {
           "description": {
             "title": "Description",
-            "type": "string"
-          },
-          "evidence": {
-            "default": "none",
-            "enum": [
-              "none",
-              "citations",
-              "full_text"
-            ],
-            "title": "Evidence",
             "type": "string"
           },
           "label": {
@@ -154,11 +176,6 @@
           "name": {
             "title": "Name",
             "type": "string"
-          },
-          "web_access": {
-            "default": false,
-            "title": "Web Access",
-            "type": "boolean"
           }
         },
         "required": [
@@ -167,6 +184,57 @@
           "description"
         ],
         "title": "AgentEndpoint",
+        "type": "object"
+      },
+      "AgentEvidenceView": {
+        "properties": {
+          "evidence_id": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Evidence Id",
+            "type": "string"
+          },
+          "source_uri": {
+            "anyOf": [
+              {
+                "maxLength": 2048,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Source Uri"
+          },
+          "title": {
+            "anyOf": [
+              {
+                "maxLength": 512,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Title"
+          },
+          "version": {
+            "anyOf": [
+              {
+                "maxLength": 128,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Version"
+          }
+        },
+        "required": [
+          "evidence_id"
+        ],
+        "title": "AgentEvidenceView",
         "type": "object"
       },
       "AgentInsight": {
@@ -566,6 +634,72 @@
           "created_by"
         ],
         "title": "AgentRelease",
+        "type": "object"
+      },
+      "AgentResearchResponse": {
+        "properties": {
+          "agent_name": {
+            "title": "Agent Name",
+            "type": "string"
+          },
+          "capability": {
+            "$ref": "#/components/schemas/Capability"
+          },
+          "claims": {
+            "items": {
+              "$ref": "#/components/schemas/AgentClaimView"
+            },
+            "title": "Claims",
+            "type": "array"
+          },
+          "details": {
+            "additionalProperties": true,
+            "title": "Details",
+            "type": "object"
+          },
+          "evidence": {
+            "items": {
+              "$ref": "#/components/schemas/AgentEvidenceView"
+            },
+            "title": "Evidence",
+            "type": "array"
+          },
+          "limitations": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Limitations",
+            "type": "array"
+          },
+          "response_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Response Id"
+          },
+          "run_id": {
+            "title": "Run Id",
+            "type": "string"
+          },
+          "summary": {
+            "maxLength": 40000,
+            "minLength": 1,
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "capability",
+          "run_id",
+          "agent_name",
+          "summary"
+        ],
+        "title": "AgentResearchResponse",
         "type": "object"
       },
       "AgentRole": {
@@ -1178,39 +1312,6 @@
         "title": "AgentWorkspaceView",
         "type": "object"
       },
-      "AnalysisStep": {
-        "properties": {
-          "deterministic": {
-            "title": "Deterministic",
-            "type": "boolean"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "method": {
-            "title": "Method",
-            "type": "string"
-          },
-          "question": {
-            "title": "Question",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "question",
-          "method",
-          "status",
-          "deterministic"
-        ],
-        "title": "AnalysisStep",
-        "type": "object"
-      },
       "ApprovalContextOutcome": {
         "description": "Outcome of a single ``resolve_context`` call.\n\n``RESOLVED``: exactly one currently-effectively-``APPROVED``\n``CAPABILITY_OPERATION`` approval exists for this release's binding's\ndestination; its ``approval_id`` and a freshly minted ``invocation_id``\nare returned.\n``NOT_APPROVED``: no such approval currently exists (never requested,\nstill pending, rejected, expired, or revoked) -- fails closed rather\nthan ever fabricating a context.\n``NOT_FOUND``: the referenced release/binding/operation itself does not\nexist (or does not match) in this scope -- a distinct, non-authorization\nfailure from \"no approval exists for an otherwise-valid binding\".",
         "enum": [
@@ -1620,36 +1721,6 @@
           }
         },
         "title": "ArtifactContract",
-        "type": "object"
-      },
-      "ArtifactSection": {
-        "properties": {
-          "body": {
-            "title": "Body",
-            "type": "string"
-          },
-          "citation_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Citation Ids",
-            "type": "array"
-          },
-          "heading": {
-            "title": "Heading",
-            "type": "string"
-          },
-          "tone": {
-            "default": "neutral",
-            "title": "Tone",
-            "type": "string"
-          }
-        },
-        "required": [
-          "heading",
-          "body"
-        ],
-        "title": "ArtifactSection",
         "type": "object"
       },
       "AssistantRequest": {
@@ -3344,6 +3415,20 @@
       },
       "ChatMessageCreate": {
         "properties": {
+          "client_message_id": {
+            "anyOf": [
+              {
+                "maxLength": 120,
+                "minLength": 16,
+                "pattern": "^[A-Za-z0-9_-]+$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Client Message Id"
+          },
           "text": {
             "maxLength": 8000,
             "minLength": 1,
@@ -3590,61 +3675,6 @@
           }
         },
         "title": "CitationPolicy",
-        "type": "object"
-      },
-      "ComputeProposal": {
-        "properties": {
-          "adapter": {
-            "title": "Adapter",
-            "type": "string"
-          },
-          "approval_required": {
-            "title": "Approval Required",
-            "type": "boolean"
-          },
-          "estimated_bytes": {
-            "title": "Estimated Bytes",
-            "type": "integer"
-          },
-          "estimated_cost_usd": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Estimated Cost Usd"
-          },
-          "estimated_minutes": {
-            "anyOf": [
-              {
-                "type": "integer"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Estimated Minutes"
-          },
-          "stages": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Stages",
-            "type": "array"
-          }
-        },
-        "required": [
-          "adapter",
-          "estimated_bytes",
-          "estimated_cost_usd",
-          "estimated_minutes",
-          "approval_required",
-          "stages"
-        ],
-        "title": "ComputeProposal",
         "type": "object"
       },
       "ConnectorCredentialUpdate": {
@@ -4179,130 +4209,6 @@
         "title": "DatasetApprovalState",
         "type": "string"
       },
-      "DatasetFieldProfile": {
-        "properties": {
-          "data_type": {
-            "title": "Data Type",
-            "type": "string"
-          },
-          "missing": {
-            "title": "Missing",
-            "type": "integer"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "range_or_values": {
-            "title": "Range Or Values",
-            "type": "string"
-          },
-          "unique": {
-            "title": "Unique",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "name",
-          "data_type",
-          "missing",
-          "unique",
-          "range_or_values"
-        ],
-        "title": "DatasetFieldProfile",
-        "type": "object"
-      },
-      "DatasetStudioResult": {
-        "properties": {
-          "analysis_plan": {
-            "items": {
-              "$ref": "#/components/schemas/AnalysisStep"
-            },
-            "title": "Analysis Plan",
-            "type": "array"
-          },
-          "asset_name": {
-            "title": "Asset Name",
-            "type": "string"
-          },
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "column_count": {
-            "title": "Column Count",
-            "type": "integer"
-          },
-          "compute_proposal": {
-            "$ref": "#/components/schemas/ComputeProposal"
-          },
-          "fields": {
-            "items": {
-              "$ref": "#/components/schemas/DatasetFieldProfile"
-            },
-            "title": "Fields",
-            "type": "array"
-          },
-          "insight": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentInsight"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "interpretation": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Interpretation",
-            "type": "array"
-          },
-          "profile_note": {
-            "title": "Profile Note",
-            "type": "string"
-          },
-          "profile_status": {
-            "title": "Profile Status",
-            "type": "string"
-          },
-          "quality_findings": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Quality Findings",
-            "type": "array"
-          },
-          "row_count": {
-            "title": "Row Count",
-            "type": "integer"
-          },
-          "run": {
-            "$ref": "#/components/schemas/StudioRun"
-          }
-        },
-        "required": [
-          "run",
-          "asset_name",
-          "profile_status",
-          "profile_note",
-          "row_count",
-          "column_count",
-          "fields",
-          "quality_findings",
-          "analysis_plan",
-          "compute_proposal",
-          "interpretation",
-          "citations"
-        ],
-        "title": "DatasetStudioResult",
-        "type": "object"
-      },
       "DelegationScope": {
         "enum": [
           "none",
@@ -4564,47 +4470,6 @@
         "title": "DeploymentRecord",
         "type": "object"
       },
-      "DraftSection": {
-        "properties": {
-          "body": {
-            "title": "Body",
-            "type": "string"
-          },
-          "evidence_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence Ids",
-            "type": "array"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "word_count": {
-            "title": "Word Count",
-            "type": "integer"
-          }
-        },
-        "required": [
-          "id",
-          "title",
-          "status",
-          "word_count",
-          "body",
-          "evidence_ids"
-        ],
-        "title": "DraftSection",
-        "type": "object"
-      },
       "EscalationRequest": {
         "additionalProperties": false,
         "properties": {
@@ -4779,7 +4644,7 @@
         "type": "object"
       },
       "EvaluationRunStatus": {
-        "description": "Honest outcome of one evaluation run attempt.\n\n``UNAVAILABLE`` is the explicit, non-fake state used when no\n``EvaluationRunner`` execution adapter is wired -- see\n``evaluation_runner.py``. A run is never silently fabricated as\n``COMPLETED`` with invented scores.",
+        "description": "Honest outcome of one evaluation run attempt.\n\n``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is\nwired. A run is never recorded as ``COMPLETED`` without measured scores.",
         "enum": [
           "completed",
           "failed",
@@ -4950,47 +4815,6 @@
           "test_case_id"
         ],
         "title": "EvaluationTestResult",
-        "type": "object"
-      },
-      "EvidenceExtraction": {
-        "properties": {
-          "citation_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Citation Ids",
-            "type": "array"
-          },
-          "limitation": {
-            "title": "Limitation",
-            "type": "string"
-          },
-          "method": {
-            "title": "Method",
-            "type": "string"
-          },
-          "outcome": {
-            "title": "Outcome",
-            "type": "string"
-          },
-          "population": {
-            "title": "Population",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "method",
-          "population",
-          "outcome",
-          "limitation",
-          "citation_ids"
-        ],
-        "title": "EvidenceExtraction",
         "type": "object"
       },
       "EvidenceState": {
@@ -5249,161 +5073,6 @@
         "title": "GateStatus",
         "type": "string"
       },
-      "GrantOpportunity": {
-        "properties": {
-          "canonical_url": {
-            "title": "Canonical Url",
-            "type": "string"
-          },
-          "deadline": {
-            "title": "Deadline",
-            "type": "string"
-          },
-          "identifier": {
-            "title": "Identifier",
-            "type": "string"
-          },
-          "sponsor": {
-            "title": "Sponsor",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "identifier",
-          "sponsor",
-          "title",
-          "deadline",
-          "status",
-          "canonical_url"
-        ],
-        "title": "GrantOpportunity",
-        "type": "object"
-      },
-      "GrantRequirement": {
-        "properties": {
-          "category": {
-            "title": "Category",
-            "type": "string"
-          },
-          "evidence_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Evidence Ids",
-            "type": "array"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "text": {
-            "title": "Text",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "text",
-          "category",
-          "status",
-          "evidence_ids"
-        ],
-        "title": "GrantRequirement",
-        "type": "object"
-      },
-      "GrantStudioResult": {
-        "properties": {
-          "blockers": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Blockers",
-            "type": "array"
-          },
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "fact_gaps": {
-            "items": {
-              "$ref": "#/components/schemas/ProjectFactGap"
-            },
-            "title": "Fact Gaps",
-            "type": "array"
-          },
-          "insight": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentInsight"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "opportunity": {
-            "$ref": "#/components/schemas/GrantOpportunity"
-          },
-          "readiness": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Readiness",
-            "type": "integer"
-          },
-          "requirements": {
-            "items": {
-              "$ref": "#/components/schemas/GrantRequirement"
-            },
-            "title": "Requirements",
-            "type": "array"
-          },
-          "run": {
-            "$ref": "#/components/schemas/StudioRun"
-          },
-          "sections": {
-            "items": {
-              "$ref": "#/components/schemas/DraftSection"
-            },
-            "title": "Sections",
-            "type": "array"
-          },
-          "specific_aims": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Specific Aims",
-            "type": "array"
-          }
-        },
-        "required": [
-          "run",
-          "opportunity",
-          "requirements",
-          "fact_gaps",
-          "specific_aims",
-          "sections",
-          "readiness",
-          "blockers",
-          "citations"
-        ],
-        "title": "GrantStudioResult",
-        "type": "object"
-      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -5419,10 +5088,6 @@
       },
       "HealthResponse": {
         "properties": {
-          "mode": {
-            "title": "Mode",
-            "type": "string"
-          },
           "service": {
             "title": "Service",
             "type": "string"
@@ -5434,8 +5099,7 @@
         },
         "required": [
           "status",
-          "service",
-          "mode"
+          "service"
         ],
         "title": "HealthResponse",
         "type": "object"
@@ -5498,85 +5162,6 @@
         ],
         "title": "InstanceReadiness",
         "type": "string"
-      },
-      "InstitutionalStudioResult": {
-        "properties": {
-          "abstained": {
-            "title": "Abstained",
-            "type": "boolean"
-          },
-          "answer": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Answer"
-          },
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "conflicts": {
-            "items": {
-              "$ref": "#/components/schemas/PolicyConflict"
-            },
-            "title": "Conflicts",
-            "type": "array"
-          },
-          "escalation": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Escalation"
-          },
-          "insight": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentInsight"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "run": {
-            "$ref": "#/components/schemas/StudioRun"
-          },
-          "scope": {
-            "title": "Scope",
-            "type": "string"
-          },
-          "versions": {
-            "items": {
-              "$ref": "#/components/schemas/PolicyVersion"
-            },
-            "title": "Versions",
-            "type": "array"
-          }
-        },
-        "required": [
-          "run",
-          "scope",
-          "answer",
-          "abstained",
-          "versions",
-          "conflicts",
-          "citations"
-        ],
-        "title": "InstitutionalStudioResult",
-        "type": "object"
       },
       "KnowledgeBinding": {
         "additionalProperties": false,
@@ -5852,77 +5437,6 @@
         "title": "LibraryStatus",
         "type": "string"
       },
-      "LiteratureStudioResult": {
-        "properties": {
-          "candidate_count": {
-            "title": "Candidate Count",
-            "type": "integer"
-          },
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "extraction_matrix": {
-            "items": {
-              "$ref": "#/components/schemas/EvidenceExtraction"
-            },
-            "title": "Extraction Matrix",
-            "type": "array"
-          },
-          "insight": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentInsight"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "protocol": {
-            "$ref": "#/components/schemas/ReviewProtocol"
-          },
-          "run": {
-            "$ref": "#/components/schemas/StudioRun"
-          },
-          "screening": {
-            "items": {
-              "$ref": "#/components/schemas/ScreeningDecision"
-            },
-            "title": "Screening",
-            "type": "array"
-          },
-          "search_queries": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Search Queries",
-            "type": "array"
-          },
-          "synthesis": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Synthesis",
-            "type": "array"
-          }
-        },
-        "required": [
-          "run",
-          "protocol",
-          "search_queries",
-          "candidate_count",
-          "screening",
-          "extraction_matrix",
-          "synthesis",
-          "citations"
-        ],
-        "title": "LiteratureStudioResult",
-        "type": "object"
-      },
       "ManifestChangeSummary": {
         "additionalProperties": false,
         "description": "One deterministic, top-level ``AgentManifest`` field-level change.\n\nComputed server-side from the canonical before/after manifest dumps\n(``model_dump(mode=\"json\")``); capability-binding changes are reported\nseparately via ``CapabilityChangeSummary`` since they have their own\nnatural identity (``descriptor_id``/``operation``) rather than a single\nscalar value.",
@@ -5968,200 +5482,6 @@
         ],
         "title": "ManifestFieldChangeKind",
         "type": "string"
-      },
-      "MatchCriterion": {
-        "properties": {
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "value": {
-            "title": "Value",
-            "type": "string"
-          },
-          "weight": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Weight",
-            "type": "number"
-          }
-        },
-        "required": [
-          "id",
-          "label",
-          "value",
-          "kind",
-          "weight"
-        ],
-        "title": "MatchCriterion",
-        "type": "object"
-      },
-      "MatchItem": {
-        "properties": {
-          "citation_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Citation Ids",
-            "type": "array"
-          },
-          "freshness": {
-            "title": "Freshness",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "$ref": "#/components/schemas/SourceKind"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "rationale": {
-            "title": "Rationale",
-            "type": "string"
-          },
-          "score": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Score",
-            "type": "number"
-          },
-          "score_factors": {
-            "items": {
-              "$ref": "#/components/schemas/MatchScoreFactor"
-            },
-            "title": "Score Factors",
-            "type": "array"
-          },
-          "tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Tags",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "kind",
-          "score",
-          "rationale",
-          "citation_ids",
-          "freshness"
-        ],
-        "title": "MatchItem",
-        "type": "object"
-      },
-      "MatchScoreFactor": {
-        "properties": {
-          "contribution": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Contribution",
-            "type": "number"
-          },
-          "evidence_id": {
-            "title": "Evidence Id",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "match": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Match",
-            "type": "number"
-          },
-          "weight": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Weight",
-            "type": "number"
-          }
-        },
-        "required": [
-          "id",
-          "label",
-          "weight",
-          "match",
-          "contribution",
-          "evidence_id"
-        ],
-        "title": "MatchScoreFactor",
-        "type": "object"
-      },
-      "MatchingStudioResult": {
-        "properties": {
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "criteria": {
-            "items": {
-              "$ref": "#/components/schemas/MatchCriterion"
-            },
-            "title": "Criteria",
-            "type": "array"
-          },
-          "insight": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/AgentInsight"
-              },
-              {
-                "type": "null"
-              }
-            ]
-          },
-          "matches": {
-            "items": {
-              "$ref": "#/components/schemas/RankedEntity"
-            },
-            "title": "Matches",
-            "type": "array"
-          },
-          "run": {
-            "$ref": "#/components/schemas/StudioRun"
-          },
-          "shortlist_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Shortlist Ids",
-            "type": "array"
-          }
-        },
-        "required": [
-          "run",
-          "criteria",
-          "matches",
-          "shortlist_ids",
-          "citations"
-        ],
-        "title": "MatchingStudioResult",
-        "type": "object"
       },
       "MemoryAuditAction": {
         "enum": [
@@ -6473,35 +5793,6 @@
         "title": "MemoryScopeKind",
         "type": "string"
       },
-      "Metric": {
-        "properties": {
-          "detail": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Detail"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "value": {
-            "title": "Value",
-            "type": "string"
-          }
-        },
-        "required": [
-          "label",
-          "value"
-        ],
-        "title": "Metric",
-        "type": "object"
-      },
       "ModelDeploymentRef": {
         "properties": {
           "capacity": {
@@ -6630,7 +5921,7 @@
         "type": "object"
       },
       "PlaygroundRunStatus": {
-        "description": "Honest outcome of one playground/test-run attempt.\n\n``UNAVAILABLE`` is the explicit, non-fake state used when no\n``PlaygroundInvoker`` execution adapter is wired -- see\n``playground_invoker.py``. A run is never silently fabricated as\n``COMPLETED`` with an invented response.",
+        "description": "Honest outcome of one playground/test-run attempt.\n\n``UNAVAILABLE`` is used when no ``PlaygroundInvoker`` execution adapter is\nwired. A run is never recorded as ``COMPLETED`` without a runtime response.",
         "enum": [
           "completed",
           "failed",
@@ -6813,100 +6104,6 @@
           "role"
         ],
         "title": "PlaygroundTraceEvent",
-        "type": "object"
-      },
-      "PolicyConflict": {
-        "properties": {
-          "description": {
-            "title": "Description",
-            "type": "string"
-          },
-          "severity": {
-            "title": "Severity",
-            "type": "string"
-          },
-          "source_a": {
-            "title": "Source A",
-            "type": "string"
-          },
-          "source_b": {
-            "title": "Source B",
-            "type": "string"
-          },
-          "topic": {
-            "title": "Topic",
-            "type": "string"
-          }
-        },
-        "required": [
-          "topic",
-          "source_a",
-          "source_b",
-          "description",
-          "severity"
-        ],
-        "title": "PolicyConflict",
-        "type": "object"
-      },
-      "PolicyVersion": {
-        "properties": {
-          "effective_date": {
-            "title": "Effective Date",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "version": {
-            "title": "Version",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "title",
-          "version",
-          "effective_date",
-          "status"
-        ],
-        "title": "PolicyVersion",
-        "type": "object"
-      },
-      "ProjectFactGap": {
-        "properties": {
-          "guidance": {
-            "title": "Guidance",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "status": {
-            "title": "Status",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "label",
-          "status",
-          "guidance"
-        ],
-        "title": "ProjectFactGap",
         "type": "object"
       },
       "ProjectSettings": {
@@ -7143,71 +6340,6 @@
         "title": "ProposalRiskEscalation",
         "type": "object"
       },
-      "ProvenanceManifest": {
-        "properties": {
-          "capability": {
-            "$ref": "#/components/schemas/Capability"
-          },
-          "caveats": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Caveats",
-            "type": "array"
-          },
-          "generated_at": {
-            "format": "date-time",
-            "title": "Generated At",
-            "type": "string"
-          },
-          "mode": {
-            "title": "Mode",
-            "type": "string"
-          },
-          "model_deployment": {
-            "title": "Model Deployment",
-            "type": "string"
-          },
-          "run_id": {
-            "title": "Run Id",
-            "type": "string"
-          },
-          "schema_version": {
-            "default": "research-assistant.provenance.v1",
-            "title": "Schema Version",
-            "type": "string"
-          },
-          "source_checksums": {
-            "additionalProperties": {
-              "type": "string"
-            },
-            "title": "Source Checksums",
-            "type": "object"
-          },
-          "source_ids": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Source Ids",
-            "type": "array"
-          },
-          "verification": {
-            "title": "Verification",
-            "type": "string"
-          }
-        },
-        "required": [
-          "run_id",
-          "capability",
-          "mode",
-          "source_ids",
-          "source_checksums",
-          "model_deployment",
-          "verification"
-        ],
-        "title": "ProvenanceManifest",
-        "type": "object"
-      },
       "PublishPromptAgentRequest": {
         "additionalProperties": false,
         "description": "Request a durable, idempotent Foundry prompt-agent publication.",
@@ -7230,70 +6362,6 @@
           "idempotency_key"
         ],
         "title": "PublishPromptAgentRequest",
-        "type": "object"
-      },
-      "RankedEntity": {
-        "properties": {
-          "components": {
-            "items": {
-              "$ref": "#/components/schemas/ScoreComponent"
-            },
-            "title": "Components",
-            "type": "array"
-          },
-          "freshness": {
-            "title": "Freshness",
-            "type": "string"
-          },
-          "gaps": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Gaps",
-            "type": "array"
-          },
-          "hard_filters_passed": {
-            "title": "Hard Filters Passed",
-            "type": "boolean"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "kind": {
-            "title": "Kind",
-            "type": "string"
-          },
-          "name": {
-            "title": "Name",
-            "type": "string"
-          },
-          "score": {
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Score",
-            "type": "number"
-          },
-          "strengths": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Strengths",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "kind",
-          "hard_filters_passed",
-          "score",
-          "components",
-          "strengths",
-          "gaps",
-          "freshness"
-        ],
-        "title": "RankedEntity",
         "type": "object"
       },
       "RegisterToolRequest": {
@@ -7673,7 +6741,6 @@
             "type": "array"
           },
           "project_id": {
-            "default": "demo-project",
             "maxLength": 100,
             "minLength": 1,
             "title": "Project Id",
@@ -7686,7 +6753,6 @@
             "type": "string"
           },
           "tenant_id": {
-            "default": "demo",
             "maxLength": 100,
             "minLength": 1,
             "title": "Tenant Id",
@@ -7694,82 +6760,12 @@
           }
         },
         "required": [
-          "query"
+          "query",
+          "project_id",
+          "tenant_id",
+          "group_ids"
         ],
         "title": "ResearchRequest",
-        "type": "object"
-      },
-      "ResearchResult": {
-        "properties": {
-          "citations": {
-            "items": {
-              "$ref": "#/components/schemas/Citation"
-            },
-            "title": "Citations",
-            "type": "array"
-          },
-          "eyebrow": {
-            "title": "Eyebrow",
-            "type": "string"
-          },
-          "matches": {
-            "items": {
-              "$ref": "#/components/schemas/MatchItem"
-            },
-            "title": "Matches",
-            "type": "array"
-          },
-          "metadata": {
-            "additionalProperties": true,
-            "title": "Metadata",
-            "type": "object"
-          },
-          "metrics": {
-            "items": {
-              "$ref": "#/components/schemas/Metric"
-            },
-            "title": "Metrics",
-            "type": "array"
-          },
-          "provenance": {
-            "$ref": "#/components/schemas/ProvenanceManifest"
-          },
-          "run": {
-            "$ref": "#/components/schemas/RunRecord"
-          },
-          "sections": {
-            "items": {
-              "$ref": "#/components/schemas/ArtifactSection"
-            },
-            "title": "Sections",
-            "type": "array"
-          },
-          "summary": {
-            "title": "Summary",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          },
-          "warnings": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Warnings",
-            "type": "array"
-          }
-        },
-        "required": [
-          "run",
-          "eyebrow",
-          "title",
-          "summary",
-          "sections",
-          "citations",
-          "provenance"
-        ],
-        "title": "ResearchResult",
         "type": "object"
       },
       "ResolveApprovalContextRequest": {
@@ -7901,53 +6897,6 @@
         "title": "ResolvedAgentContract",
         "type": "object"
       },
-      "ReviewProtocol": {
-        "properties": {
-          "date_from": {
-            "title": "Date From",
-            "type": "integer"
-          },
-          "date_to": {
-            "title": "Date To",
-            "type": "integer"
-          },
-          "exclusion_criteria": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Exclusion Criteria",
-            "type": "array"
-          },
-          "inclusion_criteria": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Inclusion Criteria",
-            "type": "array"
-          },
-          "research_question": {
-            "title": "Research Question",
-            "type": "string"
-          },
-          "sources": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Sources",
-            "type": "array"
-          }
-        },
-        "required": [
-          "research_question",
-          "date_from",
-          "date_to",
-          "sources",
-          "inclusion_criteria",
-          "exclusion_criteria"
-        ],
-        "title": "ReviewProtocol",
-        "type": "object"
-      },
       "RevokeApprovalRequest": {
         "additionalProperties": false,
         "description": "Request body to append an ``ApprovalRevocation`` for a request/decision.\n\nRevocation is permanent and append-only -- there is no corresponding\n\"un-revoke\" request; a fresh approval request is required afterward if\nthe underlying action is still needed.",
@@ -8039,78 +6988,6 @@
           "project_id"
         ],
         "title": "RunGatesRequest",
-        "type": "object"
-      },
-      "RunRecord": {
-        "properties": {
-          "capability": {
-            "$ref": "#/components/schemas/Capability"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "current_step": {
-            "title": "Current Step",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "progress": {
-            "default": 0,
-            "maximum": 100.0,
-            "minimum": 0.0,
-            "title": "Progress",
-            "type": "integer"
-          },
-          "project_id": {
-            "title": "Project Id",
-            "type": "string"
-          },
-          "started_at": {
-            "format": "date-time",
-            "title": "Started At",
-            "type": "string"
-          },
-          "status": {
-            "$ref": "#/components/schemas/RunStatus"
-          },
-          "steps": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Steps",
-            "type": "array"
-          },
-          "tenant_id": {
-            "title": "Tenant Id",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "project_id",
-          "tenant_id",
-          "capability",
-          "title",
-          "status",
-          "current_step"
-        ],
-        "title": "RunRecord",
         "type": "object"
       },
       "RunStage": {
@@ -8460,107 +7337,12 @@
         "title": "SchemaRef",
         "type": "object"
       },
-      "ScoreComponent": {
-        "properties": {
-          "contribution": {
-            "minimum": 0.0,
-            "title": "Contribution",
-            "type": "number"
-          },
-          "criterion_id": {
-            "title": "Criterion Id",
-            "type": "string"
-          },
-          "evidence_id": {
-            "title": "Evidence Id",
-            "type": "string"
-          },
-          "label": {
-            "title": "Label",
-            "type": "string"
-          },
-          "match": {
-            "maximum": 1.0,
-            "minimum": 0.0,
-            "title": "Match",
-            "type": "number"
-          },
-          "weight": {
-            "title": "Weight",
-            "type": "number"
-          }
-        },
-        "required": [
-          "criterion_id",
-          "label",
-          "weight",
-          "match",
-          "contribution",
-          "evidence_id"
-        ],
-        "title": "ScoreComponent",
-        "type": "object"
-      },
-      "ScreeningDecision": {
-        "properties": {
-          "decision": {
-            "title": "Decision",
-            "type": "string"
-          },
-          "duplicate_group": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Duplicate Group"
-          },
-          "reason": {
-            "title": "Reason",
-            "type": "string"
-          },
-          "source_id": {
-            "title": "Source Id",
-            "type": "string"
-          },
-          "title": {
-            "title": "Title",
-            "type": "string"
-          }
-        },
-        "required": [
-          "source_id",
-          "title",
-          "decision",
-          "reason"
-        ],
-        "title": "ScreeningDecision",
-        "type": "object"
-      },
       "SideEffectPolicy": {
         "description": "Deterministic, domain-owned side-effect policy for playground runs.\n\nPlayground/test invocations are diagnostic, not production traffic:\n``DRY_RUN`` is the only supported value today -- no\n``WRITE_REVERSIBLE``/``WRITE_IRREVERSIBLE``/``PRIVILEGED`` capability\noperation may take real effect during a test run. This is an\napplication-owned policy, never left to model/runtime discretion.",
         "enum": [
           "dry_run"
         ],
         "title": "SideEffectPolicy",
-        "type": "string"
-      },
-      "SourceKind": {
-        "enum": [
-          "paper",
-          "policy",
-          "grant",
-          "person",
-          "facility",
-          "equipment",
-          "method",
-          "template",
-          "dataset"
-        ],
-        "title": "SourceKind",
         "type": "string"
       },
       "SpecialistPolicy": {
@@ -13517,7 +12299,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/ResearchResult"
+                  "$ref": "#/components/schemas/AgentResearchResponse"
                 }
               }
             },
@@ -13811,27 +12593,7 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "anyOf": [
-                    {
-                      "$ref": "#/components/schemas/LiteratureStudioResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/GrantStudioResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/MatchingStudioResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/DatasetStudioResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/InstitutionalStudioResult"
-                    },
-                    {
-                      "$ref": "#/components/schemas/AutomationStudioResult"
-                    }
-                  ],
-                  "title": "Response Run Studio Api Studios  Capability  Run Post"
+                  "$ref": "#/components/schemas/AutomationStudioResult"
                 }
               }
             },

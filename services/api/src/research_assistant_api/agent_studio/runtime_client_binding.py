@@ -258,20 +258,6 @@ class ClientDeploymentBindingWriter(Protocol):
         ...
 
 
-class _StoredBinding:
-    """A client's single one-to-one binding record."""
-
-    __slots__ = ("deployment_id", "revision_id", "revision_sequence", "status")
-
-    def __init__(
-        self, deployment_id: str, revision_id: str, revision_sequence: int, status: RuntimeBindingStatus
-    ) -> None:
-        self.deployment_id = deployment_id
-        self.revision_id = revision_id
-        self.revision_sequence = revision_sequence
-        self.status = status
-
-
 def _validate_repoint_admission(
     *,
     observed_sequence: int | None,
@@ -355,104 +341,6 @@ def _validate_reinstate_admission(
     if new_sequence < observed_sequence:
         raise NonMonotonicRepointError(
             f"reinstate to sequence {new_sequence} points behind the revoked tombstone at {observed_sequence}."
-        )
-
-
-class InMemoryClientDeploymentBindingIndex:
-    """In-memory one-to-one client->deployment binding index (tests/local).
-
-    Implements both the read-only resolver and the control-plane writer; the
-    runtime is only ever handed the ``resolve_binding`` surface (typed as
-    ``ClientDeploymentBindingResolver``), never this concrete writer. A client
-    holds exactly one binding; ``grant`` is a CAS repoint that replaces it.
-    """
-
-    def __init__(self) -> None:
-        self._by_client: dict[str, _StoredBinding] = {}
-
-    def repoint(
-        self,
-        client_app_id: str,
-        deployment_id: str,
-        revision_sequence: int,
-        revision_id: str,
-        status: RuntimeBindingStatus,
-        *,
-        expected_current_sequence: int | None,
-    ) -> None:
-        binding = self._by_client.get(client_app_id)
-        if (
-            binding is not None
-            and binding.deployment_id != deployment_id
-            and binding.status is RuntimeBindingStatus.ACTIVE
-        ):
-            raise CrossDeploymentBindingError(
-                f"client '{client_app_id}' is already ACTIVELY bound to '{binding.deployment_id}'; "
-                f"it cannot be bound to '{deployment_id}' (1:1 cardinality). Revoke the existing "
-                "binding first (a revoked tombstone does not block a later grant)."
-            )
-        observed_sequence: int | None = None
-        observed_revision_id: str | None = None
-        observed_status: RuntimeBindingStatus | None = None
-        if binding is not None and binding.deployment_id == deployment_id:
-            observed_sequence = binding.revision_sequence
-            observed_revision_id = binding.revision_id
-            observed_status = binding.status
-        if observed_sequence != expected_current_sequence:
-            raise BindingPreconditionError(
-                f"binding for '{client_app_id}' changed under the repoint "
-                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
-            )
-        _validate_repoint_admission(
-            observed_sequence=observed_sequence,
-            observed_revision_id=observed_revision_id,
-            observed_status=observed_status,
-            new_sequence=revision_sequence,
-            new_revision_id=revision_id,
-            new_status=status,
-        )
-        self._by_client[client_app_id] = _StoredBinding(deployment_id, revision_id, revision_sequence, status)
-
-    def reinstate(
-        self,
-        client_app_id: str,
-        deployment_id: str,
-        revision_sequence: int,
-        revision_id: str,
-        *,
-        expected_current_sequence: int | None,
-    ) -> None:
-        binding = self._by_client.get(client_app_id)
-        if binding is not None and binding.deployment_id != deployment_id:
-            raise CrossDeploymentBindingError(
-                f"client '{client_app_id}' is already bound to '{binding.deployment_id}'; "
-                f"it cannot be reinstated onto '{deployment_id}' (1:1 cardinality)."
-            )
-        observed_sequence: int | None = None
-        observed_status: RuntimeBindingStatus | None = None
-        if binding is not None and binding.deployment_id == deployment_id:
-            observed_sequence = binding.revision_sequence
-            observed_status = binding.status
-        if observed_sequence != expected_current_sequence:
-            raise BindingPreconditionError(
-                f"binding for '{client_app_id}' changed under the reinstate "
-                f"(expected current sequence {expected_current_sequence}, observed {observed_sequence})."
-            )
-        _validate_reinstate_admission(
-            observed_status=observed_status, observed_sequence=observed_sequence, new_sequence=revision_sequence
-        )
-        self._by_client[client_app_id] = _StoredBinding(
-            deployment_id, revision_id, revision_sequence, RuntimeBindingStatus.ACTIVE
-        )
-
-    def resolve_binding(self, client_app_id: str, asserted_deployment_id: str) -> BindingResolution | None:
-        binding = self._by_client.get(client_app_id)
-        if binding is None or binding.deployment_id != asserted_deployment_id:
-            return None
-        return BindingResolution(
-            revision_id=binding.revision_id,
-            revision_sequence=binding.revision_sequence,
-            status=binding.status,
         )
 
 

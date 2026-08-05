@@ -128,70 +128,6 @@ class MemoryStore(Protocol):
     ) -> tuple[MemoryAuditRecord, ...]: ...
 
 
-class InMemoryMemoryStore:
-    """Deterministic in-process memory store, used in tests and as the base
-    class overridden by the Cosmos-backed implementation for production.
-    """
-
-    def __init__(self) -> None:
-        self._entries: dict[str, MemoryEntry] = {}
-        self._audit: list[MemoryAuditRecord] = []
-
-    def append(self, entry: MemoryEntry) -> MemoryEntry:
-        self._entries[entry.id] = entry
-        return entry
-
-    def list_entries(
-        self,
-        *,
-        tenant_id: str,
-        project_id: str,
-        scope_kind: MemoryScopeKind,
-        scope_id: str,
-        logical_agent_id: str,
-        limit: int = 100,
-    ) -> tuple[MemoryEntry, ...]:
-        matches = [
-            entry
-            for entry in self._entries.values()
-            if entry.tenant_id == tenant_id
-            and entry.project_id == project_id
-            and entry.scope_kind == scope_kind
-            and entry.scope_id == scope_id
-            and entry.logical_agent_id == logical_agent_id
-        ]
-        matches.sort(key=lambda entry: entry.created_at)
-        return tuple(matches[-limit:])
-
-    def get_entry(self, *, tenant_id: str, project_id: str, entry_id: str) -> MemoryEntry | None:
-        entry = self._entries.get(entry_id)
-        if entry is None or entry.tenant_id != tenant_id or entry.project_id != project_id:
-            return None
-        return entry
-
-    def replace_entry(self, entry: MemoryEntry) -> MemoryEntry:
-        self._entries[entry.id] = entry
-        return entry
-
-    def record_audit(self, record: MemoryAuditRecord) -> MemoryAuditRecord:
-        self._audit.append(record)
-        return record
-
-    def list_audit(
-        self, *, tenant_id: str, project_id: str, logical_agent_id: str, entry_id: str
-    ) -> tuple[MemoryAuditRecord, ...]:
-        matches = [
-            record
-            for record in self._audit
-            if record.tenant_id == tenant_id
-            and record.project_id == project_id
-            and record.logical_agent_id == logical_agent_id
-            and record.entry_id == entry_id
-        ]
-        matches.sort(key=lambda record: record.created_at)
-        return tuple(matches)
-
-
 class MemoryStoreUnavailableError(MemoryPolicyError):
     """Raised when the production memory store factory has no cloud backend
     configured. Never silently falls back to an in-memory store outside
@@ -332,8 +268,7 @@ def build_memory_store(settings: Settings) -> MemoryStore:
 
     Returns a Cosmos-backed store when ``cosmos_endpoint`` is configured.
     When it is not configured, memory persistence is explicitly unavailable
-    in production: callers must not silently fall back to
-    ``InMemoryMemoryStore`` outside of tests.
+    in production.
     """
     if not settings.cosmos_endpoint:
         raise MemoryStoreUnavailableError(

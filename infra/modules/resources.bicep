@@ -276,6 +276,7 @@ module cosmos 'cosmos.bicep' = {
     location: location
     tags: tags
     apiPrincipalId: identities.outputs.apiPrincipalId
+    principalId: principalId
   }
 }
 
@@ -469,6 +470,20 @@ resource developerFoundryProjectManager 'Microsoft.Authorization/roleAssignments
     principalId: principalId
     principalType: principalType
     roleDefinitionId: foundryProjectManagerRoleId
+  }
+}
+
+resource developerUserIdentityImpersonation 'Microsoft.Authorization/roleAssignments@2022-04-01' = if (!empty(principalId)) {
+  name: guid(
+    foundryAccount.id,
+    principalId,
+    'foundry-agent-user-identity-impersonation'
+  )
+  scope: foundryAccount
+  properties: {
+    principalId: principalId
+    principalType: principalType
+    roleDefinitionId: apiUserIdentityImpersonationRole.outputs.roleDefinitionId
   }
 }
 

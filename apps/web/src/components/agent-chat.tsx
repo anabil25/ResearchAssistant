@@ -21,7 +21,6 @@ import {
   lazy,
   useCallback,
   useEffect,
-  useMemo,
   useRef,
   useState,
   type ChangeEvent,
@@ -39,7 +38,6 @@ import {
 import { classifyAsyncError } from "@/components/async-state";
 import {
   agentSurface,
-  ensureAgentSurfaces,
   isChatCapability as surfaceIsChat,
 } from "@/lib/agent-surfaces";
 import type {
@@ -64,6 +62,7 @@ export const CHAT_CAPABILITIES = [
   "grant",
   "matching",
   "dataset",
+  "screening",
 ] as const;
 
 export type ChatCapabilityId = (typeof CHAT_CAPABILITIES)[number];
@@ -136,21 +135,8 @@ export function AgentChat({
   projectId?: string | null;
 }) {
   const copy = capabilityCopy(capability);
-  const [, setSurfacesLoaded] = useState(false);
-
-  useEffect(() => {
-    let active = true;
-    void ensureAgentSurfaces().then(() => {
-      if (active) setSurfacesLoaded(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
-
-  const [agents, setAgents] = useState<ChatAgentChoice[]>([]);
-  const [agentsLoading, setAgentsLoading] = useState(true);
-  const [agentName, setAgentName] = useState<string | null>(null);
+  const [boundAgent, setBoundAgent] = useState<ChatAgentChoice | null>(null);
+  const [agentLoading, setAgentLoading] = useState(true);
   const [thread, setThread] = useState<ChatThread | null>(null);
   const [threadLoading, setThreadLoading] = useState(false);
   const [draft, setDraft] = useState("");
@@ -162,58 +148,58 @@ export function AgentChat({
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<ChatThread | null>(null);
-  // Tracks the agent the thread was opened against so we can detect stale threads.
-  const threadAgentRef = useRef<string | null>(null);
 
-  // Returns the active thread, creating one lazily if needed.
-  const ensureThread = useCallback(
-    async (agent: string): Promise<ChatThread> => {
-      if (threadRef.current && threadAgentRef.current === agent) {
-        return threadRef.current;
+  const ensureThread = useCallback(async (): Promise<ChatThread> => {
+      if (threadRef.current) return threadRef.current;
+      if (!boundAgent) {
+        throw new Error(`No deployed agent is bound to ${copy.title}.`);
       }
       setThreadLoading(true);
       setError(null);
       try {
-        const opened = await openChatThread(capability, agent, projectId ?? undefined);
+        const opened = await openChatThread(
+          capability,
+          boundAgent.name,
+          projectId ?? undefined,
+        );
         threadRef.current = opened;
-        threadAgentRef.current = agent;
         setThread(opened);
         return opened;
       } finally {
         setThreadLoading(false);
       }
     },
-    [capability, projectId],
+    [boundAgent, capability, copy.title, projectId],
   );
 
   useEffect(() => {
     let cancelled = false;
-    setAgentsLoading(true);
+    threadRef.current = null;
+    setThread(null);
+    setPending([]);
+    setBoundAgent(null);
+    setAgentLoading(true);
+    setError(null);
     void listChatAgents(capability, projectId ?? undefined)
       .then((choices) => {
         if (cancelled) return;
-        setAgents(choices);
-        setAgentsLoading(false);
-        const first = choices[0]?.name ?? null;
-        setAgentName(first);
+        if (choices.length !== 1) {
+          throw new Error(
+            `${copy.title} requires exactly one deployed agent; the server returned ${choices.length}.`,
+          );
+        }
+        setBoundAgent(choices[0]);
+        setAgentLoading(false);
       })
       .catch((caught: unknown) => {
         if (cancelled) return;
-        setAgentsLoading(false);
+        setAgentLoading(false);
         setError(classifyAsyncError(caught).message);
       });
     return () => {
       cancelled = true;
     };
-  }, [capability, projectId]);
-
-  // Reset thread when agent or capability changes so the next interaction opens a fresh one.
-  useEffect(() => {
-    threadRef.current = null;
-    threadAgentRef.current = null;
-    setThread(null);
-    setPending([]);
-  }, [agentName, capability]);
+  }, [capability, copy.title, projectId]);
 
   useEffect(() => {
     // jsdom and older engines omit scrollIntoView; autoscroll is cosmetic.
@@ -223,19 +209,14 @@ export function AgentChat({
     }
   }, [thread?.messages.length, sending]);
 
-  const selectedAgent = useMemo(
-    () => agents.find((agent) => agent.name === agentName) ?? null,
-    [agents, agentName],
-  );
-
-  const busy = sending || threadLoading;
+  const busy = agentLoading || sending || threadLoading;
 
   const attachFiles = useCallback(
     async (files: File[]) => {
-      if (!agentName || files.length === 0) return;
+      if (!boundAgent || files.length === 0) return;
       let activeThread: ChatThread;
       try {
-        activeThread = await ensureThread(agentName);
+        activeThread = await ensureThread();
       } catch (caught) {
         setError(classifyAsyncError(caught).message);
         return;
@@ -284,7 +265,7 @@ export function AgentChat({
         }),
       );
     },
-    [agentName, ensureThread, projectId],
+    [boundAgent, ensureThread, projectId],
   );
 
   const onFileInputChange = (event: ChangeEvent<HTMLInputElement>) => {
@@ -300,13 +281,13 @@ export function AgentChat({
 
   const send = async () => {
     const text = draft.trim();
-    if (!agentName || !text || sending) return;
+    if (!boundAgent || !text || sending) return;
     setSending(true);
     setError(null);
     setDraft("");
     let activeThread: ChatThread;
     try {
-      activeThread = await ensureThread(agentName);
+      activeThread = await ensureThread();
     } catch (caught) {
       setError(classifyAsyncError(caught).message);
       setDraft(text);
@@ -316,8 +297,9 @@ export function AgentChat({
     const sentAttachments = pending
       .filter((item) => item.state === "ready" && item.attachment)
       .map((item) => item.attachment as ChatAttachment);
+    const clientMessageId = crypto.randomUUID();
     const optimistic: ChatMessage = {
-      id: `local-${Date.now()}`,
+      id: clientMessageId,
       role: "user",
       content: text,
       created_at: new Date().toISOString(),
@@ -328,7 +310,12 @@ export function AgentChat({
     threadRef.current = { ...activeThread, messages: [...activeThread.messages, optimistic] };
     setPending([]);
     try {
-      await sendChatMessage(activeThread.id, text, projectId ?? undefined);
+      await sendChatMessage(
+        activeThread.id,
+        text,
+        clientMessageId,
+        projectId ?? undefined,
+      );
       const refreshed = await getChatThread(activeThread.id, projectId ?? undefined);
       threadRef.current = refreshed;
       setThread(refreshed);
@@ -381,30 +368,24 @@ export function AgentChat({
           <h1>{copy.title}</h1>
           <p>{copy.description}</p>
         </div>
-        <label className="agent-chat-picker">
-          <span>Agent</span>
-          <select
-            value={agentName ?? ""}
-            disabled={agentsLoading || busy}
-            onChange={(event) => {
-              setAgentName(event.target.value);
-            }}
+        {boundAgent ? (
+          <div
+            className="agent-chat-binding"
+            aria-label={`Deployed agent ${boundAgent.name}`}
           >
-            {agents.map((agent) => (
-              <option key={agent.name} value={agent.name}>
-                {agent.label}
-              </option>
-            ))}
-          </select>
-        </label>
+            <Bot size={16} aria-hidden="true" />
+            <span>
+              <small>Deployed agent</small>
+              <strong>{boundAgent.name}</strong>
+            </span>
+          </div>
+        ) : null}
       </header>
 
-      {selectedAgent ? (
+      {boundAgent ? (
         <p className="agent-chat-agent-note">
-          {selectedAgent.online ? <Globe2 size={15} /> : <ShieldCheck size={15} />}
-          <span>
-            <strong>{selectedAgent.name}</strong> — {selectedAgent.description}
-          </span>
+          {boundAgent.online ? <Globe2 size={15} /> : <ShieldCheck size={15} />}
+          <span>{boundAgent.description}</span>
         </p>
       ) : null}
 
@@ -486,13 +467,13 @@ export function AgentChat({
         {threadLoading ? (
           <p className="agent-chat-pending">
             <CircleDashed className="spin" size={16} aria-hidden="true" />
-            <span>Connecting to {agentName}...</span>
+            <span>Connecting to {boundAgent?.name}...</span>
           </p>
         ) : null}
         {sending ? (
           <p className="agent-chat-pending">
             <CircleDashed className="spin" size={16} aria-hidden="true" />
-            <span>{agentName} is working...</span>
+            <span>{boundAgent?.name} is working...</span>
           </p>
         ) : null}
         <div ref={transcriptEndRef} />
@@ -538,7 +519,7 @@ export function AgentChat({
             type="button"
             className="agent-chat-attach"
             aria-label="Attach files"
-            disabled={!agentName || busy}
+            disabled={!boundAgent || busy}
             onClick={() => fileInputRef.current?.click()}
           >
             <Paperclip size={17} />
@@ -558,7 +539,7 @@ export function AgentChat({
             rows={1}
             placeholder="Ask the agent anything, or drop a file here"
             aria-label="Message"
-            disabled={!agentName || busy}
+            disabled={!boundAgent || busy}
             onChange={(event) => setDraft(event.target.value)}
             onKeyDown={onComposerKeyDown}
           />
@@ -566,7 +547,7 @@ export function AgentChat({
             type="submit"
             className="primary-button agent-chat-send"
             aria-label="Send"
-            disabled={!agentName || busy || uploading || draft.trim().length === 0}
+            disabled={!boundAgent || busy || uploading || draft.trim().length === 0}
           >
             {sending ? (
               <CircleDashed className="spin" size={16} />

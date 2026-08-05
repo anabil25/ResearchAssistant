@@ -26,19 +26,14 @@ timed out, or it was cancelled). ``NullCapabilityDiscoverySource`` is the
 production-safe default when no real adapter is wired: it reports
 ``available=False`` rather than a silently empty "success", so a caller (and
 the UI) can render "provider integration unavailable" instead of mistaking
-it for "no capabilities discovered". ``InMemoryCapabilityDiscoverySource`` is
-test-only, mirroring the ``InMemoryModelDiscovery`` pattern used for model
-discovery, and additionally supports simulating a slow/cancelled provider
-for ``discover_with_timeout`` contract tests.
+it for "no capabilities discovered".
 
 Production composition (``research_assistant_api.app._init_agent_studio``)
 wires ``build_capability_discovery_source(settings)``: the real
 ``HttpCapabilityDiscoverySource`` when a provider URL is configured
 (``agent_studio_capability_provider_url``), else the honest
-``NullCapabilityDiscoverySource`` -- never a hard-coded seed catalog
-masquerading as discovery output. See
-``capability_registry.seeded_test_registry`` for the test-only fixture that
-still exercises a populated catalog.
+``NullCapabilityDiscoverySource`` -- never a hard-coded local catalog
+masquerading as discovery output.
 """
 
 from __future__ import annotations
@@ -206,8 +201,8 @@ class CapabilityDiscoveryResult:
     """Immutable result of a single discovery pass.
 
     ``warnings`` carries honest, non-fatal discovery caveats (e.g. "one
-    provider timed out") without ever hiding them or synthesizing fake
-    success; callers may surface them to admins/operators.
+    provider timed out") without hiding them; callers may surface them to
+    admins/operators.
 
     ``available``/``unavailable_reason`` distinguish "the provider was
     reachable and honestly has nothing to report" (``available=True``, empty
@@ -255,13 +250,10 @@ class CapabilityDiscoveryResult:
         else:
             if descriptors or instances:
                 raise ValueError(
-                    "An unavailable discovery result cannot vouch for descriptors/instances; it must "
-                    "be empty"
+                    "An unavailable discovery result cannot vouch for descriptors/instances; it must be empty"
                 )
             if descriptor_pins or instance_pins or refresh_metadata is not None:
-                raise ValueError(
-                    "An unavailable discovery result cannot carry provider pins or refresh metadata"
-                )
+                raise ValueError("An unavailable discovery result cannot carry provider pins or refresh metadata")
             if not unavailable_reason:
                 raise ValueError("An unavailable discovery result must carry a non-empty unavailable_reason")
         self.descriptors = descriptors
@@ -311,35 +303,6 @@ class NullCapabilityDiscoverySource:
         )
 
 
-class InMemoryCapabilityDiscoverySource:
-    """Test-only discovery source backed by a fixed result.
-
-    Must never be wired in a cloud/production path; it exists so unit tests
-    can exercise ``CapabilityRegistry.from_source`` deterministically without
-    a live provider integration. ``delay_seconds``/``raise_cancelled`` let a
-    test simulate a slow or self-cancelling provider for
-    ``discover_with_timeout`` contract tests.
-    """
-
-    def __init__(
-        self,
-        result: CapabilityDiscoveryResult | None = None,
-        *,
-        delay_seconds: float | None = None,
-        raise_cancelled: bool = False,
-    ) -> None:
-        self._result = result if result is not None else CapabilityDiscoveryResult()
-        self._delay_seconds = delay_seconds
-        self._raise_cancelled = raise_cancelled
-
-    async def discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
-        if self._raise_cancelled:
-            raise asyncio.CancelledError("Simulated provider-side cancellation for testing.")
-        if self._delay_seconds is not None:
-            await asyncio.sleep(self._delay_seconds)
-        return self._result
-
-
 async def discover_with_timeout(
     source: CapabilityDiscoverySource, request: CapabilityDiscoveryRequest
 ) -> CapabilityDiscoveryResult:
@@ -353,10 +316,9 @@ async def discover_with_timeout(
     should use instead of calling ``source.discover`` directly.
 
     A genuine cancellation of the *caller's own task* (e.g. request
-    disconnect, shutdown) is different from a *provider* raising
-    ``CancelledError`` on its own (simulated by
-    ``InMemoryCapabilityDiscoverySource(raise_cancelled=True)`` in tests):
-    only the latter is translated here. ``Task.cancelling()`` (3.11+)
+    disconnect, shutdown) is different from a provider raising
+    ``CancelledError`` on its own: only the latter is translated here.
+    ``Task.cancelling()`` (3.11+)
     distinguishes them -- if the current task itself has an outstanding
     ``.cancel()`` request, cancellation is honored and re-raised rather than
     swallowed, so this helper never breaks cooperative task cancellation.
@@ -438,6 +400,7 @@ _HEALTH_MAP: Mapping[str, HealthStatus] = {
     "needs_consent": HealthStatus.UNHEALTHY,
     "misconfigured": HealthStatus.UNHEALTHY,
 }
+
 
 class CapabilityProviderProtocolError(RuntimeError):
     """A single provider/descriptor/instance payload failed shape or version validation.
@@ -635,9 +598,7 @@ def _wire_warnings(value: Any, *, source_label: str) -> tuple[str, ...]:
         # rendered, not have its whole warning discarded. Every other wire string
         # in this module goes through ``_verbatim_required_text`` /
         # ``_verbatim_optional_text`` and fails closed instead.
-        collected.append(
-            str(warning.get("message") or warning.get("reason_code") or "unknown warning")
-        )
+        collected.append(str(warning.get("message") or warning.get("reason_code") or "unknown warning"))
     return tuple(collected)
 
 
@@ -660,9 +621,7 @@ def _str_sequence(value: Any, *, field: str) -> tuple[str, ...]:
     items: list[str] = []
     for item in value:
         if not isinstance(item, str):
-            raise CapabilityProviderProtocolError(
-                f"{field} entries must be strings, got {type(item).__name__}"
-            )
+            raise CapabilityProviderProtocolError(f"{field} entries must be strings, got {type(item).__name__}")
         items.append(item)
     return tuple(items)
 
@@ -707,9 +666,7 @@ def _map_operation(payload: Mapping[str, Any]) -> tuple[CapabilityOperation, Raw
     operation_class = _map_operation_class(payload["operation_class"])
     docs = _str_sequence(payload.get("docs"), field="docs")
     timeout_raw = payload["timeout_seconds"]
-    timeout_seconds = (
-        int(timeout_raw) if isinstance(timeout_raw, int | float) and 1 <= timeout_raw <= 3600 else None
-    )
+    timeout_seconds = int(timeout_raw) if isinstance(timeout_raw, int | float) and 1 <= timeout_raw <= 3600 else None
     max_retries_raw = payload.get("max_retries", 0)
     max_retries = int(max_retries_raw) if isinstance(max_retries_raw, int | float) and 0 <= max_retries_raw <= 10 else 0
     # Provider RFC-8785 operation schema digests are preserved verbatim on the
@@ -825,8 +782,7 @@ def _map_descriptor(
         raise CapabilityProviderProtocolError("descriptor has no operations")
     if len(operations_payload) > max_operations:
         raise CapabilityProviderProtocolError(
-            f"descriptor declares {len(operations_payload)} operations, exceeding the adapter cap "
-            f"of {max_operations}"
+            f"descriptor declares {len(operations_payload)} operations, exceeding the adapter cap of {max_operations}"
         )
     mapped = tuple(_map_operation(op) for op in operations_payload)
     operations = tuple(operation for operation, _ in mapped)
@@ -878,8 +834,7 @@ def _map_instance(
     echoed_provider_id = payload.get("provider_id")
     if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
         raise CapabilityProviderProtocolError(
-            f"instance provider_id {echoed_provider_id!r} does not match its enclosing provider "
-            f"{provider_id!r}"
+            f"instance provider_id {echoed_provider_id!r} does not match its enclosing provider {provider_id!r}"
         )
     readiness = _map_readiness(payload["readiness"])
     health_status = _map_health(payload["health"])
@@ -967,6 +922,7 @@ _ProviderDiscoveryOutcome = tuple[
     tuple[str, ...],
 ]
 
+
 def _duplicates[HasId: (CapabilityDescriptor, CapabilityInstance)](
     items: Iterable[HasId],
 ) -> list[HasId]:
@@ -1046,9 +1002,7 @@ class HttpCapabilityDiscoverySource:
         self._credential = credential
         self._token_scope = token_scope
         self._token = (
-            get_bearer_token_provider(credential, token_scope)
-            if credential is not None and token_scope
-            else None
+            get_bearer_token_provider(credential, token_scope) if credential is not None and token_scope else None
         )
         self._owns_client = client is None
         self._client = client or httpx.AsyncClient(
@@ -1116,9 +1070,7 @@ class HttpCapabilityDiscoverySource:
         except TimeoutError:
             return CapabilityDiscoveryResult(
                 available=False,
-                unavailable_reason=(
-                    f"Capability discovery exceeded its {self._deadline_seconds}s overall deadline."
-                ),
+                unavailable_reason=(f"Capability discovery exceeded its {self._deadline_seconds}s overall deadline."),
             )
 
     async def _discover(self, request: CapabilityDiscoveryRequest) -> CapabilityDiscoveryResult:
@@ -1210,8 +1162,7 @@ class HttpCapabilityDiscoverySource:
                 continue
             if candidate in seen_provider_ids:
                 entry_warnings.append(
-                    f"Provider {candidate!r} appears more than once in the catalog; the duplicate was "
-                    "ignored."
+                    f"Provider {candidate!r} appears more than once in the catalog; the duplicate was ignored."
                 )
                 continue
             seen_provider_ids.add(candidate)
@@ -1255,9 +1206,7 @@ class HttpCapabilityDiscoverySource:
                 provider_warnings,
             ) = outcome
             warnings.extend(provider_warnings)
-            for descriptor, descriptor_pin in zip(
-                provider_descriptors, provider_descriptor_pins, strict=True
-            ):
+            for descriptor, descriptor_pin in zip(provider_descriptors, provider_descriptor_pins, strict=True):
                 collected_descriptors.append((provider_id, descriptor, descriptor_pin))
             for instance, instance_pin in zip(provider_instances, provider_instance_pins, strict=True):
                 collected_instances.append((provider_id, instance, instance_pin))
@@ -1280,8 +1229,7 @@ class HttpCapabilityDiscoverySource:
         # would have been wrong, and a confidently-wrong statement about a
         # control is worse than none because it gets trusted.
         duplicate_descriptor_ids = {
-            descriptor.id
-            for descriptor in _duplicates(descriptor for _, descriptor, _ in collected_descriptors)
+            descriptor.id for descriptor in _duplicates(descriptor for _, descriptor, _ in collected_descriptors)
         }
         duplicate_instance_ids = {
             instance.id for instance in _duplicates(instance for _, instance, _ in collected_instances)
@@ -1384,16 +1332,14 @@ class HttpCapabilityDiscoverySource:
         echoed_provider_id = payload.get("provider_id")
         if not isinstance(echoed_provider_id, str) or echoed_provider_id != provider_id:
             raise CapabilityProviderProtocolError(
-                f"Provider {provider_id} capabilities response provider_id mismatch: "
-                f"{echoed_provider_id!r}."
+                f"Provider {provider_id} capabilities response provider_id mismatch: {echoed_provider_id!r}."
             )
         descriptors_payload = payload.get("descriptors")
         if descriptors_payload is None:
             descriptors_payload = []
         if not isinstance(descriptors_payload, list):
             raise CapabilityProviderProtocolError(
-                f"Provider {provider_id} 'descriptors' was not a JSON array "
-                f"({type(descriptors_payload).__name__})."
+                f"Provider {provider_id} 'descriptors' was not a JSON array ({type(descriptors_payload).__name__})."
             )
         if len(descriptors_payload) > self._max_descriptors_per_provider:
             raise CapabilityProviderProtocolError(
@@ -1405,17 +1351,14 @@ class HttpCapabilityDiscoverySource:
             instances_payload = []
         if not isinstance(instances_payload, list):
             raise CapabilityProviderProtocolError(
-                f"Provider {provider_id} 'instances' was not a JSON array "
-                f"({type(instances_payload).__name__})."
+                f"Provider {provider_id} 'instances' was not a JSON array ({type(instances_payload).__name__})."
             )
         if len(instances_payload) > self._max_instances_per_provider:
             raise CapabilityProviderProtocolError(
                 f"Provider {provider_id} returned {len(instances_payload)} instances, exceeding the "
                 f"adapter cap of {self._max_instances_per_provider}."
             )
-        warnings: list[str] = list(
-            _wire_warnings(payload.get("warnings"), source_label=f"Provider {provider_id}")
-        )
+        warnings: list[str] = list(_wire_warnings(payload.get("warnings"), source_label=f"Provider {provider_id}"))
         descriptors: list[CapabilityDescriptor] = []
         descriptor_pins: list[ProviderDescriptorPins] = []
         for position, descriptor_payload in enumerate(descriptors_payload):
@@ -1464,9 +1407,7 @@ class HttpCapabilityDiscoverySource:
         # raw wire field a second time.
         pin_counts: Counter[str] = Counter(pin.descriptor_backend_id for pin in descriptor_pins)
         descriptor_pin_by_backend_id = {
-            pin.descriptor_backend_id: pin
-            for pin in descriptor_pins
-            if pin_counts[pin.descriptor_backend_id] == 1
+            pin.descriptor_backend_id: pin for pin in descriptor_pins if pin_counts[pin.descriptor_backend_id] == 1
         }
         for position, instance_payload in enumerate(instances_payload):
             if not isinstance(instance_payload, Mapping):
@@ -1489,8 +1430,7 @@ class HttpCapabilityDiscoverySource:
             ) as exc:
                 instance_id = instance_payload.get("instance_id")
                 warnings.append(
-                    f"Provider {provider_id} instance {instance_id!r} could not be translated and "
-                    f"was skipped: {exc}"
+                    f"Provider {provider_id} instance {instance_id!r} could not be translated and was skipped: {exc}"
                 )
                 continue
             reference = descriptor_pin_by_backend_id.get(instance.descriptor_id)
@@ -1548,24 +1488,3 @@ def build_capability_discovery_source(settings: Settings) -> CapabilityDiscovery
         max_concurrency=settings.agent_studio_capability_provider_max_concurrency,
         deadline_seconds=settings.agent_studio_capability_provider_deadline_seconds,
     )
-
-
-def _tag_provider_digest(value: Any) -> str | None:
-    """Namespaces a provider-reported RFC-8785 digest, or rejects a malformed one.
-
-    ``None`` is a legitimate input (an optional/absent digest); anything else
-    must be a well-formed lowercase 64-character SHA-256 hex string, since a
-    malformed digest string is a protocol violation, not a value to silently
-    pass through.
-    """
-
-    if value is None:
-        return None
-    if (
-        not isinstance(value, str)
-        or len(value) != 64
-        or value != value.lower()
-        or any(char not in _HEX_DIGITS for char in value)
-    ):
-        raise CapabilityProviderProtocolError(f"expected a lowercase SHA-256 hex digest, got {value!r}")
-    return f"{_PROVIDER_DIGEST_PREFIX}{value}"

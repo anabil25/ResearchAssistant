@@ -10,10 +10,10 @@ literals encoded, and a parity test pins them to it.
 
 from __future__ import annotations
 
-
 from pydantic import BaseModel, ConfigDict
 
 from research_assistant_core.models import Capability, CapabilitySpec
+
 
 class AgentEndpoint(BaseModel):
     """One deployed agent a researcher can talk to.
@@ -40,9 +40,7 @@ class AgentSurface(BaseModel):
 
     #: Renders the conversational surface rather than a bespoke studio.
     chat: bool = False
-    #: A studio capability runs through ``ResearchService``. A chat-only
-    #: capability has no blueprint and must be refused there rather than
-    #: reaching a map that would raise ``KeyError``.
+    #: A studio capability has a deterministic, user-authored workflow surface.
     studio: bool = True
 
     title: str
@@ -182,7 +180,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
             "Compute deterministic profiles before explaining metrics, quality, and next analyses."
         ),
         example_prompt=(
-            "Summarize the sample outcome dataset and identify the strongest data-quality caveat."
+            "Summarize the attached outcome dataset and identify the strongest data-quality caveat."
         ),
         accent="blue",
         icon="FlaskConical",
@@ -208,7 +206,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
             ),
         ),
         chat=True,
-        # Conversational only: there is no ResearchService blueprint behind it.
+        # Conversational only: there is no workflow editor behind it.
         studio=False,
         title="Systematic review screening",
         short_title="Screen papers",

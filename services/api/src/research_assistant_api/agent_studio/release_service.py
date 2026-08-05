@@ -161,9 +161,7 @@ class ReleaseService:
         self._registry = capability_registry
         # Fail-closed default: if no live discovery is wired, any manifest
         # that declares a ``model_deployment`` will hard-fail cut/deploy
-        # revalidation rather than silently skipping the check. Tests must
-        # explicitly supply a fake/in-memory discovery to exercise the
-        # success path.
+        # revalidation rather than silently skipping the check.
         self._model_discovery: ModelDiscovery = (
             model_discovery if model_discovery is not None else UnavailableModelDiscovery()
         )

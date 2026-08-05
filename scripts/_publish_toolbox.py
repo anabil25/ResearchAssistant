@@ -8,7 +8,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from scripts.azd_env import sync_canonical_azd_outputs  # noqa: E402
+from scripts.azd_env import sync_canonical_azd_outputs
 
 sync_canonical_azd_outputs()
 

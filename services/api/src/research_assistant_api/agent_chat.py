@@ -29,6 +29,7 @@ Three boundaries are deliberate and load-bearing:
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from dataclasses import dataclass
@@ -41,14 +42,13 @@ from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from pydantic import BaseModel, Field
-from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.agent_surfaces import (
     chat_capabilities,
     endpoint_for,
     find_surface,
 )
+from research_assistant_core.azure_auth import azure_credential
 from research_assistant_core.models import Capability
-from research_assistant_core.service import ResearchService
 from starlette.concurrency import run_in_threadpool
 
 from research_assistant_api.config import Settings
@@ -144,6 +144,12 @@ class ChatThreadCreate(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
+    client_message_id: str | None = Field(
+        default=None,
+        min_length=16,
+        max_length=120,
+        pattern=r"^[A-Za-z0-9_-]+$",
+    )
 
 
 @dataclass(frozen=True, slots=True)
@@ -270,50 +276,6 @@ class AgentChatGateway:
             raise HostedAgentInvocationError(f"Could not upload {path} to the Hosted Agent session.") from exc
 
 
-class LocalAgentChatGateway:
-    """Deterministic stand-in used by the local mock runtime.
-
-    The e2e suite and local development run without a Foundry endpoint. Rather
-    than leaving the chat surface permanently 503 (which would make the studios
-    untestable offline), this echoes back what a real turn would have carried
-    and says plainly that no model was called, so a mock reply can never be
-    mistaken for agent output.
-    """
-
-    def open_thread(self, agent_name: str, *, user_identity: str) -> ThreadHandle:
-        token = uuid4().hex[:12]
-        return ThreadHandle(conversation_id=f"local-conv-{token}", session_id=f"local-session-{token}")
-
-    def send(
-        self,
-        *,
-        agent_name: str,
-        conversation_id: str,
-        session_id: str,
-        user_identity: str,
-        text: str,
-    ) -> HostedAgentReply:
-        return HostedAgentReply(
-            agent_name=agent_name,
-            content=(
-                f"**Local mock runtime** — no Hosted Agent was invoked.\n\n"
-                f"`{agent_name}` would have received this turn:\n\n> {text.strip()}"
-            ),
-            response_id=f"local-response-{uuid4().hex[:12]}",
-        )
-
-    def upload(
-        self,
-        *,
-        agent_name: str,
-        session_id: str,
-        user_identity: str,
-        path: str,
-        content: bytes,
-    ) -> None:
-        logger.info("Local mock runtime accepted attachment %s (%s bytes)", path, len(content))
-
-
 def _capability_agents(capability: Capability) -> tuple[AgentChoice, ...]:
     """Deployed agents for a capability, in registry order."""
     surface = find_surface(capability)
@@ -382,6 +344,17 @@ def _attachment_view(attachment: ChatAttachment) -> ChatAttachmentView:
     return ChatAttachmentView(**attachment.model_dump())
 
 
+def _message_view(message: ChatMessage) -> ChatMessageView:
+    return ChatMessageView(
+        id=message.id,
+        role=message.role,
+        content=message.content,
+        created_at=message.created_at,
+        agent_name=message.agent_name,
+        attachments=[_attachment_view(item) for item in message.attachments],
+    )
+
+
 def _thread_view(thread: ChatThread) -> ChatThreadView:
     return ChatThreadView(
         id=thread.id,
@@ -389,17 +362,7 @@ def _thread_view(thread: ChatThread) -> ChatThreadView:
         agent_name=thread.agent_name,
         created_at=thread.created_at,
         updated_at=thread.updated_at,
-        messages=[
-            ChatMessageView(
-                id=message.id,
-                role=message.role,
-                content=message.content,
-                created_at=message.created_at,
-                agent_name=message.agent_name,
-                attachments=[_attachment_view(item) for item in message.attachments],
-            )
-            for message in thread.messages
-        ],
+        messages=[_message_view(message) for message in thread.messages],
         attachments=[_attachment_view(item) for item in thread.attachments],
     )
 
@@ -522,10 +485,51 @@ async def send_chat_message(
 ) -> ChatMessageView:
     store, identity = _workspace_access(request)
     thread = _load_thread(store, thread_id, identity)
+    client_message_id = payload.client_message_id or f"legacy-{uuid4().hex}"
+    assistant_id = f"reply-{client_message_id}"
+    existing = next((message for message in thread.messages if message.id == assistant_id), None)
+    if existing is not None:
+        return _message_view(existing)
+
+    turn_key = (thread.id, identity.user_id, client_message_id)
+    active = _ACTIVE_CHAT_TURNS.get(turn_key)
+    if active is None:
+        active = asyncio.create_task(
+            _execute_chat_turn(
+                thread=thread,
+                payload=payload,
+                request=request,
+                store=store,
+                identity=identity,
+                client_message_id=client_message_id,
+            )
+        )
+        _ACTIVE_CHAT_TURNS[turn_key] = active
+
+        def remove_completed(completed: asyncio.Task[ChatMessageView]) -> None:
+            if _ACTIVE_CHAT_TURNS.get(turn_key) is completed:
+                _ACTIVE_CHAT_TURNS.pop(turn_key, None)
+
+        active.add_done_callback(remove_completed)
+    return await asyncio.shield(active)
+
+
+_ACTIVE_CHAT_TURNS: dict[tuple[str, str, str], asyncio.Task[ChatMessageView]] = {}
+
+
+async def _execute_chat_turn(
+    *,
+    thread: ChatThread,
+    payload: ChatMessageCreate,
+    request: Request,
+    store: WorkspaceStore,
+    identity: IdentityContext,
+    client_message_id: str,
+) -> ChatMessageView:
     gateway = _gateway(request)
     pending = [item for item in thread.attachments if not _already_announced(thread, item)]
     user_message = ChatMessage(
-        id=f"msg-{uuid4().hex[:16]}",
+        id=client_message_id,
         role="user",
         content=payload.text,
         created_at=utc_now(),
@@ -555,7 +559,7 @@ async def send_chat_message(
     content = _render_agent_reply(reply.content)
     follow_up = _next_steps(thread, reply.content, evidence_count=0)
     assistant_message = ChatMessage(
-        id=f"msg-{uuid4().hex[:16]}",
+        id=f"reply-{client_message_id}",
         role="assistant",
         content=f"{content}\n\n{follow_up}" if follow_up else content,
         created_at=utc_now(),
@@ -564,13 +568,7 @@ async def send_chat_message(
     store.save_chat_thread(
         thread.model_copy(update={"messages": [*thread.messages, user_message, assistant_message]})
     )
-    return ChatMessageView(
-        id=assistant_message.id,
-        role=assistant_message.role,
-        content=assistant_message.content,
-        created_at=assistant_message.created_at,
-        agent_name=assistant_message.agent_name,
-    )
+    return _message_view(assistant_message)
 
 
 def _already_announced(thread: ChatThread, attachment: ChatAttachment) -> bool:
@@ -776,10 +774,10 @@ def _contract_envelope(
 
 
 def build_agent_chat_gateway(settings: Settings) -> ChatGateway:
-    """Compose the real gateway in hosted mode, the honest local stub otherwise."""
-    if settings.execution_mode == "hosted" and settings.foundry_project_endpoint:
-        return AgentChatGateway(settings)
-    return LocalAgentChatGateway()
+    """Compose the Foundry gateway for this deployment."""
+    if not settings.foundry_project_endpoint:
+        raise HostedAgentConfigurationError("FOUNDRY_PROJECT_ENDPOINT is required.")
+    return AgentChatGateway(settings)
 
 
 __all__ = [
@@ -788,7 +786,6 @@ __all__ = [
     "ChatGateway",
     "ChatMessageView",
     "ChatThreadView",
-    "LocalAgentChatGateway",
     "build_agent_chat_gateway",
     "delegated_user_identity_for",
     "router",

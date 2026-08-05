@@ -9,9 +9,8 @@ from fastapi import HTTPException, Request, status
 
 from research_assistant_api.config import Settings
 
-
 PLATFORM_OWNER_GROUPS = frozenset({"research-admins", "agent-studio-admins"})
-LOCAL_DEVELOPMENT_SOURCE = "demo-sandbox"
+LOCAL_DEVELOPMENT_SOURCE = "local-development"
 
 
 @dataclass(frozen=True, slots=True)
@@ -51,8 +50,9 @@ def is_platform_owner(identity: IdentityContext) -> bool:
 
 def local_developer_identity(settings: Settings) -> IdentityContext:
     return IdentityContext(
+        # This value is persisted as the owner of existing local-development projects.
         user_id="demo-researcher",
-        display_name="Anonymous researcher",
+        display_name="Local developer",
         tenant_id=settings.workspace_tenant_id,
         groups=(
             "researchers",
@@ -107,7 +107,7 @@ def _has_group_overage(payload: dict[str, Any]) -> bool:
 
 
 def resolve_identity(request: Request, settings: Settings) -> IdentityContext:
-    """Resolve the caller's identity from platform-injected or demo signals.
+    """Resolve the caller's identity from platform or local-development signals.
 
     ``entra_auth_enforced`` gates trusting the
     ``x-ms-client-principal`` header that Azure Container Apps' built-in
@@ -185,10 +185,3 @@ PROJECT_GROUP_PREFIX = "project:"
 def project_group_name(project_id: str) -> str:
     """Canonical group-claim name granting membership in ``project_id``."""
     return f"{PROJECT_GROUP_PREFIX}{project_id}"
-
-
-#: The interactive local/dev "demo sandbox" identity source (only ever issued
-#: when ``Settings.entra_auth_enforced`` is false). It never carries real Entra
-#: group claims; ``local_developer_identity`` grants only the configured local
-#: workspace project through the same explicit group convention used by authz.
-DEMO_SANDBOX_SOURCE = LOCAL_DEVELOPMENT_SOURCE

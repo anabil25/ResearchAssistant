@@ -98,7 +98,7 @@ export function FoundryAgentCatalog({
         isFoundryUnconfigured(error.message) ? (
           <AsyncStateBanner
             kind="unavailable"
-            message="No Foundry project is configured for this environment, so there is no agent inventory to list. Local development runs offline against a synthetic corpus; deployed environments receive FOUNDRY_PROJECT_ENDPOINT from infrastructure."
+            message="No Foundry project is configured for this environment. Configure FOUNDRY_PROJECT_ENDPOINT to list deployed agents."
           />
         ) : (
           <AsyncStateBanner kind={error.kind} message={error.message} onRetry={load} />

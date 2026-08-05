@@ -1785,6 +1785,18 @@ export interface components {
             /** Online */
             online: boolean;
         };
+        /** AgentClaimView */
+        AgentClaimView: {
+            /** Evidence Ids */
+            evidence_ids?: string[];
+            /**
+             * Support
+             * @enum {string}
+             */
+            support: "supported" | "unsupported" | "conflicting";
+            /** Text */
+            text: string;
+        };
         /**
          * AgentDraft
          * @description A mutable, in-progress edit of a manifest prior to cutting a version.
@@ -1833,27 +1845,28 @@ export interface components {
          * AgentEndpoint
          * @description One deployed agent a researcher can talk to.
          *
-         *     Everything the runtime needs is declared here. Nothing infers behaviour from
-         *     the agent's name.
+         *     Every agent reaches the same shared Foundry toolbox, so there is nothing to
+         *     declare about tools, web access, or retrieval: an agent searches the project
+         *     index with ``file_search`` and public sources with the connector tools.
          */
         AgentEndpoint: {
             /** Description */
             description: string;
-            /**
-             * Evidence
-             * @default none
-             * @enum {string}
-             */
-            evidence: "none" | "citations" | "full_text";
             /** Label */
             label: string;
             /** Name */
             name: string;
-            /**
-             * Web Access
-             * @default false
-             */
-            web_access: boolean;
+        };
+        /** AgentEvidenceView */
+        AgentEvidenceView: {
+            /** Evidence Id */
+            evidence_id: string;
+            /** Source Uri */
+            source_uri?: string | null;
+            /** Title */
+            title?: string | null;
+            /** Version */
+            version?: string | null;
         };
         /** AgentInsight */
         AgentInsight: {
@@ -2012,6 +2025,28 @@ export interface components {
             tenant_id: string;
             /** Version Id */
             version_id: string;
+        };
+        /** AgentResearchResponse */
+        AgentResearchResponse: {
+            /** Agent Name */
+            agent_name: string;
+            capability: components["schemas"]["Capability"];
+            /** Claims */
+            claims?: components["schemas"]["AgentClaimView"][];
+            /** Details */
+            details?: {
+                [key: string]: unknown;
+            };
+            /** Evidence */
+            evidence?: components["schemas"]["AgentEvidenceView"][];
+            /** Limitations */
+            limitations?: string[];
+            /** Response Id */
+            response_id?: string | null;
+            /** Run Id */
+            run_id: string;
+            /** Summary */
+            summary: string;
         };
         /**
          * AgentRole
@@ -2288,19 +2323,6 @@ export interface components {
              */
             resolved_at?: string;
         };
-        /** AnalysisStep */
-        AnalysisStep: {
-            /** Deterministic */
-            deterministic: boolean;
-            /** Id */
-            id: string;
-            /** Method */
-            method: string;
-            /** Question */
-            question: string;
-            /** Status */
-            status: string;
-        };
         /**
          * ApprovalContextOutcome
          * @description Outcome of a single ``resolve_context`` call.
@@ -2500,20 +2522,6 @@ export interface components {
              * @default false
              */
             requires_human_review: boolean;
-        };
-        /** ArtifactSection */
-        ArtifactSection: {
-            /** Body */
-            body: string;
-            /** Citation Ids */
-            citation_ids?: string[];
-            /** Heading */
-            heading: string;
-            /**
-             * Tone
-             * @default neutral
-             */
-            tone: string;
         };
         /** AssistantRequest */
         AssistantRequest: {
@@ -3281,6 +3289,8 @@ export interface components {
         };
         /** ChatMessageCreate */
         ChatMessageCreate: {
+            /** Client Message Id */
+            client_message_id?: string | null;
             /** Text */
             text: string;
         };
@@ -3381,21 +3391,6 @@ export interface components {
              * @default false
              */
             require_citations: boolean;
-        };
-        /** ComputeProposal */
-        ComputeProposal: {
-            /** Adapter */
-            adapter: string;
-            /** Approval Required */
-            approval_required: boolean;
-            /** Estimated Bytes */
-            estimated_bytes: number;
-            /** Estimated Cost Usd */
-            estimated_cost_usd: number | null;
-            /** Estimated Minutes */
-            estimated_minutes: number | null;
-            /** Stages */
-            stages: string[];
         };
         /** ConnectorCredentialUpdate */
         ConnectorCredentialUpdate: {
@@ -3606,45 +3601,6 @@ export interface components {
          * @enum {string}
          */
         DatasetApprovalState: "pending" | "approved" | "rejected" | "consumed";
-        /** DatasetFieldProfile */
-        DatasetFieldProfile: {
-            /** Data Type */
-            data_type: string;
-            /** Missing */
-            missing: number;
-            /** Name */
-            name: string;
-            /** Range Or Values */
-            range_or_values: string;
-            /** Unique */
-            unique: number;
-        };
-        /** DatasetStudioResult */
-        DatasetStudioResult: {
-            /** Analysis Plan */
-            analysis_plan: components["schemas"]["AnalysisStep"][];
-            /** Asset Name */
-            asset_name: string;
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Column Count */
-            column_count: number;
-            compute_proposal: components["schemas"]["ComputeProposal"];
-            /** Fields */
-            fields: components["schemas"]["DatasetFieldProfile"][];
-            insight?: components["schemas"]["AgentInsight"] | null;
-            /** Interpretation */
-            interpretation: string[];
-            /** Profile Note */
-            profile_note: string;
-            /** Profile Status */
-            profile_status: string;
-            /** Quality Findings */
-            quality_findings: string[];
-            /** Row Count */
-            row_count: number;
-            run: components["schemas"]["StudioRun"];
-        };
         /**
          * DelegationScope
          * @enum {string}
@@ -3760,21 +3716,6 @@ export interface components {
             /** Version Id */
             version_id: string;
         };
-        /** DraftSection */
-        DraftSection: {
-            /** Body */
-            body: string;
-            /** Evidence Ids */
-            evidence_ids: string[];
-            /** Id */
-            id: string;
-            /** Status */
-            status: string;
-            /** Title */
-            title: string;
-            /** Word Count */
-            word_count: number;
-        };
         /** EscalationRequest */
         EscalationRequest: {
             /** Evidence Summary */
@@ -3863,10 +3804,8 @@ export interface components {
          * EvaluationRunStatus
          * @description Honest outcome of one evaluation run attempt.
          *
-         *     ``UNAVAILABLE`` is the explicit, non-fake state used when no
-         *     ``EvaluationRunner`` execution adapter is wired -- see
-         *     ``evaluation_runner.py``. A run is never silently fabricated as
-         *     ``COMPLETED`` with invented scores.
+         *     ``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is
+         *     wired. A run is never recorded as ``COMPLETED`` without measured scores.
          * @enum {string}
          */
         EvaluationRunStatus: "completed" | "failed" | "unavailable";
@@ -3937,21 +3876,6 @@ export interface components {
             score?: number | null;
             /** Test Case Id */
             test_case_id: string;
-        };
-        /** EvidenceExtraction */
-        EvidenceExtraction: {
-            /** Citation Ids */
-            citation_ids: string[];
-            /** Limitation */
-            limitation: string;
-            /** Method */
-            method: string;
-            /** Outcome */
-            outcome: string;
-            /** Population */
-            population: string;
-            /** Source Id */
-            source_id: string;
         };
         /**
          * EvidenceState
@@ -4057,54 +3981,6 @@ export interface components {
          * @enum {string}
          */
         GateStatus: "passed" | "failed" | "skipped" | "not_applicable";
-        /** GrantOpportunity */
-        GrantOpportunity: {
-            /** Canonical Url */
-            canonical_url: string;
-            /** Deadline */
-            deadline: string;
-            /** Identifier */
-            identifier: string;
-            /** Sponsor */
-            sponsor: string;
-            /** Status */
-            status: string;
-            /** Title */
-            title: string;
-        };
-        /** GrantRequirement */
-        GrantRequirement: {
-            /** Category */
-            category: string;
-            /** Evidence Ids */
-            evidence_ids: string[];
-            /** Id */
-            id: string;
-            /** Status */
-            status: string;
-            /** Text */
-            text: string;
-        };
-        /** GrantStudioResult */
-        GrantStudioResult: {
-            /** Blockers */
-            blockers: string[];
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Fact Gaps */
-            fact_gaps: components["schemas"]["ProjectFactGap"][];
-            insight?: components["schemas"]["AgentInsight"] | null;
-            opportunity: components["schemas"]["GrantOpportunity"];
-            /** Readiness */
-            readiness: number;
-            /** Requirements */
-            requirements: components["schemas"]["GrantRequirement"][];
-            run: components["schemas"]["StudioRun"];
-            /** Sections */
-            sections: components["schemas"]["DraftSection"][];
-            /** Specific Aims */
-            specific_aims: string[];
-        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -4112,8 +3988,6 @@ export interface components {
         };
         /** HealthResponse */
         HealthResponse: {
-            /** Mode */
-            mode: string;
             /** Service */
             service: string;
             /** Status */
@@ -4165,25 +4039,6 @@ export interface components {
          * @enum {string}
          */
         InstanceReadiness: "ready" | "degraded" | "unavailable" | "unauthorized" | "needs_consent" | "misconfigured";
-        /** InstitutionalStudioResult */
-        InstitutionalStudioResult: {
-            /** Abstained */
-            abstained: boolean;
-            /** Answer */
-            answer: string | null;
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Conflicts */
-            conflicts: components["schemas"]["PolicyConflict"][];
-            /** Escalation */
-            escalation?: string | null;
-            insight?: components["schemas"]["AgentInsight"] | null;
-            run: components["schemas"]["StudioRun"];
-            /** Scope */
-            scope: string;
-            /** Versions */
-            versions: components["schemas"]["PolicyVersion"][];
-        };
         /**
          * KnowledgeBinding
          * @description A knowledge/grounding source attached to the manifest.
@@ -4286,24 +4141,6 @@ export interface components {
          * @enum {string}
          */
         LibraryStatus: "ready" | "processing" | "needs_review" | "blocked";
-        /** LiteratureStudioResult */
-        LiteratureStudioResult: {
-            /** Candidate Count */
-            candidate_count: number;
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Extraction Matrix */
-            extraction_matrix: components["schemas"]["EvidenceExtraction"][];
-            insight?: components["schemas"]["AgentInsight"] | null;
-            protocol: components["schemas"]["ReviewProtocol"];
-            run: components["schemas"]["StudioRun"];
-            /** Screening */
-            screening: components["schemas"]["ScreeningDecision"][];
-            /** Search Queries */
-            search_queries: string[];
-            /** Synthesis */
-            synthesis: string[];
-        };
         /**
          * ManifestChangeSummary
          * @description One deterministic, top-level ``AgentManifest`` field-level change.
@@ -4328,67 +4165,6 @@ export interface components {
          * @enum {string}
          */
         ManifestFieldChangeKind: "added" | "removed" | "modified";
-        /** MatchCriterion */
-        MatchCriterion: {
-            /** Id */
-            id: string;
-            /** Kind */
-            kind: string;
-            /** Label */
-            label: string;
-            /** Value */
-            value: string;
-            /** Weight */
-            weight: number;
-        };
-        /** MatchItem */
-        MatchItem: {
-            /** Citation Ids */
-            citation_ids: string[];
-            /** Freshness */
-            freshness: string;
-            /** Id */
-            id: string;
-            kind: components["schemas"]["SourceKind"];
-            /** Name */
-            name: string;
-            /** Rationale */
-            rationale: string;
-            /** Score */
-            score: number;
-            /** Score Factors */
-            score_factors?: components["schemas"]["MatchScoreFactor"][];
-            /** Tags */
-            tags?: string[];
-        };
-        /** MatchScoreFactor */
-        MatchScoreFactor: {
-            /** Contribution */
-            contribution: number;
-            /** Evidence Id */
-            evidence_id: string;
-            /** Id */
-            id: string;
-            /** Label */
-            label: string;
-            /** Match */
-            match: number;
-            /** Weight */
-            weight: number;
-        };
-        /** MatchingStudioResult */
-        MatchingStudioResult: {
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Criteria */
-            criteria: components["schemas"]["MatchCriterion"][];
-            insight?: components["schemas"]["AgentInsight"] | null;
-            /** Matches */
-            matches: components["schemas"]["RankedEntity"][];
-            run: components["schemas"]["StudioRun"];
-            /** Shortlist Ids */
-            shortlist_ids: string[];
-        };
         /**
          * MemoryAuditAction
          * @enum {string}
@@ -4586,15 +4362,6 @@ export interface components {
          * @enum {string}
          */
         MemoryScopeKind: "conversation" | "user" | "project" | "private_agent";
-        /** Metric */
-        Metric: {
-            /** Detail */
-            detail?: string | null;
-            /** Label */
-            label: string;
-            /** Value */
-            value: string;
-        };
         /** ModelDeploymentRef */
         ModelDeploymentRef: {
             /** Capacity */
@@ -4669,10 +4436,8 @@ export interface components {
          * PlaygroundRunStatus
          * @description Honest outcome of one playground/test-run attempt.
          *
-         *     ``UNAVAILABLE`` is the explicit, non-fake state used when no
-         *     ``PlaygroundInvoker`` execution adapter is wired -- see
-         *     ``playground_invoker.py``. A run is never silently fabricated as
-         *     ``COMPLETED`` with an invented response.
+         *     ``UNAVAILABLE`` is used when no ``PlaygroundInvoker`` execution adapter is
+         *     wired. A run is never recorded as ``COMPLETED`` without a runtime response.
          * @enum {string}
          */
         PlaygroundRunStatus: "completed" | "failed" | "unavailable";
@@ -4769,43 +4534,6 @@ export interface components {
             /** Sequence */
             sequence: number;
             tool_call?: components["schemas"]["PlaygroundToolCall"] | null;
-        };
-        /** PolicyConflict */
-        PolicyConflict: {
-            /** Description */
-            description: string;
-            /** Severity */
-            severity: string;
-            /** Source A */
-            source_a: string;
-            /** Source B */
-            source_b: string;
-            /** Topic */
-            topic: string;
-        };
-        /** PolicyVersion */
-        PolicyVersion: {
-            /** Effective Date */
-            effective_date: string;
-            /** Source Id */
-            source_id: string;
-            /** Status */
-            status: string;
-            /** Title */
-            title: string;
-            /** Version */
-            version: string;
-        };
-        /** ProjectFactGap */
-        ProjectFactGap: {
-            /** Guidance */
-            guidance: string;
-            /** Id */
-            id: string;
-            /** Label */
-            label: string;
-            /** Status */
-            status: string;
         };
         /** ProjectSettings */
         ProjectSettings: {
@@ -4914,36 +4642,6 @@ export interface components {
             /** Detail */
             detail: string;
         };
-        /** ProvenanceManifest */
-        ProvenanceManifest: {
-            capability: components["schemas"]["Capability"];
-            /** Caveats */
-            caveats?: string[];
-            /**
-             * Generated At
-             * Format: date-time
-             */
-            generated_at?: string;
-            /** Mode */
-            mode: string;
-            /** Model Deployment */
-            model_deployment: string;
-            /** Run Id */
-            run_id: string;
-            /**
-             * Schema Version
-             * @default research-assistant.provenance.v1
-             */
-            schema_version: string;
-            /** Source Checksums */
-            source_checksums: {
-                [key: string]: string;
-            };
-            /** Source Ids */
-            source_ids: string[];
-            /** Verification */
-            verification: string;
-        };
         /**
          * PublishPromptAgentRequest
          * @description Request a durable, idempotent Foundry prompt-agent publication.
@@ -4953,27 +4651,6 @@ export interface components {
             idempotency_key: string;
             /** Project Id */
             project_id: string;
-        };
-        /** RankedEntity */
-        RankedEntity: {
-            /** Components */
-            components: components["schemas"]["ScoreComponent"][];
-            /** Freshness */
-            freshness: string;
-            /** Gaps */
-            gaps: string[];
-            /** Hard Filters Passed */
-            hard_filters_passed: boolean;
-            /** Id */
-            id: string;
-            /** Kind */
-            kind: string;
-            /** Name */
-            name: string;
-            /** Score */
-            score: number;
-            /** Strengths */
-            strengths: string[];
         };
         /** RegisterToolRequest */
         RegisterToolRequest: {
@@ -5168,44 +4845,13 @@ export interface components {
                 [key: string]: unknown;
             };
             /** Group Ids */
-            group_ids?: string[];
-            /**
-             * Project Id
-             * @default demo-project
-             */
+            group_ids: string[];
+            /** Project Id */
             project_id: string;
             /** Query */
             query: string;
-            /**
-             * Tenant Id
-             * @default demo
-             */
+            /** Tenant Id */
             tenant_id: string;
-        };
-        /** ResearchResult */
-        ResearchResult: {
-            /** Citations */
-            citations: components["schemas"]["Citation"][];
-            /** Eyebrow */
-            eyebrow: string;
-            /** Matches */
-            matches?: components["schemas"]["MatchItem"][];
-            /** Metadata */
-            metadata?: {
-                [key: string]: unknown;
-            };
-            /** Metrics */
-            metrics?: components["schemas"]["Metric"][];
-            provenance: components["schemas"]["ProvenanceManifest"];
-            run: components["schemas"]["RunRecord"];
-            /** Sections */
-            sections: components["schemas"]["ArtifactSection"][];
-            /** Summary */
-            summary: string;
-            /** Title */
-            title: string;
-            /** Warnings */
-            warnings?: string[];
         };
         /**
          * ResolveApprovalContextRequest
@@ -5265,21 +4911,6 @@ export interface components {
             /** Version Id */
             version_id: string;
         };
-        /** ReviewProtocol */
-        ReviewProtocol: {
-            /** Date From */
-            date_from: number;
-            /** Date To */
-            date_to: number;
-            /** Exclusion Criteria */
-            exclusion_criteria: string[];
-            /** Inclusion Criteria */
-            inclusion_criteria: string[];
-            /** Research Question */
-            research_question: string;
-            /** Sources */
-            sources: string[];
-        };
         /**
          * RevokeApprovalRequest
          * @description Request body to append an ``ApprovalRevocation`` for a request/decision.
@@ -5312,35 +4943,6 @@ export interface components {
             harness_release_id?: string | null;
             /** Project Id */
             project_id: string;
-        };
-        /** RunRecord */
-        RunRecord: {
-            capability: components["schemas"]["Capability"];
-            /** Completed At */
-            completed_at?: string | null;
-            /** Current Step */
-            current_step: string;
-            /** Id */
-            id: string;
-            /**
-             * Progress
-             * @default 0
-             */
-            progress: number;
-            /** Project Id */
-            project_id: string;
-            /**
-             * Started At
-             * Format: date-time
-             */
-            started_at?: string;
-            status: components["schemas"]["RunStatus"];
-            /** Steps */
-            steps?: string[];
-            /** Tenant Id */
-            tenant_id: string;
-            /** Title */
-            title: string;
         };
         /** RunStage */
         RunStage: {
@@ -5512,34 +5114,6 @@ export interface components {
             /** Ref */
             ref: string;
         };
-        /** ScoreComponent */
-        ScoreComponent: {
-            /** Contribution */
-            contribution: number;
-            /** Criterion Id */
-            criterion_id: string;
-            /** Evidence Id */
-            evidence_id: string;
-            /** Label */
-            label: string;
-            /** Match */
-            match: number;
-            /** Weight */
-            weight: number;
-        };
-        /** ScreeningDecision */
-        ScreeningDecision: {
-            /** Decision */
-            decision: string;
-            /** Duplicate Group */
-            duplicate_group?: string | null;
-            /** Reason */
-            reason: string;
-            /** Source Id */
-            source_id: string;
-            /** Title */
-            title: string;
-        };
         /**
          * SideEffectPolicy
          * @description Deterministic, domain-owned side-effect policy for playground runs.
@@ -5552,11 +5126,6 @@ export interface components {
          * @enum {string}
          */
         SideEffectPolicy: "dry_run";
-        /**
-         * SourceKind
-         * @enum {string}
-         */
-        SourceKind: "paper" | "policy" | "grant" | "person" | "facility" | "equipment" | "method" | "template" | "dataset";
         /**
          * SpecialistPolicy
          * @description Specialist/delegation policy: whether/how this agent may delegate to
@@ -8562,7 +8131,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["ResearchResult"];
+                    "application/json": components["schemas"]["AgentResearchResponse"];
                 };
             };
             /** @description Validation Error */
@@ -8789,7 +8358,7 @@ export interface operations {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["LiteratureStudioResult"] | components["schemas"]["GrantStudioResult"] | components["schemas"]["MatchingStudioResult"] | components["schemas"]["DatasetStudioResult"] | components["schemas"]["InstitutionalStudioResult"] | components["schemas"]["AutomationStudioResult"];
+                    "application/json": components["schemas"]["AutomationStudioResult"];
                 };
             };
             /** @description Validation Error */

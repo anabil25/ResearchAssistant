@@ -9,7 +9,6 @@ from research_assistant_core.models import (
     RunRecord,
     RunStatus,
 )
-from research_assistant_core.service import ResearchService
 from research_assistant_core.workflows import (
     WORKFLOW_BLUEPRINTS,
     WorkflowBlueprint,
@@ -33,7 +32,6 @@ __all__ = [
     "LocalTestComputeAdapter",
     "ResearchRequest",
     "ResearchResult",
-    "ResearchService",
     "RunRecord",
     "RunStatus",
     "WorkflowBlueprint",

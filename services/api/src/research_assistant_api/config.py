@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 from functools import lru_cache
-from typing import Literal
 from urllib.parse import urlsplit
 
 from pydantic import AliasChoices, Field, field_validator
@@ -20,12 +19,7 @@ class Settings(BaseSettings):
         default="development",
         validation_alias=AliasChoices("RESEARCH_ENVIRONMENT", "AZURE_ENV_NAME"),
     )
-    execution_mode: Literal["mock", "hosted"] = Field(
-        default="mock",
-        validation_alias=AliasChoices("RESEARCH_EXECUTION_MODE", "EXECUTION_MODE"),
-    )
-    foundry_project_endpoint: str | None = Field(
-        default=None,
+    foundry_project_endpoint: str = Field(
         validation_alias=AliasChoices("FOUNDRY_PROJECT_ENDPOINT", "AZURE_AI_PROJECT_ENDPOINT"),
     )
     coordinator_agent_name: str = Field(
@@ -36,16 +30,14 @@ class Settings(BaseSettings):
         default=None,
         validation_alias=AliasChoices("AZURE_CLIENT_ID", "AZURE_MANAGED_IDENTITY_CLIENT_ID"),
     )
-    cosmos_endpoint: str | None = Field(
-        default=None,
+    cosmos_endpoint: str = Field(
         validation_alias="AZURE_COSMOS_ENDPOINT",
     )
     cosmos_database: str = Field(
         default="research",
         validation_alias="AZURE_COSMOS_DATABASE",
     )
-    storage_blob_endpoint: str | None = Field(
-        default=None,
+    storage_blob_endpoint: str = Field(
         validation_alias="AZURE_STORAGE_BLOB_ENDPOINT",
     )
     storage_source_container: str = Field(
@@ -89,8 +81,7 @@ class Settings(BaseSettings):
             "is explicitly unavailable (503) rather than silently degraded or fabricated."
         ),
     )
-    search_endpoint: str | None = Field(
-        default=None,
+    search_endpoint: str = Field(
         validation_alias="AZURE_SEARCH_ENDPOINT",
     )
     search_index_name: str = Field(
@@ -125,11 +116,9 @@ class Settings(BaseSettings):
         ),
     )
     workspace_tenant_id: str = Field(
-        default="demo",
         validation_alias="RESEARCH_WORKSPACE_TENANT_ID",
     )
     workspace_project_id: str = Field(
-        default="demo-project",
         validation_alias="RESEARCH_WORKSPACE_PROJECT_ID",
     )
     agent_studio_capability_provider_url: str | None = Field(
@@ -254,31 +243,31 @@ class Settings(BaseSettings):
 
     @field_validator("foundry_project_endpoint")
     @classmethod
-    def validate_foundry_endpoint(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
+    def validate_foundry_endpoint(cls, value: str) -> str:
+        if not value.startswith("https://"):
             raise ValueError("Foundry project endpoint must use HTTPS")
-        return value.rstrip("/") if value else None
+        return value.rstrip("/")
 
     @field_validator("cosmos_endpoint")
     @classmethod
-    def validate_cosmos_endpoint(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
+    def validate_cosmos_endpoint(cls, value: str) -> str:
+        if not value.startswith("https://"):
             raise ValueError("Cosmos DB endpoint must use HTTPS")
-        return value.rstrip("/") if value else None
+        return value.rstrip("/")
 
     @field_validator("storage_blob_endpoint")
     @classmethod
-    def validate_storage_endpoint(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
+    def validate_storage_endpoint(cls, value: str) -> str:
+        if not value.startswith("https://"):
             raise ValueError("Storage Blob endpoint must use HTTPS")
-        return value.rstrip("/") if value else None
+        return value.rstrip("/")
 
     @field_validator("search_endpoint")
     @classmethod
-    def validate_search_endpoint(cls, value: str | None) -> str | None:
-        if value and not value.startswith("https://"):
+    def validate_search_endpoint(cls, value: str) -> str:
+        if not value.startswith("https://"):
             raise ValueError("Azure AI Search endpoint must use HTTPS")
-        return value.rstrip("/") if value else None
+        return value.rstrip("/")
 
     @field_validator("agent_studio_app_insights_resource_id")
     @classmethod
@@ -321,4 +310,4 @@ class Settings(BaseSettings):
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return Settings()  # type: ignore[call-arg]

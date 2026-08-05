@@ -8,7 +8,6 @@ import type {
   AgentReleaseSummary,
   AgentSetting,
   AgentSummary,
-  AgentSurfaceView,
   AgentTraceSummary,
   ApprovalRecord,
   CapabilityDescriptor,
@@ -76,6 +75,31 @@ export class ApiError extends Error {
   }
 }
 
+function apiErrorMessage(payload: unknown, status: number): string {
+  if (!payload || typeof payload !== "object") {
+    return `Research API returned ${status}`;
+  }
+  const body = payload as { detail?: unknown; error?: unknown };
+  for (const value of [body.detail, body.error]) {
+    if (typeof value === "string" && value.trim()) return value;
+    if (Array.isArray(value)) {
+      const messages = value
+        .map((item) =>
+          item && typeof item === "object" && "msg" in item
+            ? String(item.msg)
+            : null,
+        )
+        .filter((item): item is string => Boolean(item));
+      if (messages.length) return messages.join("; ");
+    }
+    if (value && typeof value === "object" && "message" in value) {
+      const message = String(value.message).trim();
+      if (message) return message;
+    }
+  }
+  return `Research API returned ${status}`;
+}
+
 /**
  * Shared fetch/error-handling core for every backend call, regardless of
  * which base path it's rooted under. `apiFetch` and `agentStudioFetch` are
@@ -106,16 +130,8 @@ async function backendFetch<T>(
   });
 
   if (!response.ok) {
-    const payload = (await response.json().catch(() => null)) as {
-      detail?: string;
-      error?: string;
-    } | null;
-    throw new ApiError(
-      payload?.detail ??
-        payload?.error ??
-        `Research API returned ${response.status}`,
-      response.status,
-    );
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(apiErrorMessage(payload, response.status), response.status);
   }
   return (await response.json()) as T;
 }
@@ -126,10 +142,6 @@ async function apiFetch<T>(
   projectId?: string,
 ): Promise<T> {
   return backendFetch<T>(`${API_BASE}${path}`, init, projectId);
-}
-
-export async function getAgentSurfaces(): Promise<AgentSurfaceView[]> {
-  return apiFetch<AgentSurfaceView[]>("/agent-surfaces");
 }
 
 export interface WorkspaceData {
@@ -356,11 +368,15 @@ export async function getChatThread(
 export async function sendChatMessage(
   threadId: string,
   text: string,
+  clientMessageId: string,
   projectId?: string,
 ): Promise<ChatMessage> {
   return backendFetch<ChatMessage>(
     `${AGENT_CHAT_BASE}/threads/${encodeURIComponent(threadId)}/messages`,
-    { method: "POST", body: JSON.stringify({ text }) },
+    {
+      method: "POST",
+      body: JSON.stringify({ text, client_message_id: clientMessageId }),
+    },
     projectId,
   );
 }

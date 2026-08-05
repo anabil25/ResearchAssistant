@@ -1,12 +1,10 @@
-"""Real (non-fabricated) release package/build metadata.
+"""Release package and build metadata from authoritative runtime sources.
 
 ``ReleaseService.cut_version`` used to derive ``package_version`` as
-``f"{sequence}.0.0"`` — a fake semver invented from the version's display
-``sequence`` number. This module supplies genuinely real data instead:
-actual installed package versions (read via ``importlib.metadata``, i.e.
-what is truly running), a content digest over that map, and an optional
-real source-control revision. ``sequence`` remains a separate display/
-ordering concept and is never used to derive any of these values.
+``f"{sequence}.0.0"`` from the version's display sequence. This module instead
+uses installed package versions, a content digest over that map, and an
+optional source-control revision. ``sequence`` remains a separate display and
+ordering concept.
 """
 
 from __future__ import annotations

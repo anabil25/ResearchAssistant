@@ -4,7 +4,7 @@ import json
 import logging
 import os
 from collections.abc import Callable
-from typing import Annotated, cast
+from typing import Annotated, Any, cast
 from urllib.error import HTTPError, URLError
 from uuid import uuid4
 from xml.etree.ElementTree import ParseError
@@ -13,10 +13,10 @@ import httpx
 from fastapi import Depends, FastAPI, HTTPException, Request, Response
 from fastapi.responses import JSONResponse
 from research_assistant_connectors import ResearchConnectorRegistry, connector_catalog
-from research_assistant_core.connector_catalog import connector_definitions
 from research_assistant_connectors.providers import ProviderError
 from research_assistant_connectors.providers._http import base64_encoded_length
 from research_assistant_connectors.providers.config import DEFAULT_UPLOAD_BYTES
+from research_assistant_core.connector_catalog import connector_definitions
 from research_assistant_core.connector_gateway import (
     ConnectorCatalogResponse,
     ConnectorDescriptor,

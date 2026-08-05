@@ -253,7 +253,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
                 "gates", "Set approval gates", "Bind risky actions to named approvers and evidence.", "researcher", True
             ),
             WorkflowStage(
-                "dry-run", "Dry run", "Execute with fixtures and no external side effects.", "durable-worker"
+                "dry-run", "Dry run", "Validate the submitted graph with no external side effects.", "durable-worker"
             ),
             WorkflowStage(
                 "activate", "Activate automation", "Approve the exact graph and enable its trigger.", "reviewer", True

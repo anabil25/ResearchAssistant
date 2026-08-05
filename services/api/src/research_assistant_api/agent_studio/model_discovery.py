@@ -26,21 +26,6 @@ class ModelDiscovery(Protocol):
     def list_deployed_models(self) -> tuple[ModelDeploymentRef, ...]: ...
 
 
-class InMemoryModelDiscovery:
-    """Explicit, test/offline-only model discovery backed by a fixed list.
-
-    This must never be wired in a cloud/production path; it exists so unit
-    tests can exercise the platform deterministically without a live Foundry
-    project.
-    """
-
-    def __init__(self, models: tuple[ModelDeploymentRef, ...] = ()) -> None:
-        self._models = models
-
-    def list_deployed_models(self) -> tuple[ModelDeploymentRef, ...]:
-        return self._models
-
-
 class UnavailableModelDiscovery:
     """Explicit cloud-unavailable path: no Foundry project is configured."""
 

@@ -12,9 +12,8 @@ method on any store implementation, mirroring the durable, tamper-evident
 nature of an audit trail. Callers that need to reference an event again
 (for example a UI audit-log view) use ``list_events``.
 
-Per the cloud-unavailable-paths requirement, the production factory raises
-``AuditStoreUnavailableError`` rather than silently falling back to memory
-when no Cosmos endpoint is configured; ``InMemoryAuditStore`` is test-only.
+The production factory raises ``AuditStoreUnavailableError`` when no Cosmos
+endpoint is configured.
 """
 
 from __future__ import annotations
@@ -52,36 +51,6 @@ class AuditStore(Protocol):
         kind: AuditEventKind | None = None,
         limit: int = 100,
     ) -> tuple[AuditEvent, ...]: ...
-
-
-class InMemoryAuditStore:
-    """Test-only, append-only in-process audit store."""
-
-    def __init__(self) -> None:
-        self._events: list[AuditEvent] = []
-
-    def record(self, event: AuditEvent) -> AuditEvent:
-        self._events.append(event)
-        return event
-
-    def list_events(
-        self,
-        *,
-        scope: ScopeContext,
-        logical_agent_id: str | None = None,
-        kind: AuditEventKind | None = None,
-        limit: int = 100,
-    ) -> tuple[AuditEvent, ...]:
-        matches = [
-            event
-            for event in self._events
-            if event.tenant_id == scope.tenant_id
-            and event.project_id == scope.project_id
-            and (logical_agent_id is None or event.logical_agent_id == logical_agent_id)
-            and (kind is None or event.kind == kind)
-        ]
-        matches.sort(key=lambda event: event.created_at)
-        return tuple(matches[-limit:])
 
 
 class CosmosAuditStore:

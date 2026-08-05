@@ -68,8 +68,19 @@ export const APPROVED_EXTERNAL_URL_HOSTS: ReadonlySet<string> = new Set([
   "www.semanticscholar.org",
 ]);
 
+export const APPROVED_RESEARCH_SOURCE_HOSTS: ReadonlySet<string> = new Set([
+  ...APPROVED_EXTERNAL_URL_HOSTS,
+  "doi.org",
+  "who.int",
+  "www.who.int",
+]);
+
 export const CONNECTOR_TERMS_URL_POLICY: ExternalUrlPolicy = {
   allowedHosts: APPROVED_EXTERNAL_URL_HOSTS,
+};
+
+export const RESEARCH_SOURCE_URL_POLICY: ExternalUrlPolicy = {
+  allowedHosts: APPROVED_RESEARCH_SOURCE_HOSTS,
 };
 
 const LOOPBACK_HOSTS = new Set(["localhost", "0.0.0.0", "::1", "[::1]"]);

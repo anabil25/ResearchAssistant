@@ -1411,10 +1411,8 @@ class EvaluationSuite(BaseModel):
 class EvaluationRunStatus(StrEnum):
     """Honest outcome of one evaluation run attempt.
 
-    ``UNAVAILABLE`` is the explicit, non-fake state used when no
-    ``EvaluationRunner`` execution adapter is wired -- see
-    ``evaluation_runner.py``. A run is never silently fabricated as
-    ``COMPLETED`` with invented scores.
+    ``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is
+    wired. A run is never recorded as ``COMPLETED`` without measured scores.
     """
 
     COMPLETED = "completed"
@@ -1471,10 +1469,8 @@ class EvaluationRun(BaseModel):
 class PlaygroundRunStatus(StrEnum):
     """Honest outcome of one playground/test-run attempt.
 
-    ``UNAVAILABLE`` is the explicit, non-fake state used when no
-    ``PlaygroundInvoker`` execution adapter is wired -- see
-    ``playground_invoker.py``. A run is never silently fabricated as
-    ``COMPLETED`` with an invented response.
+    ``UNAVAILABLE`` is used when no ``PlaygroundInvoker`` execution adapter is
+    wired. A run is never recorded as ``COMPLETED`` without a runtime response.
     """
 
     COMPLETED = "completed"

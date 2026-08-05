@@ -70,12 +70,12 @@ class EvidenceChunk(BaseModel):
     identifier: str | None = None
     authors: list[str] = Field(default_factory=list)
     year: int | None = None
-    license: str = "CC0 synthetic fixture"
+    license: str
     version: str = "1"
     checksum: str
-    allowed_tenants: list[str] = Field(default_factory=lambda: ["demo"])
-    allowed_projects: list[str] = Field(default_factory=lambda: ["demo-project"])
-    allowed_groups: list[str] = Field(default_factory=lambda: ["researchers"])
+    allowed_tenants: list[str]
+    allowed_projects: list[str]
+    allowed_groups: list[str]
     access: str = "internal"
     metadata: dict[str, Any] = Field(default_factory=dict)
 
@@ -161,9 +161,9 @@ class RunRecord(BaseModel):
 
 class ResearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=4000)
-    project_id: str = Field(default="demo-project", min_length=1, max_length=100)
-    tenant_id: str = Field(default="demo", min_length=1, max_length=100)
-    group_ids: list[str] = Field(default_factory=lambda: ["researchers"])
+    project_id: str = Field(min_length=1, max_length=100)
+    tenant_id: str = Field(min_length=1, max_length=100)
+    group_ids: list[str]
     context: dict[str, Any] = Field(default_factory=dict)
 
 

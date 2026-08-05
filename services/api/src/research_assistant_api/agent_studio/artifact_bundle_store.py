@@ -26,10 +26,8 @@ so a read is always authorized against an explicit ``ScopeContext`` rather
 than a bare tenant id, and no path can collide across projects even for
 agents that happen to share a logical agent id across tenants/projects.
 
-Per the cloud-unavailable-paths requirement, when no storage endpoint is
-configured this store is explicitly unavailable in non-test code paths
-(``UnavailableArtifactBundleStore``); ``InMemoryArtifactBundleStore`` must
-only ever be used by tests.
+When no storage endpoint is configured, this store is explicitly unavailable
+through ``UnavailableArtifactBundleStore``.
 """
 
 from __future__ import annotations
@@ -96,8 +94,7 @@ def _verify_content_matches_checksum(content: bytes, *, checksum: str, location:
     unreachable in correct operation -- but, as with the write-side
     ``ResourceExistsError`` race check, a content-addressed path is not
     *provably* immune to returning wrong bytes (storage corruption, a
-    prior bug, an out-of-band/privileged writer, or a test fixture
-    poking storage directly). A caller must never receive bytes silently
+    prior bug, or an out-of-band/privileged writer). A caller must never receive bytes silently
     misattributed to a checksum they did not actually produce.
     """
     actual = sha256(content).hexdigest()
@@ -129,43 +126,6 @@ class ArtifactBundleStore(Protocol):
         checksum: str,
         version_label: str,
     ) -> bytes | None: ...
-
-
-class InMemoryArtifactBundleStore:
-    """Test-only, content-addressed in-process bundle store."""
-
-    def __init__(self) -> None:
-        self.items: dict[str, bytes] = {}
-
-    def put(
-        self,
-        *,
-        tenant_id: str,
-        project_id: str,
-        logical_agent_id: str,
-        content: bytes,
-        content_type: str = "application/zip",
-        version_label: str,
-    ) -> StoredBundle:
-        checksum = sha256(content).hexdigest()
-        key = _blob_path(tenant_id, project_id, logical_agent_id, checksum, version_label)
-        self.items.setdefault(key, content)
-        return StoredBundle(uri=f"memory://{key}", checksum=f"sha256:{checksum}", size_bytes=len(content))
-
-    def get(
-        self,
-        *,
-        scope: ScopeContext,
-        logical_agent_id: str,
-        checksum: str,
-        version_label: str,
-    ) -> bytes | None:
-        key = _blob_path(scope.tenant_id, scope.project_id, logical_agent_id, checksum, version_label)
-        content = self.items.get(key)
-        if content is None:
-            return None
-        _verify_content_matches_checksum(content, checksum=checksum, location=key)
-        return content
 
 
 class UnavailableArtifactBundleStore:

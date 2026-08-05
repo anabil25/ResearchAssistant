@@ -123,10 +123,6 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
               value: '${name}-azure'
             }
             {
-              name: 'RESEARCH_EXECUTION_MODE'
-              value: 'hosted'
-            }
-            {
               name: 'RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER'
               value: 'true'
             }

@@ -4,6 +4,7 @@ param name string
 param location string
 param tags object = {}
 param apiPrincipalId string
+param principalId string = ''
 
 var dataContributorRoleDefinitionId = '${account.id}/sqlRoleDefinitions/00000000-0000-0000-0000-000000000002'
 resource account 'Microsoft.DocumentDB/databaseAccounts@2025-04-15' = {
@@ -184,6 +185,16 @@ resource apiDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2
   name: guid(account.id, apiPrincipalId, dataContributorRoleDefinitionId)
   properties: {
     principalId: apiPrincipalId
+    roleDefinitionId: dataContributorRoleDefinitionId
+    scope: account.id
+  }
+}
+
+resource developerDataRole 'Microsoft.DocumentDB/databaseAccounts/sqlRoleAssignments@2025-04-15' = if (!empty(principalId)) {
+  parent: account
+  name: guid(account.id, principalId, dataContributorRoleDefinitionId)
+  properties: {
+    principalId: principalId
     roleDefinitionId: dataContributorRoleDefinitionId
     scope: account.id
   }

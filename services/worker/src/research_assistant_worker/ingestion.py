@@ -98,7 +98,7 @@ def _update_run(
     client = CosmosClient(endpoint, credential=credential())
     container = client.get_database_client(database_name).get_container_client("runs")
     run_id = str(payload["run_id"])
-    partition = f"{payload.get('tenant_id', 'demo')}|{run_id}"
+    partition = f"{payload['tenant_id']}|{run_id}"
     document = container.read_item(item=run_id, partition_key=partition)
     run = document["payload"]
     run["status"] = status
@@ -169,7 +169,7 @@ def _update_library(
     client = CosmosClient(endpoint, credential=credential())
     container = client.get_database_client(database_name).get_container_client("sources")
     source_id = str(payload["source_id"])
-    partition = f"{payload.get('tenant_id', 'demo')}|{payload.get('project_id', 'demo-project')}"
+    partition = f"{payload['tenant_id']}|{payload['project_id']}"
     document = container.read_item(item=source_id, partition_key=partition)
     item = document["payload"]
     item["status"] = status
@@ -285,8 +285,8 @@ def extract_source(payload: dict[str, Any]) -> dict[str, Any]:
         "source_id": payload["source_id"],
         "title": payload.get("title", payload["source_id"]),
         "kind": payload.get("kind", "Document"),
-        "tenant_id": payload.get("tenant_id", "demo"),
-        "project_id": payload.get("project_id", "demo-project"),
+        "tenant_id": payload["tenant_id"],
+        "project_id": payload["project_id"],
         "access": payload.get("access", "internal"),
         "group_ids": payload.get("group_ids", []),
         "license": payload.get("license", "Project supplied"),

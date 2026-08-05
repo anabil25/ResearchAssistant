@@ -87,153 +87,6 @@ class WorkspaceProjectProvider:
         raise NotImplementedError
 
 
-class InMemoryWorkspaceProjectProvider(WorkspaceProjectProvider):
-    """Local/test project catalog with the same ownership semantics as Cosmos."""
-
-    def __init__(self, settings: Settings) -> None:
-        self._tenant_id = settings.workspace_tenant_id
-        self._template_project_id = settings.workspace_project_id
-        self._projects: dict[tuple[str, str], PersonalProject] = {}
-        self._preferences: dict[tuple[str, str], str] = {}
-        self._stores: dict[tuple[str, str], WorkspaceStore] = {}
-
-    def _require_tenant(self, identity: IdentityContext) -> None:
-        if identity.tenant_id != self._tenant_id:
-            raise WorkspaceProjectUnavailableError("The requested project is unavailable.")
-
-    def _get_owned_project(self, identity: IdentityContext, project_id: str) -> PersonalProject:
-        self._require_tenant(identity)
-        project = self._projects.get((identity.tenant_id, project_id))
-        if (
-            project is None
-            or project.owner_user_id != identity.user_id
-            or project.lifecycle is not ProjectLifecycle.ACTIVE
-        ):
-            raise WorkspaceProjectUnavailableError("The requested project is unavailable.")
-        return project
-
-    def _create(
-        self,
-        identity: IdentityContext,
-        payload: PersonalProjectCreate,
-        *,
-        project_id: str | None = None,
-        seed_demo_data: bool = False,
-    ) -> PersonalProject:
-        self._require_tenant(identity)
-        now = utc_now()
-        selected_project_id = project_id or f"project-{uuid4().hex}"
-        project = PersonalProject(
-            project_id=selected_project_id,
-            owner_user_id=identity.user_id,
-            name=payload.name,
-            description=payload.description,
-            created_at=now,
-            updated_at=now,
-            template_project_id=self._template_project_id,
-        )
-        self._projects[(identity.tenant_id, selected_project_id)] = project
-        self._stores[(identity.tenant_id, selected_project_id)] = WorkspaceStore(
-            tenant_id=identity.tenant_id,
-            project_id=selected_project_id,
-            project_name=payload.name,
-            project_description=payload.description,
-            seed_demo_data=seed_demo_data,
-        )
-        self._preferences[(identity.tenant_id, identity.user_id)] = selected_project_id
-        return project
-
-    def _ensure_demo_workspace(self, identity: IdentityContext) -> None:
-        """Provision a neutral local workspace for the anonymous sandbox.
-
-        Production always uses the Cosmos provider, which never assigns the
-        legacy template to a caller. This adapter exists only when no Cosmos
-        endpoint is configured, so its seeded data remains isolated to the
-        locally resolved anonymous identity.
-        """
-        preference_key = (identity.tenant_id, identity.user_id)
-        if preference_key not in self._preferences and identity.source == "demo-sandbox":
-            self._create(
-                identity,
-                PersonalProjectCreate(
-                    name="Personal research workspace",
-                    description="A local workspace initialized for the current identity.",
-                ),
-                project_id=self._template_project_id,
-                seed_demo_data=True,
-            )
-
-    def list_projects(self, identity: IdentityContext) -> tuple[PersonalProject, ...]:
-        self._require_tenant(identity)
-        self._ensure_demo_workspace(identity)
-        return tuple(
-            sorted(
-                (
-                    project
-                    for (tenant_id, _), project in self._projects.items()
-                    if tenant_id == identity.tenant_id
-                    and project.owner_user_id == identity.user_id
-                    and project.lifecycle is ProjectLifecycle.ACTIVE
-                ),
-                key=lambda project: (project.updated_at, project.project_id),
-                reverse=True,
-            )
-        )
-
-    def create_project(self, identity: IdentityContext, payload: PersonalProjectCreate) -> PersonalProject:
-        return self._create(identity, payload)
-
-    def update_project(
-        self,
-        identity: IdentityContext,
-        project_id: str,
-        payload: PersonalProjectUpdate,
-    ) -> PersonalProject:
-        project = self._get_owned_project(identity, project_id)
-        updated = project.model_copy(
-            update={
-                "name": payload.name if payload.name is not None else project.name,
-                "description": payload.description if payload.description is not None else project.description,
-                "lifecycle": ProjectLifecycle.ARCHIVED if payload.archive else project.lifecycle,
-                "updated_at": utc_now(),
-            }
-        )
-        if payload.name is not None or payload.description is not None:
-            store = self._stores[(identity.tenant_id, project_id)]
-            store.update_settings(
-                store.settings().model_copy(
-                    update={"name": updated.name, "description": updated.description}
-                )
-            )
-        self._projects[(identity.tenant_id, project_id)] = updated
-        preference_key = (identity.tenant_id, identity.user_id)
-        if payload.archive and self._preferences.get(preference_key) == project_id:
-            del self._preferences[preference_key]
-        return updated
-
-    def select_project(self, identity: IdentityContext, project_id: str) -> PersonalProject:
-        project = self._get_owned_project(identity, project_id)
-        self._preferences[(identity.tenant_id, identity.user_id)] = project_id
-        return project
-
-    def active_project_id(self, identity: IdentityContext) -> str | None:
-        self._require_tenant(identity)
-        self._ensure_demo_workspace(identity)
-        return self._preferences.get((identity.tenant_id, identity.user_id))
-
-    def workspace_for(self, identity: IdentityContext, project_id: str | None) -> WorkspaceStore:
-        self._require_tenant(identity)
-        self._ensure_demo_workspace(identity)
-        selected_project_id = project_id or self._preferences.get((identity.tenant_id, identity.user_id))
-        if selected_project_id is None:
-            raise WorkspaceProjectUnavailableError("The requested project is unavailable.")
-        self._get_owned_project(identity, selected_project_id)
-        return self._stores[(identity.tenant_id, selected_project_id)]
-
-    def stores_for_reconciliation(self) -> tuple[WorkspaceStore, ...]:
-        return tuple(self._stores.values())
-
-
 class CosmosWorkspaceStore(WorkspaceStore):
     persistence = "Azure Cosmos DB"
 
@@ -242,11 +95,10 @@ class CosmosWorkspaceStore(WorkspaceStore):
         endpoint: str,
         database_name: str,
         credential: TokenCredential,
-        tenant_id: str = "demo",
-        project_id: str = "demo-project",
+        tenant_id: str,
+        project_id: str,
         *,
         initial_settings: ProjectSettings | None = None,
-        seed_demo_data: bool = True,
     ) -> None:
         super().__init__(
             tenant_id=tenant_id,
@@ -257,7 +109,6 @@ class CosmosWorkspaceStore(WorkspaceStore):
                 if initial_settings is not None
                 else DEFAULT_PROJECT_DESCRIPTION
             ),
-            seed_demo_data=seed_demo_data,
         )
         if initial_settings is not None:
             self._settings = initial_settings
@@ -266,7 +117,7 @@ class CosmosWorkspaceStore(WorkspaceStore):
         self._projects_container = database.get_container_client("projects")
         self._sources_container = database.get_container_client("sources")
         self._runs_container = database.get_container_client("runs")
-        self._load_or_seed()
+        self._load_or_initialize()
 
     def _query(
         self,
@@ -288,7 +139,7 @@ class CosmosWorkspaceStore(WorkspaceStore):
             )
         )
 
-    def _load_or_seed(self) -> None:
+    def _load_or_initialize(self) -> None:
         settings_documents = self._query(self._projects_container, "settings")
         if settings_documents:
             self._settings = ProjectSettings.model_validate(settings_documents[0]["payload"])
@@ -1200,7 +1051,6 @@ class CosmosWorkspaceProjectProvider(WorkspaceProjectProvider):
                     tenant_id=self._tenant_id,
                     project_id=project.project_id,
                     initial_settings=initial_settings,
-                    seed_demo_data=False,
                 )
                 self._stores[key] = store
             return store
@@ -1318,24 +1168,7 @@ class CosmosWorkspaceProjectProvider(WorkspaceProjectProvider):
         )
 
 
-def build_workspace_store(settings: Settings) -> WorkspaceStore:
-    if not settings.cosmos_endpoint:
-        return WorkspaceStore(
-            tenant_id=settings.workspace_tenant_id,
-            project_id=settings.workspace_project_id,
-        )
-    return CosmosWorkspaceStore(
-        settings.cosmos_endpoint,
-        settings.cosmos_database,
-        azure_credential(settings.managed_identity_client_id),
-        tenant_id=settings.workspace_tenant_id,
-        project_id=settings.workspace_project_id,
-    )
-
-
 def build_workspace_project_provider(settings: Settings) -> WorkspaceProjectProvider:
-    if not settings.cosmos_endpoint:
-        return InMemoryWorkspaceProjectProvider(settings)
     return CosmosWorkspaceProjectProvider(
         settings.cosmos_endpoint,
         settings.cosmos_database,

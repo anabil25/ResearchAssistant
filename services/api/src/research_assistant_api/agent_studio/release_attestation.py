@@ -27,8 +27,7 @@ plain (unkeyed) SHA-256 content digest when none is given. Both are
 reproducible/tamper-evident, but only the keyed form is a genuine signature
 a third party can trust without also trusting "nobody else could compute a
 SHA-256 hash" -- ``signature_algorithm`` always says which one a caller
-actually received, so nothing here is ever presented as more than it is (no
-fake production success).
+actually received, so nothing here is ever presented as more than it is.
 
 A supplied signing key must always carry an explicit ``key_version``
 label. ``key_version`` is embedded in the signed payload
@@ -101,7 +100,7 @@ def _canonical_payload(
     domain objects) so both signing (``build_release_attestation``, from
     freshly-fetched records) and verification (``verify_release_attestation``,
     from a received ``ReleaseAttestation`` alone) compute the identical
-    payload without either side needing to reconstruct a fake domain record.
+    payload without either side needing to reconstruct a domain record.
     Uses a nested JSON object (never a separator-joined string) for the same
     collision-safety reason ``compute_scope_key`` documents: a canonical JSON
     encoding is unambiguous by construction, so no field value (however it is

@@ -1,17 +1,6 @@
-import { useEffect, useState } from "react";
-
-import { getAgentSurfaces } from "@/lib/api";
 import type { AgentSurfaceView, CapabilityId } from "@/lib/types";
 
-/**
- * Chat-surface metadata, seeded with the capabilities that shipped with the
- * browser bundle and then overlaid with whatever `/api/agent-surfaces` reports.
- *
- * The seed exists so routing and copy resolve on first paint, before the fetch
- * lands. A capability the bundle has never heard of resolves once priming
- * completes, which is what makes adding an agent a server-side change only.
- */
-const SEED: Record<string, AgentSurfaceView> = {
+const SURFACES: Record<string, AgentSurfaceView> = {
   literature: {
     capability: "literature",
     chat: true,
@@ -68,37 +57,26 @@ const SEED: Record<string, AgentSurfaceView> = {
       "Compute descriptive statistics per group and show the code you ran.",
     ],
   },
+  screening: {
+    capability: "screening",
+    chat: true,
+    icon: "ClipboardCheck",
+    eyebrow: "Evidence review",
+    chat_title: "Screening Studio",
+    chat_description:
+      "State the inclusion and exclusion criteria, then ask the screening agent to decide each paper in the authorized project index.",
+    suggestions: [
+      "Screen for randomised trials of AI triage in adult emergency care.",
+      "Exclude editorials, protocols without results, and paediatric-only studies.",
+      "List every unclear decision and the criterion that needs reviewer judgement.",
+    ],
+  },
 };
-
-const registry = new Map<string, AgentSurfaceView>(Object.entries(SEED));
-
-/** Overlay server-declared surfaces. Safe to call more than once. */
-export function primeAgentSurfaces(surfaces: AgentSurfaceView[]): void {
-  for (const surface of surfaces) {
-    registry.set(surface.capability, surface);
-  }
-}
-
-let priming: Promise<void> | null = null;
-
-/** Load the server registry once per page. Any failure leaves the seed in place. */
-export function ensureAgentSurfaces(): Promise<void> {
-  // The call is wrapped rather than chained: a synchronous throw would escape a
-  // trailing .catch() and take the render down with it.
-  priming ??= (async () => {
-    try {
-      primeAgentSurfaces(await getAgentSurfaces());
-    } catch {
-      // An older API without this route still renders from the seed.
-    }
-  })();
-  return priming;
-}
 
 export function agentSurface(
   capability: CapabilityId,
 ): AgentSurfaceView | null {
-  return registry.get(capability) ?? null;
+  return SURFACES[capability] ?? null;
 }
 
 export function isChatCapability(capability: CapabilityId): boolean {
@@ -106,21 +84,7 @@ export function isChatCapability(capability: CapabilityId): boolean {
 }
 
 export function chatCapabilities(): CapabilityId[] {
-  return [...registry.values()]
+  return Object.values(SURFACES)
     .filter((surface) => surface.chat)
     .map((surface) => surface.capability);
-}
-
-/** Re-renders once the server registry lands, so routing sees new capabilities. */
-export function useAgentSurfaces(): void {
-  const [, setLoaded] = useState(false);
-  useEffect(() => {
-    let active = true;
-    void ensureAgentSurfaces().then(() => {
-      if (active) setLoaded(true);
-    });
-    return () => {
-      active = false;
-    };
-  }, []);
 }

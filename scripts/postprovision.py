@@ -15,7 +15,6 @@ from weakref import WeakKeyDictionary
 from azure.core.credentials import TokenCredential
 from azure.core.exceptions import HttpResponseError
 from azure.identity import DefaultAzureCredential, get_bearer_token_provider
-from azure.search.documents import SearchClient
 from azure.search.documents.indexes import SearchIndexClient
 from azure.search.documents.indexes.models import (
     HnswAlgorithmConfiguration,
@@ -29,8 +28,6 @@ from azure.search.documents.indexes.models import (
     VectorSearch,
     VectorSearchProfile,
 )
-from azure.storage.blob import BlobServiceClient
-from openai import AzureOpenAI
 from research_assistant_core.connector_catalog import connector_definitions
 
 from scripts.azd_env import sync_canonical_azd_outputs
@@ -222,40 +219,6 @@ def with_rbac_retry[T](label: str, operation: Callable[[], T]) -> T:
     raise RuntimeError(f"{label} failed after bounded RBAC retries") from last_error
 
 
-def load_documents(
-    *,
-    tenant_id: str = "demo",
-    project_id: str = "demo-project",
-) -> list[dict[str, Any]]:
-    path = ROOT / "sample_data" / "evidence.json"
-    documents = json.loads(path.read_text(encoding="utf-8"))
-    if not isinstance(documents, list) or not documents:
-        raise RuntimeError("sample_data/evidence.json must contain a non-empty JSON array")
-    for document in documents:
-        source_kind = str(document.get("source_kind", ""))
-        is_public = source_kind in {"paper", "grant"}
-        document["tenant_ids"] = [tenant_id]
-        document["project_ids"] = [project_id]
-        document.setdefault("group_ids", [] if is_public else ["researchers"])
-        document.setdefault("access", "public" if is_public else "internal")
-        document.setdefault(
-            "year",
-            2025
-            if document.get("source_id") == "paper-rag"
-            else 2024
-            if document.get("source_id") == "paper-workflow"
-            else 2026,
-        )
-        document.setdefault(
-            "provider",
-            "PubMed" if source_kind == "paper" else "Grants.gov" if source_kind == "grant" else "Institutional Library",
-        )
-        document.setdefault("ingestion_status", "ready")
-        document.setdefault("safety_status", "safe")
-        document.setdefault("generation_id", "seed-v1")
-    return documents
-
-
 def create_index(
     endpoint: str,
     index_name: str,
@@ -364,94 +327,6 @@ def create_index(
     )
     client = SearchIndexClient(endpoint=endpoint, credential=credential)
     with_rbac_retry("Create Search index", lambda: client.create_or_update_index(index))
-
-
-def embed_documents(
-    documents: list[dict[str, Any]],
-    credential: TokenCredential,
-) -> None:
-    token_provider = get_bearer_token_provider(
-        credential,
-        "https://cognitiveservices.azure.com/.default",
-    )
-    client = AzureOpenAI(
-        azure_endpoint=required_env("AZURE_OPENAI_ENDPOINT"),
-        azure_ad_token_provider=token_provider,
-        api_version="2024-10-21",
-    )
-    response = client.embeddings.create(
-        model=required_env("AZURE_AI_EMBEDDING_DEPLOYMENT_NAME"),
-        input=[document["content"] for document in documents],
-    )
-    for document, embedding in zip(documents, response.data, strict=True):
-        document["content_vector"] = embedding.embedding
-
-
-def upload_search_documents(
-    endpoint: str,
-    index_name: str,
-    documents: list[dict[str, Any]],
-    credential: TokenCredential,
-) -> None:
-    client = SearchClient(endpoint=endpoint, index_name=index_name, credential=credential)
-    result = with_rbac_retry(
-        "Upload Search documents",
-        lambda: client.upload_documents(documents=documents),
-    )
-    failures = [item for item in result if not item.succeeded]
-    if failures:
-        raise RuntimeError(f"Search upload failed for {[item.key for item in failures]}")
-
-
-def storage_public_network_access() -> str:
-    completed = subprocess.run(
-        [
-            AZ_CLI,
-            "storage",
-            "account",
-            "show",
-            "--resource-group",
-            required_env("AZURE_RESOURCE_GROUP"),
-            "--name",
-            required_env("AZURE_STORAGE_ACCOUNT_NAME"),
-            "--query",
-            "publicNetworkAccess",
-            "--output",
-            "tsv",
-        ],
-        check=True,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-    )
-    return completed.stdout.strip()
-
-
-def upload_source_artifacts(credential: TokenCredential) -> bool:
-    if storage_public_network_access().lower() == "disabled":
-        print(
-            "Blob archival skipped: Azure Policy disables Storage public network access. "
-            "The synthetic evidence remains indexed in Azure AI Search."
-        )
-        return False
-
-    endpoint = required_env("AZURE_STORAGE_BLOB_ENDPOINT")
-    container = required_env("AZURE_STORAGE_SOURCE_CONTAINER")
-    service = BlobServiceClient(account_url=endpoint, credential=credential)
-    container_client = service.get_container_client(container)
-
-    def upload() -> None:
-        for path in sorted((ROOT / "sample_data").iterdir()):
-            if path.is_file():
-                container_client.upload_blob(
-                    name=f"sample/{path.name}",
-                    data=path.read_bytes(),
-                    overwrite=True,
-                    metadata={"fixture": "true", "license": "CC0-synthetic"},
-                )
-
-    with_rbac_retry("Upload source artifacts", upload)
-    return True
 
 
 def wait_for_acr_pull_roles() -> None:
@@ -1069,10 +944,17 @@ def configure_agent_memory(credential: TokenCredential | None = None) -> str:
 
 LOCAL_ENV_BEGIN = "# >>> azd postprovision (managed) >>>"
 LOCAL_ENV_END = "# <<< azd postprovision (managed) <<<"
-#: Endpoints a local API process needs to read back what this deployment
-#: created. Deliberately excludes stores whose absence keeps local runs on the
-#: offline sandbox the README promises.
-LOCAL_ENV_KEYS = ("FOUNDRY_PROJECT_ENDPOINT",)
+LOCAL_WEB_ENV_BEGIN = "# >>> azd live backend (managed) >>>"
+LOCAL_WEB_ENV_END = "# <<< azd live backend (managed) <<<"
+LOCAL_ENV_BINDINGS = {
+    "FOUNDRY_PROJECT_ENDPOINT": "FOUNDRY_PROJECT_ENDPOINT",
+    "RESEARCH_WORKSPACE_TENANT_ID": "AZURE_TENANT_ID",
+    "RESEARCH_WORKSPACE_PROJECT_ID": "AZURE_AI_PROJECT_NAME",
+    "AZURE_COSMOS_ENDPOINT": "AZURE_COSMOS_ENDPOINT",
+    "AZURE_SEARCH_ENDPOINT": "AZURE_SEARCH_ENDPOINT",
+    "AZURE_SEARCH_INDEX_NAME": "AZURE_SEARCH_INDEX_NAME",
+    "AZURE_STORAGE_BLOB_ENDPOINT": "AZURE_STORAGE_BLOB_ENDPOINT",
+}
 
 
 def write_local_env() -> None:
@@ -1084,7 +966,11 @@ def write_local_env() -> None:
     every provision also repoints a checkout that still references a torn-down
     environment. Lines outside the markers are preserved.
     """
-    managed = [f'{key}="{os.environ[key]}"' for key in LOCAL_ENV_KEYS if os.environ.get(key)]
+    managed = [
+        f'{target}="{os.environ[source]}"'
+        for target, source in LOCAL_ENV_BINDINGS.items()
+        if os.environ.get(source)
+    ]
     if not managed:
         return
 
@@ -1108,27 +994,49 @@ def write_local_env() -> None:
     print(f"Wrote {len(managed)} local development value(s) to {env_path}.")
 
 
+def write_local_web_env() -> None:
+    web_url = os.environ.get("WEB_URL") or os.environ.get("SERVICE_WEB_URI")
+    if not web_url:
+        return
+    env_path = ROOT / "apps" / "web" / ".env.local"
+    existing = env_path.read_text(encoding="utf-8").splitlines() if env_path.exists() else []
+    preserved: list[str] = []
+    inside = False
+    for line in existing:
+        if line.strip() == LOCAL_WEB_ENV_BEGIN:
+            inside = True
+        elif line.strip() == LOCAL_WEB_ENV_END:
+            inside = False
+        elif not inside:
+            preserved.append(line)
+    while preserved and not preserved[-1].strip():
+        preserved.pop()
+    backend_url = f"{web_url.rstrip('/')}/api/backend"
+    block = [
+        LOCAL_WEB_ENV_BEGIN,
+        f'INTERNAL_API_URL="{backend_url}"',
+        LOCAL_WEB_ENV_END,
+    ]
+    content = "\n".join([*preserved, *([""] if preserved else []), *block])
+    env_path.write_text(content + "\n", encoding="utf-8")
+    print(f"Configured the local web app to use the deployed live backend via {env_path}.")
+
+
 def main() -> None:
     sync_canonical_azd_outputs()
     write_local_env()
+    write_local_web_env()
     credential = DefaultAzureCredential()
     endpoint = required_env("AZURE_SEARCH_ENDPOINT")
     index_name = required_env("AZURE_SEARCH_INDEX_NAME")
-    documents = load_documents(
-        tenant_id=required_env("AZURE_TENANT_ID"),
-        project_id=required_env("AZURE_AI_PROJECT_NAME"),
-    )
 
     create_index(endpoint, index_name, credential)
-    embed_documents(documents, credential)
-    upload_search_documents(endpoint, index_name, documents, credential)
-    upload_source_artifacts(credential)
     configure_connector_gateway(credential)
     connector_targets = configure_connector_connections(credential)
     configure_shared_toolbox(credential, connector_targets=connector_targets)
     configure_agent_memory(credential)
     wait_for_acr_pull_roles()
-    print(f"Provisioned {len(documents)} evidence records into {index_name}.")
+    print(f"Configured the empty evidence index {index_name}; ingestion is explicit.")
 
 
 if __name__ == "__main__":

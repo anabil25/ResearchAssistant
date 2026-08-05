@@ -32,7 +32,6 @@ import { createPortal } from "react-dom";
 
 import type { WorkspaceData } from "@/lib/api";
 import { AgentChat, isChatCapability } from "@/components/agent-chat";
-import { useAgentSurfaces } from "@/lib/agent-surfaces";
 import { openBlockingModal } from "@/lib/blocking-modal";
 import { isConnectorRunnable } from "@/lib/connector-availability";
 import type {
@@ -269,15 +268,49 @@ function RunEvidence({ result }: { result: StudioResult }) {
 export const InstitutionalStudio: (props: StudioProps) => ReactNode = () => (
   <div className="studio-page institutional-studio institutional-coming-soon">
     <section
-      className="work-iq-coming-soon"
-      aria-labelledby="work-iq-coming-soon-title"
+      className="institutional-preview"
+      aria-labelledby="institutional-preview-title"
     >
-      <div className="work-iq-coming-soon-mark" aria-hidden="true">
-        <Sparkles size={28} />
+      <div className="institutional-preview-rail" aria-hidden="true">
+        <span><Lock size={20} /></span>
+        <i />
+        <span><ShieldCheck size={20} /></span>
+        <i />
+        <span><Sparkles size={20} /></span>
       </div>
-      <span className="eyebrow">Microsoft 365 integration</span>
-      <h1 id="work-iq-coming-soon-title">Work IQ</h1>
-      <p>Plugin coming soon</p>
+      <div className="institutional-preview-copy">
+        <span className="institutional-preview-status">
+          <Clock3 size={15} />
+          Preview planned
+        </span>
+        <span className="eyebrow">Institutional Q&amp;A · Work IQ</span>
+        <h1 id="institutional-preview-title">Coming soon in preview</h1>
+        <p className="institutional-preview-lede">
+          The governed Microsoft 365 connection is not enabled in this release.
+          This workspace will open when preview access is ready.
+        </p>
+        <div className="institutional-preview-boundary">
+          <ShieldCheck size={19} />
+          <span>
+            <strong>Permission boundary preserved</strong>
+            <small>No institutional content is queried or synthesized here yet.</small>
+          </span>
+        </div>
+      </div>
+      <dl className="institutional-preview-facts">
+        <div>
+          <dt>Availability</dt>
+          <dd>Not enabled</dd>
+        </div>
+        <div>
+          <dt>Release channel</dt>
+          <dd>Preview</dd>
+        </div>
+        <div>
+          <dt>Data access</dt>
+          <dd>Permission-aware</dd>
+        </div>
+      </dl>
     </section>
   </div>
 );
@@ -1492,14 +1525,6 @@ export function StudioForCapability({
   capability,
   ...props
 }: StudioProps & { capability: CapabilityId }) {
-  // Routing depends on the server-declared surface registry, so prime it here:
-  // a capability the bundle never heard of has no other way to resolve.
-  useAgentSurfaces();
-  // The evidence/analysis capabilities share one chat surface: their agents
-  // already carry the instructions, tools, and boundary that the old multi-step
-  // forms re-stated in the browser. Institutional Q&A keeps its
-  // version-and-abstain workflow and orchestration keeps its DAG editor,
-  // because neither is a conversation.
   if (isChatCapability(capability)) {
     return <AgentChat capability={capability} projectId={props.projectId} />;
   }

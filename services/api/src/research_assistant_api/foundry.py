@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import time
 from dataclasses import dataclass
@@ -27,6 +28,24 @@ class HostedAgentInvocationError(RuntimeError):
     pass
 
 
+def parse_hosted_agent_payload(content: str) -> dict[str, Any]:
+    """Return the final complete JSON object emitted by a Hosted Agent."""
+    decoder = json.JSONDecoder()
+    resolved: dict[str, Any] | None = None
+    for index, character in enumerate(content):
+        if character != "{":
+            continue
+        try:
+            candidate, _ = decoder.raw_decode(content[index:])
+        except json.JSONDecodeError:
+            continue
+        if isinstance(candidate, dict):
+            resolved = candidate
+    if resolved is None:
+        raise HostedAgentInvocationError("Hosted Agent returned no valid JSON object.")
+    return resolved
+
+
 @dataclass(frozen=True, slots=True)
 class HostedAgentReply:
     agent_name: str
@@ -35,7 +54,29 @@ class HostedAgentReply:
 
 
 SESSION_RETRY_DELAYS = (15, 30, 60)
-EMPTY_OUTPUT_RETRY_DELAYS = (2, 5)
+RESPONSE_POLL_DELAYS = (2, 5, 10)
+
+_RESPONSE_ERROR_MESSAGES = {
+    "rate_limit_exceeded": "The agent model is temporarily rate limited. Retry shortly.",
+    "server_error": "The Hosted Agent runtime reported an internal error.",
+    "invalid_prompt": "The Hosted Agent rejected the request.",
+}
+
+
+def _failed_response_detail(response: Any, target: str, status: str) -> str:
+    error = getattr(response, "error", None)
+    code = getattr(error, "code", None)
+    if isinstance(code, str):
+        detail = _RESPONSE_ERROR_MESSAGES.get(
+            code,
+            "The Hosted Agent could not complete the request.",
+        )
+        return f"Hosted Agent {target} ended with status {status} ({code}). {detail}"
+    incomplete = getattr(response, "incomplete_details", None)
+    reason = getattr(incomplete, "reason", None)
+    if isinstance(reason, str):
+        return f"Hosted Agent {target} ended with status {status} ({reason})."
+    return f"Hosted Agent {target} response ended with status {status}."
 
 
 def create_response_with_retries(client: Any, target: str, payload: dict[str, Any]) -> Any:
@@ -47,7 +88,6 @@ def create_response_with_retries(client: Any, target: str, payload: dict[str, An
     failure and is raised immediately.
     """
     session_retries = 0
-    empty_output_retries = 0
     while True:
         try:
             response = client.responses.create(**payload)
@@ -67,19 +107,36 @@ def create_response_with_retries(client: Any, target: str, payload: dict[str, An
             time.sleep(SESSION_RETRY_DELAYS[session_retries])
             session_retries += 1
             continue
-        if response.output_text.strip():
-            return response
-        if empty_output_retries == len(EMPTY_OUTPUT_RETRY_DELAYS):
-            raise HostedAgentInvocationError(f"Hosted Agent {target} returned no output after bounded retries.")
-        delay = EMPTY_OUTPUT_RETRY_DELAYS[empty_output_retries]
-        logger.warning(
-            "Hosted Agent %s returned empty output for response %s; retrying in %s seconds.",
+        break
+
+    response_status = getattr(response, "status", None)
+    if response_status in {"failed", "cancelled", "incomplete"}:
+        raise HostedAgentInvocationError(
+            _failed_response_detail(response, target, response_status)
+        )
+    if response.output_text.strip():
+        return response
+    response_id = getattr(response, "id", None)
+    if not response_id:
+        raise HostedAgentInvocationError(f"Hosted Agent {target} returned no response identifier.")
+    for delay in RESPONSE_POLL_DELAYS:
+        status = getattr(response, "status", None)
+        if status in {"failed", "cancelled", "incomplete"}:
+            raise HostedAgentInvocationError(_failed_response_detail(response, target, status))
+        logger.info(
+            "Hosted Agent %s response %s has no output yet; polling in %s seconds.",
             target,
-            getattr(response, "id", "unknown"),
+            response_id,
             delay,
         )
         time.sleep(delay)
-        empty_output_retries += 1
+        response = client.responses.retrieve(response_id)
+        if response.output_text.strip():
+            return response
+    status = getattr(response, "status", "unknown")
+    raise HostedAgentInvocationError(
+        f"Hosted Agent {target} returned no output after bounded polling (status {status})."
+    )
 
 
 class HostedAgentGateway:

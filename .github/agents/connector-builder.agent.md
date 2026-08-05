@@ -46,7 +46,7 @@ Implementation boundary:
 
 Validation:
 
-- Add recorded/mock provider responses. Tests must not depend on a live service.
+- Add live provider contract and failure-mode checks with bounded requests.
 - Cover valid results, zero results, malformed/oversized responses, timeout,
   rate limit, auth failure, schema drift, redirect/SSRF attempts, and cleanup.
 - Regenerate the connector OpenAPI artifact.

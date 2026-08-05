@@ -15,14 +15,12 @@ generated candidate manifest: validation, diffing, immutable storage,
 concurrency-checked apply, and reject/history.
 
 Production wiring (see ``app.py``) fails closed -- ``build_manifest_proposal_
-generator`` returns ``UnavailableManifestProposalGenerator`` until a real
-generator is wired -- rather than fabricating a fake successful proposal.
-``InMemoryManifestProposalGenerator`` is test-only.
+generator`` returns ``UnavailableManifestProposalGenerator`` until a provider
+is wired.
 """
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Protocol
 from uuid import uuid4
@@ -112,29 +110,13 @@ class UnavailableManifestProposalGenerator:
         )
 
 
-class InMemoryManifestProposalGenerator:
-    """Test-only, deterministic generator driven by a caller-supplied callable.
-
-    Must never be wired in a cloud/production path; production always uses
-    ``UnavailableManifestProposalGenerator`` until a real generator (owned by
-    the harness's integration session) is wired via ``build_manifest_
-    proposal_generator``.
-    """
-
-    def __init__(self, transform: Callable[[AgentManifest, str], ProposedManifestChange]) -> None:
-        self._transform = transform
-
-    def propose(self, *, manifest: AgentManifest, message: str) -> ProposedManifestChange:
-        return self._transform(manifest, message)
-
-
 def build_manifest_proposal_generator(settings: Settings) -> ManifestProposalGenerator:
-    """Production factory: never returns an in-memory/fake generator.
+    """Return the configured production generator or an unavailable provider.
 
     There is currently no configured Builder Agent generation provider in
     this codebase (that integration is owned by the harness's ``agents/**``
-    surface); this always returns the explicit cloud-unavailable path until
-    one is wired, per the "no fake production success" requirement.
+    surface); this returns the explicit cloud-unavailable path until one is
+    wired.
     """
     del settings  # no provider configuration exists yet; kept for interface symmetry
     return UnavailableManifestProposalGenerator()

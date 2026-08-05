@@ -9,7 +9,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
-from typing import Any
+from typing import Any, cast
 
 import httpx
 
@@ -21,9 +21,15 @@ def _decode(response: httpx.Response) -> dict[str, Any]:
     if "text/event-stream" in content_type:
         for line in response.text.splitlines():
             if line.startswith("data:"):
-                return json.loads(line[5:].strip())
+                payload = json.loads(line[5:].strip())
+                if isinstance(payload, dict):
+                    return cast(dict[str, Any], payload)
+                raise RuntimeError("Event stream data frame must be a JSON object")
         raise RuntimeError("Event stream contained no data frame")
-    return response.json()
+    payload = response.json()
+    if not isinstance(payload, dict):
+        raise RuntimeError("MCP response must be a JSON object")
+    return cast(dict[str, Any], payload)
 
 
 def main() -> int:

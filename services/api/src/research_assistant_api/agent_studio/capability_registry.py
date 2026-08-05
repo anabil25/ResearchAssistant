@@ -1,26 +1,7 @@
 """Capability catalog and attach-time maturity enforcement.
 
-The seed catalog below reflects the built-in Foundry Agent Service tool
-catalog's *documented* maturity as of this writing (Microsoft Learn
-"Agent tools overview for Foundry Agent Service", `tool-catalog` page):
-Web Search, Code Interpreter, File Search, Azure AI Search, Azure Functions,
-and Function Calling are GA; Custom Code Interpreter, Image Generation,
-Browser Automation, Computer Use, Microsoft Fabric, SharePoint, Memory, and
-the Toolbox/A2A connector paths are explicitly documented as "(preview)".
-Custom Hosted code is modeled as a non-Foundry-native capability so it is
-never eligible for Managed Foundry runtime selection.
-
-This module intentionally hard-codes the maturity for the built-in catalog
-(no network call at import time), but that seed is **test-fixture-only**:
-see ``seeded_test_registry`` below. It must never be reachable from a
-production path. ``default_registry()`` (no arguments) instead returns an
-honest, empty, explicitly-``unavailable`` registry — the platform correction
-requires Agent Studio to *consume* provider discovery through an interface
-owned by the integration/harness session rather than duplicate Foundry/tool
-discovery here (see ``capability_discovery.CapabilityDiscoverySource`` for
-that seam). ``CapabilityRegistry.from_source``/``build_registry_from_source``
-build a registry entirely from an injected source's (scope-aware, async)
-discovery output — no seed mixed in, ever.
+The registry is populated only from scope-aware provider discovery. No local
+catalog is mixed into provider results or used when discovery is unavailable.
 """
 
 from __future__ import annotations
@@ -288,255 +269,6 @@ def _unknown(
 _PREVIEW_REASON = "Documented as preview in the Foundry Agent Service tool catalog."
 
 
-def _seed_descriptors() -> tuple[CapabilityDescriptor, ...]:
-    return (
-        CapabilityDescriptor(
-            id="foundry.web_search",
-            provider="microsoft_foundry",
-            title="Web Search",
-            description="Retrieve real-time public web information with inline citations.",
-            operations=(_ga("search", side_effect_destinations=("public_web",)),),
-            risk_tier="medium",
-            data_boundary="public",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.code_interpreter",
-            provider="microsoft_foundry",
-            title="Code Interpreter",
-            description="Write and run Python code in a Foundry-managed sandbox.",
-            operations=(
-                _ga(
-                    "run",
-                    operation_class=OperationClass.WRITE_REVERSIBLE,
-                    side_effect_destinations=("foundry_sandbox",),
-                ),
-                _preview(
-                    "custom_environment",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_REVERSIBLE,
-                    side_effect_destinations=("foundry_sandbox",),
-                ),
-            ),
-            risk_tier="medium",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.file_search",
-            provider="microsoft_foundry",
-            title="File Search",
-            description="Augment agents with knowledge from uploaded files.",
-            operations=(_ga("search", side_effect_destinations=("file_store",)),),
-            auth_requirements=("workspace_connection:file_store",),
-            risk_tier="low",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.azure_ai_search",
-            provider="microsoft_foundry",
-            title="Azure AI Search",
-            description="Ground agents with data from an existing Azure AI Search index.",
-            operations=(_ga("search", side_effect_destinations=("azure_ai_search_index",)),),
-            auth_requirements=("workspace_connection:azure_ai_search",),
-            risk_tier="low",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.azure_functions",
-            provider="microsoft_foundry",
-            title="Azure Functions",
-            description="Call Azure Functions to perform custom actions and retrieve dynamic data.",
-            operations=(
-                _ga(
-                    "invoke",
-                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
-                    side_effect_destinations=("azure_functions",),
-                    requires_approval=True,
-                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
-                ),
-            ),
-            auth_requirements=("workspace_connection:azure_functions",),
-            risk_tier="medium",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.function_calling",
-            provider="microsoft_foundry",
-            title="Function Calling",
-            description="Define custom functions the agent can call; the caller executes and returns results.",
-            operations=(_ga("invoke", operation_class=OperationClass.PURE),),
-            risk_tier="medium",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.memory",
-            provider="microsoft_foundry",
-            title="Foundry Native Memory",
-            description="Foundry-managed long-term agent memory store.",
-            operations=(
-                _preview("recall", _PREVIEW_REASON, side_effect_destinations=("foundry_memory_store",)),
-                _preview(
-                    "store",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_REVERSIBLE,
-                    side_effect_destinations=("foundry_memory_store",),
-                ),
-            ),
-            risk_tier="high",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.custom_code_interpreter",
-            provider="microsoft_foundry",
-            title="Custom Code Interpreter",
-            description="Customized code interpreter resources/packages/Container Apps environment.",
-            operations=(
-                _preview(
-                    "run",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_REVERSIBLE,
-                    side_effect_destinations=("container_apps_environment",),
-                ),
-            ),
-            risk_tier="medium",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.image_generation",
-            provider="microsoft_foundry",
-            title="Image Generation",
-            description="Generate images as part of conversations and workflows.",
-            operations=(
-                _preview(
-                    "generate",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_REVERSIBLE,
-                    side_effect_destinations=("generated_media_store",),
-                ),
-            ),
-            risk_tier="medium",
-            data_boundary="project",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.browser_automation",
-            provider="microsoft_foundry",
-            title="Browser Automation",
-            description="Perform browser tasks through natural language prompts.",
-            operations=(
-                _preview(
-                    "run",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
-                    side_effect_destinations=("public_web",),
-                    requires_approval=True,
-                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
-                ),
-            ),
-            risk_tier="high",
-            data_boundary="public",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.computer_use",
-            provider="microsoft_foundry",
-            title="Computer Use",
-            description="Interact with computer systems through their user interfaces.",
-            operations=(
-                _preview(
-                    "run",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.PRIVILEGED,
-                    side_effect_destinations=("host_computer",),
-                    requires_approval=True,
-                    approval_policy_ref="policy.capability-approval.privileged.v1",
-                ),
-            ),
-            risk_tier="high",
-            data_boundary="public",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.microsoft_fabric",
-            provider="microsoft_foundry",
-            title="Microsoft Fabric",
-            description="Connect to a Microsoft Fabric data agent for data analysis.",
-            operations=(_preview("query", _PREVIEW_REASON, side_effect_destinations=("microsoft_fabric",)),),
-            auth_requirements=("workspace_connection:fabric",),
-            risk_tier="medium",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.sharepoint",
-            provider="microsoft_foundry",
-            title="SharePoint",
-            description="Chat with private documents stored in SharePoint.",
-            operations=(_preview("search", _PREVIEW_REASON, side_effect_destinations=("sharepoint",)),),
-            auth_requirements=("workspace_connection:sharepoint",),
-            risk_tier="medium",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.toolbox_connector",
-            provider="microsoft_foundry",
-            title="Toolbox Connector (Custom · Preview)",
-            description="Connector-namespace managed MCP tool access (gateway_connector / catalog_MCP).",
-            operations=(
-                _preview(
-                    "invoke",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
-                    side_effect_destinations=("toolbox_connector",),
-                    requires_approval=True,
-                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
-                ),
-            ),
-            auth_requirements=("workspace_connection:toolbox",),
-            risk_tier="high",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="foundry.a2a",
-            provider="microsoft_foundry",
-            title="Agent2Agent (A2A)",
-            description="Call another agent over the A2A protocol.",
-            operations=(
-                _preview(
-                    "call",
-                    _PREVIEW_REASON,
-                    operation_class=OperationClass.WRITE_IRREVERSIBLE,
-                    side_effect_destinations=("a2a_peer_agent",),
-                    requires_approval=True,
-                    approval_policy_ref="policy.capability-approval.write-irreversible.v1",
-                ),
-            ),
-            risk_tier="high",
-            data_boundary="tenant",
-            managed_foundry_native=True,
-        ),
-        CapabilityDescriptor(
-            id="custom.hosted_code",
-            provider="custom_hosted",
-            title="Custom Hosted Code",
-            description="Arbitrary application code running in a Custom Hosted container; not Foundry-native.",
-            operations=(_unknown("run", reason="Custom code cannot run inside Managed Foundry runtime."),),
-            risk_tier="high",
-            data_boundary="project",
-            managed_foundry_native=False,
-        ),
-    )
-
-
 class CapabilityRegistry:
     """In-memory capability catalog with GA-only attach enforcement.
 
@@ -557,10 +289,7 @@ class CapabilityRegistry:
     ) -> None:
         """Construct a registry directly from ``descriptors`` (default: empty).
 
-        Unlike the pre-correction behavior, a bare ``CapabilityRegistry()``
-        with no arguments is **not** seeded with the hard-coded Foundry
-        catalog — it is an honest, empty catalog. The hard-coded seed is
-        only ever reachable via ``seeded_test_registry`` (test-fixture-only).
+        A bare ``CapabilityRegistry()`` is an honest, empty catalog.
 
         ``available``/``unavailable_reason`` mirror
         ``capability_discovery.CapabilityDiscoveryResult``'s honest-empty
@@ -955,28 +684,12 @@ class CapabilityRegistry:
         return tuple(self.resolve_binding_view(binding) for binding in bindings)
 
 
-def seeded_test_registry(descriptors: tuple[CapabilityDescriptor, ...] | None = None) -> CapabilityRegistry:
-    """Test-fixture-only registry seeded with the hard-coded Foundry catalog.
-
-    **Must never be called from a production path.** This is the only
-    reachable use of ``_seed_descriptors()`` in this module; it exists so
-    unit/integration tests can exercise attach/binding/gate/runtime-selection
-    logic against a realistic, populated catalog without a live provider
-    integration. Production composition must use ``default_registry()``
-    (honest, unconfigured-by-default) or ``build_registry_from_source`` with
-    a real adapter instead.
-    """
-    return CapabilityRegistry(descriptors if descriptors is not None else _seed_descriptors())
-
-
 def default_registry() -> CapabilityRegistry:
     """Build the process-default capability registry with no source configured.
 
-    Returns an honest, empty, explicitly ``unavailable`` registry — it never
-    falls back to the hard-coded seed catalog (see ``seeded_test_registry``
-    for that test-only fixture). Production composition that has not yet
-    wired a real ``CapabilityDiscoverySource`` adapter should use this
-    directly, or equivalently call ``build_registry_from_source`` with a
+    Returns an honest, empty, explicitly ``unavailable`` registry. Production
+    composition that has not yet wired a real ``CapabilityDiscoverySource``
+    adapter should use this directly, or call ``build_registry_from_source`` with a
     ``NullCapabilityDiscoverySource``; both surface the same explicit
     "provider integration unavailable" signal rather than an
     indistinguishable empty success.

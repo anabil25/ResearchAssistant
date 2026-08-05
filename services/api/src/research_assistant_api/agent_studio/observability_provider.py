@@ -41,11 +41,6 @@ from research_assistant_api.config import Settings
 #: real Application Insights-backed provider.
 APP_INSIGHTS_SOURCE = "application-insights"
 
-#: Source label surfaced by ``InMemoryObservabilityProvider`` -- must never
-#: appear in a production response.
-IN_MEMORY_SOURCE = "in-memory-test-double"
-
-
 class ObservabilityProviderError(RuntimeError):
     pass
 
@@ -65,36 +60,6 @@ class UnavailableObservabilityProvider:
         del deployment, window
         raise ObservabilityProviderError(
             "No Application Insights resource is configured; deployment observability is unavailable."
-        )
-
-
-class InMemoryObservabilityProvider:
-    """Explicit, test/offline-only provider backed by a fixed summary or factory.
-
-    This must never be wired in a cloud/production path; it exists so unit
-    tests can exercise the router route deterministically without a live
-    Application Insights resource.
-    """
-
-    def __init__(self, summary: DeploymentObservabilitySummary | None = None) -> None:
-        self._summary = summary
-
-    def get_deployment_summary(
-        self, deployment: DeploymentRecord, *, window: timedelta
-    ) -> DeploymentObservabilitySummary:
-        if self._summary is not None:
-            return self._summary
-        now = utc_now()
-        return DeploymentObservabilitySummary(
-            deployment_id=deployment.id,
-            logical_agent_id=deployment.logical_agent_id,
-            window_start=now - window,
-            window_end=now,
-            health=deployment.health,
-            invocation_count=0,
-            error_count=0,
-            error_rate=0.0,
-            source=IN_MEMORY_SOURCE,
         )
 
 

@@ -356,8 +356,8 @@ azd up
   model deployments, role assignments, VNet, private Blob/Cosmos endpoints,
   and DNS.
 - `postprovision` hook then:
-  1. Creates Search indexes and uploads the synthetic corpus (via isolated
-     `.venv-provision`).
+  1. Creates an empty evidence Search index; ingestion remains an explicit
+     user action.
   2. Reconciles mutable APIM connector APIs, policies, MCP surfaces, and
      missing optional secret slots without overwriting user-managed keys.
   3. Reconciles Foundry connections, Toolboxes, memory, and deployment data.
@@ -535,10 +535,10 @@ same checkout.
 ### Deploying into a governed / network-restricted subscription
 
 The `postprovision` hook does the data-plane wiring that Bicep can't: it
-builds the AI Search index, uploads the synthetic corpus, and registers the
-nine Foundry agents. That work runs from the machine that ran `azd up`, over
-the public internet, using your `az login` identity. It therefore needs
-network line-of-sight to the AI Search and Foundry endpoints.
+creates the empty AI Search index and reconciles connector, Toolbox, memory,
+and Foundry project dependencies. That work runs from the machine that ran
+`azd up`, over the public internet, using your `az login` identity. It
+therefore needs network line-of-sight to the AI Search and Foundry endpoints.
 
 Many enterprise subscriptions apply an Azure Policy that disables public
 network access on PaaS data services. When that happens, a laptop simply
@@ -615,9 +615,8 @@ services/
 apps/
   web/                   #   Next.js workbench (Container App)
 
-scripts/                 #   azd lifecycle hooks, corpus upload, agent RBAC
-tests/                   #   pytest suites (offline + live) + Playwright E2E
-sample_data/             #   synthetic CC0 corpus
+scripts/                 #   azd lifecycle hooks, service reconciliation, agent RBAC
+tests/                   #   live pytest release checks
 ```
 
 | Directory | Azure resources owned | Responsibility |
@@ -627,7 +626,7 @@ sample_data/             #   synthetic CC0 corpus
 | `services/api/` | FastAPI Container App | Research API, ingestion, approval gate |
 | `apps/web/` | Next.js Container App | Workbench UI |
 | `packages/` | — | Shared Python contracts and connectors |
-| `scripts/` | azd lifecycle hooks | Postprovision: index, corpus, agent setup |
+| `scripts/` | azd lifecycle hooks | Postprovision: index and live service reconciliation |
 | `tests/` | — | Quality gate: pytest + Playwright |
 
 ## Data and safety

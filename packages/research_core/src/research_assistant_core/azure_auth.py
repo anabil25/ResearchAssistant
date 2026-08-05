@@ -24,18 +24,16 @@ from __future__ import annotations
 import os
 from collections.abc import Callable
 from threading import Lock
-from typing import TYPE_CHECKING
+from typing import cast
 
-if TYPE_CHECKING:  # pragma: no cover - typing only
-    from azure.core.credentials import TokenCredential
-    from azure.core.credentials_async import AsyncTokenCredential
+from azure.core.credentials import TokenCredential
+from azure.core.credentials_async import AsyncTokenCredential
 
 __all__ = [
     "async_azure_credential",
     "async_token_provider",
     "azure_credential",
     "managed_identity_client_id",
-    "reset_credential_cache",
     "token_provider",
 ]
 
@@ -75,7 +73,7 @@ def azure_credential(client_id: str | None = None) -> TokenCredential:
                     else DefaultAzureCredential()
                 )
                 _CREDENTIALS[key] = cached
-    return cached  # type: ignore[return-value]
+    return cast(TokenCredential, cached)
 
 
 def async_azure_credential(client_id: str | None = None) -> AsyncTokenCredential:
@@ -98,7 +96,7 @@ def async_azure_credential(client_id: str | None = None) -> AsyncTokenCredential
                     else DefaultAzureCredential()
                 )
                 _CREDENTIALS[key] = cached
-    return cached  # type: ignore[return-value]
+    return cast(AsyncTokenCredential, cached)
 
 
 def token_provider(scope: str, *, client_id: str | None = None) -> Callable[[], str]:
@@ -120,7 +118,7 @@ def token_provider(scope: str, *, client_id: str | None = None) -> Callable[[], 
 
                 cached = get_bearer_token_provider(credential, scope)
                 _TOKEN_PROVIDERS[key] = cached
-    return cached  # type: ignore[return-value]
+    return cast(Callable[[], str], cached)
 
 
 def async_token_provider(scope: str, *, client_id: str | None = None) -> Callable[[], object]:
@@ -138,11 +136,4 @@ def async_token_provider(scope: str, *, client_id: str | None = None) -> Callabl
 
                 cached = get_bearer_token_provider(credential, scope)
                 _TOKEN_PROVIDERS[key] = cached
-    return cached  # type: ignore[return-value]
-
-
-def reset_credential_cache() -> None:
-    """Drop the memoized credentials and providers. For tests only."""
-    with _LOCK:
-        _CREDENTIALS.clear()
-        _TOKEN_PROVIDERS.clear()
+    return cached

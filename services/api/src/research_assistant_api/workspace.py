@@ -13,7 +13,7 @@ from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, mod
 from research_assistant_core.connector_catalog import ConnectorDefinition, connector_definitions
 from research_assistant_core.models import Capability, RunStatus
 
-from research_assistant_api.identity import LOCAL_DEVELOPMENT_SOURCE, IdentityContext
+from research_assistant_api.identity import IdentityContext
 
 
 def utc_now() -> datetime:
@@ -524,7 +524,7 @@ class PersonalProject(BaseModel):
     is only the authorization and lifecycle boundary used to select one.
     """
 
-    project_id: str = Field(pattern=r"^(?:project-[a-f0-9]{32}|demo-project)$")
+    project_id: str = Field(pattern=r"^project-[a-f0-9]{32}$")
     owner_user_id: str = Field(min_length=1, max_length=200)
     name: str = Field(min_length=3, max_length=120)
     description: str = Field(min_length=3, max_length=1000)
@@ -592,23 +592,22 @@ def _dataset_audit_order(entry: DatasetApprovalAuditEntry) -> tuple[datetime, in
 
 
 class WorkspaceStore:
-    persistence = "in-memory demo"
+    persistence = "process memory"
 
     def __init__(
         self,
-        tenant_id: str = "demo",
-        project_id: str = "demo-project",
+        tenant_id: str,
+        project_id: str,
         *,
         project_name: str = DEFAULT_PROJECT_NAME,
         project_description: str = DEFAULT_PROJECT_DESCRIPTION,
-        seed_demo_data: bool = True,
     ) -> None:
         self.tenant_id = tenant_id
         self.project_id = project_id
         self._lock = RLock()
-        self._library = _seed_library() if seed_demo_data else []
-        self._runs = _seed_runs(project_id) if seed_demo_data else []
-        self._approvals = _seed_approvals() if seed_demo_data else []
+        self._library: list[LibraryItem] = []
+        self._runs: list[RunSummary] = []
+        self._approvals: list[ApprovalRecord] = []
         self._dataset_approvals: list[DatasetApprovalRequest] = []
         #: Requester principal id (``IdentityContext.user_id``) per approval id,
         #: kept distinct from the public read model (which exposes only the
@@ -620,7 +619,7 @@ class WorkspaceStore:
         #: Monotonic counter backing ``DatasetApprovalAuditEntry.sequence``, so
         #: append order survives ties in the coarse system clock.
         self._dataset_audit_sequence = 0
-        self._connectors = _seed_connectors() if seed_demo_data else [
+        self._connectors = [
             connector.model_copy(
                 update={
                     "enabled": False,
@@ -629,14 +628,14 @@ class WorkspaceStore:
                     "assigned_agents": [],
                 }
             )
-            for connector in _seed_connectors()
+            for connector in _connector_catalog()
         ]
         self._settings = default_project_settings(
             project_id,
             name=project_name,
             description=project_description,
         )
-        self._agents = _seed_agents()
+        self._agents: list[AgentSetting] = []
         self._chat_threads: dict[str, ChatThread] = {}
 
     def summary(self) -> WorkspaceSummary:
@@ -936,21 +935,6 @@ class WorkspaceStore:
         with self._lock:
             return self._dataset_requester_principals.get(request_id)
 
-    @staticmethod
-    def _dataset_sod_exempt(identity: IdentityContext) -> bool:
-        """Deterministic separation-of-duties policy exemption.
-
-        The only identity allowed to both request and decide the same dataset
-        approval is the local developer identity, which exists solely when no
-        authenticating gateway fronts the API. Separation of duties stays
-        strictly enforced for every gateway-authenticated identity.
-
-        Deliberately NOT consulted on the consume path: see
-        ``_verify_consuming_principal``, where the same predicate would mean
-        "anyone may consume".
-        """
-        return identity.source == LOCAL_DEVELOPMENT_SOURCE
-
     def _append_dataset_audit(
         self,
         *,
@@ -1011,32 +995,21 @@ class WorkspaceStore:
                     DatasetApprovalDenialReason.ALREADY_DECIDED,
                     "This dataset approval request has already been decided.",
                 )
-            if not self._dataset_sod_exempt(identity):
-                requester_principal = self._dataset_requester_principals.get(request_id)
-                if requester_principal is None:
-                    # Fail closed rather than skip the control. Absent requester
-                    # means separation of duties CANNOT be verified, so deny --
-                    # the same shape as an allowlist status check: deny unless
-                    # provably distinct. This is deliberately not solved by a
-                    # backfill: a backfill can be incomplete and silently so,
-                    # and would re-introduce the bypass for anything it missed.
-                    # Every approval persisted before requester binding existed
-                    # is therefore undecidable; the requester re-submits, which
-                    # binds a principal. Backfill remains optional cleanup, never
-                    # the control.
-                    raise DatasetApprovalError(
-                        DatasetApprovalDenialReason.UNATTRIBUTABLE_REQUESTER,
-                        "This dataset approval request has no attributable requester "
-                        "principal, so reviewer/requester separation of duties cannot "
-                        "be verified; refusing to decide it. Re-submit the request to "
-                        "bind a requester principal.",
-                    )
-                if requester_principal == identity.user_id:
-                    raise DatasetApprovalError(
-                        DatasetApprovalDenialReason.SEPARATION_OF_DUTIES,
-                        "The requester of a dataset approval cannot also approve or reject "
-                        "it; a different reviewer must decide (separation of duties).",
-                    )
+            requester_principal = self._dataset_requester_principals.get(request_id)
+            if requester_principal is None:
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.UNATTRIBUTABLE_REQUESTER,
+                    "This dataset approval request has no attributable requester "
+                    "principal, so reviewer/requester separation of duties cannot "
+                    "be verified; refusing to decide it. Re-submit the request to "
+                    "bind a requester principal.",
+                )
+            if requester_principal == identity.user_id:
+                raise DatasetApprovalError(
+                    DatasetApprovalDenialReason.SEPARATION_OF_DUTIES,
+                    "The requester of a dataset approval cannot also approve or reject "
+                    "it; a different reviewer must decide (separation of duties).",
+                )
             record.state = (
                 DatasetApprovalState.APPROVED
                 if decision.decision == "approved"
@@ -1491,213 +1464,6 @@ class WorkspaceStore:
             return deepcopy(record)
 
 
-def _seed_library() -> list[LibraryItem]:
-    now = utc_now()
-    rows = [
-        (
-            "paper-rag",
-            "Provenance-first retrieval for research synthesis",
-            "Paper",
-            "PubMed",
-            6,
-            "CC BY 4.0",
-            "public",
-            ["retrieval", "citations"],
-        ),
-        (
-            "paper-human",
-            "Human review gates for evidence workflows",
-            "Paper",
-            "Europe PMC",
-            4,
-            "CC BY 4.0",
-            "public",
-            ["human-in-the-loop"],
-        ),
-        (
-            "grant-open",
-            "Open Research Infrastructure Opportunity",
-            "Funding notice",
-            "Grants.gov",
-            8,
-            "U.S. Government Work",
-            "public",
-            ["grant", "open-science"],
-        ),
-        (
-            "policy-irb",
-            "IRB guidance for AI-assisted research",
-            "Policy",
-            "Institutional Library",
-            5,
-            "Institutional",
-            "restricted",
-            ["IRB", "policy"],
-        ),
-        (
-            "policy-retention",
-            "Research records retention standard",
-            "Policy",
-            "Institutional Library",
-            3,
-            "Institutional",
-            "internal",
-            ["records", "retention"],
-        ),
-        (
-            "dataset-outcomes",
-            "Pilot outcomes.csv",
-            "Dataset",
-            "Workspace upload",
-            1,
-            "Project supplied",
-            "restricted",
-            ["pilot", "outcomes"],
-        ),
-        (
-            "profile-computational-biology",
-            "Computational biology collaboration profile",
-            "Research profile",
-            "Faculty directory",
-            2,
-            "Institutional",
-            "internal",
-            ["genomics", "reproducibility"],
-        ),
-        (
-            "facility-imaging",
-            "Advanced Imaging Core",
-            "Facility",
-            "Core directory",
-            2,
-            "Institutional",
-            "internal",
-            ["microscopy", "image-analysis"],
-        ),
-        (
-            "template-dmp",
-            "Data-management plan template",
-            "Template",
-            "Research Office",
-            3,
-            "Institutional",
-            "internal",
-            ["DMP", "template"],
-        ),
-    ]
-    return [
-        LibraryItem(
-            id=row[0],
-            title=row[1],
-            kind=row[2],
-            source=row[3],
-            status=LibraryStatus.READY,
-            access=row[6],
-            version="1.0",
-            checksum=f"sha256:{row[0]}-fixture",
-            license=row[5],
-            added_at=now,
-            evidence_count=row[4],
-            connector=row[3],
-            provider=row[3],
-            publication_year=2026,
-            description=f"Verified {row[2].lower()} record available to this project.",
-            tags=row[7],
-        )
-        for row in rows
-    ]
-
-
-def _seed_runs(project_id: str) -> list[RunSummary]:
-    now = utc_now()
-    rows = [
-        (
-            "run-lit-001",
-            Capability.LITERATURE,
-            "Reproducible synthesis protocol",
-            RunStatus.COMPLETED,
-            100,
-            "Citation audit complete",
-            2,
-        ),
-        (
-            "run-grant-001",
-            Capability.GRANT,
-            "Open infrastructure application",
-            RunStatus.WAITING_FOR_APPROVAL,
-            86,
-            "Reviewer approval",
-            4,
-        ),
-        (
-            "run-match-001",
-            Capability.MATCHING,
-            "Genomics collaborator shortlist",
-            RunStatus.COMPLETED,
-            100,
-            "Shortlist confirmed",
-            1,
-        ),
-        (
-            "run-data-001",
-            Capability.DATASET,
-            "Pilot outcomes profile",
-            RunStatus.BLOCKED,
-            15,
-            "Compute adapter not configured",
-            3,
-        ),
-        (
-            "run-policy-001",
-            Capability.INSTITUTIONAL_QA,
-            "IRB disclosure guidance",
-            RunStatus.COMPLETED,
-            100,
-            "Answer audited",
-            1,
-        ),
-    ]
-    return [
-        RunSummary(
-            id=row[0],
-            durable_instance_id=f"research-{row[0]}",
-            project_id=project_id,
-            capability=row[1],
-            title=row[2],
-            status=row[3],
-            progress=row[4],
-            current_stage=row[5],
-            owner="Workspace researcher",
-            started_at=now,
-            completed_at=now if row[3] == RunStatus.COMPLETED else None,
-            artifact_count=row[6],
-            approval_id=("approval-grant-export" if row[0] == "run-grant-001" else None),
-        )
-        for row in rows
-    ]
-
-
-def _seed_approvals() -> list[ApprovalRecord]:
-    now = utc_now()
-    return [
-        ApprovalRecord(
-            id="approval-grant-export",
-            run_id="run-grant-001",
-            title="Release grant package for institutional review",
-            state=ApprovalState.PENDING,
-            risk="High",
-            gated_action="Export package version 0.8 and notify the assigned research-office reviewer.",
-            destination="SharePoint research site / Grant reviews",
-            requested_by="grant-agent",
-            requested_at=now,
-            evidence_summary=(
-                "7/7 requirements mapped; 2 project fact gaps remain; no unsupported commitments detected."
-            ),
-            idempotency_key="grant-export-run-grant-001-v08",
-        ),
-    ]
-
-
 def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
     return ConnectorSetting(
         id=definition.id,
@@ -1723,91 +1489,5 @@ def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
     )
 
 
-def _seed_connectors() -> list[ConnectorSetting]:
+def _connector_catalog() -> list[ConnectorSetting]:
     return [_connector(definition) for definition in connector_definitions()]
-
-
-def _seed_agents() -> list[AgentSetting]:
-    return [
-        AgentSetting(
-            id="coordinator",
-            name="Research coordinator",
-            model_tier="Fast",
-            status="Active",
-            web_access="Never direct",
-            workflow_steps=["Classify", "Route", "Reconcile"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="literature",
-            name="Literature synthesis",
-            model_tier="Primary",
-            status="Active",
-            web_access="Opt-in public only",
-            workflow_steps=["Protocol", "Search", "Screen", "Extract", "Synthesize", "Audit"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="grant",
-            name="Grant development",
-            model_tier="Primary",
-            status="Active",
-            web_access="Opportunity only",
-            workflow_steps=["Requirements", "Facts", "Aims", "Draft", "Compliance", "Red team"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="matching",
-            name="PI & resource matching",
-            model_tier="Fast",
-            status="Active",
-            web_access="Public metadata leads",
-            workflow_steps=["Criteria", "Filter", "Resolve", "Score", "Compare"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="dataset",
-            name="Dataset interpretation",
-            model_tier="Fast",
-            status="Active",
-            web_access="No raw data",
-            workflow_steps=["Validate", "Profile", "Plan", "Compute", "Interpret"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="institution",
-            name="Institutional guidance",
-            model_tier="Fast",
-            status="Active",
-            web_access="Forbidden",
-            workflow_steps=["Scope", "Authorize", "Version", "Conflict", "Answer"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="literature_online",
-            name="Literature public researcher",
-            model_tier="Fast",
-            status="Active",
-            web_access="Public-only deployment",
-            workflow_steps=["Public query", "Metadata", "Web", "Source handoff"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="grant_online",
-            name="Grant opportunity researcher",
-            model_tier="Fast",
-            status="Active",
-            web_access="Public opportunity only",
-            workflow_steps=["Public notice", "Funding metadata", "Verify URL"],
-            deployment="Foundry Hosted Agent",
-        ),
-        AgentSetting(
-            id="matching_online",
-            name="Public entity researcher",
-            model_tier="Fast",
-            status="Active",
-            web_access="Public metadata only",
-            workflow_steps=["Public criteria", "Resolve IDs", "Return leads"],
-            deployment="Foundry Hosted Agent",
-        ),
-    ]

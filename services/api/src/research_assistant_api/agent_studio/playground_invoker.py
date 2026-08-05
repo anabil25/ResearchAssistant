@@ -18,7 +18,6 @@ tests.
 
 from __future__ import annotations
 
-from collections.abc import Callable
 from typing import NamedTuple, Protocol
 
 from research_assistant_api.agent_studio.models import PlaygroundToolCall, PlaygroundTraceEvent
@@ -35,10 +34,6 @@ class PlaygroundInvocationResult(NamedTuple):
     tool_calls: tuple[PlaygroundToolCall, ...]
 
 
-#: ``(input_text, instructions) -> PlaygroundInvocationResult`` -- test-only response hook.
-RespondFn = Callable[[str, str], PlaygroundInvocationResult]
-
-
 class PlaygroundInvoker(Protocol):
     def invoke(self, *, instructions: str, input_text: str) -> PlaygroundInvocationResult: ...
 
@@ -50,23 +45,6 @@ class UnavailablePlaygroundInvoker:
         raise PlaygroundInvocationError(
             "No playground execution adapter is configured; test/playground runs are unavailable."
         )
-
-
-class InMemoryPlaygroundInvoker:
-    """Explicit, test/offline-only invoker backed by a caller-supplied response function.
-
-    This must never be wired in a cloud/production path; it exists so unit
-    tests can exercise the run-creation/persistence/history flow
-    deterministically without a live runtime adapter.
-    """
-
-    def __init__(self, respond: RespondFn | None = None) -> None:
-        self._respond = respond
-
-    def invoke(self, *, instructions: str, input_text: str) -> PlaygroundInvocationResult:
-        if self._respond is not None:
-            return self._respond(input_text, instructions)
-        return PlaygroundInvocationResult(output=input_text, trace=(), tool_calls=())
 
 
 def build_playground_invoker(settings: Settings) -> PlaygroundInvoker:

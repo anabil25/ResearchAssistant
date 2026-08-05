@@ -5,29 +5,14 @@ from collections.abc import Callable, Mapping
 from contextlib import ExitStack
 from dataclasses import dataclass, field
 from enum import StrEnum
-from threading import Lock
 from typing import Protocol
 
 from opentelemetry import metrics, trace
-from opentelemetry._logs import get_logger_provider, set_logger_provider
-from opentelemetry.sdk._logs import LoggerProvider
-from opentelemetry.sdk._logs.export import (
-    InMemoryLogRecordExporter,
-    SimpleLogRecordProcessor,
-)
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import InMemoryMetricReader
-from opentelemetry.sdk.resources import Resource
-from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
-from opentelemetry.sdk.trace.export.in_memory_span_exporter import (
-    InMemorySpanExporter,
-)
+from opentelemetry._logs import get_logger_provider
 
 
 class TelemetryMode(StrEnum):
     DISABLED = "disabled"
-    LOCAL = "local"
     AZURE_MONITOR = "azure-monitor"
 
 
@@ -41,9 +26,6 @@ class TelemetryRuntime:
     service_name: str
     providers: tuple[object, ...] = ()
     cleanup: Callable[[], None] | None = None
-    span_exporter: InMemorySpanExporter | None = None
-    metric_reader: InMemoryMetricReader | None = None
-    log_exporter: InMemoryLogRecordExporter | None = None
     closed: bool = field(default=False, init=False)
 
     def shutdown(self) -> None:
@@ -64,11 +46,6 @@ ProviderSnapshot = Callable[[], tuple[object, ...]]
 AzureMonitorConfigurer = Callable[..., None]
 CredentialFactory = Callable[[str | None], CloseableCredential]
 
-_LOCAL_ENVIRONMENTS = frozenset({"dev", "development", "local", "test", "testing"})
-_LOCAL_RUNTIME: TelemetryRuntime | None = None
-_LOCAL_RUNTIME_LOCK = Lock()
-
-
 def resolve_telemetry_mode(
     *,
     environment: str | None,
@@ -80,10 +57,9 @@ def resolve_telemetry_mode(
             return TelemetryMode(explicit.strip().lower())
         except ValueError as exc:
             raise ValueError(
-                "RESEARCH_TELEMETRY_MODE must be disabled, local, or azure-monitor"
+                "RESEARCH_TELEMETRY_MODE must be disabled or azure-monitor"
             ) from exc
-    if (environment or "").strip().lower() in _LOCAL_ENVIRONMENTS:
-        return TelemetryMode.LOCAL
+    del environment
     if environ.get("APPLICATIONINSIGHTS_CONNECTION_STRING"):
         return TelemetryMode.AZURE_MONITOR
     return TelemetryMode.DISABLED
@@ -95,55 +71,6 @@ def global_provider_snapshot() -> tuple[object, ...]:
         metrics.get_meter_provider(),
         get_logger_provider(),
     )
-
-
-def validate_provider_ownership(
-    actual: tuple[object, ...],
-    expected: tuple[object, ...],
-) -> None:
-    if actual != expected:
-        raise RuntimeError("Local telemetry requires unconfigured OpenTelemetry providers")
-
-
-def configure_local_telemetry(service_name: str) -> TelemetryRuntime:
-    global _LOCAL_RUNTIME
-    with _LOCAL_RUNTIME_LOCK:
-        if _LOCAL_RUNTIME is not None:
-            if _LOCAL_RUNTIME.closed:
-                raise RuntimeError("Local telemetry has already been shut down")
-            return _LOCAL_RUNTIME
-
-        resource = Resource({"service.name": service_name, "deployment.environment": "local"})
-        span_exporter = InMemorySpanExporter()
-        tracer_provider = TracerProvider(resource=resource, shutdown_on_exit=False)
-        tracer_provider.add_span_processor(SimpleSpanProcessor(span_exporter))
-        metric_reader = InMemoryMetricReader()
-        meter_provider = MeterProvider(
-            metric_readers=(metric_reader,),
-            resource=resource,
-            shutdown_on_exit=False,
-        )
-        log_exporter = InMemoryLogRecordExporter()  # type: ignore[no-untyped-call]
-        logger_provider = LoggerProvider(resource=resource, shutdown_on_exit=False)
-        logger_provider.add_log_record_processor(SimpleLogRecordProcessor(log_exporter))
-
-        trace.set_tracer_provider(tracer_provider)
-        metrics.set_meter_provider(meter_provider)
-        set_logger_provider(logger_provider)
-        validate_provider_ownership(
-            global_provider_snapshot(),
-            (tracer_provider, meter_provider, logger_provider),
-        )
-
-        _LOCAL_RUNTIME = TelemetryRuntime(
-            mode=TelemetryMode.LOCAL,
-            service_name=service_name,
-            providers=(tracer_provider, meter_provider, logger_provider),
-            span_exporter=span_exporter,
-            metric_reader=metric_reader,
-            log_exporter=log_exporter,
-        )
-        return _LOCAL_RUNTIME
 
 
 class TelemetryController:
@@ -181,9 +108,6 @@ class TelemetryController:
 
         if mode == TelemetryMode.DISABLED:
             self._runtime = TelemetryRuntime(mode=mode, service_name=service_name)
-            return mode
-        if mode == TelemetryMode.LOCAL:
-            self._runtime = configure_local_telemetry(service_name)
             return mode
 
         connection_string = values.get("APPLICATIONINSIGHTS_CONNECTION_STRING")
