@@ -26,6 +26,17 @@ function statusLabel(value: string | null): string {
   return value ? value.replaceAll("_", " ") : "Unknown";
 }
 
+function agentTypeLabel(value: FoundryAgentInventoryItem["agent_type"]): string {
+  const labels: Record<FoundryAgentInventoryItem["agent_type"], string> = {
+    hosted: "Hosted",
+    prompt: "Prompt",
+    workflow: "Workflow",
+    external: "External",
+    unknown: "Unknown type",
+  };
+  return labels[value];
+}
+
 // The API reports "no Foundry project configured" with the same 503 it uses for a
 // real outage. Retrying a missing deployment setting can never succeed, so match
 // the server's fixed wording to tell a configuration state apart from a failure.
@@ -121,14 +132,17 @@ export function FoundryAgentCatalog({
                 <div>
                   <strong>{agent.name}</strong>
                   <span className="agent-registry-owner">
-                    {agent.agent_type === "hosted" ? "Hosted" : agent.agent_type === "prompt" ? "Prompt" : "Unknown type"}
+                    {agentTypeLabel(agent.agent_type)}
                   </span>
                 </div>
                 <span className="agent-registry-lifecycle">{statusLabel(agent.status)}</span>
               </div>
               <p className="agent-registry-purpose">{agent.description ?? "No description was returned by Foundry."}</p>
               <dl className="agent-registry-facts">
-                <div><dt>Model</dt><dd>{agent.model ?? "Not reported"}</dd></div>
+                <div>
+                  <dt>{agent.model_deployments.length === 1 ? "Model" : "Models"}</dt>
+                  <dd>{agent.model_deployments.length > 0 ? agent.model_deployments.join(", ") : "Not reported"}</dd>
+                </div>
                 <div><dt>Version</dt><dd>{agent.version ?? "Not reported"}</dd></div>
               </dl>
             </article>

@@ -24,12 +24,6 @@ environmentVariables:
       value: dataset-agent
     - name: RESEARCH_INSTITUTION_AGENT_NAME
       value: institution-agent
-    - name: RESEARCH_LITERATURE_ONLINE_AGENT_NAME
-      value: literature-online-agent
-    - name: RESEARCH_GRANT_ONLINE_AGENT_NAME
-      value: grant-online-agent
-    - name: RESEARCH_MATCHING_ONLINE_AGENT_NAME
-      value: matching-online-agent
     - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
       value: "false"
 kind: hosted

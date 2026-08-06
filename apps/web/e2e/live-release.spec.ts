@@ -21,6 +21,56 @@ test("live workbench loads a Cosmos-backed project without failed requests", asy
 });
 
 
+test("removed workbench surfaces stay unreachable", async ({ page }) => {
+  await page.goto("/");
+
+  await expect(page.getByRole("button", { name: /Runs & approvals/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /Workflow Automation/i })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Search workspace" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: /pending approvals/i })).toHaveCount(0);
+
+  await page.keyboard.press("Control+K");
+  await expect(page.getByRole("dialog", { name: "Search workspace" })).toHaveCount(0);
+
+  for (const removedView of ["runs", "orchestration"]) {
+    await page.goto(`/?view=${removedView}`);
+    await expect(
+      page.getByRole("banner").getByText("Research command center", { exact: true }),
+    ).toBeVisible();
+  }
+});
+
+
+test("Project Settings exposes real connection and credential controls", async ({
+  page,
+}) => {
+  await page.goto("/?view=settings");
+  await expect(page.getByRole("heading", { name: "Project Settings" })).toBeVisible();
+
+  await page.getByRole("button", { name: /^Connections/ }).click();
+  await expect(page.getByRole("heading", { name: "Research connections" })).toBeVisible();
+  await expect(
+    page.getByText(/API keys are deployment-wide gateway secrets/i),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Test connection" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save configuration" })).toBeVisible();
+
+  await page
+    .getByRole("combobox", { name: "Connection to manage" })
+    .selectOption({ label: "Semantic Scholar" });
+  await expect(
+    page.getByRole("textbox", {
+      name: "API key for Semantic Scholar",
+    }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "Save key" })).toBeDisabled();
+
+  await expect(page.getByText("Gateway & tool versions")).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Evaluation" })).toHaveCount(0);
+  await expect(page.getByRole("button", { name: "Readiness" })).toHaveCount(0);
+});
+
+
 test("live literature agent opens a real session and answers", async ({ page }) => {
   await page.goto("/?view=literature");
   await expect(page.getByRole("heading", { name: "Literature Studio" })).toBeVisible();

@@ -3,6 +3,10 @@
 import {
   BookOpen,
   Bot,
+  BrainCircuit,
+  Check,
+  ChevronDown,
+  ChevronUp,
   CircleDashed,
   ClipboardCheck,
   FileText,
@@ -13,6 +17,7 @@ import {
   ShieldCheck,
   Sparkles,
   Users,
+  Wrench,
   X,
   type LucideIcon,
 } from "lucide-react";
@@ -32,7 +37,7 @@ import {
   getChatThread,
   listChatAgents,
   openChatThread,
-  sendChatMessage,
+  streamChatMessage,
   uploadChatFile,
 } from "@/lib/api";
 import { classifyAsyncError } from "@/components/async-state";
@@ -43,8 +48,10 @@ import {
 import type {
   CapabilityId,
   ChatAgentChoice,
+  ChatActivity,
   ChatAttachment,
   ChatMessage,
+  ChatStreamEvent,
   ChatThread,
 } from "@/lib/types";
 
@@ -53,9 +60,8 @@ const ResearchMarkdown = lazy(async () => ({
 }));
 
 /**
- * The four capabilities that render this chat surface. Institutional Q&A keeps
- * its version-and-abstain workflow and Workflow Automation keeps its DAG
- * editor, so neither appears here — the backend rejects them too.
+ * The capabilities that render this chat surface. Institutional Q&A keeps its
+ * version-and-abstain workflow, so it does not appear here.
  */
 export const CHAT_CAPABILITIES = [
   "literature",
@@ -114,6 +120,197 @@ function formatTimestamp(value: string): string {
     : parsed.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
 }
 
+function formatDuration(value: number | null): string | null {
+  if (value === null) return null;
+  if (value < 1_000) return `${value} ms`;
+  return `${(value / 1_000).toFixed(value < 10_000 ? 1 : 0)} s`;
+}
+
+const LONG_RESPONSE_CHARACTERS = 900;
+
+function ActivityStatusIcon({ status }: { status: string }) {
+  if (status === "in_progress" || status === "running") {
+    return <CircleDashed className="spin" size={12} aria-hidden="true" />;
+  }
+  if (status === "failed" || status === "incomplete") {
+    return <X size={12} aria-hidden="true" />;
+  }
+  return <Check size={12} aria-hidden="true" />;
+}
+
+function AgentActivityPanel({
+  message,
+  live = false,
+}: {
+  message: ChatMessage;
+  live?: boolean;
+}) {
+  const activity = message.activity ?? [];
+  const toolCount = activity.filter((item) => item.kind === "tool").length;
+  const duration = formatDuration(message.duration_ms ?? null);
+  const facts = [
+    toolCount
+      ? `${toolCount} ${toolCount === 1 ? "tool" : "tools"}`
+      : live
+        ? "Starting"
+        : "Direct response",
+    message.source_count
+      ? `${message.source_count} ${message.source_count === 1 ? "source" : "sources"}`
+      : null,
+    duration,
+  ].filter(Boolean);
+
+  if (!live && activity.length === 0 && message.duration_ms == null) return null;
+
+  return (
+    <details
+      className="agent-chat-activity"
+      data-live={live ? "true" : "false"}
+      open={live ? true : undefined}
+    >
+      <summary>
+        <span className="agent-chat-activity-title">
+          <BrainCircuit size={15} aria-hidden="true" />
+          Activity
+        </span>
+        <span className="agent-chat-activity-facts">{facts.join(" · ")}</span>
+        <ChevronDown className="agent-chat-activity-chevron" size={15} aria-hidden="true" />
+      </summary>
+      <div className="agent-chat-activity-body">
+        {activity.length > 0 ? (
+          <ol>
+            {activity.map((item, index) => (
+              <li key={`${item.kind}-${item.label}-${index}`}>
+                <span className="agent-chat-activity-icon" data-kind={item.kind}>
+                  {item.kind === "tool" ? (
+                    <Wrench size={14} aria-hidden="true" />
+                  ) : (
+                    <BrainCircuit size={14} aria-hidden="true" />
+                  )}
+                </span>
+                <span className="agent-chat-activity-copy">
+                  <strong>{item.label}</strong>
+                  {item.detail ? <small>{item.detail}</small> : null}
+                </span>
+                <span className="agent-chat-activity-status" data-status={item.status}>
+                  <ActivityStatusIcon status={item.status} />
+                  {item.status.replaceAll("_", " ")}
+                </span>
+              </li>
+            ))}
+          </ol>
+        ) : (
+          <p>
+            {live
+              ? "Waiting for the first observable action..."
+              : "No external tools were used for this response."}
+          </p>
+        )}
+        <p className="agent-chat-activity-note">
+          Shows observable actions and concise approach summaries. Private reasoning
+          and tool payloads remain hidden.
+        </p>
+      </div>
+    </details>
+  );
+}
+
+function AgentAnswer({
+  message,
+  live = false,
+}: {
+  message: ChatMessage;
+  live?: boolean;
+}) {
+  const [expanded, setExpanded] = useState(false);
+  const isLong = !live && message.content.length > LONG_RESPONSE_CHARACTERS;
+
+  return (
+    <>
+      <div
+        className="agent-chat-answer"
+        data-collapsed={isLong && !expanded ? "true" : "false"}
+      >
+        {message.content ? (
+          <Suspense fallback={<p>Rendering response...</p>}>
+            <ResearchMarkdown
+              content={message.content}
+              label={`${message.agent_name ?? "Agent"} response`}
+            />
+          </Suspense>
+        ) : live ? (
+          <p className="agent-chat-live-answer">
+            <CircleDashed className="spin" size={14} aria-hidden="true" />
+            Preparing the response...
+          </p>
+        ) : null}
+      </div>
+      {isLong ? (
+        <button
+          type="button"
+          className="agent-chat-answer-toggle"
+          aria-expanded={expanded}
+          onClick={() => setExpanded((current) => !current)}
+        >
+          {expanded ? <ChevronUp size={14} /> : <ChevronDown size={14} />}
+          {expanded ? "Show less" : "Show full response"}
+        </button>
+      ) : null}
+      <AgentActivityPanel message={message} live={live} />
+    </>
+  );
+}
+
+interface LiveChatActivity extends ChatActivity {
+  streamId: string;
+}
+
+interface LiveChatMessage extends Omit<ChatMessage, "activity"> {
+  activity: LiveChatActivity[];
+}
+
+function ChatMessageEntry({
+  message,
+  live = false,
+}: {
+  message: ChatMessage;
+  live?: boolean;
+}) {
+  return (
+    <article
+      className={`agent-chat-message agent-chat-${message.role}`}
+      data-live={live ? "true" : "false"}
+    >
+      <div className="agent-chat-message-meta">
+        <span className="agent-chat-avatar" aria-hidden="true">
+          {message.role === "assistant" ? <Bot size={15} /> : null}
+        </span>
+        <strong>
+          {message.role === "assistant" ? (message.agent_name ?? "Agent") : "You"}
+        </strong>
+        <time dateTime={message.created_at}>{formatTimestamp(message.created_at)}</time>
+        {live ? <em className="agent-chat-live-label">Live</em> : null}
+      </div>
+      {message.role === "assistant" ? (
+        <AgentAnswer message={message} live={live} />
+      ) : (
+        <p className="agent-chat-text">{message.content}</p>
+      )}
+      {message.attachments.length > 0 ? (
+        <ul className="agent-chat-attachments">
+          {message.attachments.map((attachment) => (
+            <li key={attachment.path}>
+              <Paperclip size={13} aria-hidden="true" />
+              <span>{attachment.path}</span>
+              <em>{formatBytes(attachment.size_bytes)}</em>
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </article>
+  );
+}
+
 interface PendingAttachment {
   key: string;
   name: string;
@@ -142,6 +339,8 @@ export function AgentChat({
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState<PendingAttachment[]>([]);
   const [sending, setSending] = useState(false);
+  const [streamingMessage, setStreamingMessage] = useState<LiveChatMessage | null>(null);
+  const [streamStartedAt, setStreamStartedAt] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
@@ -207,7 +406,26 @@ export function AgentChat({
     if (typeof end?.scrollIntoView === "function") {
       end.scrollIntoView({ block: "end" });
     }
-  }, [thread?.messages.length, sending]);
+  }, [
+    thread?.messages.length,
+    sending,
+    streamingMessage?.content.length,
+    streamingMessage?.activity.length,
+  ]);
+
+  useEffect(() => {
+    if (streamStartedAt == null) return;
+    const updateDuration = () => {
+      setStreamingMessage((current) =>
+        current
+          ? { ...current, duration_ms: Math.max(0, Date.now() - streamStartedAt) }
+          : current,
+      );
+    };
+    updateDuration();
+    const interval = window.setInterval(updateDuration, 1_000);
+    return () => window.clearInterval(interval);
+  }, [streamStartedAt]);
 
   const busy = agentLoading || sending || threadLoading;
 
@@ -305,15 +523,79 @@ export function AgentChat({
       created_at: new Date().toISOString(),
       agent_name: null,
       attachments: sentAttachments,
+      activity: [],
+      duration_ms: null,
+      source_count: 0,
     };
     setThread({ ...activeThread, messages: [...activeThread.messages, optimistic] });
     threadRef.current = { ...activeThread, messages: [...activeThread.messages, optimistic] };
     setPending([]);
+    const liveStartedAt = Date.now();
+    setStreamStartedAt(liveStartedAt);
+    setStreamingMessage({
+      id: `reply-${clientMessageId}`,
+      role: "assistant",
+      content: "",
+      created_at: new Date(liveStartedAt).toISOString(),
+      agent_name: boundAgent.name,
+      attachments: [],
+      activity: [],
+      duration_ms: 0,
+      source_count: 0,
+    });
     try {
-      await sendChatMessage(
+      const onStreamEvent = (event: ChatStreamEvent) => {
+        if (event.type === "started") {
+          setStreamingMessage((current) =>
+            current
+              ? {
+                  ...current,
+                  id: event.message_id,
+                  agent_name: event.agent_name,
+                  created_at: event.created_at,
+                }
+              : current,
+          );
+          return;
+        }
+        if (event.type === "activity") {
+          setStreamingMessage((current) => {
+            if (!current) return current;
+            const next: LiveChatActivity = {
+              ...event.activity,
+              streamId: event.activity_id,
+            };
+            const index = current.activity.findIndex(
+              (item) => item.streamId === event.activity_id,
+            );
+            const activity = [...current.activity];
+            if (index >= 0) activity[index] = next;
+            else activity.push(next);
+            return { ...current, activity };
+          });
+          return;
+        }
+        if (event.type === "text_delta") {
+          setStreamingMessage((current) =>
+            current ? { ...current, content: `${current.content}${event.delta}` } : current,
+          );
+          return;
+        }
+        if (event.type === "completed") {
+          setStreamingMessage({
+            ...event.message,
+            activity: (event.message.activity ?? []).map((item, index) => ({
+              ...item,
+              streamId: `final-${index}`,
+            })),
+          });
+        }
+      };
+      await streamChatMessage(
         activeThread.id,
         text,
         clientMessageId,
+        onStreamEvent,
         projectId ?? undefined,
       );
       const refreshed = await getChatThread(activeThread.id, projectId ?? undefined);
@@ -329,6 +611,8 @@ export function AgentChat({
       threadRef.current = activeThread;
       setDraft(text);
     } finally {
+      setStreamingMessage(null);
+      setStreamStartedAt(null);
       setSending(false);
     }
   };
@@ -423,46 +707,12 @@ export function AgentChat({
         ) : null}
 
         {messages.map((message) => (
-          <article
-            key={message.id}
-            className={`agent-chat-message agent-chat-${message.role}`}
-          >
-            <div className="agent-chat-message-meta">
-              <span className="agent-chat-avatar" aria-hidden="true">
-                {message.role === "assistant" ? <Bot size={15} /> : null}
-              </span>
-              <strong>
-                {message.role === "assistant"
-                  ? (message.agent_name ?? "Agent")
-                  : "You"}
-              </strong>
-              <time dateTime={message.created_at}>
-                {formatTimestamp(message.created_at)}
-              </time>
-            </div>
-            {message.role === "assistant" ? (
-              <Suspense fallback={<p>Rendering response...</p>}>
-                <ResearchMarkdown
-                  content={message.content}
-                  label={`${message.agent_name ?? "Agent"} response`}
-                />
-              </Suspense>
-            ) : (
-              <p className="agent-chat-text">{message.content}</p>
-            )}
-            {message.attachments.length > 0 ? (
-              <ul className="agent-chat-attachments">
-                {message.attachments.map((attachment) => (
-                  <li key={attachment.path}>
-                    <Paperclip size={13} aria-hidden="true" />
-                    <span>{attachment.path}</span>
-                    <em>{formatBytes(attachment.size_bytes)}</em>
-                  </li>
-                ))}
-              </ul>
-            ) : null}
-          </article>
+          <ChatMessageEntry key={message.id} message={message} />
         ))}
+
+        {streamingMessage ? (
+          <ChatMessageEntry message={streamingMessage} live />
+        ) : null}
 
         {threadLoading ? (
           <p className="agent-chat-pending">
@@ -470,11 +720,14 @@ export function AgentChat({
             <span>Connecting to {boundAgent?.name}...</span>
           </p>
         ) : null}
-        {sending ? (
-          <p className="agent-chat-pending">
+        {sending && !streamingMessage ? (
+          <div className="agent-chat-pending">
             <CircleDashed className="spin" size={16} aria-hidden="true" />
-            <span>{boundAgent?.name} is working...</span>
-          </p>
+            <span>
+              <strong>{boundAgent?.name} is working...</strong>
+              <small>Tools, sources, and timing will appear in Activity.</small>
+            </span>
+          </div>
         ) : null}
         <div ref={transcriptEndRef} />
       </div>

@@ -32,6 +32,8 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
+from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from hashlib import sha256
@@ -41,6 +43,7 @@ from uuid import uuid4
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from research_assistant_core.agent_surfaces import (
     chat_capabilities,
@@ -60,11 +63,15 @@ from research_assistant_api.foundry import (
     HostedAgentConfigurationError,
     HostedAgentInvocationError,
     HostedAgentNotReadyError,
+    HostedAgentProgress,
     HostedAgentReply,
+    build_hosted_agent_reply,
     create_response_with_retries,
+    stream_response_events,
 )
 from research_assistant_api.identity import IdentityContext, resolve_identity
 from research_assistant_api.workspace import (
+    ChatActivity,
     ChatAttachment,
     ChatMessage,
     ChatThread,
@@ -116,6 +123,13 @@ class ChatAttachmentView(BaseModel):
     uploaded_at: datetime
 
 
+class ChatActivityView(BaseModel):
+    kind: str
+    label: str
+    status: str
+    detail: str | None = None
+
+
 class ChatMessageView(BaseModel):
     id: str
     role: str
@@ -123,6 +137,9 @@ class ChatMessageView(BaseModel):
     created_at: datetime
     agent_name: str | None = None
     attachments: list[ChatAttachmentView] = Field(default_factory=list)
+    activity: list[ChatActivityView] = Field(default_factory=list)
+    duration_ms: int | None = None
+    source_count: int = 0
 
 
 class ChatThreadView(BaseModel):
@@ -170,6 +187,16 @@ class ChatGateway(Protocol):
         user_identity: str,
         text: str,
     ) -> HostedAgentReply: ...
+
+    def stream(
+        self,
+        *,
+        agent_name: str,
+        conversation_id: str,
+        session_id: str,
+        user_identity: str,
+        text: str,
+    ) -> Iterator[HostedAgentProgress]: ...
 
     def upload(
         self,
@@ -236,6 +263,7 @@ class AgentChatGateway:
         text: str,
     ) -> HostedAgentReply:
         client = self._project().get_openai_client(agent_name=agent_name)
+        started_at = time.monotonic()
         response = create_response_with_retries(
             client,
             agent_name,
@@ -248,10 +276,29 @@ class AgentChatGateway:
                 "extra_headers": {"x-ms-user-identity": user_identity},
             },
         )
-        return HostedAgentReply(
-            agent_name=agent_name,
-            content=response.output_text.strip(),
-            response_id=getattr(response, "id", None),
+        return build_hosted_agent_reply(response, agent_name, started_at)
+
+    def stream(
+        self,
+        *,
+        agent_name: str,
+        conversation_id: str,
+        session_id: str,
+        user_identity: str,
+        text: str,
+    ) -> Iterator[HostedAgentProgress]:
+        client = self._project().get_openai_client(agent_name=agent_name)
+        return stream_response_events(
+            client,
+            agent_name,
+            {
+                "input": text,
+                "extra_body": {
+                    "conversation": conversation_id,
+                    "agent_session_id": session_id,
+                },
+                "extra_headers": {"x-ms-user-identity": user_identity},
+            },
         )
 
     def upload(
@@ -352,6 +399,9 @@ def _message_view(message: ChatMessage) -> ChatMessageView:
         created_at=message.created_at,
         agent_name=message.agent_name,
         attachments=[_attachment_view(item) for item in message.attachments],
+        activity=[ChatActivityView(**item.model_dump()) for item in message.activity],
+        duration_ms=message.duration_ms,
+        source_count=message.source_count,
     )
 
 
@@ -492,6 +542,8 @@ async def send_chat_message(
         return _message_view(existing)
 
     turn_key = (thread.id, identity.user_id, client_message_id)
+    if turn_key in _ACTIVE_STREAM_TURNS:
+        raise HTTPException(status_code=409, detail="This chat turn is already streaming.")
     active = _ACTIVE_CHAT_TURNS.get(turn_key)
     if active is None:
         active = asyncio.create_task(
@@ -515,6 +567,195 @@ async def send_chat_message(
 
 
 _ACTIVE_CHAT_TURNS: dict[tuple[str, str, str], asyncio.Task[ChatMessageView]] = {}
+_ACTIVE_STREAM_TURNS: set[tuple[str, str, str]] = set()
+
+
+def _sse_event(event_type: str, payload: dict[str, object]) -> str:
+    return f"event: {event_type}\ndata: {json.dumps(payload, separators=(',', ':'))}\n\n"
+
+
+@router.post(
+    "/threads/{thread_id}/messages/stream",
+    response_class=StreamingResponse,
+    responses={200: {"content": {"text/event-stream": {}}}},
+)
+async def stream_chat_message(
+    thread_id: str,
+    payload: ChatMessageCreate,
+    request: Request,
+) -> StreamingResponse:
+    """Stream observable Hosted Agent progress, then persist one canonical turn."""
+    store, identity = _workspace_access(request)
+    thread = _load_thread(store, thread_id, identity)
+    client_message_id = payload.client_message_id or f"legacy-{uuid4().hex}"
+    assistant_id = f"reply-{client_message_id}"
+    existing = next((message for message in thread.messages if message.id == assistant_id), None)
+    if existing is not None:
+        body: Iterator[str] = iter(
+            [
+                _sse_event(
+                    "completed",
+                    {"type": "completed", "message": _message_view(existing).model_dump(mode="json")},
+                )
+            ]
+        )
+        return StreamingResponse(body, media_type="text/event-stream")
+
+    turn_key = (thread.id, identity.user_id, client_message_id)
+    if turn_key in _ACTIVE_STREAM_TURNS or turn_key in _ACTIVE_CHAT_TURNS:
+        raise HTTPException(status_code=409, detail="This chat turn is already in progress.")
+    _ACTIVE_STREAM_TURNS.add(turn_key)
+
+    pending = [item for item in thread.attachments if not _already_announced(thread, item)]
+    settings = cast(Settings, request.app.state.settings)
+    envelope = _contract_envelope(
+        thread,
+        identity=identity,
+        settings=settings,
+        text=payload.text,
+        attachments=pending,
+    )
+    body = _execute_chat_turn_stream(
+        gateway=_gateway(request),
+        thread=thread,
+        store=store,
+        payload=payload,
+        client_message_id=client_message_id,
+        pending=pending,
+        envelope=envelope,
+        turn_key=turn_key,
+    )
+    return StreamingResponse(
+        body,
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
+
+
+def _execute_chat_turn_stream(
+    *,
+    gateway: ChatGateway,
+    thread: ChatThread,
+    store: WorkspaceStore,
+    payload: ChatMessageCreate,
+    client_message_id: str,
+    pending: list[ChatAttachment],
+    envelope: str,
+    turn_key: tuple[str, str, str],
+) -> Iterator[str]:
+    started_at = utc_now()
+    yield _sse_event(
+        "started",
+        {
+            "type": "started",
+            "message_id": f"reply-{client_message_id}",
+            "agent_name": thread.agent_name,
+            "created_at": started_at.isoformat(),
+        },
+    )
+    try:
+        for progress in gateway.stream(
+            agent_name=thread.agent_name,
+            conversation_id=thread.conversation_id,
+            session_id=thread.session_id,
+            user_identity=thread.delegated_user_identity,
+            text=envelope,
+        ):
+            if progress.type == "activity" and progress.activity is not None:
+                activity = ChatActivityView(
+                    kind=progress.activity.kind,
+                    label=progress.activity.label,
+                    status=progress.activity.status,
+                    detail=progress.activity.detail,
+                )
+                yield _sse_event(
+                    "activity",
+                    {
+                        "type": "activity",
+                        "activity_id": progress.activity_id or f"activity-{uuid4().hex}",
+                        "activity": activity.model_dump(mode="json"),
+                    },
+                )
+                continue
+            if progress.type == "text_delta" and progress.delta:
+                yield _sse_event(
+                    "text_delta",
+                    {"type": "text_delta", "delta": progress.delta},
+                )
+                continue
+            if progress.type != "completed" or progress.reply is None:
+                continue
+
+            reply = progress.reply
+            content = _render_agent_reply(reply.content)
+            follow_up = _next_steps(thread, reply.content, evidence_count=0)
+            assistant_message = ChatMessage(
+                id=f"reply-{client_message_id}",
+                role="assistant",
+                content=f"{content}\n\n{follow_up}" if follow_up else content,
+                created_at=utc_now(),
+                agent_name=reply.agent_name,
+                activity=[
+                    ChatActivity(
+                        kind=item.kind,
+                        label=item.label,
+                        status=item.status,
+                        detail=item.detail,
+                    )
+                    for item in reply.activity
+                ],
+                duration_ms=reply.duration_ms,
+                source_count=reply.source_count,
+            )
+            user_message = ChatMessage(
+                id=client_message_id,
+                role="user",
+                content=payload.text,
+                created_at=started_at,
+                attachments=list(pending),
+            )
+            store.save_chat_thread(
+                thread.model_copy(
+                    update={"messages": [*thread.messages, user_message, assistant_message]}
+                )
+            )
+            yield _sse_event(
+                "completed",
+                {
+                    "type": "completed",
+                    "message": _message_view(assistant_message).model_dump(mode="json"),
+                },
+            )
+            return
+    except (
+        HostedAgentConfigurationError,
+        HostedAgentNotReadyError,
+        HostedAgentInvocationError,
+    ) as exc:
+        status_code = (
+            503
+            if isinstance(exc, HostedAgentConfigurationError | HostedAgentNotReadyError)
+            else 502
+        )
+        yield _sse_event(
+            "error",
+            {"type": "error", "detail": str(exc), "status": status_code},
+        )
+    except Exception:
+        logger.exception("Unexpected failure while streaming Hosted Agent %s.", thread.agent_name)
+        yield _sse_event(
+            "error",
+            {
+                "type": "error",
+                "detail": "The Hosted Agent stream ended unexpectedly.",
+                "status": 502,
+            },
+        )
+    finally:
+        _ACTIVE_STREAM_TURNS.discard(turn_key)
 
 
 async def _execute_chat_turn(
@@ -564,6 +805,17 @@ async def _execute_chat_turn(
         content=f"{content}\n\n{follow_up}" if follow_up else content,
         created_at=utc_now(),
         agent_name=reply.agent_name,
+        activity=[
+            ChatActivity(
+                kind=item.kind,
+                label=item.label,
+                status=item.status,
+                detail=item.detail,
+            )
+            for item in reply.activity
+        ],
+        duration_ms=reply.duration_ms,
+        source_count=reply.source_count,
     )
     store.save_chat_thread(
         thread.model_copy(update={"messages": [*thread.messages, user_message, assistant_message]})
@@ -666,14 +918,24 @@ def _render_agent_reply(raw: str) -> str:
 
     claims = payload.get("claims") or []
     if isinstance(claims, list) and claims:
-        lines.append("\n**Findings**\n")
+        findings: list[str] = []
+        unsupported: list[str] = []
         for claim in claims:
             if not isinstance(claim, dict):
-                lines.append(f"- {_bullet(claim)}")
+                findings.append(f"- {_bullet(claim)}")
                 continue
             support = str(claim.get("support") or "").replace("_", " ")
+            if support == "unsupported":
+                unsupported.append(f"- Unsupported: {claim.get('text', '')}")
+                continue
             marker = f" _({support})_" if support and support != "supported" else ""
-            lines.append(f"- {claim.get('text', '')}{marker}")
+            findings.append(f"- {claim.get('text', '')}{marker}")
+        if findings:
+            lines.append("\n**Findings**\n")
+            lines.extend(findings)
+        if unsupported:
+            lines.append("\n**Not established**\n")
+            lines.extend(unsupported)
 
     for key, label in _REPLY_SECTIONS:
         values = payload.get(key)

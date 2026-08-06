@@ -6,9 +6,11 @@ container:
     resources:
         cpu: "0.5"
         memory: 1Gi
-description: Explains deterministic table, metric, and notebook-output profiles.
+description: Profiles authorized laboratory datasets and runs explicitly approved analyses.
 environmentVariables:
-    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+    - name: DATASET_LEAD_MODEL
+      value: gpt-5.6-sol
+    - name: DATASET_WORKER_MODEL
       value: gpt-5.4-mini
     - name: RESEARCH_WORKSPACE_TENANT_ID
       value: ${AZURE_TENANT_ID}

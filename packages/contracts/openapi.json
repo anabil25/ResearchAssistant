@@ -163,7 +163,7 @@
         "type": "object"
       },
       "AgentEndpoint": {
-        "description": "One deployed agent a researcher can talk to.\n\nEvery agent reaches the same shared Foundry toolbox, so there is nothing to\ndeclare about tools, web access, or retrieval: an agent searches the project\nindex with ``file_search`` and public sources with the connector tools.",
+        "description": "One deployed agent a researcher can talk to.\n\nPublic discovery is an explicit deployment capability. Callers must still\nauthorize connector use independently for every turn.",
         "properties": {
           "description": {
             "title": "Description",
@@ -176,6 +176,11 @@
           "name": {
             "title": "Name",
             "type": "string"
+          },
+          "supports_public_discovery": {
+            "default": false,
+            "title": "Supports Public Discovery",
+            "type": "boolean"
           }
         },
         "required": [
@@ -1740,6 +1745,16 @@
             "minLength": 3,
             "title": "Message",
             "type": "string"
+          },
+          "public_discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicDiscoveryRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -3384,6 +3399,40 @@
         "title": "CapabilityVersionPin",
         "type": "object"
       },
+      "ChatActivityView": {
+        "properties": {
+          "detail": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Detail"
+          },
+          "kind": {
+            "title": "Kind",
+            "type": "string"
+          },
+          "label": {
+            "title": "Label",
+            "type": "string"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          }
+        },
+        "required": [
+          "kind",
+          "label",
+          "status"
+        ],
+        "title": "ChatActivityView",
+        "type": "object"
+      },
       "ChatAttachmentView": {
         "properties": {
           "content_type": {
@@ -3444,6 +3493,13 @@
       },
       "ChatMessageView": {
         "properties": {
+          "activity": {
+            "items": {
+              "$ref": "#/components/schemas/ChatActivityView"
+            },
+            "title": "Activity",
+            "type": "array"
+          },
           "agent_name": {
             "anyOf": [
               {
@@ -3471,6 +3527,17 @@
             "title": "Created At",
             "type": "string"
           },
+          "duration_ms": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Duration Ms"
+          },
           "id": {
             "title": "Id",
             "type": "string"
@@ -3478,6 +3545,11 @@
           "role": {
             "title": "Role",
             "type": "string"
+          },
+          "source_count": {
+            "default": 0,
+            "title": "Source Count",
+            "type": "integer"
           }
         },
         "required": [
@@ -4907,6 +4979,14 @@
             ],
             "title": "Model"
           },
+          "model_deployments": {
+            "default": [],
+            "items": {
+              "type": "string"
+            },
+            "title": "Model Deployments",
+            "type": "array"
+          },
           "name": {
             "maxLength": 200,
             "minLength": 1,
@@ -4949,6 +5029,8 @@
         "enum": [
           "hosted",
           "prompt",
+          "workflow",
+          "external",
           "unknown"
         ],
         "title": "FoundryAgentType",
@@ -6340,6 +6422,40 @@
         "title": "ProposalRiskEscalation",
         "type": "object"
       },
+      "PublicDiscoveryRequest": {
+        "additionalProperties": false,
+        "description": "Explicit per-turn consent for public connector discovery.",
+        "properties": {
+          "connector_ids": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Connector Ids"
+          },
+          "public_context": {
+            "anyOf": [
+              {
+                "maxLength": 40000,
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Public Context"
+          }
+        },
+        "title": "PublicDiscoveryRequest",
+        "type": "object"
+      },
       "PublishPromptAgentRequest": {
         "additionalProperties": false,
         "description": "Request a durable, idempotent Foundry prompt-agent publication.",
@@ -6745,6 +6861,16 @@
             "minLength": 1,
             "title": "Project Id",
             "type": "string"
+          },
+          "public_discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicDiscoveryRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           },
           "query": {
             "maxLength": 4000,
@@ -7624,6 +7750,16 @@
             "default": false,
             "title": "Online Research",
             "type": "boolean"
+          },
+          "public_discovery": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PublicDiscoveryRequest"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
         "required": [
@@ -8187,6 +8323,55 @@
           }
         },
         "summary": "Send Chat Message",
+        "tags": [
+          "agent-chat"
+        ]
+      }
+    },
+    "/api/agent-chat/threads/{thread_id}/messages/stream": {
+      "post": {
+        "description": "Stream observable Hosted Agent progress, then persist one canonical turn.",
+        "operationId": "stream_chat_message_api_agent_chat_threads__thread_id__messages_stream_post",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "thread_id",
+            "required": true,
+            "schema": {
+              "title": "Thread Id",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/ChatMessageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "text/event-stream": {}
+            },
+            "description": "Successful Response"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "summary": "Stream Chat Message",
         "tags": [
           "agent-chat"
         ]

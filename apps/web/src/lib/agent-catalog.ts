@@ -25,11 +25,8 @@ const STRUCTURAL_AGENT_INDEX: Record<
 > = {
   coordinator: { ownerKind: "platform", capability: "orchestration" },
   literature: { ownerKind: "platform", capability: "literature" },
-  literature_online: { ownerKind: "platform", capability: "literature" },
   grant: { ownerKind: "platform", capability: "grant" },
-  grant_online: { ownerKind: "platform", capability: "grant" },
   matching: { ownerKind: "platform", capability: "matching" },
-  matching_online: { ownerKind: "platform", capability: "matching" },
   dataset: { ownerKind: "platform", capability: "dataset" },
   institution: { ownerKind: "platform", capability: "institutional_qa" },
 };

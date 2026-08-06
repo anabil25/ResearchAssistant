@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from research_assistant_core.models import Capability, Citation, RunStatus
+from research_assistant_core.models import Capability, Citation, PublicDiscoveryRequest, RunStatus
 
 
 class EvidenceState(StrEnum):
@@ -21,6 +21,7 @@ class StudioRunRequest(BaseModel):
 
     objective: str = Field(min_length=3, max_length=4000)
     online_research: bool = False
+    public_discovery: PublicDiscoveryRequest | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
 
 

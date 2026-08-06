@@ -18,9 +18,8 @@ from research_assistant_core.models import Capability, CapabilitySpec
 class AgentEndpoint(BaseModel):
     """One deployed agent a researcher can talk to.
 
-    Every agent reaches the same shared Foundry toolbox, so there is nothing to
-    declare about tools, web access, or retrieval: an agent searches the project
-    index with ``file_search`` and public sources with the connector tools.
+    Public discovery is an explicit deployment capability. Callers must still
+    authorize connector use independently for every turn.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -28,6 +27,7 @@ class AgentEndpoint(BaseModel):
     name: str
     label: str
     description: str
+    supports_public_discovery: bool = False
 
 
 class AgentSurface(BaseModel):
@@ -76,13 +76,19 @@ class AgentSurface(BaseModel):
         )
 
 
-def _agent(stem: str, description: str) -> tuple[AgentEndpoint, ...]:
-    """One agent per capability, reaching the same shared toolbox as every other."""
+def _agent(
+    stem: str,
+    description: str,
+    *,
+    supports_public_discovery: bool = False,
+) -> tuple[AgentEndpoint, ...]:
+    """Declare the canonical deployment for one capability."""
     return (
         AgentEndpoint(
             name=f"{stem}-agent",
             label="Research agent",
             description=description,
+            supports_public_discovery=supports_public_discovery,
         ),
     )
 
@@ -90,7 +96,11 @@ def _agent(stem: str, description: str) -> tuple[AgentEndpoint, ...]:
 AGENT_SURFACES: tuple[AgentSurface, ...] = (
     AgentSurface(
         capability=Capability.LITERATURE,
-        agents=_agent("literature", "Synthesizes from the project library and public research sources."),
+        agents=_agent(
+            "literature",
+            "Synthesizes from the project library and public research sources.",
+            supports_public_discovery=True,
+        ),
         chat=True,
         title="Literature review synthesis",
         short_title="Synthesize literature",
@@ -116,7 +126,11 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
     ),
     AgentSurface(
         capability=Capability.GRANT,
-        agents=_agent("grant", "Maps funding requirements from the library and public opportunity sources."),
+        agents=_agent(
+            "grant",
+            "Maps funding requirements from the library and public opportunity sources.",
+            supports_public_discovery=True,
+        ),
         chat=True,
         title="Grant application studio",
         short_title="Draft a grant",
@@ -140,7 +154,11 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
     ),
     AgentSurface(
         capability=Capability.MATCHING,
-        agents=_agent("matching", "Matches experts and resources from the library and public registries."),
+        agents=_agent(
+            "matching",
+            "Matches experts and resources from the library and public registries.",
+            supports_public_discovery=True,
+        ),
         chat=True,
         title="PI and resource matching",
         short_title="Find collaborators",

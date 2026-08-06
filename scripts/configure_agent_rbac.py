@@ -18,9 +18,7 @@ AGENT_NAMES = (
     "matching-agent",
     "dataset-agent",
     "institution-agent",
-    "literature-online-agent",
-    "grant-online-agent",
-    "matching-online-agent",
+    "screening-agent",
 )
 FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
 AZ_CLI = "az.cmd" if os.name == "nt" else "az"

@@ -1,1 +1,0 @@
-"""Public grant Hosted Agent."""

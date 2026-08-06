@@ -59,8 +59,6 @@ def tools_for_profile(
             context={"agent": profile.id},
         )
     if requires_toolbox:
-        if profile.online:
-            return []
         toolbox = FoundryToolbox(
             get_credential(settings.managed_identity_client_id if settings is not None else None),
             url=toolbox_endpoint,
@@ -71,22 +69,16 @@ def tools_for_profile(
     return []
 
 
-async def request_tools_for_profile(
+def request_tool_names_for_profile(
     profile: AgentManifest,
-    settings: HarnessSettings,
     connector_ids: tuple[str, ...],
-) -> tuple[FoundryToolbox, tuple[Any, ...]]:
+) -> frozenset[str]:
     if not profile.online:
         raise ConfigurationError(
             "Request-scoped Toolbox tools are only supported for online profiles",
             context={"agent": profile.id},
         )
-    if settings.toolbox_endpoint is None:
-        raise ConfigurationError(
-            "Manifest requires a configured Foundry Toolbox endpoint",
-            context={"agent": profile.id},
-        )
-    configured_sources = set(profile.knowledge_bindings[0].sources)
+    configured_sources = set(profile.connector_sources)
     unauthorized = set(connector_ids) - configured_sources
     if unauthorized:
         error_context: dict[str, Any] = {
@@ -97,13 +89,7 @@ async def request_tools_for_profile(
             "Request names connectors outside the profile Toolbox surface",
             context=error_context,
         )
-    toolbox = FoundryToolbox(
-        get_credential(settings.managed_identity_client_id),
-        url=str(settings.toolbox_endpoint),
-        load_tools=False,
-        timeout=settings.default_timeout_seconds,
-    )
-    allowed_names = {
+    allowed_names = frozenset({
         "web_search",
         *{
             f"{connector_id}___{operation.mcp_tool_name}"
@@ -111,31 +97,18 @@ async def request_tools_for_profile(
             for operation in connector_definition(connector_id).operations
             if operation.operation_class != "delete"
         },
-    }
-    toolbox.allowed_tools = frozenset(allowed_names)
-    try:
-        await toolbox.connect()
-        await toolbox.load_tools()
-        functions = tuple(toolbox.functions)
-        functions_by_name = {
-            name: function
-            for function in functions
-            if isinstance((name := getattr(function, "name", function)), str)
+    })
+    missing_bindings = allowed_names - _bound_tool_names(profile)
+    if missing_bindings:
+        missing_context: dict[str, Any] = {
+            "agent": profile.id,
+            "tools": sorted(missing_bindings),
         }
-        missing = allowed_names - set(functions_by_name)
-        if missing:
-            missing_context: dict[str, Any] = {
-                "agent": profile.id,
-                "tools": sorted(missing),
-            }
-            raise ConfigurationError(
-                "Configured Foundry Toolbox is missing authorized tools",
-                context=missing_context,
-            )
-        return toolbox, tuple(functions_by_name[name] for name in sorted(allowed_names))
-    except BaseException:
-        await toolbox.close()
-        raise
+        raise ConfigurationError(
+            "Profile Toolbox bindings are missing authorized tools",
+            context=missing_context,
+        )
+    return allowed_names
 
 
 def _agent_names() -> dict[str, str]:
@@ -145,23 +118,6 @@ def _agent_names() -> dict[str, str]:
         "matching": os.getenv("RESEARCH_MATCHING_AGENT_NAME", "matching-agent"),
         "dataset": os.getenv("RESEARCH_DATASET_AGENT_NAME", "dataset-agent"),
         "institutional_qa": os.getenv("RESEARCH_INSTITUTION_AGENT_NAME", "institution-agent"),
-    }
-
-
-def _online_agent_names() -> dict[str, str]:
-    return {
-        "literature": os.getenv(
-            "RESEARCH_LITERATURE_ONLINE_AGENT_NAME",
-            "literature-online-agent",
-        ),
-        "grant": os.getenv(
-            "RESEARCH_GRANT_ONLINE_AGENT_NAME",
-            "grant-online-agent",
-        ),
-        "matching": os.getenv(
-            "RESEARCH_MATCHING_ONLINE_AGENT_NAME",
-            "matching-online-agent",
-        ),
     }
 
 
@@ -182,8 +138,7 @@ def build_delegate_tool() -> Any:
         ] = "internal",
     ) -> str:
         """Delegate a bounded read-only request to the matching Hosted Agent."""
-        agent_name = delegated_agent_name(capability, sensitivity)
-        if agent_name is None:
+        if capability not in _agent_names():
             return json.dumps(
                 {
                     "error": "unsupported_capability",
@@ -195,6 +150,15 @@ def build_delegate_tool() -> Any:
                 {
                     "error": "invalid_sensitivity",
                     "allowed": ["public", "internal", "confidential", "restricted"],
+                }
+            )
+        agent_name = delegated_agent_name(capability, sensitivity)
+        if agent_name is None:
+            return json.dumps(
+                {
+                    "error": "unsupported_route",
+                    "capability": capability,
+                    "sensitivity": sensitivity,
                 }
             )
         endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]

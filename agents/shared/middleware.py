@@ -12,6 +12,8 @@ from agent_framework import (
     AgentResponse,
     AgentResponseUpdate,
     Annotation,
+    ChatContext,
+    ChatMiddleware,
     Content,
     FunctionInvocationContext,
     FunctionMiddleware,
@@ -63,7 +65,7 @@ from .telemetry import (
     OpenTelemetryGovernanceAuditSink,
     telemetry_identity_digest,
 )
-from .tools import request_tools_for_profile
+from .tools import request_tool_names_for_profile
 
 _GOVERNANCE_CONTEXT_KEY = "governance_context"
 _TOOL_EVIDENCE_KEY = "authorized_tool_evidence"
@@ -138,20 +140,12 @@ class ContractMiddleware(AgentMiddleware):
         )
         context.function_invocation_kwargs[_TOOL_EVIDENCE_KEY] = tool_evidence
         context.function_invocation_kwargs[_AUTHORIZED_CONNECTOR_IDS_KEY] = connector_ids
-        request_toolbox = None
         try:
-            if self._manifest.online:
-                if self._settings is None:
-                    raise ConfigurationError(
-                        "Online Toolbox requests require runtime settings",
-                        context={"agent": self._manifest.id},
-                    )
-                request_toolbox, request_tools = await request_tools_for_profile(
-                    self._manifest,
-                    self._settings,
-                    connector_ids,
+            if self._manifest.online and self._settings is None:
+                raise ConfigurationError(
+                    "Online Toolbox requests require runtime settings",
+                    context={"agent": self._manifest.id},
                 )
-                context.tools = request_tools
             await call_next()
             if context.stream:
                 if not isinstance(context.result, ResponseStream):
@@ -164,9 +158,6 @@ class ContractMiddleware(AgentMiddleware):
                     request,
                     tool_evidence,
                 )
-                if request_toolbox is not None:
-                    context.stream_cleanup_hooks.append(request_toolbox.close)
-                    request_toolbox = None
             elif isinstance(context.result, AgentResponse):
                 context.result = self._normalize_response(
                     context.result,
@@ -184,9 +175,6 @@ class ContractMiddleware(AgentMiddleware):
                 error_code=error_from_exception(exc).code,
             )
             raise
-        finally:
-            if request_toolbox is not None:
-                await request_toolbox.close()
 
     def _validate(self, messages: list[Message]) -> ResearchRequest:
         if not messages or messages[-1].role != "user":
@@ -471,6 +459,60 @@ class ContractMiddleware(AgentMiddleware):
         await self._conversation_store.save(
             from_agent_session(request.tenant_id, context.session)
         )
+
+
+def _tool_name(tool_value: Any) -> str | None:
+    name = getattr(tool_value, "name", None)
+    if isinstance(name, str):
+        return name
+    if not isinstance(tool_value, dict):
+        return None
+    function = tool_value.get("function")
+    if isinstance(function, dict) and isinstance(function.get("name"), str):
+        return cast(str, function["name"])
+    return cast(str, tool_value["name"]) if isinstance(tool_value.get("name"), str) else None
+
+
+class ConnectorToolExposureMiddleware(ChatMiddleware):
+    """Expose only the current request's immutable Toolbox allowlist."""
+
+    def __init__(self, manifest: AgentManifest) -> None:
+        self._manifest = manifest
+        self._profile_tool_names = frozenset(
+            binding.operation_ref.id.removeprefix("foundry.toolbox.")
+            for binding in manifest.capability_bindings
+            if binding.operation_ref.id.startswith("foundry.toolbox.")
+        )
+
+    async def process(
+        self,
+        context: ChatContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        authorized = context.function_invocation_kwargs.get(_AUTHORIZED_CONNECTOR_IDS_KEY)
+        if not isinstance(authorized, tuple) or not all(isinstance(item, str) for item in authorized):
+            raise AuthorizationError("Connector tool exposure is missing validated authorization")
+        allowed_names = request_tool_names_for_profile(self._manifest, authorized)
+        options = dict(context.options or {})
+        tools = list(options.get("tools") or ())
+        loaded_names = {name for tool_value in tools if (name := _tool_name(tool_value)) is not None}
+        missing = allowed_names - loaded_names
+        if missing:
+            error_context: dict[str, Any] = {
+                "agent": self._manifest.id,
+                "tools": sorted(missing),
+            }
+            raise ConfigurationError(
+                "Configured Foundry Toolbox is missing authorized tools",
+                context=error_context,
+            )
+        options["tools"] = [
+            tool_value
+            for tool_value in tools
+            if (name := _tool_name(tool_value)) not in self._profile_tool_names or name in allowed_names
+        ]
+        context.options = options
+        await call_next()
 
 
 class ConnectorToolAuthorizationMiddleware(FunctionMiddleware):
@@ -864,13 +906,13 @@ def middleware_for_manifest(
     trusted_tenant_id: str | None = None,
     trusted_project_id: str | None = None,
     platform_managed_tools: bool = False,
-) -> list[AgentMiddleware | FunctionMiddleware]:
+) -> list[AgentMiddleware | FunctionMiddleware | ChatMiddleware]:
     effective_audit_sink = audit_sink or (
         OpenTelemetryGovernanceAuditSink() if release_id is not None else None
     )
     # The loop sits outermost so it wraps contract normalization and halts the
     # turn when an iteration returns a pending tool approval.
-    middleware: list[AgentMiddleware | FunctionMiddleware] = [
+    middleware: list[AgentMiddleware | FunctionMiddleware | ChatMiddleware] = [
         *loop_middleware_for_manifest(manifest),
         ContractMiddleware(
             manifest,
@@ -883,6 +925,7 @@ def middleware_for_manifest(
         ),
     ]
     if manifest.online:
+        middleware.append(ConnectorToolExposureMiddleware(manifest))
         middleware.append(ConnectorToolAuthorizationMiddleware(manifest))
     if (
         not platform_managed_tools

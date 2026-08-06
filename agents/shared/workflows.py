@@ -290,7 +290,10 @@ class FoundrySpecialistInvoker:
             ),
         )
         manifest = _specialist_manifest(request)
-        contracts = bind_contracts(manifest)
+        contracts = bind_contracts(
+            manifest,
+            public=request.request.sensitivity == Sensitivity.PUBLIC,
+        )
         agent_request = contracts.input_model.model_validate(_specialist_payload(request, manifest.id))
         try:
             with self._project_factory(
@@ -323,12 +326,6 @@ def _specialist_manifest(request: SpecialistRequest) -> AgentManifest:
         SpecialistCapability.DATASET: "dataset",
         SpecialistCapability.INSTITUTION: "institution",
     }[request.capability]
-    if request.request.sensitivity == Sensitivity.PUBLIC and request.capability in {
-        SpecialistCapability.LITERATURE,
-        SpecialistCapability.GRANT,
-        SpecialistCapability.MATCHING,
-    }:
-        profile_id = f"{profile_id}_online"
     return get_manifest(profile_id)
 
 

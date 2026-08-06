@@ -23,9 +23,10 @@ flowchart LR
     API --> Matching[Hosted matching-agent]
     API --> Dataset[Hosted dataset-agent]
     API --> Institution[Hosted institution-agent]
+    API --> Screening[Hosted screening-agent]
 
     API --> Search[(Azure AI Search)]
-    Literature & Grant & Dataset --> Models[Foundry model deployments]
+    Literature & Grant & Dataset & Screening --> Models[Foundry model deployments]
 
     API --> DocIntel[Document Intelligence v4]
     API --> Search
@@ -38,7 +39,7 @@ flowchart LR
 
 ## Hosted Agent contract
 
-- `azure.yaml` contains one `azure.ai.project` service and nine
+- `azure.yaml` contains one `azure.ai.project` service and seven
   `azure.ai.agent` services.
 - Every agent uses `codeConfiguration` with Python 3.13 remote build.
 - Every agent exposes Responses protocol `2.0.0`.
@@ -137,8 +138,9 @@ flowchart LR
 
 ## Online source layer
 
-- Three dedicated public-online profiles receive Foundry Web Search only for
-  an explicitly acknowledged public query.
+- The canonical literature, grant, and matching profiles receive shared
+  Foundry Toolbox connector and Web Search tools only for an explicitly
+  acknowledged public query; no separate online deployments exist.
 - A server-side typed connector registry provides PubMed, Europe PMC, Crossref, OpenAlex,
   arXiv, ClinicalTrials.gov, Grants.gov, NIH RePORTER, DataCite, ORCID, ROR,
   and optional Semantic Scholar access.
@@ -171,14 +173,15 @@ flowchart LR
   `connector___operation` Toolbox tools for that request, rejects any
   off-list connector call, and requires returned source metadata to match the
   invoked connector before it becomes evidence.
-- Each profile has an explicit source allowlist. The institution agent has no
-  tools and receives only server-authorized, version-resolved passages.
+- Each canonical profile has an explicit source allowlist. The institution
+  agent has no tools and receives only server-authorized, version-resolved
+  passages.
 - Connectors cap queries/results, use official HTTPS endpoints, return metadata
   plus terms URLs, and do not bypass paywalls or bulk-download full text.
-- The UI sends a separate public query and acknowledgement with every online
+- The UI sends a separate public query and acknowledgement with every public
   workflow. The API rejects incomplete/ineligible requests, applies saved
-  connector assignments, and invokes a separate online deployment. Offline
-  specialists contain no tools, independent of request option support.
+  connector assignments, and invokes the canonical specialist deployment.
+  Private runs expose no public tools, independent of request option support.
 - Hosted Agents do not call multi-tenant Search. Tenant filtering, ACLs, source
   kinds, versions, and citations are resolved by the API before invocation.
 
@@ -254,8 +257,8 @@ not an implicit behavior change.
 ## Azure resource map
 
 - Microsoft Foundry account/project and three model deployments
-- nine Foundry Hosted Agents: coordinator, five tool-free specialists, and
-  three public-online researchers
+- seven Foundry Hosted Agents: coordinator and six specialists; literature,
+  grant, and matching can consume governed public tools per request
 - API Management Standard v2 with one MCP server per reviewed public
   connector, plus a temporary shared fallback MCP server during the staged
   migration

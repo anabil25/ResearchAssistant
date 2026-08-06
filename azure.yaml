@@ -16,7 +16,7 @@ services:
                 version: "2026-07-09"
               name: gpt-5.6-sol
               sku:
-                capacity: 30
+                capacity: 200
                 name: DataZoneStandard
             - model:
                 format: OpenAI
@@ -24,7 +24,7 @@ services:
                 version: "2026-03-17"
               name: gpt-5.4-mini
               sku:
-                capacity: 30
+                capacity: 200
                 name: DataZoneStandard
             - model:
                 format: OpenAI
@@ -57,13 +57,6 @@ services:
         uses:
             - ai-project
         $ref: ./agents/grant/agent.yaml
-    grant-online-agent:
-        project: ./agents
-        host: azure.ai.agent
-        language: python
-        uses:
-            - ai-project
-        $ref: ./agents/grant_online/agent.yaml
     institution-agent:
         project: ./agents
         host: azure.ai.agent
@@ -78,13 +71,6 @@ services:
         uses:
             - ai-project
         $ref: ./agents/literature/agent.yaml
-    literature-online-agent:
-        project: ./agents
-        host: azure.ai.agent
-        language: python
-        uses:
-            - ai-project
-        $ref: ./agents/literature_online/agent.yaml
     matching-agent:
         project: ./agents
         host: azure.ai.agent
@@ -92,13 +78,6 @@ services:
         uses:
             - ai-project
         $ref: ./agents/matching/agent.yaml
-    matching-online-agent:
-        project: ./agents
-        host: azure.ai.agent
-        language: python
-        uses:
-            - ai-project
-        $ref: ./agents/matching_online/agent.yaml
     research-coordinator:
         project: ./agents
         host: azure.ai.agent

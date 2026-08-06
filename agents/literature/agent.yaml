@@ -8,12 +8,16 @@ container:
         memory: 1Gi
 description: Produces skeptical, source-grounded literature comparisons and synthesis.
 environmentVariables:
-    - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
+    - name: LITERATURE_LEAD_MODEL
       value: gpt-5.6-sol
+    - name: LITERATURE_WORKER_MODEL
+      value: gpt-5.4-mini
     - name: RESEARCH_WORKSPACE_TENANT_ID
       value: ${AZURE_TENANT_ID}
     - name: RESEARCH_WORKSPACE_PROJECT_ID
       value: ${AZURE_AI_PROJECT_NAME}
+    - name: TOOLBOX_ENDPOINT
+      value: ${TOOLBOX_SHARED_MCP_ENDPOINT}
     - name: AZURE_TRACING_GEN_AI_CONTENT_RECORDING_ENABLED
       value: "false"
 kind: hosted

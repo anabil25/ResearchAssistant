@@ -90,7 +90,7 @@ async function proxy(
       },
       body,
       duplex: "half",
-      signal: AbortSignal.timeout(240_000),
+      signal: AbortSignal.timeout(900_000),
       cache: "no-store",
     } as RequestInit & { duplex: "half" });
     return new NextResponse(upstream.body, {
@@ -98,6 +98,9 @@ async function proxy(
       headers: {
         "Content-Type":
           upstream.headers.get("Content-Type") ?? "application/json",
+        "Cache-Control":
+          upstream.headers.get("Cache-Control") ?? "no-cache, no-transform",
+        "X-Accel-Buffering": upstream.headers.get("X-Accel-Buffering") ?? "no",
         "X-Request-ID": upstream.headers.get("X-Request-ID") ?? "",
       },
     });

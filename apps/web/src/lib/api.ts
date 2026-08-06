@@ -17,6 +17,7 @@ import type {
   ChatAgentChoice,
   ChatAttachment,
   ChatMessage,
+  ChatStreamEvent,
   ChatThread,
   ConnectionView,
   ConnectorSetting,
@@ -379,6 +380,75 @@ export async function sendChatMessage(
     },
     projectId,
   );
+}
+
+function streamFrameData(frame: string): string {
+  return frame
+    .split(/\r?\n/)
+    .filter((line) => line.startsWith("data:"))
+    .map((line) => line.slice(5).trimStart())
+    .join("\n");
+}
+
+export async function streamChatMessage(
+  threadId: string,
+  text: string,
+  clientMessageId: string,
+  onEvent: (event: ChatStreamEvent) => void,
+  projectId?: string,
+): Promise<ChatMessage> {
+  const response = await fetch(
+    `${AGENT_CHAT_BASE}/threads/${encodeURIComponent(threadId)}/messages/stream`,
+    {
+      method: "POST",
+      headers: requestHeaders(undefined, projectId),
+      body: JSON.stringify({ text, client_message_id: clientMessageId }),
+    },
+  );
+  if (!response.ok) {
+    const payload: unknown = await response.json().catch(() => null);
+    throw new ApiError(apiErrorMessage(payload, response.status), response.status);
+  }
+  if (!response.body) {
+    throw new ApiError("The agent stream returned no response body.", 502);
+  }
+
+  const reader = response.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let completed: ChatMessage | null = null;
+
+  const processFrame = (frame: string) => {
+    const data = streamFrameData(frame);
+    if (!data) return;
+    const event = JSON.parse(data) as ChatStreamEvent;
+    onEvent(event);
+    if (event.type === "error") {
+      throw new ApiError(event.detail, event.status);
+    }
+    if (event.type === "completed") completed = event.message;
+  };
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      buffer += decoder.decode(value, { stream: !done });
+      let boundary = /\r?\n\r?\n/.exec(buffer);
+      while (boundary?.index != null) {
+        processFrame(buffer.slice(0, boundary.index));
+        buffer = buffer.slice(boundary.index + boundary[0].length);
+        boundary = /\r?\n\r?\n/.exec(buffer);
+      }
+      if (done) break;
+    }
+    if (buffer.trim()) processFrame(buffer);
+  } finally {
+    reader.releaseLock();
+  }
+  if (!completed) {
+    throw new ApiError("The agent stream ended before completing the response.", 502);
+  }
+  return completed;
 }
 
 export async function uploadChatFile(

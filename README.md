@@ -8,7 +8,7 @@ The solution combines the strongest product ideas from the academic research
 tooling ecosystem without mixing GPL code, and applies the repeatable `azd`,
 managed identity, observability, and validation patterns from
 [ITHelpdesk](https://github.com/abKrazy/ITHelpdesk). Researchers chat with a
-Next.js workbench that calls a FastAPI backend, which coordinates nine
+Next.js workbench that calls a FastAPI backend, which coordinates seven
 Foundry Hosted Agents across six research studios.
 
 > 📐 [ARCHITECTURE.md](ARCHITECTURE.md) is the source of truth for
@@ -100,12 +100,13 @@ agents/models, retrieval, governance, and evaluation.
 ### Online research and industry connectors
 
 Online research is **off by default** and can be enabled only on a public
-literature, grant-opportunity, or matching run. Offline specialists are
-separate tool-free deployments; three public-online deployments receive
-Foundry Web Search. Institutional and dataset workflows cannot enable public
-web tools. Web results remain untrusted until stored and verified, and can
-flow outside the Azure compliance/geographic boundary under Grounding with
-Bing terms.
+literature, grant-opportunity, or matching run. Those canonical specialists
+receive only the assigned shared Toolbox connector and Web Search tools for an
+explicitly acknowledged public query; there are no separate online
+deployments. Institutional, dataset, and screening workflows cannot enable
+public web tools. Web results remain untrusted until stored and verified, and
+can flow outside the Azure compliance/geographic boundary under Grounding
+with Bing terms.
 
 The API applies saved connector enablement and specialist assignments before
 retrieving bounded public metadata:
@@ -124,7 +125,7 @@ stores or returns it. Run the local live transport check with
 
 ## Architecture
 
-Nine separately deployable Microsoft Agent Framework Hosted Agents form the
+Seven separately deployable Microsoft Agent Framework Hosted Agents form the
 reasoning layer behind the six studios:
 
 | Agent | Responsibility | Model tier |
@@ -135,9 +136,7 @@ reasoning layer behind the six studios:
 | `matching-agent` | PI, facility, equipment, method, and template matching | `gpt-5.4-mini` |
 | `dataset-agent` | Explanation of deterministic data/notebook profiles | `gpt-5.4-mini` |
 | `institution-agent` | Authorized institutional guidance | `gpt-5.4-mini` |
-| `literature-online-agent` | Public scholarly metadata and web research | `gpt-5.4-mini` |
-| `grant-online-agent` | Public opportunity metadata and web verification | `gpt-5.4-mini` |
-| `matching-online-agent` | Public researcher/organization metadata leads | `gpt-5.4-mini` |
+| `screening-agent` | Applies systematic-review inclusion criteria to authorized library evidence | `gpt-5.6-sol` + `gpt-5.4-mini` |
 
 All agents use direct-code deployment, the Foundry Responses protocol `2.0.0`,
 dedicated endpoints, and dedicated Entra agent identities. The implementation
@@ -218,8 +217,8 @@ roles it assigns:
 
 | Model | Deployment type | Capacity | Config param |
 |-------|----------------|----------|-------------|
-| `gpt-5.4-mini` (coordinator, matching, dataset, institution, online agents) | GlobalStandard | 30 (30 K TPM) | `chatMiniModelDeploymentName` |
-| `gpt-5.6-sol` (literature, grant agents) | GlobalStandard | 30 (30 K TPM) | `chatSolModelDeploymentName` |
+| `gpt-5.4-mini` (coordinator, matching, dataset, institution, screening screener) | GlobalStandard | 30 (30 K TPM) | `chatMiniModelDeploymentName` |
+| `gpt-5.6-sol` (literature, grant, screening lead) | GlobalStandard | 30 (30 K TPM) | `chatSolModelDeploymentName` |
 | `text-embedding-3-large` (Search embeddings) | Standard | 30 (30 K TPM) | `embeddingModelDeploymentName` |
 
 Model version is not pinned; Foundry uses the current default
@@ -361,7 +360,7 @@ azd up
   2. Reconciles mutable APIM connector APIs, policies, MCP surfaces, and
      missing optional secret slots without overwriting user-managed keys.
   3. Reconciles Foundry connections, Toolboxes, memory, and deployment data.
-- `azd deploy --all` deploys all nine direct-code Hosted Agents and remotely
+- `azd deploy --all` deploys all seven direct-code Hosted Agents and remotely
   builds the FastAPI and Next.js Container App images.
 - `postdeploy` publishes Hosted Agent IDs and grants each runtime identity its
   required Foundry role. Provisioning fails closed before deployment if any
@@ -595,11 +594,12 @@ infra/                   # Bicep IaC (subscription-scoped)
 
 agents/                  # Hosted Agent source (Python 3.13 remote build)
   coordinator/           #   research-coordinator
-  literature/            #   literature-agent (+ literature-online-agent)
-  grant/                 #   grant-agent (+ grant-online-agent)
-  matching/              #   matching-agent (+ matching-online-agent)
+  literature/            #   literature-agent
+  grant/                 #   grant-agent
+  matching/              #   matching-agent
   dataset/               #   dataset-agent
   institution/           #   institution-agent
+  screening/             #   screening-agent
   shared/                #   shared config, credential helpers, evidence contracts
   evals/                 #   evaluation datasets and eval YAML manifests
 
@@ -622,7 +622,7 @@ tests/                   #   live pytest release checks
 | Directory | Azure resources owned | Responsibility |
 |-----------|----------------------|----------------|
 | `infra/` | All Azure resources (Bicep) | Infrastructure |
-| `agents/` | Nine Foundry Hosted Agents | Agent logic + evidence contracts |
+| `agents/` | Seven Foundry Hosted Agents | Agent logic + evidence contracts |
 | `services/api/` | FastAPI Container App | Research API, ingestion, approval gate |
 | `apps/web/` | Next.js Container App | Workbench UI |
 | `packages/` | — | Shared Python contracts and connectors |

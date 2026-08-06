@@ -125,6 +125,7 @@ class LiteratureRequest(ResearchRequest):
 class LiteratureResponse(ResearchResponse):
     consensus: tuple[str, ...] = ()
     disagreements: tuple[str, ...] = ()
+    search_urls: tuple[str, ...] = ()
 
 
 def _reject_public_evidence(
@@ -151,7 +152,7 @@ class PublicLiteratureRequest(ResearchRequest):
 
 
 class PublicLiteratureResponse(LiteratureResponse):
-    search_urls: tuple[str, ...] = ()
+    pass
 
 
 class GrantRequest(ResearchRequest):
@@ -166,6 +167,7 @@ class GrantRequest(ResearchRequest):
 class GrantResponse(ResearchResponse):
     requirements: tuple[str, ...] = ()
     ready_for_review: bool = False
+    opportunity_urls: tuple[str, ...] = ()
 
 
 class PublicGrantRequest(ResearchRequest):
@@ -184,7 +186,7 @@ class PublicGrantRequest(ResearchRequest):
 
 
 class PublicGrantResponse(GrantResponse):
-    opportunity_urls: tuple[str, ...] = ()
+    pass
 
 
 class MatchingRequest(ResearchRequest):
@@ -198,6 +200,7 @@ class MatchingRequest(ResearchRequest):
 
 class MatchingResponse(ResearchResponse):
     record_ids: tuple[str, ...] = ()
+    lead_record_ids: tuple[str, ...] = ()
 
 
 class PublicMatchingRequest(ResearchRequest):
@@ -216,7 +219,7 @@ class PublicMatchingRequest(ResearchRequest):
 
 
 class PublicMatchingResponse(MatchingResponse):
-    lead_record_ids: tuple[str, ...] = ()
+    pass
 
 
 class DatasetRequest(ResearchRequest):
@@ -391,17 +394,8 @@ _SPECIALIST_RESPONSE_CONTRACTS: dict[
     type[ResearchResponse],
 ] = {
     (SpecialistCapability.LITERATURE, "literature-agent"): LiteratureResponse,
-    (
-        SpecialistCapability.LITERATURE,
-        "literature-online-agent",
-    ): PublicLiteratureResponse,
     (SpecialistCapability.GRANT, "grant-agent"): GrantResponse,
-    (SpecialistCapability.GRANT, "grant-online-agent"): PublicGrantResponse,
     (SpecialistCapability.MATCHING, "matching-agent"): MatchingResponse,
-    (
-        SpecialistCapability.MATCHING,
-        "matching-online-agent",
-    ): PublicMatchingResponse,
     (SpecialistCapability.DATASET, "dataset-agent"): DatasetResponse,
     (SpecialistCapability.INSTITUTION, "institution-agent"): InstitutionResponse,
 }
@@ -443,7 +437,7 @@ class SpecialistResult(BaseModel):
         response_contract = _SPECIALIST_RESPONSE_CONTRACTS.get((self.capability, self.agent_name))
         if response_contract is None:
             raise ValueError("specialist result does not match a pinned capability and agent identity")
-        if self.response is not None and type(self.response) is not response_contract:
+        if self.response is not None and not isinstance(self.response, response_contract):
             raise ValueError("specialist response does not match its pinned output contract")
         if (self.response is None) == (self.error_code is None):
             raise ValueError("specialist result requires exactly one of response or error_code")
@@ -597,15 +591,23 @@ class AgentContractBinding:
     output_model: type[ResearchResponse]
 
 
-def bind_contracts(manifest: AgentManifest) -> AgentContractBinding:
+def bind_contracts(
+    manifest: AgentManifest,
+    *,
+    public: bool = False,
+) -> AgentContractBinding:
+    input_schema = manifest.public_input_schema if public else manifest.input_schema
+    output_schema = manifest.public_output_schema if public else manifest.output_schema
+    if input_schema is None or output_schema is None:
+        raise ContractError("Agent manifest does not declare a public discovery contract")
     try:
-        input_model = INPUT_CONTRACTS[manifest.input_schema.schema_id]
-        output_model = OUTPUT_CONTRACTS[manifest.output_schema.schema_id]
+        input_model = INPUT_CONTRACTS[input_schema.schema_id]
+        output_model = OUTPUT_CONTRACTS[output_schema.schema_id]
     except KeyError as exc:
         raise ContractError("Agent manifest references an unknown contract schema") from exc
-    expected_input = _schema_reference(manifest.input_schema.schema_id, input_model)
-    expected_output = _schema_reference(manifest.output_schema.schema_id, output_model)
-    if manifest.input_schema != expected_input or manifest.output_schema != expected_output:
+    expected_input = _schema_reference(input_schema.schema_id, input_model)
+    expected_output = _schema_reference(output_schema.schema_id, output_model)
+    if input_schema != expected_input or output_schema != expected_output:
         raise ContractError("Agent manifest contract schema digest does not match runtime binding")
     return AgentContractBinding(input_model=input_model, output_model=output_model)
 
@@ -876,8 +878,11 @@ class AgentManifest(BaseModel):
     instructions: str = Field(min_length=1)
     input_schema: SchemaReference
     output_schema: SchemaReference
+    public_input_schema: SchemaReference | None = None
+    public_output_schema: SchemaReference | None = None
     capability_bindings: tuple[CapabilityBinding, ...] = ()
     model_policy: ModelPolicy
+    discovery_model_policy: ModelPolicy | None = None
     runtime_requirements: RuntimeRequirements
     knowledge_bindings: tuple[KnowledgeBinding, ...]
     evidence_policy: EvidencePolicy
@@ -913,6 +918,19 @@ class AgentManifest(BaseModel):
             )
         if self.online and "public" not in self.instructions.lower():
             raise ValueError("online manifests must state their public-data boundary")
+        if (self.public_input_schema is None) != (self.public_output_schema is None):
+            raise ValueError("public input and output schemas must be declared together")
+        if self.supports_public_discovery != (self.discovery_model_policy is not None):
+            raise ValueError(
+                "public discovery contracts require a dedicated discovery model policy"
+            )
+        if self.discovery_model_policy is not None and (
+            self.discovery_model_policy.performance_class != "fast"
+            or not self.discovery_model_policy.tool_calling_required
+        ):
+            raise ValueError(
+                "public discovery requires a fast tool-calling model policy"
+            )
         if self.specialist_policy is not None and self.id != "coordinator":
             raise ValueError("specialist policy is only valid for the coordinator")
         if (
@@ -949,6 +967,10 @@ class AgentManifest(BaseModel):
     @property
     def online(self) -> bool:
         return any(binding.access == "public" for binding in self.knowledge_bindings)
+
+    @property
+    def supports_public_discovery(self) -> bool:
+        return self.public_input_schema is not None
 
     @property
     def connector_sources(self) -> tuple[str, ...]:

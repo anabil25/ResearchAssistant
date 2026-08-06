@@ -159,12 +159,32 @@ class RunRecord(BaseModel):
     steps: list[str] = Field(default_factory=list)
 
 
+class PublicDiscoveryRequest(BaseModel):
+    """Explicit per-turn consent for public connector discovery."""
+
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    connector_ids: tuple[str, ...] | None = None
+    public_context: str | None = Field(default=None, max_length=40_000)
+
+    @model_validator(mode="after")
+    def connector_ids_are_unique_and_nonempty(self) -> PublicDiscoveryRequest:
+        if self.connector_ids is None:
+            return self
+        if len(self.connector_ids) != len(set(self.connector_ids)):
+            raise ValueError("public discovery connector identifiers must be unique")
+        if any(not connector_id for connector_id in self.connector_ids):
+            raise ValueError("public discovery connector identifiers must be non-empty")
+        return self
+
+
 class ResearchRequest(BaseModel):
     query: str = Field(min_length=3, max_length=4000)
     project_id: str = Field(min_length=1, max_length=100)
     tenant_id: str = Field(min_length=1, max_length=100)
     group_ids: list[str]
     context: dict[str, Any] = Field(default_factory=dict)
+    public_discovery: PublicDiscoveryRequest | None = None
 
 
 class HostedPublicAgentRequest(BaseModel):

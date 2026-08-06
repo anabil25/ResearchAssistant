@@ -66,6 +66,13 @@ export interface ChatAttachment {
   uploaded_at: string;
 }
 
+export interface ChatActivity {
+  kind: "approach" | "tool";
+  label: string;
+  status: string;
+  detail: string | null;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -73,6 +80,9 @@ export interface ChatMessage {
   created_at: string;
   agent_name: string | null;
   attachments: ChatAttachment[];
+  activity?: ChatActivity[];
+  duration_ms?: number | null;
+  source_count?: number;
 }
 
 export interface ChatThread {
@@ -85,7 +95,23 @@ export interface ChatThread {
   attachments: ChatAttachment[];
 }
 
-export type FoundryAgentType = "hosted" | "prompt" | "unknown";
+export type ChatStreamEvent =
+  | {
+      type: "started";
+      message_id: string;
+      agent_name: string;
+      created_at: string;
+    }
+  | {
+      type: "activity";
+      activity_id: string;
+      activity: ChatActivity;
+    }
+  | { type: "text_delta"; delta: string }
+  | { type: "completed"; message: ChatMessage }
+  | { type: "error"; detail: string; status: number };
+
+export type FoundryAgentType = "hosted" | "prompt" | "workflow" | "external" | "unknown";
 
 export interface FoundryAgentInventoryItem {
   name: string;
@@ -93,6 +119,7 @@ export interface FoundryAgentInventoryItem {
   description: string | null;
   version: string | null;
   status: string | null;
+  model_deployments: string[];
   model: string | null;
 }
 
@@ -771,16 +798,10 @@ export function defaultPublicBoundary(): PublicBoundaryView {
  * (and every other structured field) is always `null` here regardless of
  * content — independent review found the previous substring heuristic
  * (`includes("public")` => `public_online`) genuinely misclassified real
- * agents: the *internal* `literature` agent's real backend text is
- * "Opt-in public only" (opt-in, i.e. off by default — not an unconditional
- * public commitment) and the internal `matching` agent's is "Public metadata
- * leads" (a conditional/partial description), yet both contain the
- * substring "public" and were wrongly promoted to `public_online` — the
- * same claim of unconditional public access that only the dedicated
- * `literature_online`/`grant_online`/`matching_online` agents actually make.
- * The agent's `_online` id suffix is also never used as a signal here, for
- * the same reason: an id naming convention is not a structured boundary
- * either. The raw `web_access` text is still surfaced verbatim as
+ * agents: a canonical agent can support both authorized evidence and
+ * request-scoped public discovery, so free text containing "public" cannot
+ * identify the active mode or its data boundary. The raw `web_access` text
+ * is still surfaced verbatim as
  * `outbound_data_boundary` purely for human context — it never asserts a
  * boundary. Only a real Agent Studio endpoint (not yet implemented) may
  * ever set `mode` to a non-null value.

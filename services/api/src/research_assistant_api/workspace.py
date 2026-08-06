@@ -436,6 +436,13 @@ class ChatAttachment(BaseModel):
     uploaded_at: datetime
 
 
+class ChatActivity(BaseModel):
+    kind: Literal["approach", "tool"]
+    label: str = Field(min_length=1, max_length=120)
+    status: str = Field(min_length=1, max_length=40)
+    detail: str | None = Field(default=None, max_length=500)
+
+
 class ChatMessage(BaseModel):
     id: str
     role: Literal["user", "assistant"]
@@ -443,6 +450,9 @@ class ChatMessage(BaseModel):
     created_at: datetime
     agent_name: str | None = None
     attachments: list[ChatAttachment] = Field(default_factory=list)
+    activity: list[ChatActivity] = Field(default_factory=list)
+    duration_ms: int | None = Field(default=None, ge=0)
+    source_count: int = Field(default=0, ge=0)
 
 
 class ChatThread(BaseModel):

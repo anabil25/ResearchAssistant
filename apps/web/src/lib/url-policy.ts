@@ -70,8 +70,17 @@ export const APPROVED_EXTERNAL_URL_HOSTS: ReadonlySet<string> = new Set([
 
 export const APPROVED_RESEARCH_SOURCE_HOSTS: ReadonlySet<string> = new Set([
   ...APPROVED_EXTERNAL_URL_HOSTS,
+  "cdc.gov",
   "doi.org",
+  "ghdx.healthdata.org",
+  "healthdata.org",
+  "jamanetwork.com",
+  "nejm.org",
   "who.int",
+  "www.cdc.gov",
+  "www.healthdata.org",
+  "www.jamanetwork.com",
+  "www.nejm.org",
   "www.who.int",
 ]);
 

@@ -21,7 +21,7 @@ import {
   type WorkspaceData,
 } from "@/lib/api";
 import type { ConnectorSetting } from "@/lib/types";
-import { formatTime, statusLabel } from "@/components/workspace-views";
+import { formatTime } from "@/components/workspace-views";
 import { EmptyBlock, LoadingBlock } from "@/components/async-state";
 import {
   describeUrlPolicyRejection,
@@ -35,16 +35,6 @@ const CONNECTOR_SPECIALISTS = [
   "dataset",
   "institution",
 ] as const;
-
-const GATEWAY_VERSION_TARGETS: {
-  id: string;
-  label: string;
-  pattern: RegExp;
-}[] = [
-  { id: "apim", label: "Azure API Management (APIM)", pattern: /apim/i },
-  { id: "mcp", label: "MCP tool registry", pattern: /mcp/i },
-  { id: "toolbox", label: "Toolbox", pattern: /toolbox/i },
-];
 
 export function connectorStatusInfo(connector: ConnectorSetting): {
   label: string;
@@ -145,14 +135,6 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
         .toLowerCase()
         .includes(connectorQuery.toLowerCase()),
   );
-  const gatewayVersionCards = GATEWAY_VERSION_TARGETS.map((target) => ({
-    ...target,
-    connector: (data?.connectors ?? []).find(
-      (connector) =>
-        target.pattern.test(connector.id) ||
-        target.pattern.test(connector.category),
-    ),
-  }));
   const managedConnectorStatus = managedConnector
     ? connectorStatusInfo(managedConnector)
     : null;
@@ -241,14 +223,12 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
 
   if (!data) {
     return (
-      <div className="operational-page connections-page">
-        <header className="operational-header">
+      <div className="connections-page">
+        <header className="settings-section-heading">
           <div>
-            <span className="eyebrow">Workspace control plane</span>
-            <h1>Connections</h1>
+            <h2>Research connections</h2>
             <p>
-              Assign allowlisted public metadata sources to specific agents,
-              inspect terms, and run bounded health tests.
+              Loading deployment connections and project assignments.
             </p>
           </div>
         </header>
@@ -258,15 +238,15 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
   }
 
   return (
-    <div className="operational-page connections-page">
-      <header className="operational-header">
+    <div className="connections-page">
+      <header className="settings-section-heading">
         <div>
-          <span className="eyebrow">Workspace control plane</span>
-          <h1>Connections</h1>
+          <h2>Research connections</h2>
           <p>
             Assign allowlisted public metadata sources to specific agents,
-            inspect terms, and run bounded health tests. Connections apply
-            across every studio and agent in this workspace.
+            inspect terms, and run bounded health tests. Enablement and agent
+            assignments apply to this project. API keys are deployment-wide
+            gateway secrets and affect every project that uses the provider.
           </p>
         </div>
         <span className="subtle-chip">
@@ -484,9 +464,10 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
                       />
                     </label>
                     <p className="connector-credential-note">
-                      Stored in the API gateway as a secret and never shown
-                      again. Clearing it returns the connector to anonymous
-                      quota.
+                      Stored once as a deployment-wide API gateway secret and
+                      never shown again. Replacing or clearing it affects every
+                      project that uses this provider; clearing it returns the
+                      connector to anonymous quota.
                       {managedConnector.credential_help_url ? (
                         <>
                           {" "}
@@ -679,52 +660,6 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
           </div>
           <span className="subtle-chip">Per-run only</span>
         </article>
-
-        <div className="settings-section-heading">
-          <div>
-            <h2>Gateway & tool versions</h2>
-            <p>
-              Version promotion and rollback are unavailable until an
-              administrator registers a real gateway or tool registry.
-              Nothing here promotes a version by default.
-            </p>
-          </div>
-        </div>
-        <div className="readiness-card-grid">
-          {gatewayVersionCards.map((target) => (
-            <article className="panel readiness-status-card" key={target.id}>
-              <div>
-                <strong>{target.label}</strong>
-                <span className="subtle-chip">
-                  {target.connector
-                    ? statusLabel(target.connector.test_status)
-                    : "Not configured"}
-                </span>
-              </div>
-              <p>
-                {target.connector
-                  ? `${target.connector.name} is registered, but version promotion still requires administrator approval.`
-                  : "No gateway or tool registry connection is configured for this capability yet."}
-              </p>
-              <div className="connector-actions">
-                <button
-                  type="button"
-                  disabled
-                  title="Version promotion requires a verified gateway release and administrator approval; not available in this workspace."
-                >
-                  Promote to default
-                </button>
-                <button
-                  type="button"
-                  disabled
-                  title="Rollback requires an active promoted version."
-                >
-                  Roll back
-                </button>
-              </div>
-            </article>
-          ))}
-        </div>
       </section>
     </div>
   );

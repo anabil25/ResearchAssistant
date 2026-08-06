@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 
-from research_assistant_api.app import app
-from research_assistant_connector_adapter.provider_api import contract_app as provider_app
-from research_assistant_core.connector_catalog import connector_definitions
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
 
-from scripts.build_connector_apim_spec import (
+from research_assistant_api.app import app  # noqa: E402
+from research_assistant_connector_adapter.provider_api import contract_app as provider_app  # noqa: E402
+from research_assistant_core.connector_catalog import connector_definitions  # noqa: E402
+
+from scripts.build_connector_apim_spec import (  # noqa: E402
     connector_apim_openapi,
     connector_operation_policies,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
 OUTPUT = ROOT / "packages" / "contracts" / "openapi.json"
 CONNECTOR_OUTPUT = ROOT / "infra" / "provider-specs" / "authored" / "research_connectors.json"
 CONNECTOR_POLICY_OUTPUT = ROOT / "infra" / "connector-operation-policies.json"

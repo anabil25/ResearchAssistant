@@ -3,12 +3,13 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from research_assistant_core.models import Capability
+from research_assistant_core.models import Capability, PublicDiscoveryRequest
 
 
 class AssistantRequest(BaseModel):
     message: str = Field(min_length=3, max_length=8000)
     capability: Capability | None = None
+    public_discovery: PublicDiscoveryRequest | None = None
 
 
 class AssistantResponse(BaseModel):

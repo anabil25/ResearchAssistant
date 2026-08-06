@@ -89,6 +89,26 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/api/agent-chat/threads/{thread_id}/messages/stream": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Stream Chat Message
+         * @description Stream observable Hosted Agent progress, then persist one canonical turn.
+         */
+        post: operations["stream_chat_message_api_agent_chat_threads__thread_id__messages_stream_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/api/agent-studio/agents": {
         parameters: {
             query?: never;
@@ -1845,9 +1865,8 @@ export interface components {
          * AgentEndpoint
          * @description One deployed agent a researcher can talk to.
          *
-         *     Every agent reaches the same shared Foundry toolbox, so there is nothing to
-         *     declare about tools, web access, or retrieval: an agent searches the project
-         *     index with ``file_search`` and public sources with the connector tools.
+         *     Public discovery is an explicit deployment capability. Callers must still
+         *     authorize connector use independently for every turn.
          */
         AgentEndpoint: {
             /** Description */
@@ -1856,6 +1875,11 @@ export interface components {
             label: string;
             /** Name */
             name: string;
+            /**
+             * Supports Public Discovery
+             * @default false
+             */
+            supports_public_discovery: boolean;
         };
         /** AgentEvidenceView */
         AgentEvidenceView: {
@@ -2528,6 +2552,7 @@ export interface components {
             capability?: components["schemas"]["Capability"] | null;
             /** Message */
             message: string;
+            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
         };
         /** AssistantResponse */
         AssistantResponse: {
@@ -3273,6 +3298,17 @@ export interface components {
             operation_ref: components["schemas"]["CapabilityOperationRef"];
             policy_ref?: components["schemas"]["CapabilityPolicyRef"] | null;
         };
+        /** ChatActivityView */
+        ChatActivityView: {
+            /** Detail */
+            detail?: string | null;
+            /** Kind */
+            kind: string;
+            /** Label */
+            label: string;
+            /** Status */
+            status: string;
+        };
         /** ChatAttachmentView */
         ChatAttachmentView: {
             /** Content Type */
@@ -3296,6 +3332,8 @@ export interface components {
         };
         /** ChatMessageView */
         ChatMessageView: {
+            /** Activity */
+            activity?: components["schemas"]["ChatActivityView"][];
             /** Agent Name */
             agent_name?: string | null;
             /** Attachments */
@@ -3307,10 +3345,17 @@ export interface components {
              * Format: date-time
              */
             created_at: string;
+            /** Duration Ms */
+            duration_ms?: number | null;
             /** Id */
             id: string;
             /** Role */
             role: string;
+            /**
+             * Source Count
+             * @default 0
+             */
+            source_count: number;
         };
         /** ChatThreadCreate */
         ChatThreadCreate: {
@@ -3911,6 +3956,11 @@ export interface components {
             description?: string | null;
             /** Model */
             model?: string | null;
+            /**
+             * Model Deployments
+             * @default []
+             */
+            model_deployments: string[];
             /** Name */
             name: string;
             /** Status */
@@ -3922,7 +3972,7 @@ export interface components {
          * FoundryAgentType
          * @enum {string}
          */
-        FoundryAgentType: "hosted" | "prompt" | "unknown";
+        FoundryAgentType: "hosted" | "prompt" | "workflow" | "external" | "unknown";
         /**
          * FoundryProjectContext
          * @description The one configured Foundry project available to this Studio deployment.
@@ -4643,6 +4693,16 @@ export interface components {
             detail: string;
         };
         /**
+         * PublicDiscoveryRequest
+         * @description Explicit per-turn consent for public connector discovery.
+         */
+        PublicDiscoveryRequest: {
+            /** Connector Ids */
+            connector_ids?: string[] | null;
+            /** Public Context */
+            public_context?: string | null;
+        };
+        /**
          * PublishPromptAgentRequest
          * @description Request a durable, idempotent Foundry prompt-agent publication.
          */
@@ -4848,6 +4908,7 @@ export interface components {
             group_ids: string[];
             /** Project Id */
             project_id: string;
+            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
             /** Query */
             query: string;
             /** Tenant Id */
@@ -5241,6 +5302,7 @@ export interface components {
              * @default false
              */
             online_research: boolean;
+            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
         };
         /**
          * TemplateListResponse
@@ -5557,6 +5619,41 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ChatMessageView"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    stream_chat_message_api_agent_chat_threads__thread_id__messages_stream_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                thread_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChatMessageCreate"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "text/event-stream": unknown;
                 };
             };
             /** @description Validation Error */

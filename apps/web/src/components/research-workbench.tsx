@@ -2,38 +2,26 @@
 
 import {
   Archive,
-  Bell,
   Bot,
-  BookOpen,
-  FileText,
-  History,
   Home,
-  Landmark,
   Library,
   Menu,
   Pencil,
   Plus,
-  Search,
   Settings,
   ShieldCheck,
   Sparkles,
-  Users,
-  Workflow,
   X,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 
-import {
-  StudioForCapability,
-  type StudioRunOptions,
-} from "@/components/studio-components";
+import { StudioForCapability } from "@/components/studio-components";
 import { FoundryAgentCatalog, PromptAgentBuilder } from "@/components/foundry-agent-studio";
+import { ProjectSettingsView } from "@/components/project-settings";
 import {
   CAPABILITY_CARDS,
   LibraryView,
   Overview,
-  RunsView,
-  SettingsView,
   type WorkspaceViewId,
 } from "@/components/workspace-views";
 import {
@@ -41,25 +29,15 @@ import {
   createProject,
   getWorkspaceData,
   listProjects,
-  runStudio,
   updateProject,
   type WorkspaceData,
 } from "@/lib/api";
 import { useBlockingModalOpen } from "@/lib/blocking-modal";
-import type {
-  CapabilityId,
-  ProjectSummary,
-  StudioResult,
-} from "@/lib/types";
-
-function isCapability(view: WorkspaceViewId): view is CapabilityId {
-  return CAPABILITY_CARDS.some((capability) => capability.id === view);
-}
+import type { ProjectSummary } from "@/lib/types";
 
 function viewTitle(view: WorkspaceViewId): string {
   if (view === "overview") return "Research command center";
   if (view === "library") return "Evidence Library";
-  if (view === "runs") return "Runs & Approvals";
   if (view === "settings") return "Project Settings";
   if (view === "agents") return "Agents";
   if (view === "prompt-builder") return "Prompt builder";
@@ -73,7 +51,6 @@ function isWorkspaceView(candidate: string | null): candidate is WorkspaceViewId
   return (
     candidate === "overview" ||
     candidate === "library" ||
-    candidate === "runs" ||
     candidate === "settings" ||
     candidate === "agents" ||
     candidate === "prompt-builder" ||
@@ -97,19 +74,13 @@ export function ResearchWorkbench() {
   const [activeProjectId, setActiveProjectId] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [navOpen, setNavOpen] = useState(false);
-  const [searchOpen, setSearchOpen] = useState(false);
   const blockingModalOpen = useBlockingModalOpen();
-  const [searchQuery, setSearchQuery] = useState("");
-  const [studioResult, setStudioResult] = useState<StudioResult | null>(null);
-  const [studioRunning, setStudioRunning] = useState(false);
-  const [studioError, setStudioError] = useState<string | null>(null);
   const [projectPanelMode, setProjectPanelMode] = useState<"create" | "edit" | null>(null);
   const [projectName, setProjectName] = useState("");
   const [projectDescription, setProjectDescription] = useState("");
   const [projectError, setProjectError] = useState<string | null>(null);
   const [projectSubmitting, setProjectSubmitting] = useState(false);
   const [archiveConfirmationOpen, setArchiveConfirmationOpen] = useState(false);
-  const [focusRunId, setFocusRunId] = useState<string | null>(null);
   const mobileMenuTriggerRef = useRef<HTMLButtonElement | null>(null);
   const railCloseRef = useRef<HTMLButtonElement | null>(null);
   const wasNavOpenRef = useRef(false);
@@ -125,18 +96,6 @@ export function ResearchWorkbench() {
   // result if a newer refresh has since been issued, so only the
   // most-recently-requested response is ever applied, deterministically.
   const requestSequenceRef = useRef(0);
-  // executeStudio (below) issues its own runStudio() calls, independently of
-  // and interleaved with the workspace-data refresh above, so it needs its
-  // own monotonic sequence counter rather than sharing requestSequenceRef:
-  // a studio run's response racing against a workspace refresh is not the
-  // failure mode being guarded against here, but two studio runs racing
-  // against each other is -- e.g. re-running a slow validation, then
-  // immediately cloning into a new draft and running a fast one; without
-  // this guard the slow, now-stale first response could land after the
-  // fast one and silently overwrite the result the user is currently
-  // looking at with an answer for a configuration they've already
-  // abandoned.
-  const studioRequestSequenceRef = useRef(0);
 
   const loadWorkspace = useCallback(async (projectId: string | null) => {
     if (!projectId) {
@@ -222,9 +181,6 @@ export function ResearchWorkbench() {
     const restoreView = () => {
       setView(viewFromSearch(window.location.search));
       setNavOpen(false);
-      setSearchOpen(false);
-      setStudioResult(null);
-      setStudioError(null);
     };
     restoreView();
     window.addEventListener("popstate", restoreView);
@@ -328,12 +284,7 @@ export function ResearchWorkbench() {
       }
       if (event.key === "Escape") {
         setNavOpen(false);
-        setSearchOpen(false);
         setProjectPanelMode(null);
-      }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "k") {
-        event.preventDefault();
-        setSearchOpen(true);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -362,20 +313,9 @@ export function ResearchWorkbench() {
     }
     setView(next);
     setNavOpen(false);
-    setSearchOpen(false);
-    setStudioResult(null);
-    setStudioError(null);
-    if (next !== "runs") {
-      setFocusRunId(null);
-    }
-    if (next === "library" || next === "runs" || next === "settings") {
+    if (next === "library" || next === "settings") {
       void refresh();
     }
-  };
-
-  const navigateToRun = (runId: string) => {
-    navigate("runs");
-    setFocusRunId(runId);
   };
 
   const selectProject = async (projectId: string) => {
@@ -390,9 +330,6 @@ export function ResearchWorkbench() {
         })),
       );
       setActiveProjectId(projectId);
-      setStudioResult(null);
-      setStudioError(null);
-      setFocusRunId(null);
       updateProjectUrl(projectId);
       await loadWorkspace(projectId);
     } catch (error) {
@@ -459,9 +396,6 @@ export function ResearchWorkbench() {
       setProjects(availableProjects);
       setActiveProjectId(nextProject?.id ?? null);
       setData(null);
-      setStudioResult(null);
-      setStudioError(null);
-      setFocusRunId(null);
       updateProjectUrl(nextProject?.id ?? null);
       setArchiveConfirmationOpen(false);
       setProjectPanelMode(nextProject ? null : "create");
@@ -477,77 +411,7 @@ export function ResearchWorkbench() {
     }
   };
 
-  const executeStudio = async (
-    capability: CapabilityId,
-    objective: string,
-    options: StudioRunOptions = {},
-  ) => {
-    const requestId = (studioRequestSequenceRef.current += 1);
-    setStudioRunning(true);
-    setStudioError(null);
-    try {
-      const result = await runStudio(capability, objective, options, activeProjectId ?? undefined);
-      if (studioRequestSequenceRef.current !== requestId) return;
-      setStudioResult(result);
-      void refresh();
-    } catch (error) {
-      if (studioRequestSequenceRef.current !== requestId) return;
-      setStudioError(
-        error instanceof Error ? error.message : "The studio run failed.",
-      );
-    } finally {
-      if (studioRequestSequenceRef.current === requestId) {
-        setStudioRunning(false);
-      }
-    }
-  };
-
-  const workflow = isCapability(view)
-    ? data?.workflows.find((item) => item.capability === view)
-    : undefined;
-  const pendingApprovals =
-    data?.approvals.filter((approval) => approval.state === "pending").length ??
-    0;
   const activeProject = projects.find((project) => project.id === activeProjectId);
-  const searchItems = useMemo(() => {
-    const items: { id: WorkspaceViewId; title: string; subtitle: string }[] = [
-      {
-        id: "overview",
-        title: "Research command center",
-        subtitle: "Workspace overview",
-      },
-      {
-        id: "library",
-        title: "Evidence Library",
-        subtitle: "Sources, versions, licenses, and ACLs",
-      },
-      {
-        id: "runs",
-        title: "Runs & Approvals",
-        subtitle: "Durable execution and review gates",
-      },
-      {
-        id: "settings",
-        title: "Project Settings",
-        subtitle: "Agents, connectors, evidence, and governance",
-      },
-      {
-        id: "agents",
-        title: "Agents",
-        subtitle: "Foundry Hosted and Prompt agents",
-      },
-      ...CAPABILITY_CARDS.map((capability) => ({
-        id: capability.id,
-        title: capability.title,
-        subtitle: capability.artifact,
-      })),
-    ];
-    return items.filter((item) =>
-      `${item.title} ${item.subtitle}`
-        .toLowerCase()
-        .includes(searchQuery.toLowerCase()),
-    );
-  }, [searchQuery]);
 
   return (
     <div
@@ -656,23 +520,13 @@ export function ResearchWorkbench() {
           >
             <Library size={17} />
             <span>Library</span>
-            <em>{data?.summary.library_items ?? 9}</em>
-          </button>
-          <button
-            className="rail-link"
-            data-active={view === "runs"}
-            aria-current={view === "runs" ? "page" : undefined}
-            onClick={() => navigate("runs")}
-          >
-            <History size={17} />
-            <span>Runs & approvals</span>
-            {pendingApprovals ? <em>{pendingApprovals}</em> : null}
+            <em>{data?.summary.library_items ?? "—"}</em>
           </button>
         </nav>
 
         <span className="rail-section-label">Studios</span>
         <nav className="rail-nav studio-nav" aria-label="Research studios">
-          {CAPABILITY_CARDS.filter((capability) => capability.id !== "orchestration").map((capability) => {
+          {CAPABILITY_CARDS.map((capability) => {
             const Icon = capability.icon;
             return (
               <button
@@ -691,15 +545,6 @@ export function ResearchWorkbench() {
 
         <div className="rail-spacer" />
         <nav className="rail-nav utility-nav" aria-label="Project utilities">
-          <button
-            className="rail-link"
-            data-active={view === "orchestration"}
-            aria-current={view === "orchestration" ? "page" : undefined}
-            onClick={() => navigate("orchestration")}
-          >
-            <Workflow size={17} />
-            <span>Workflow Automation</span>
-          </button>
           <button
             className="rail-link"
             data-active={view === "agents" || view === "prompt-builder"}
@@ -741,23 +586,6 @@ export function ResearchWorkbench() {
           </div>
           <div className="topbar-actions">
             <button
-              className="search-button"
-              aria-label="Search workspace"
-              onClick={() => setSearchOpen(true)}
-            >
-              <Search size={16} />
-              <span>Search workspace</span>
-              <kbd>Ctrl K</kbd>
-            </button>
-            <button
-              className="icon-button"
-              aria-label={`${pendingApprovals} pending approvals`}
-              onClick={() => navigate("runs")}
-            >
-              <Bell size={18} />
-              {pendingApprovals ? <span>{pendingApprovals}</span> : null}
-            </button>
-            <button
               className="icon-button"
               aria-label="Open project settings"
               onClick={() => navigate("settings")}
@@ -786,16 +614,9 @@ export function ResearchWorkbench() {
             />
           ) : view === "library" ? (
             <LibraryView data={data} onRefresh={refresh} />
-          ) : view === "runs" ? (
-            <RunsView
-              key={focusRunId ?? "runs-default"}
-              data={data}
-              onRefresh={refresh}
-              focusRunId={focusRunId}
-            />
           ) : view === "settings" ? (
-            <SettingsView
-              key={data?.settings ? "settings-loaded" : "settings-loading"}
+            <ProjectSettingsView
+              key={data?.settings.project_id ?? "settings-loading"}
               data={data}
               onRefresh={refresh}
             />
@@ -810,15 +631,7 @@ export function ResearchWorkbench() {
           ) : (
             <StudioForCapability
               capability={view}
-              result={studioResult}
-              running={studioRunning}
-              error={studioError}
-              workflow={workflow}
-              onRun={executeStudio}
-              data={data}
               projectId={activeProjectId}
-              onRefresh={refresh}
-              onNavigateToRun={navigateToRun}
             />
           )}
         </main>
@@ -944,64 +757,6 @@ export function ResearchWorkbench() {
         </div>
       ) : null}
 
-      {searchOpen ? (
-        <div className="command-backdrop" role="presentation">
-          <div
-            className="command-palette"
-            role="dialog"
-            aria-modal="true"
-            aria-label="Search workspace"
-          >
-            <label>
-              <Search size={19} />
-              <span className="sr-only">Search workspace</span>
-              <input
-                autoFocus
-                placeholder="Search studios, Library, runs, or settings"
-                value={searchQuery}
-                onChange={(event) => setSearchQuery(event.target.value)}
-              />
-              <button
-                aria-label="Close search"
-                onClick={() => setSearchOpen(false)}
-              >
-                <X size={17} />
-              </button>
-            </label>
-            <div className="command-results">
-              {searchItems.map((item) => (
-                <button key={item.id} onClick={() => navigate(item.id)}>
-                  <span>
-                    {item.id === "library" ? (
-                      <Library size={17} />
-                    ) : item.id === "runs" ? (
-                      <History size={17} />
-                    ) : item.id === "settings" ? (
-                      <Settings size={17} />
-                    ) : item.id === "literature" ? (
-                      <BookOpen size={17} />
-                    ) : item.id === "grant" ? (
-                      <FileText size={17} />
-                    ) : item.id === "matching" ? (
-                      <Users size={17} />
-                    ) : item.id === "institutional_qa" ? (
-                      <Landmark size={17} />
-                    ) : item.id === "orchestration" ? (
-                      <Workflow size={17} />
-                    ) : (
-                      <Home size={17} />
-                    )}
-                  </span>
-                  <span>
-                    <strong>{item.title}</strong>
-                    <small>{item.subtitle}</small>
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-        </div>
-      ) : null}
     </div>
   );
 }

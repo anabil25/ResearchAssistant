@@ -116,6 +116,8 @@ class RuntimeTarget(StrEnum):
 class FoundryAgentType(StrEnum):
     HOSTED = "hosted"
     PROMPT = "prompt"
+    WORKFLOW = "workflow"
+    EXTERNAL = "external"
     UNKNOWN = "unknown"
 
 
@@ -129,6 +131,7 @@ class FoundryAgentInventoryItem(BaseModel):
     description: str | None = Field(default=None, max_length=4000)
     version: str | None = Field(default=None, max_length=200)
     status: str | None = Field(default=None, max_length=200)
+    model_deployments: tuple[str, ...] = ()
     model: str | None = Field(default=None, max_length=200)
 
 

@@ -5,7 +5,7 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Any
 
-from research_assistant_core.models import Capability
+from research_assistant_core.models import Capability, PublicDiscoveryRequest
 
 from research_assistant_api.connector_gateway import (
     ConnectorGateway,
@@ -136,6 +136,14 @@ class ConnectorAuthorizationError(Exception):
         status). Callers use this to choose HTTP 403 vs 422.
         """
         return any(violation.reason in {"disabled", "not_assigned"} for violation in self.violations)
+
+
+@dataclass(frozen=True, slots=True)
+class PublicDiscoveryAuthorization:
+    """Server-resolved authorization for one public-discovery turn."""
+
+    connector_ids: tuple[str, ...]
+    public_context: str | None
 
 
 def resolve_authorized_sources(
@@ -285,6 +293,27 @@ def select_authorized_sources(
             and target_agent in connector.assigned_agents
             and connector.test_status in _READY_STATUSES
         )
+    )
+
+
+def authorize_public_discovery(
+    capability: Capability,
+    request: PublicDiscoveryRequest | None,
+    connectors: list[ConnectorSetting],
+) -> PublicDiscoveryAuthorization | None:
+    """Resolve explicit per-turn public discovery against workspace policy."""
+    if request is None:
+        return None
+    if capability not in _CAPABILITY_SOURCES:
+        raise ValueError(f"{capability.value} does not support public discovery.")
+    connector_ids = select_authorized_sources(
+        capability,
+        list(request.connector_ids) if request.connector_ids is not None else None,
+        connectors,
+    )
+    return PublicDiscoveryAuthorization(
+        connector_ids=connector_ids,
+        public_context=request.public_context,
     )
 
 

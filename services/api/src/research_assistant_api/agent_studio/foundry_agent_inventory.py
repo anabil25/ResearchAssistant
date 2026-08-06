@@ -11,6 +11,7 @@ from collections.abc import Mapping
 from typing import Any, Protocol
 
 from azure.ai.projects import AIProjectClient
+from azure.ai.projects.models import AgentKind
 from azure.core.credentials import TokenCredential
 from research_assistant_core.azure_auth import azure_credential
 
@@ -44,28 +45,34 @@ def _field(source: Any, name: str) -> Any:
     return getattr(source, name, None)
 
 
-def _agent_type(definition: Any, agent: Any) -> FoundryAgentType:
-    raw_type = _value(_field(definition, "kind") or _field(agent, "kind") or _field(agent, "type"))
-    if raw_type is None:
+def _agent_type(definition: Any) -> FoundryAgentType:
+    raw_kind = _value(_field(definition, "kind"))
+    if raw_kind is None:
         return FoundryAgentType.UNKNOWN
-    normalized = raw_type.lower().replace("_", "-")
-    if "hosted" in normalized:
-        return FoundryAgentType.HOSTED
-    if "prompt" in normalized:
-        return FoundryAgentType.PROMPT
-    return FoundryAgentType.UNKNOWN
+    exact_types = {
+        AgentKind.HOSTED.value: FoundryAgentType.HOSTED,
+        AgentKind.PROMPT.value: FoundryAgentType.PROMPT,
+        AgentKind.WORKFLOW.value: FoundryAgentType.WORKFLOW,
+        AgentKind.EXTERNAL.value: FoundryAgentType.EXTERNAL,
+    }
+    return exact_types.get(raw_kind, FoundryAgentType.UNKNOWN)
 
 
-def _model(definition: Any, latest: Any, agent: Any) -> str | None:
-    # A hosted agent names its deployment through the container environment;
-    # only a prompt agent carries the model on the definition itself.
-    environment = _field(definition, "environment_variables")
-    return _value(
-        _field(definition, "model")
-        or _field(environment, "AZURE_AI_MODEL_DEPLOYMENT_NAME")
-        or _field(latest, "model")
-        or _field(agent, "model")
-    )
+def _model_deployments(definition: Any, live_deployment_names: frozenset[str]) -> tuple[str, ...]:
+    candidates: list[str] = []
+    direct_model = _value(_field(definition, "model"))
+    if direct_model in live_deployment_names:
+        candidates.append(direct_model)
+
+    if _value(_field(definition, "kind")) == AgentKind.HOSTED.value:
+        environment = _field(definition, "environment_variables")
+        if isinstance(environment, Mapping):
+            for raw_value in environment.values():
+                value = _value(raw_value)
+                if value in live_deployment_names:
+                    candidates.append(value)
+
+    return tuple(sorted(set(candidates)))
 
 
 class AIProjectFoundryAgentInventory:
@@ -76,31 +83,50 @@ class AIProjectFoundryAgentInventory:
         self._credential = credential
 
     def list_agents(self) -> tuple[FoundryAgentInventoryItem, ...]:
-        client = AIProjectClient(endpoint=self._endpoint, credential=self._credential, allow_preview=True)
         try:
-            agents = client.agents.list()
+            with AIProjectClient(
+                endpoint=self._endpoint,
+                credential=self._credential,
+                allow_preview=True,
+            ) as client:
+                agents = list(client.agents.list())
+                deployments = list(client.deployments.list())
+                live_deployment_names = frozenset(
+                    name
+                    for deployment in deployments
+                    if (name := _value(_field(deployment, "name")))
+                )
+
+                inventory: list[FoundryAgentInventoryItem] = []
+                for agent in agents:
+                    name = _value(_field(agent, "name"))
+                    if not name:
+                        continue
+                    latest = _field(_field(agent, "versions"), "latest")
+                    version = _value(_field(latest, "version"))
+                    if version and (
+                        _field(latest, "definition") is None or _field(latest, "status") is None
+                    ):
+                        latest = client.agents.get_version(agent_name=name, agent_version=version)
+                    definition = _field(latest, "definition")
+                    model_deployments = _model_deployments(definition, live_deployment_names)
+                    inventory.append(
+                        FoundryAgentInventoryItem(
+                            name=name,
+                            agent_type=_agent_type(definition),
+                            description=_value(
+                                _field(latest, "description") or _field(agent, "description")
+                            ),
+                            version=_value(_field(latest, "version")),
+                            status=_value(_field(latest, "status")),
+                            model_deployments=model_deployments,
+                            model=model_deployments[0] if len(model_deployments) == 1 else None,
+                        )
+                    )
         except Exception as exc:
             raise FoundryAgentInventoryError(
                 f"Listing agents for Foundry project {self._endpoint} failed."
             ) from exc
-
-        inventory: list[FoundryAgentInventoryItem] = []
-        for agent in agents:
-            name = _value(_field(agent, "name"))
-            if not name:
-                continue
-            latest = _field(_field(agent, "versions"), "latest")
-            definition = _field(latest, "definition")
-            inventory.append(
-                FoundryAgentInventoryItem(
-                    name=name,
-                    agent_type=_agent_type(definition, agent),
-                    description=_value(_field(latest, "description") or _field(agent, "description")),
-                    version=_value(_field(latest, "version")),
-                    status=_value(_field(latest, "status")),
-                    model=_model(definition, latest, agent),
-                )
-            )
         return tuple(sorted(inventory, key=lambda item: item.name))
 
 
