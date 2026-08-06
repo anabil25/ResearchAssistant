@@ -6,7 +6,7 @@ records (drafts, approvals, deployments) are plain ``BaseModel`` instances
 updated via ``model_copy(update=...)``, matching the existing
 ``ApprovalRecord`` pattern in ``research_assistant_api.workspace``. Records
 that are contractually immutable once created (``AgentVersion``,
-``ReleaseGateReport``, ``LineageEdge``, ``EvaluationRecord``) use
+``ReleaseGateReport``, ``LineageEdge``) use
 ``model_config = ConfigDict(frozen=True)``.
 """
 
@@ -304,7 +304,7 @@ class CapabilityOperation(BaseModel):
         instance readiness/health, connection auth/consent/scopes, policy/
         approval satisfiability, or destination-constraint drift.
         ``CapabilityRegistry.validate_attachment``/``check_binding_freshness``
-        are the single deterministic evaluators that check this alongside
+        are the deterministic checks that cover this alongside
         every other axis (instance bindability, descriptor/operation/
         destination freshness, connection, policy/approval) and collect
         every disqualifying reason; deterministic runtime selection also
@@ -1010,8 +1010,8 @@ class CitationPolicy(BaseModel):
     """Citation/evidence policy: whether responses must cite evidence and,
     if so, from which declared sources. Advisory at the model-behavior level
     (no gate can verify a model actually cited correctly) but is a
-    deterministic, auditable declaration of intent that evaluation/observability
-    tooling can check against.
+    deterministic, auditable declaration of intent that audit and observability
+    tooling can inspect.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -1055,7 +1055,7 @@ class AgentManifest(BaseModel):
     choice directly — ``runtime_requirements`` states facts that
     ``select_runtime`` uses to *derive* the target deterministically (see
     ``runtime_selection.py``). Every other cross-cutting concern (I/O
-    contract, knowledge, delegation, policy/evaluation references, citation
+    contract, knowledge, delegation, policy and release-gate references, citation
     policy, artifact contract, lineage/template provenance) is declared here
     so an ``AgentVersion`` cut from this manifest is a complete, self-describing
     release candidate.
@@ -1092,7 +1092,6 @@ class AgentManifest(BaseModel):
     memory_policy: MemoryPolicy = Field(default_factory=MemoryPolicy)
     specialist_policy: SpecialistPolicy = Field(default_factory=SpecialistPolicy)
     policy_refs: tuple[str, ...] = Field(default_factory=tuple)
-    evaluation_suite_refs: tuple[str, ...] = Field(default_factory=tuple)
     citation_policy: CitationPolicy = Field(default_factory=CitationPolicy)
     artifact_contract: ArtifactContract = Field(default_factory=ArtifactContract)
     template_provenance: TemplateProvenance | None = None
@@ -1359,116 +1358,6 @@ class ResolvedAgentContract(BaseModel):
     protocol_version: str
 
 
-# --------------------------------------------------------------------------
-# Advisory evaluations
-# --------------------------------------------------------------------------
-
-
-class EvaluationRecord(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    version_id: str
-    evaluator: str
-    score: float | None = None
-    advisory: bool = True
-    summary: str
-    created_at: datetime = Field(default_factory=utc_now)
-
-
-class EvaluationTestCase(BaseModel):
-    """One input/expected-output pair within an ``EvaluationSuite``."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    id: str = Field(min_length=1, max_length=200)
-    name: str = Field(min_length=1, max_length=200)
-    input: str = Field(min_length=1, max_length=20000)
-    expected_output: str | None = Field(default=None, max_length=20000)
-    tags: tuple[str, ...] = Field(default_factory=tuple)
-
-
-class EvaluationSuite(BaseModel):
-    """A named, versionable collection of ``EvaluationTestCase`` entries for
-    one logical agent, owned/authored by that agent's contributors.
-
-    Distinct from ``ReleaseGateReport.evaluations`` (narrow evidence attached
-    at gate time): a suite is a durable, reusable asset a researcher builds
-    up over time and runs repeatedly against successive drafts/versions to
-    see trends -- the full "Evaluate" tab surface, not a gate side effect.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    logical_agent_id: str
-    tenant_id: str = Field(min_length=1, max_length=200)
-    project_id: str = Field(min_length=1, max_length=200)
-    name: str = Field(min_length=1, max_length=200)
-    description: str = Field(default="", max_length=4000)
-    test_cases: tuple[EvaluationTestCase, ...] = Field(default_factory=tuple)
-    created_at: datetime = Field(default_factory=utc_now)
-    created_by: str
-
-
-class EvaluationRunStatus(StrEnum):
-    """Honest outcome of one evaluation run attempt.
-
-    ``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is
-    wired. A run is never recorded as ``COMPLETED`` without measured scores.
-    """
-
-    COMPLETED = "completed"
-    FAILED = "failed"
-    UNAVAILABLE = "unavailable"
-
-
-class EvaluationTestResult(BaseModel):
-    model_config = ConfigDict(frozen=True)
-
-    test_case_id: str
-    score: float | None = None
-    passed: bool | None = None
-    output: str | None = None
-    detail: str = ""
-
-
-class EvaluationRun(BaseModel):
-    """One advisory evaluation run of a suite against either the current
-    draft (``version_id=None``) or one exact, immutable ``AgentVersion``
-    (``version_id`` set).
-
-    Always advisory (``advisory`` is always ``True``): an ``EvaluationRun``
-    is never consulted by ``policy_gates``/hard release gates, and
-    ``ReleaseGateReport.evaluations`` is a separate, narrower evidence
-    record -- this is the durable history/trends surface a researcher
-    browses across many runs over time.
-    """
-
-    model_config = ConfigDict(frozen=True)
-
-    id: str
-    suite_id: str
-    logical_agent_id: str
-    tenant_id: str = Field(min_length=1, max_length=200)
-    project_id: str = Field(min_length=1, max_length=200)
-    version_id: str | None = None
-    status: EvaluationRunStatus
-    results: tuple[EvaluationTestResult, ...] = Field(default_factory=tuple)
-    summary: str = ""
-    requested_by: str
-    created_at: datetime = Field(default_factory=utc_now)
-    completed_at: datetime | None = None
-    advisory: bool = True
-
-    @property
-    def average_score(self) -> float | None:
-        scored = [result.score for result in self.results if result.score is not None]
-        if not scored:
-            return None
-        return sum(scored) / len(scored)
-
-
 class PlaygroundRunStatus(StrEnum):
     """Honest outcome of one playground/test-run attempt.
 
@@ -1526,10 +1415,8 @@ class PlaygroundTestRun(BaseModel):
     against either the current draft (``version_id=None``) or one exact,
     immutable ``AgentVersion`` (``version_id`` set).
 
-    Distinct from ``EvaluationRun``: this is a single interactive
-    request/response exchange for manual inspection (trace, tool calls)
-    a researcher runs while iterating on a draft, not a scored batch
-    suite run consulted for trends.
+    This is a single interactive request/response exchange for manual
+    inspection of traces and tool calls while iterating on a draft.
     """
 
     model_config = ConfigDict(frozen=True)
@@ -1610,7 +1497,6 @@ class ReleaseGateReport(BaseModel):
     tenant_id: str = Field(min_length=1, max_length=200)
     project_id: str = Field(min_length=1, max_length=200)
     results: tuple[GateResult, ...]
-    evaluations: tuple[EvaluationRecord, ...] = Field(default_factory=tuple)
     created_at: datetime = Field(default_factory=utc_now)
 
     @property
@@ -1635,10 +1521,7 @@ class ReleaseAttestationStatus(StrEnum):
     """Whether a ``ReleaseAttestation`` found all objective hard gates passing.
 
     Derived exclusively from ``ReleaseGateReport.passed`` (schema/build/
-    test/auth/policy/approval/security/smoke/binding) -- a report's
-    ``evaluations`` (advisory) never influence this value, matching the
-    hard-gate/advisory-evaluation boundary enforced everywhere else in this
-    package.
+    test/auth/policy/approval/security/smoke/binding).
     """
 
     ATTESTED = "attested"
@@ -1650,8 +1533,7 @@ class ReleaseAttestation(BaseModel):
     exact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a
     harness/runtime consumer to verify at startup before trusting a release.
 
-    Never re-runs gates and never reflects advisory ``EvaluationRecord``
-    scores -- it is a purely read-derived, reproducible projection of a
+    Never re-runs gates -- it is a purely read-derived, reproducible projection of a
     release's own ``gate_report_id`` and its version's own ``manifest_hash``.
     ``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==
     "hmac-sha256"``) over the canonical, finite JSON encoding of every field

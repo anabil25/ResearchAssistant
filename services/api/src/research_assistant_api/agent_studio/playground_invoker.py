@@ -10,10 +10,8 @@ adapter is wired in above this port -- the create-run endpoint fails
 honestly with 503 and never persists a fabricated run record in that case
 (see ``router.create_test_run``).
 
-This mirrors ``evaluation_runner.py``'s ``EvaluationRunnerError``/
-``UnavailableEvaluationRunner`` pattern: a typed protocol, a typed error,
-and an explicit unavailable default. In-memory invokers exist only for
-tests.
+The boundary uses a typed protocol, a typed error, and an explicit
+unavailable default. In-memory invokers exist only for tests.
 """
 
 from __future__ import annotations

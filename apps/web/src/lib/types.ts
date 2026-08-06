@@ -246,8 +246,7 @@ export type CapabilityMaturity = "ga" | "preview" | "unknown";
  * `5dab8b7`). A `ga`-maturity operation can still be `deprecated` (still
  * works, scheduled for removal) or `retired` (withdrawn); either makes it
  * permanently non-attachable regardless of maturity. Defaults to `active`
- * on the backend model, matching this UI's legacy-adapter fallback (see
- * `lib/legacy-capability-adapter.ts`).
+ * on the backend model.
  */
 export type CapabilityOperationLifecycle = "active" | "deprecated" | "retired";
 
@@ -658,42 +657,10 @@ export function resolveCapabilityBindingView(
   };
 }
 
-/**
- * @deprecated Legacy flat capability reference shape. New Agent Studio
- * surfaces must be built against `CapabilityBindingView`
- * (descriptor + instance + binding) instead. This type must only be consumed
- * by the explicit adapter in `lib/legacy-capability-adapter.ts` —
- * `legacy-capability-adapter.test.ts` fails the suite if any other source
- * file references it.
- */
-export interface AgentCapabilityRef {
-  id: string;
-  family: string;
-  operation: string;
-  maturity: CapabilityMaturity;
-}
-
 export interface AgentHealthSummary {
   state: "healthy" | "degraded" | "unavailable" | "unknown";
   last_checked_at: string | null;
   detail: string;
-}
-
-export interface AgentEvaluationGate {
-  id: string;
-  label: string;
-  passing: boolean;
-}
-
-export interface AgentEvaluationSummary {
-  /** Evaluations are always advisory signal, never a hard release gate. */
-  advisory: true;
-  citation_resolution: number | null;
-  claim_entailment: number | null;
-  retrieval_completeness: number | null;
-  last_run_at: string | null;
-  /** Objective, blocking release gates — evaluated separately from advisory metrics above. */
-  hard_gates: AgentEvaluationGate[];
 }
 
 export interface AgentTraceSummary {

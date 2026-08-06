@@ -52,8 +52,6 @@ from research_assistant_api.agent_studio.models import (
     BuilderProposalState,
     DeploymentEnvironment,
     DeploymentRecord,
-    EvaluationRun,
-    EvaluationSuite,
     IdempotencyClaim,
     IdempotencyClaimDisposition,
     IdempotencyKey,
@@ -1284,89 +1282,6 @@ class CosmosAgentStudioStore(AgentStudioStore):
             raise AgentStudioStoreError(f"Proposal '{proposal.id}' was decided concurrently.") from exc
         self._builder_proposals[proposal.id] = proposal
         return proposal
-
-    # -- Advisory evaluations ------------------------------------------------
-
-    @staticmethod
-    def _evaluation_suite_id(suite_id: str) -> str:
-        return f"evaluation_suite::{suite_id}"
-
-    @staticmethod
-    def _evaluation_run_id(run_id: str) -> str:
-        return f"evaluation_run::{run_id}"
-
-    def create_evaluation_suite(self, scope: ScopeContext, suite: EvaluationSuite) -> EvaluationSuite:
-        super().create_evaluation_suite(scope, suite)
-        self._upsert(
-            scope.scope_key,
-            self._evaluation_suite_id(suite.id),
-            "evaluation_suite",
-            suite.model_dump(mode="json"),
-        )
-        return suite
-
-    def _cache_evaluation_suite(self, scope: ScopeContext, suite: EvaluationSuite) -> None:
-        self._evaluation_suites[suite.id] = suite
-        ids = self._evaluation_suites_by_agent.setdefault((scope.scope_key, suite.logical_agent_id), [])
-        if suite.id not in ids:
-            ids.append(suite.id)
-
-    def get_evaluation_suite(self, scope: ScopeContext, suite_id: str) -> EvaluationSuite | None:
-        document = self._read(scope.scope_key, self._evaluation_suite_id(suite_id))
-        if document is None:
-            return None
-        suite = EvaluationSuite.model_validate(document["payload"])
-        if suite.tenant_id != scope.tenant_id or suite.project_id != scope.project_id:
-            return None
-        self._cache_evaluation_suite(scope, suite)
-        return suite
-
-    def list_evaluation_suites(self, scope: ScopeContext, logical_agent_id: str) -> tuple[EvaluationSuite, ...]:
-        documents = self._query_partition(scope.scope_key, "evaluation_suite")
-        for document in documents:
-            suite = EvaluationSuite.model_validate(document["payload"])
-            if suite.logical_agent_id == logical_agent_id:
-                self._cache_evaluation_suite(scope, suite)
-        return super().list_evaluation_suites(scope, logical_agent_id)
-
-    def create_evaluation_run(self, scope: ScopeContext, run: EvaluationRun) -> EvaluationRun:
-        super().create_evaluation_run(scope, run)
-        self._upsert(
-            scope.scope_key,
-            self._evaluation_run_id(run.id),
-            "evaluation_run",
-            run.model_dump(mode="json"),
-        )
-        return run
-
-    def _cache_evaluation_run(self, scope: ScopeContext, run: EvaluationRun) -> None:
-        self._evaluation_runs[run.id] = run
-        agent_ids = self._evaluation_runs_by_agent.setdefault((scope.scope_key, run.logical_agent_id), [])
-        if run.id not in agent_ids:
-            agent_ids.append(run.id)
-        suite_ids = self._evaluation_runs_by_suite.setdefault((scope.scope_key, run.suite_id), [])
-        if run.id not in suite_ids:
-            suite_ids.append(run.id)
-
-    def get_evaluation_run(self, scope: ScopeContext, run_id: str) -> EvaluationRun | None:
-        document = self._read(scope.scope_key, self._evaluation_run_id(run_id))
-        if document is None:
-            return None
-        run = EvaluationRun.model_validate(document["payload"])
-        if run.tenant_id != scope.tenant_id or run.project_id != scope.project_id:
-            return None
-        self._cache_evaluation_run(scope, run)
-        return run
-
-    def list_evaluation_runs(
-        self, scope: ScopeContext, logical_agent_id: str, *, suite_id: str | None = None
-    ) -> tuple[EvaluationRun, ...]:
-        documents = self._query_partition(scope.scope_key, "evaluation_run")
-        for document in documents:
-            run = EvaluationRun.model_validate(document["payload"])
-            if run.logical_agent_id == logical_agent_id:
-                self._cache_evaluation_run(scope, run)
-        return super().list_evaluation_runs(scope, logical_agent_id, suite_id=suite_id)
 
     # -- Test/playground runs --------------------------------------------
 

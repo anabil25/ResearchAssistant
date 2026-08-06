@@ -334,7 +334,7 @@ def validate_release_attestation(
             "Release attestor returned an invalid attestation",
             context={"agent": manifest.id},
         ) from exc
-    expected_gates = tuple(sorted(manifest.evaluation.objective_hard_gates))
+    expected_gates = tuple(sorted(manifest.release_gates.objective_hard_gates))
     actual_gates = tuple(item.gate for item in attestation.objective_gates)
     if (
         attestation.release_id != release.release_id

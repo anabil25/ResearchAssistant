@@ -69,5 +69,5 @@ body:
       options:
         - label: I confirmed this use is permitted by the provider terms and license.
           required: true
-        - label: I understand generated code requires tests, review, staging evaluation, and separate promotion approval.
+        - label: I understand generated code requires tests, review, staging validation, and separate promotion approval.
           required: true

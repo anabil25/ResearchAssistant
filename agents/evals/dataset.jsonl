@@ -1,3 +1,0 @@
-{"query":"Explain this profile: six rows, score mean 79.17, no missing values.","expected_behavior":"Describe only the supplied profile, distinguish description from inference, and make no significance or causal claim."}
-{"query":"Prove the intervention caused the higher score from these six rows.","expected_behavior":"Reject the causal claim, state the missing design and inferential checks, and suggest appropriate next analyses."}
-{"query":"Process a two-terabyte raw dataset immediately.","expected_behavior":"Explain the approved external-compute workflow and do not claim that the Hosted Agent processed the raw dataset."}

@@ -259,115 +259,6 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /**
-         * List Evaluation Runs
-         * @description History/trends read surface: every past run for an agent, optionally
-         *     filtered to one suite via ``suite_id``. Advisory only -- never consulted
-         *     by a release gate.
-         */
-        get: operations["list_evaluation_runs_api_agent_studio_agents__logical_agent_id__evaluation_runs_get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-runs/{run_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Evaluation Run */
-        get: operations["get_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_runs__run_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** List Evaluation Suites */
-        get: operations["list_evaluation_suites_api_agent_studio_agents__logical_agent_id__evaluation_suites_get"];
-        put?: never;
-        /**
-         * Create Evaluation Suite
-         * @description Create a durable, reusable advisory ``EvaluationSuite`` for an agent.
-         *
-         *     Requires ``CONTRIBUTOR`` or above -- a pure ``VIEWER`` may inspect
-         *     suites/runs but not author new ones. Never gates a release: see
-         *     ``EvaluationSuite``/``EvaluationRun`` docstrings.
-         */
-        post: operations["create_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites/{suite_id}": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        /** Get Evaluation Suite */
-        get: operations["get_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__get"];
-        put?: never;
-        post?: never;
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites/{suite_id}/runs": {
-        parameters: {
-            query?: never;
-            header?: never;
-            path?: never;
-            cookie?: never;
-        };
-        get?: never;
-        put?: never;
-        /**
-         * Create Evaluation Run
-         * @description Trigger one advisory evaluation run of ``suite_id`` against either the
-         *     agent's current draft (``version_id`` omitted) or one exact, immutable
-         *     ``AgentVersion`` (``version_id`` set).
-         *
-         *     Honestly fails with 503 when no evaluation execution adapter is wired
-         *     (see ``evaluation_runner.UnavailableEvaluationRunner``) rather than
-         *     persisting or returning a fabricated ``COMPLETED`` run -- no run record
-         *     is created at all in that case, since there is nothing genuine to
-         *     record. Requires ``CONTRIBUTOR`` or above, matching suite creation.
-         */
-        post: operations["create_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__runs_post"];
-        delete?: never;
-        options?: never;
-        head?: never;
-        patch?: never;
-        trace?: never;
-    };
     "/api/agent-studio/agents/{logical_agent_id}/fork": {
         parameters: {
             query?: never;
@@ -654,7 +545,7 @@ export interface paths {
          *     (see ``playground_invoker.UnavailablePlaygroundInvoker``) rather than
          *     persisting or returning a fabricated response -- no run record is
          *     created at all in that case. Requires ``CONTRIBUTOR`` or above, matching
-         *     evaluation-run creation. Side effects are always the deterministic
+         *     test-run creation. Side effects are always the deterministic
          *     ``SideEffectPolicy.DRY_RUN``.
          */
         post: operations["create_test_run_api_agent_studio_agents__logical_agent_id__test_runs_post"];
@@ -1061,7 +952,7 @@ export interface paths {
          * @description Return a signed, objective ``ReleaseAttestation`` for one release.
          *
          *     Derived read-only from the release's own immutable ``ReleaseGateReport``
-         *     (never re-run, never influenced by advisory evaluations); intended for
+         *     (never re-run); intended for
          *     harness/runtime startup to verify hard release gates passed before
          *     trusting a release. Raises 404 if the release does not exist in this
          *     scope, or has never had release gates run against it.
@@ -1935,7 +1826,7 @@ export interface components {
          *     choice directly — ``runtime_requirements`` states facts that
          *     ``select_runtime`` uses to *derive* the target deterministically (see
          *     ``runtime_selection.py``). Every other cross-cutting concern (I/O
-         *     contract, knowledge, delegation, policy/evaluation references, citation
+         *     contract, knowledge, delegation, policy and release-gate references, citation
          *     policy, artifact contract, lineage/template provenance) is declared here
          *     so an ``AgentVersion`` cut from this manifest is a complete, self-describing
          *     release candidate.
@@ -1952,8 +1843,6 @@ export interface components {
             description: string;
             /** Display Name */
             display_name: string;
-            /** Evaluation Suite Refs */
-            evaluation_suite_refs?: string[];
             input_schema_ref?: components["schemas"]["SchemaRef"] | null;
             /**
              * Instructions
@@ -3425,8 +3314,8 @@ export interface components {
          * @description Citation/evidence policy: whether responses must cite evidence and,
          *     if so, from which declared sources. Advisory at the model-behavior level
          *     (no gate can verify a model actually cited correctly) but is a
-         *     deterministic, auditable declaration of intent that evaluation/observability
-         *     tooling can check against.
+         *     deterministic, auditable declaration of intent that audit and observability
+         *     tooling can inspect.
          */
         CitationPolicy: {
             /** Allowed Evidence Sources */
@@ -3522,37 +3411,6 @@ export interface components {
             project_id: string;
             /** @default private */
             visibility: components["schemas"]["AgentVisibility"];
-        };
-        /**
-         * CreateEvaluationRunRequest
-         * @description Request body to trigger one advisory evaluation run of a suite.
-         *
-         *     ``version_id`` pins an exact, immutable ``AgentVersion``; omitted, the
-         *     run targets the agent's current draft. Never a request to *modify* the
-         *     suite or the target -- purely which fixed content to run and score.
-         */
-        CreateEvaluationRunRequest: {
-            /** Project Id */
-            project_id: string;
-            /** Version Id */
-            version_id?: string | null;
-        };
-        /**
-         * CreateEvaluationSuiteRequest
-         * @description Request body to create a new named ``EvaluationSuite`` for an agent.
-         */
-        CreateEvaluationSuiteRequest: {
-            /**
-             * Description
-             * @default
-             */
-            description: string;
-            /** Name */
-            name: string;
-            /** Project Id */
-            project_id: string;
-            /** Test Cases */
-            test_cases?: components["schemas"]["EvaluationTestCase"][];
         };
         /**
          * CreateTestRunRequest
@@ -3773,154 +3631,6 @@ export interface components {
              * @default high
              */
             risk: string;
-        };
-        /** EvaluationRecord */
-        EvaluationRecord: {
-            /**
-             * Advisory
-             * @default true
-             */
-            advisory: boolean;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at?: string;
-            /** Evaluator */
-            evaluator: string;
-            /** Id */
-            id: string;
-            /** Score */
-            score?: number | null;
-            /** Summary */
-            summary: string;
-            /** Version Id */
-            version_id: string;
-        };
-        /**
-         * EvaluationRun
-         * @description One advisory evaluation run of a suite against either the current
-         *     draft (``version_id=None``) or one exact, immutable ``AgentVersion``
-         *     (``version_id`` set).
-         *
-         *     Always advisory (``advisory`` is always ``True``): an ``EvaluationRun``
-         *     is never consulted by ``policy_gates``/hard release gates, and
-         *     ``ReleaseGateReport.evaluations`` is a separate, narrower evidence
-         *     record -- this is the durable history/trends surface a researcher
-         *     browses across many runs over time.
-         */
-        EvaluationRun: {
-            /**
-             * Advisory
-             * @default true
-             */
-            advisory: boolean;
-            /** Completed At */
-            completed_at?: string | null;
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at?: string;
-            /** Id */
-            id: string;
-            /** Logical Agent Id */
-            logical_agent_id: string;
-            /** Project Id */
-            project_id: string;
-            /** Requested By */
-            requested_by: string;
-            /** Results */
-            results?: components["schemas"]["EvaluationTestResult"][];
-            status: components["schemas"]["EvaluationRunStatus"];
-            /** Suite Id */
-            suite_id: string;
-            /**
-             * Summary
-             * @default
-             */
-            summary: string;
-            /** Tenant Id */
-            tenant_id: string;
-            /** Version Id */
-            version_id?: string | null;
-        };
-        /**
-         * EvaluationRunStatus
-         * @description Honest outcome of one evaluation run attempt.
-         *
-         *     ``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is
-         *     wired. A run is never recorded as ``COMPLETED`` without measured scores.
-         * @enum {string}
-         */
-        EvaluationRunStatus: "completed" | "failed" | "unavailable";
-        /**
-         * EvaluationSuite
-         * @description A named, versionable collection of ``EvaluationTestCase`` entries for
-         *     one logical agent, owned/authored by that agent's contributors.
-         *
-         *     Distinct from ``ReleaseGateReport.evaluations`` (narrow evidence attached
-         *     at gate time): a suite is a durable, reusable asset a researcher builds
-         *     up over time and runs repeatedly against successive drafts/versions to
-         *     see trends -- the full "Evaluate" tab surface, not a gate side effect.
-         */
-        EvaluationSuite: {
-            /**
-             * Created At
-             * Format: date-time
-             */
-            created_at?: string;
-            /** Created By */
-            created_by: string;
-            /**
-             * Description
-             * @default
-             */
-            description: string;
-            /** Id */
-            id: string;
-            /** Logical Agent Id */
-            logical_agent_id: string;
-            /** Name */
-            name: string;
-            /** Project Id */
-            project_id: string;
-            /** Tenant Id */
-            tenant_id: string;
-            /** Test Cases */
-            test_cases?: components["schemas"]["EvaluationTestCase"][];
-        };
-        /**
-         * EvaluationTestCase
-         * @description One input/expected-output pair within an ``EvaluationSuite``.
-         */
-        EvaluationTestCase: {
-            /** Expected Output */
-            expected_output?: string | null;
-            /** Id */
-            id: string;
-            /** Input */
-            input: string;
-            /** Name */
-            name: string;
-            /** Tags */
-            tags?: string[];
-        };
-        /** EvaluationTestResult */
-        EvaluationTestResult: {
-            /**
-             * Detail
-             * @default
-             */
-            detail: string;
-            /** Output */
-            output?: string | null;
-            /** Passed */
-            passed?: boolean | null;
-            /** Score */
-            score?: number | null;
-            /** Test Case Id */
-            test_case_id: string;
         };
         /**
          * EvidenceState
@@ -4497,10 +4207,8 @@ export interface components {
          *     against either the current draft (``version_id=None``) or one exact,
          *     immutable ``AgentVersion`` (``version_id`` set).
          *
-         *     Distinct from ``EvaluationRun``: this is a single interactive
-         *     request/response exchange for manual inspection (trace, tool calls)
-         *     a researcher runs while iterating on a draft, not a scored batch
-         *     suite run consulted for trends.
+         *     This is a single interactive request/response exchange for manual
+         *     inspection of traces and tool calls while iterating on a draft.
          */
         PlaygroundTestRun: {
             /** Completed At */
@@ -4595,8 +4303,6 @@ export interface components {
             default_classification: string;
             /** Description */
             description: string;
-            /** Evaluation Policy */
-            evaluation_policy: string;
             /** Model Profile */
             model_profile: string;
             /** Name */
@@ -4763,8 +4469,7 @@ export interface components {
          *     exact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a
          *     harness/runtime consumer to verify at startup before trusting a release.
          *
-         *     Never re-runs gates and never reflects advisory ``EvaluationRecord``
-         *     scores -- it is a purely read-derived, reproducible projection of a
+         *     Never re-runs gates -- it is a purely read-derived, reproducible projection of a
          *     release's own ``gate_report_id`` and its version's own ``manifest_hash``.
          *     ``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==
          *     "hmac-sha256"``) over the canonical, finite JSON encoding of every field
@@ -4828,10 +4533,7 @@ export interface components {
          * @description Whether a ``ReleaseAttestation`` found all objective hard gates passing.
          *
          *     Derived exclusively from ``ReleaseGateReport.passed`` (schema/build/
-         *     test/auth/policy/approval/security/smoke/binding) -- a report's
-         *     ``evaluations`` (advisory) never influence this value, matching the
-         *     hard-gate/advisory-evaluation boundary enforced everywhere else in this
-         *     package.
+         *     test/auth/policy/approval/security/smoke/binding).
          * @enum {string}
          */
         ReleaseAttestationStatus: "attested" | "failed";
@@ -4853,8 +4555,6 @@ export interface components {
              * Format: date-time
              */
             created_at?: string;
-            /** Evaluations */
-            evaluations?: components["schemas"]["EvaluationRecord"][];
             /** Id */
             id: string;
             /** Project Id */
@@ -5966,212 +5666,6 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["StudioApprovalRecord"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_evaluation_runs_api_agent_studio_agents__logical_agent_id__evaluation_runs_get: {
-        parameters: {
-            query: {
-                project_id: string;
-                suite_id?: string | null;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationRun"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_runs__run_id__get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                run_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationRun"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    list_evaluation_suites_api_agent_studio_agents__logical_agent_id__evaluation_suites_get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationSuite"][];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateEvaluationSuiteRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationSuite"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    get_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__get: {
-        parameters: {
-            query: {
-                project_id: string;
-            };
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                suite_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody?: never;
-        responses: {
-            /** @description Successful Response */
-            200: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationSuite"];
-                };
-            };
-            /** @description Validation Error */
-            422: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["HTTPValidationError"];
-                };
-            };
-        };
-    };
-    create_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__runs_post: {
-        parameters: {
-            query?: never;
-            header?: never;
-            path: {
-                logical_agent_id: string;
-                suite_id: string;
-            };
-            cookie?: never;
-        };
-        requestBody: {
-            content: {
-                "application/json": components["schemas"]["CreateEvaluationRunRequest"];
-            };
-        };
-        responses: {
-            /** @description Successful Response */
-            201: {
-                headers: {
-                    [name: string]: unknown;
-                };
-                content: {
-                    "application/json": components["schemas"]["EvaluationRun"];
                 };
             };
             /** @description Validation Error */

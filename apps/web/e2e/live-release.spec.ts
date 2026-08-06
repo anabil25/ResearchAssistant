@@ -66,7 +66,6 @@ test("Project Settings exposes real connection and credential controls", async (
   await expect(page.getByRole("button", { name: "Save key" })).toBeDisabled();
 
   await expect(page.getByText("Gateway & tool versions")).toHaveCount(0);
-  await expect(page.getByRole("button", { name: "Evaluation" })).toHaveCount(0);
   await expect(page.getByRole("button", { name: "Readiness" })).toHaveCount(0);
 });
 

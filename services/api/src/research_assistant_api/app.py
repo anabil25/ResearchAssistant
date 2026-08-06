@@ -54,7 +54,6 @@ from research_assistant_api.agent_studio.capability_discovery import (
 from research_assistant_api.agent_studio.capability_registry import build_registry_from_source
 from research_assistant_api.agent_studio.cosmos_store import build_agent_studio_store
 from research_assistant_api.agent_studio.deployment_service import DeploymentService
-from research_assistant_api.agent_studio.evaluation_runner import build_evaluation_runner
 from research_assistant_api.agent_studio.foundry_agent_inventory import build_foundry_agent_inventory
 from research_assistant_api.agent_studio.foundry_prompt_publisher import build_prompt_agent_publisher
 from research_assistant_api.agent_studio.idempotency import StoreBackedIdempotencyPort
@@ -221,17 +220,11 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
     # module docstring for why a built-in seed is legitimate here, unlike
     # the capability registry above).
     application.state.agent_studio_template_catalog = default_template_catalog()
-    # Advisory evaluation execution port. Always the explicit-unavailable
-    # adapter here -- see ``evaluation_runner`` module docstring: actual
-    # execution requires the harness-owned runtime invocation path, out of
-    # scope for this platform session.
-    application.state.agent_studio_evaluation_runner = build_evaluation_runner(settings)
-    # Playground/test-run invocation port. Same honest-unavailable contract
-    # as the evaluation runner above -- real invocation requires the
-    # harness-owned runtime, out of scope for this platform session.
+    # Playground/test-run invocation requires the harness-owned runtime and
+    # therefore uses an honest unavailable adapter when no invoker is configured.
     application.state.agent_studio_playground_invoker = build_playground_invoker(settings)
-    # Deployment Observability/Monitor read surface. Unlike the evaluation
-    # runner/playground invoker above, this *is* wired to a real adapter
+    # Deployment Observability/Monitor read surface. Unlike the playground
+    # invoker above, this *is* wired to a real adapter
     # when configured (mirrors ``model_discovery`` above) -- querying
     # already-emitted Application Insights telemetry is this platform's own
     # ownership, not the harness-owned runtime invocation path.
@@ -282,7 +275,7 @@ async def _init_agent_studio(application: FastAPI, settings: Settings) -> None:
         application.state.agent_studio_approval_context_resolver = StoreBackedApprovalContextResolver(store)
         # Read-derived projection of a release's own immutable ReleaseGateReport,
         # for harness/runtime startup to verify hard gates passed before trusting
-        # a release -- advisory evaluations never affect this.
+        # a release.
         application.state.agent_studio_release_attestation_port = StoreBackedReleaseAttestationPort(store)
     try:
         memory_store = build_memory_store(settings)

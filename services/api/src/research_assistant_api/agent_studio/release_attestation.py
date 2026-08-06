@@ -9,8 +9,7 @@ which never transitions a release past ``GATED`` without one), and
 objective schema/build/test/auth/policy/approval/security/smoke/binding
 verdict. ``build_release_attestation`` only re-packages those two immutable
 records into one signed, self-contained object -- it never re-runs gates,
-never inspects (let alone is influenced by) the report's advisory
-``evaluations``, and never accepts caller-supplied gate results.
+and never accepts caller-supplied gate results.
 
 This projection also carries forward ``AgentRelease.harness_release_id`` /
 ``harness_manifest_digest`` / ``harness_link_schema_version`` (harness

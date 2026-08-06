@@ -3,7 +3,6 @@ import type {
   AgentContractView,
   AgentDraftIntent,
   AgentDraftView,
-  AgentEvaluationSummary,
   AgentHealthSummary,
   AgentReleaseSummary,
   AgentSetting,
@@ -600,8 +599,7 @@ export async function uploadChatFile(
 //     pending|approved|rejected`) is scoped to `version_id` for release/
 //     fork/admin-escalation promotion — never a per-capability-binding
 //     concept; a capability operation only declares `requires_approval`
-//     (boolean). `types.ts`/`legacy-capability-adapter.ts`/
-//     `agent-workspace.tsx` and their tests were corrected to this verified
+//     (boolean). `types.ts` and its tests were corrected to this verified
 //     shape; `isCapabilityAttachable` now takes `(operation, instance)` and
 //     checks `maturity === "ga"` plus instance readiness only when an
 //     instance is actually pinned. (This maturity/lifecycle finding was
@@ -694,14 +692,8 @@ export async function uploadChatFile(
 //     client-side (an explicitly-documented preliminary/display-only
 //     derivation, not a backend mirror), now requiring BOTH `maturity ===
 //     "ga"` AND `lifecycle === "active"` before falling through to the
-//     existing conservative instance-readiness check. `CapabilityOperation`,
-//     `legacy-capability-adapter.ts` (which defaults the synthetic
-//     lifecycle to `active`, matching the backend's own default, since a
-//     legacy ref carries no real lifecycle signal), and `agent-workspace.tsx`
-//     (a distinct lifecycle chip/warning alongside the existing maturity
-//     chip, so a `ga`+`deprecated`/`retired` operation is never visually
-//     indistinguishable from a `ga`+`active` one) were all updated to match,
-//     with tests covering the full maturity×lifecycle matrix and explicitly
+//     existing conservative instance-readiness check. Tests cover the full
+//     maturity×lifecycle matrix and explicitly
 //     asserting no false-positive "attachable" outside `ga`+`active`. Per
 //     explicit instruction, the route/OpenAPI integration itself was NOT
 //     touched in this round — that remains frozen pending the backend's
@@ -716,9 +708,7 @@ export async function uploadChatFile(
 // hard-code an Agent Studio path itself. Every function below issues a real
 // request; until the backend ships these routes they will reject with a
 // real error (404/502) that callers must surface as an explicit unavailable
-// state, never a fabricated success. `getWorkspaceData`'s `/agents` read
-// (AgentSetting[]) remains the one legacy exception, used only to build the
-// `source: "legacy_agents_endpoint"` fallback in `lib/agent-catalog.ts`.
+// state, never a fabricated success.
 // ---------------------------------------------------------------------------
 
 async function agentStudioFetch<T>(path: string, init?: RequestInit): Promise<T> {
@@ -848,13 +838,6 @@ export async function getAgentHealth(
   agentId: string,
 ): Promise<AgentHealthSummary> {
   return agentStudioFetch<AgentHealthSummary>(`/agents/${agentId}/health`);
-}
-
-/** Evaluation is always advisory signal; see `hard_gates` for the blocking release gates. */
-export async function getAgentEvaluation(
-  agentId: string,
-): Promise<AgentEvaluationSummary> {
-  return agentStudioFetch<AgentEvaluationSummary>(`/agents/${agentId}/evaluation`);
 }
 
 export async function getAgentDeployment(

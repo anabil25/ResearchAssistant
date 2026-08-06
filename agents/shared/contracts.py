@@ -813,16 +813,13 @@ class ObjectiveGate(StrEnum):
 _REQUIRED_OBJECTIVE_GATES = tuple(ObjectiveGate)
 
 
-class EvaluationPolicy(BaseModel):
+class ReleaseGatePolicy(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
-    suite: str
-    minimum_score: float = Field(default=0.8, ge=0, le=1)
-    evaluator_results_advisory: Literal[True] = True
     objective_hard_gates: tuple[ObjectiveGate, ...] = _REQUIRED_OBJECTIVE_GATES
 
     @model_validator(mode="after")
-    def objective_gates_are_complete(self) -> EvaluationPolicy:
+    def objective_gates_are_complete(self) -> ReleaseGatePolicy:
         if set(self.objective_hard_gates) != set(_REQUIRED_OBJECTIVE_GATES):
             raise ValueError("all objective release gates are required")
         return self
@@ -890,7 +887,7 @@ class AgentManifest(BaseModel):
     artifact_policy: ArtifactPolicy
     workflow_steps: tuple[str, ...] = Field(min_length=1)
     memory: MemoryPolicy
-    evaluation: EvaluationPolicy
+    release_gates: ReleaseGatePolicy
     loop: LoopPolicy = LoopPolicy()
 
     @model_validator(mode="after")

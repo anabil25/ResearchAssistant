@@ -20,13 +20,13 @@ from .contracts import (
     SCHEMA_REFERENCES,
     AgentManifest,
     ArtifactPolicy,
-    EvaluationPolicy,
     EvidencePolicy,
     KnowledgeBinding,
     LoopPolicy,
     MemoryPolicy,
     ModelPolicy,
     PinnedSpecialist,
+    ReleaseGatePolicy,
     RuntimeRequirements,
     Sensitivity,
     SpecialistCapability,
@@ -169,7 +169,7 @@ def _manifest(
         ),
         workflow_steps=workflow_steps,
         memory=MemoryPolicy(),
-        evaluation=EvaluationPolicy(suite=f"{id}-smoke"),
+        release_gates=ReleaseGatePolicy(),
         loop=loop or LoopPolicy(),
     )
 

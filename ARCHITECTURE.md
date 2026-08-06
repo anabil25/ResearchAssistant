@@ -90,11 +90,7 @@ flowchart LR
   tracked or untracked worktree
   drift so the direct-code remote-build upload cannot claim a committed source
   identity for different bytes. Checkout-only newline translation is allowed.
-  **It does not cover the wider package-eligible set:** shipped non-Python files
-  (`.agent_configs/baseline/metadata.yaml`, root `*.eval.yaml`,
-  `datasets/**.jsonl`, `evaluators/**.{json,yaml}`) are outside the identity
-  filter, so drifting one passes this check. Measured: 12 shipped-but-unhashed
-  files. Closing that gap is tracked as F1.
+  Agent definition YAML remains outside that source identity.
   A future immutable deployed-artifact digest is separate evidence and must not
   be folded into release, approval, idempotency, or parent-lineage identity.
 
@@ -102,9 +98,8 @@ flowchart LR
 
 - Production release promotion requires an application-owned durable release
   attestor to confirm the immutable release, schemas, source tree, model and
-  provider pins, and every objective hard gate. Evaluator scores are advisory
-  and never substitute for these gates. Foundry Hosted Agent startup uses the
-  platform-managed identity, lifecycle, and Toolbox connections directly.
+  provider pins, and every objective hard gate. Foundry Hosted Agent startup
+  uses the platform-managed identity, lifecycle, and Toolbox connections directly.
 - Consequential capabilities claim durable idempotency first, atomically
   consume an exact-bound one-time `approval_decision_id`, persist the receipt,
   and only then resolve the runtime handler. Client booleans are never
@@ -285,4 +280,4 @@ The web and API remain warm for the demo profile.
    validates Toolbox versions before promoting them.
 4. `azd deploy` creates Hosted Agent versions and deploys Container Apps.
 5. `postdeploy` grants the coordinator only the Foundry delegation role.
-6. Smoke and evaluation suites verify the deployed endpoints.
+6. Smoke checks verify the deployed endpoints.

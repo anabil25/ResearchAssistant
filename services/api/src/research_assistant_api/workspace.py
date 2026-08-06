@@ -490,7 +490,6 @@ class ProjectSettings(BaseModel):
     require_human_approval: bool
     allowed_export_destinations: list[str]
     model_profile: str
-    evaluation_policy: str
 
 
 DEFAULT_PROJECT_NAME = "Research workspace template"
@@ -518,7 +517,6 @@ def default_project_settings(
         require_human_approval=True,
         allowed_export_destinations=["Workspace Library", "SharePoint research site"],
         model_profile="Balanced quality",
-        evaluation_policy="Block release on unresolved citations or critical policy findings",
     )
 
 

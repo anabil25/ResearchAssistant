@@ -321,7 +321,7 @@
       },
       "AgentManifest": {
         "additionalProperties": false,
-        "description": "The mutable, editable, runtime-neutral definition of an agent.\n\nRuntime-neutral means this manifest never encodes a \"deploy target\"\nchoice directly \u2014 ``runtime_requirements`` states facts that\n``select_runtime`` uses to *derive* the target deterministically (see\n``runtime_selection.py``). Every other cross-cutting concern (I/O\ncontract, knowledge, delegation, policy/evaluation references, citation\npolicy, artifact contract, lineage/template provenance) is declared here\nso an ``AgentVersion`` cut from this manifest is a complete, self-describing\nrelease candidate.",
+        "description": "The mutable, editable, runtime-neutral definition of an agent.\n\nRuntime-neutral means this manifest never encodes a \"deploy target\"\nchoice directly \u2014 ``runtime_requirements`` states facts that\n``select_runtime`` uses to *derive* the target deterministically (see\n``runtime_selection.py``). Every other cross-cutting concern (I/O\ncontract, knowledge, delegation, policy and release-gate references, citation\npolicy, artifact contract, lineage/template provenance) is declared here\nso an ``AgentVersion`` cut from this manifest is a complete, self-describing\nrelease candidate.",
         "properties": {
           "artifact_contract": {
             "$ref": "#/components/schemas/ArtifactContract"
@@ -347,13 +347,6 @@
             "minLength": 1,
             "title": "Display Name",
             "type": "string"
-          },
-          "evaluation_suite_refs": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Evaluation Suite Refs",
-            "type": "array"
           },
           "input_schema_ref": {
             "anyOf": [
@@ -3731,7 +3724,7 @@
       },
       "CitationPolicy": {
         "additionalProperties": false,
-        "description": "Citation/evidence policy: whether responses must cite evidence and,\nif so, from which declared sources. Advisory at the model-behavior level\n(no gate can verify a model actually cited correctly) but is a\ndeterministic, auditable declaration of intent that evaluation/observability\ntooling can check against.",
+        "description": "Citation/evidence policy: whether responses must cite evidence and,\nif so, from which declared sources. Advisory at the model-behavior level\n(no gate can verify a model actually cited correctly) but is a\ndeterministic, auditable declaration of intent that audit and observability\ntooling can inspect.",
         "properties": {
           "allowed_evidence_sources": {
             "items": {
@@ -3985,71 +3978,6 @@
           "display_name"
         ],
         "title": "CreateAgentRequest",
-        "type": "object"
-      },
-      "CreateEvaluationRunRequest": {
-        "additionalProperties": false,
-        "description": "Request body to trigger one advisory evaluation run of a suite.\n\n``version_id`` pins an exact, immutable ``AgentVersion``; omitted, the\nrun targets the agent's current draft. Never a request to *modify* the\nsuite or the target -- purely which fixed content to run and score.",
-        "properties": {
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "version_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Version Id"
-          }
-        },
-        "required": [
-          "project_id"
-        ],
-        "title": "CreateEvaluationRunRequest",
-        "type": "object"
-      },
-      "CreateEvaluationSuiteRequest": {
-        "additionalProperties": false,
-        "description": "Request body to create a new named ``EvaluationSuite`` for an agent.",
-        "properties": {
-          "description": {
-            "default": "",
-            "maxLength": 4000,
-            "title": "Description",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "test_cases": {
-            "items": {
-              "$ref": "#/components/schemas/EvaluationTestCase"
-            },
-            "title": "Test Cases",
-            "type": "array"
-          }
-        },
-        "required": [
-          "project_id",
-          "name"
-        ],
-        "title": "CreateEvaluationSuiteRequest",
         "type": "object"
       },
       "CreateTestRunRequest": {
@@ -4572,321 +4500,6 @@
           "evidence_summary"
         ],
         "title": "EscalationRequest",
-        "type": "object"
-      },
-      "EvaluationRecord": {
-        "properties": {
-          "advisory": {
-            "default": true,
-            "title": "Advisory",
-            "type": "boolean"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "evaluator": {
-            "title": "Evaluator",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Score"
-          },
-          "summary": {
-            "title": "Summary",
-            "type": "string"
-          },
-          "version_id": {
-            "title": "Version Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "id",
-          "version_id",
-          "evaluator",
-          "summary"
-        ],
-        "title": "EvaluationRecord",
-        "type": "object"
-      },
-      "EvaluationRun": {
-        "description": "One advisory evaluation run of a suite against either the current\ndraft (``version_id=None``) or one exact, immutable ``AgentVersion``\n(``version_id`` set).\n\nAlways advisory (``advisory`` is always ``True``): an ``EvaluationRun``\nis never consulted by ``policy_gates``/hard release gates, and\n``ReleaseGateReport.evaluations`` is a separate, narrower evidence\nrecord -- this is the durable history/trends surface a researcher\nbrowses across many runs over time.",
-        "properties": {
-          "advisory": {
-            "default": true,
-            "title": "Advisory",
-            "type": "boolean"
-          },
-          "completed_at": {
-            "anyOf": [
-              {
-                "format": "date-time",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Completed At"
-          },
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "logical_agent_id": {
-            "title": "Logical Agent Id",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "requested_by": {
-            "title": "Requested By",
-            "type": "string"
-          },
-          "results": {
-            "items": {
-              "$ref": "#/components/schemas/EvaluationTestResult"
-            },
-            "title": "Results",
-            "type": "array"
-          },
-          "status": {
-            "$ref": "#/components/schemas/EvaluationRunStatus"
-          },
-          "suite_id": {
-            "title": "Suite Id",
-            "type": "string"
-          },
-          "summary": {
-            "default": "",
-            "title": "Summary",
-            "type": "string"
-          },
-          "tenant_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Tenant Id",
-            "type": "string"
-          },
-          "version_id": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Version Id"
-          }
-        },
-        "required": [
-          "id",
-          "suite_id",
-          "logical_agent_id",
-          "tenant_id",
-          "project_id",
-          "status",
-          "requested_by"
-        ],
-        "title": "EvaluationRun",
-        "type": "object"
-      },
-      "EvaluationRunStatus": {
-        "description": "Honest outcome of one evaluation run attempt.\n\n``UNAVAILABLE`` is used when no ``EvaluationRunner`` execution adapter is\nwired. A run is never recorded as ``COMPLETED`` without measured scores.",
-        "enum": [
-          "completed",
-          "failed",
-          "unavailable"
-        ],
-        "title": "EvaluationRunStatus",
-        "type": "string"
-      },
-      "EvaluationSuite": {
-        "description": "A named, versionable collection of ``EvaluationTestCase`` entries for\none logical agent, owned/authored by that agent's contributors.\n\nDistinct from ``ReleaseGateReport.evaluations`` (narrow evidence attached\nat gate time): a suite is a durable, reusable asset a researcher builds\nup over time and runs repeatedly against successive drafts/versions to\nsee trends -- the full \"Evaluate\" tab surface, not a gate side effect.",
-        "properties": {
-          "created_at": {
-            "format": "date-time",
-            "title": "Created At",
-            "type": "string"
-          },
-          "created_by": {
-            "title": "Created By",
-            "type": "string"
-          },
-          "description": {
-            "default": "",
-            "maxLength": 4000,
-            "title": "Description",
-            "type": "string"
-          },
-          "id": {
-            "title": "Id",
-            "type": "string"
-          },
-          "logical_agent_id": {
-            "title": "Logical Agent Id",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "project_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Project Id",
-            "type": "string"
-          },
-          "tenant_id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Tenant Id",
-            "type": "string"
-          },
-          "test_cases": {
-            "items": {
-              "$ref": "#/components/schemas/EvaluationTestCase"
-            },
-            "title": "Test Cases",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "logical_agent_id",
-          "tenant_id",
-          "project_id",
-          "name",
-          "created_by"
-        ],
-        "title": "EvaluationSuite",
-        "type": "object"
-      },
-      "EvaluationTestCase": {
-        "additionalProperties": false,
-        "description": "One input/expected-output pair within an ``EvaluationSuite``.",
-        "properties": {
-          "expected_output": {
-            "anyOf": [
-              {
-                "maxLength": 20000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Expected Output"
-          },
-          "id": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Id",
-            "type": "string"
-          },
-          "input": {
-            "maxLength": 20000,
-            "minLength": 1,
-            "title": "Input",
-            "type": "string"
-          },
-          "name": {
-            "maxLength": 200,
-            "minLength": 1,
-            "title": "Name",
-            "type": "string"
-          },
-          "tags": {
-            "items": {
-              "type": "string"
-            },
-            "title": "Tags",
-            "type": "array"
-          }
-        },
-        "required": [
-          "id",
-          "name",
-          "input"
-        ],
-        "title": "EvaluationTestCase",
-        "type": "object"
-      },
-      "EvaluationTestResult": {
-        "properties": {
-          "detail": {
-            "default": "",
-            "title": "Detail",
-            "type": "string"
-          },
-          "output": {
-            "anyOf": [
-              {
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Output"
-          },
-          "passed": {
-            "anyOf": [
-              {
-                "type": "boolean"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Passed"
-          },
-          "score": {
-            "anyOf": [
-              {
-                "type": "number"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Score"
-          },
-          "test_case_id": {
-            "title": "Test Case Id",
-            "type": "string"
-          }
-        },
-        "required": [
-          "test_case_id"
-        ],
-        "title": "EvaluationTestResult",
         "type": "object"
       },
       "EvidenceState": {
@@ -6013,7 +5626,7 @@
         "type": "string"
       },
       "PlaygroundTestRun": {
-        "description": "One ad hoc playground/test invocation of a single typed input\nagainst either the current draft (``version_id=None``) or one exact,\nimmutable ``AgentVersion`` (``version_id`` set).\n\nDistinct from ``EvaluationRun``: this is a single interactive\nrequest/response exchange for manual inspection (trace, tool calls)\na researcher runs while iterating on a draft, not a scored batch\nsuite run consulted for trends.",
+        "description": "One ad hoc playground/test invocation of a single typed input\nagainst either the current draft (``version_id=None``) or one exact,\nimmutable ``AgentVersion`` (``version_id`` set).\n\nThis is a single interactive request/response exchange for manual\ninspection of traces and tool calls while iterating on a draft.",
         "properties": {
           "completed_at": {
             "anyOf": [
@@ -6211,10 +5824,6 @@
             "title": "Description",
             "type": "string"
           },
-          "evaluation_policy": {
-            "title": "Evaluation Policy",
-            "type": "string"
-          },
           "model_profile": {
             "title": "Model Profile",
             "type": "string"
@@ -6252,8 +5861,7 @@
           "citation_coverage_threshold",
           "require_human_approval",
           "allowed_export_destinations",
-          "model_profile",
-          "evaluation_policy"
+          "model_profile"
         ],
         "title": "ProjectSettings",
         "type": "object"
@@ -6569,7 +6177,7 @@
       },
       "ReleaseAttestation": {
         "additionalProperties": false,
-        "description": "Signed, objective attestation that hard release gates passed for one\nexact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a\nharness/runtime consumer to verify at startup before trusting a release.\n\nNever re-runs gates and never reflects advisory ``EvaluationRecord``\nscores -- it is a purely read-derived, reproducible projection of a\nrelease's own ``gate_report_id`` and its version's own ``manifest_hash``.\n``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==\n\"hmac-sha256\"``) over the canonical, finite JSON encoding of every field\nbelow when an attestation-signing key is configured; when none is\nconfigured, ``signature_algorithm == \"sha256-digest\"`` and ``signature``\nis a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-\nevidence check but explicitly *not* claimed as a keyed signature, so a\nconsumer can distinguish \"verified against a shared secret\" from \"just a\ncontent digest\" and this package never overstates what it can honestly\nattest.\n\n``key_version`` names which configured signing key produced ``signature``\n(``None`` for the unkeyed digest form). It is included in the signed\npayload itself, so an attacker cannot substitute a different key\nversion's claim without invalidating the signature. A verifier that\nretains multiple historical secrets (key rotation) uses this field to\nlook up the one specific secret this attestation was actually signed\nwith, rather than guessing or trying every known key.",
+        "description": "Signed, objective attestation that hard release gates passed for one\nexact ``AgentRelease`` + its immutable ``ReleaseGateReport``, for a\nharness/runtime consumer to verify at startup before trusting a release.\n\nNever re-runs gates -- it is a purely read-derived, reproducible projection of a\nrelease's own ``gate_report_id`` and its version's own ``manifest_hash``.\n``signature`` is a keyed HMAC-SHA256 digest (``signature_algorithm ==\n\"hmac-sha256\"``) over the canonical, finite JSON encoding of every field\nbelow when an attestation-signing key is configured; when none is\nconfigured, ``signature_algorithm == \"sha256-digest\"`` and ``signature``\nis a plain (unkeyed) SHA-256 digest instead -- still a genuine tamper-\nevidence check but explicitly *not* claimed as a keyed signature, so a\nconsumer can distinguish \"verified against a shared secret\" from \"just a\ncontent digest\" and this package never overstates what it can honestly\nattest.\n\n``key_version`` names which configured signing key produced ``signature``\n(``None`` for the unkeyed digest form). It is included in the signed\npayload itself, so an attacker cannot substitute a different key\nversion's claim without invalidating the signature. A verifier that\nretains multiple historical secrets (key rotation) uses this field to\nlook up the one specific secret this attestation was actually signed\nwith, rather than guessing or trying every known key.",
         "properties": {
           "attested_at": {
             "format": "date-time",
@@ -6702,7 +6310,7 @@
         "type": "object"
       },
       "ReleaseAttestationStatus": {
-        "description": "Whether a ``ReleaseAttestation`` found all objective hard gates passing.\n\nDerived exclusively from ``ReleaseGateReport.passed`` (schema/build/\ntest/auth/policy/approval/security/smoke/binding) -- a report's\n``evaluations`` (advisory) never influence this value, matching the\nhard-gate/advisory-evaluation boundary enforced everywhere else in this\npackage.",
+        "description": "Whether a ``ReleaseAttestation`` found all objective hard gates passing.\n\nDerived exclusively from ``ReleaseGateReport.passed`` (schema/build/\ntest/auth/policy/approval/security/smoke/binding).",
         "enum": [
           "attested",
           "failed"
@@ -6717,13 +6325,6 @@
             "format": "date-time",
             "title": "Created At",
             "type": "string"
-          },
-          "evaluations": {
-            "items": {
-              "$ref": "#/components/schemas/EvaluationRecord"
-            },
-            "title": "Evaluations",
-            "type": "array"
           },
           "id": {
             "title": "Id",
@@ -8905,366 +8506,6 @@
         ]
       }
     },
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-runs": {
-      "get": {
-        "description": "History/trends read surface: every past run for an agent, optionally\nfiltered to one suite via ``suite_id``. Advisory only -- never consulted\nby a release gate.",
-        "operationId": "list_evaluation_runs_api_agent_studio_agents__logical_agent_id__evaluation_runs_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "suite_id",
-            "required": false,
-            "schema": {
-              "anyOf": [
-                {
-                  "type": "string"
-                },
-                {
-                  "type": "null"
-                }
-              ],
-              "title": "Suite Id"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/EvaluationRun"
-                  },
-                  "title": "Response List Evaluation Runs Api Agent Studio Agents  Logical Agent Id  Evaluation Runs Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Evaluation Runs",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-runs/{run_id}": {
-      "get": {
-        "operationId": "get_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_runs__run_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "run_id",
-            "required": true,
-            "schema": {
-              "title": "Run Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EvaluationRun"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Evaluation Run",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites": {
-      "get": {
-        "operationId": "list_evaluation_suites_api_agent_studio_agents__logical_agent_id__evaluation_suites_get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "items": {
-                    "$ref": "#/components/schemas/EvaluationSuite"
-                  },
-                  "title": "Response List Evaluation Suites Api Agent Studio Agents  Logical Agent Id  Evaluation Suites Get",
-                  "type": "array"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "List Evaluation Suites",
-        "tags": [
-          "agent-studio"
-        ]
-      },
-      "post": {
-        "description": "Create a durable, reusable advisory ``EvaluationSuite`` for an agent.\n\nRequires ``CONTRIBUTOR`` or above -- a pure ``VIEWER`` may inspect\nsuites/runs but not author new ones. Never gates a release: see\n``EvaluationSuite``/``EvaluationRun`` docstrings.",
-        "operationId": "create_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateEvaluationSuiteRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EvaluationSuite"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Evaluation Suite",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites/{suite_id}": {
-      "get": {
-        "operationId": "get_evaluation_suite_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__get",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "suite_id",
-            "required": true,
-            "schema": {
-              "title": "Suite Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "query",
-            "name": "project_id",
-            "required": true,
-            "schema": {
-              "title": "Project Id",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EvaluationSuite"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Get Evaluation Suite",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
-    "/api/agent-studio/agents/{logical_agent_id}/evaluation-suites/{suite_id}/runs": {
-      "post": {
-        "description": "Trigger one advisory evaluation run of ``suite_id`` against either the\nagent's current draft (``version_id`` omitted) or one exact, immutable\n``AgentVersion`` (``version_id`` set).\n\nHonestly fails with 503 when no evaluation execution adapter is wired\n(see ``evaluation_runner.UnavailableEvaluationRunner``) rather than\npersisting or returning a fabricated ``COMPLETED`` run -- no run record\nis created at all in that case, since there is nothing genuine to\nrecord. Requires ``CONTRIBUTOR`` or above, matching suite creation.",
-        "operationId": "create_evaluation_run_api_agent_studio_agents__logical_agent_id__evaluation_suites__suite_id__runs_post",
-        "parameters": [
-          {
-            "in": "path",
-            "name": "logical_agent_id",
-            "required": true,
-            "schema": {
-              "title": "Logical Agent Id",
-              "type": "string"
-            }
-          },
-          {
-            "in": "path",
-            "name": "suite_id",
-            "required": true,
-            "schema": {
-              "title": "Suite Id",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "schema": {
-                "$ref": "#/components/schemas/CreateEvaluationRunRequest"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "201": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/EvaluationRun"
-                }
-              }
-            },
-            "description": "Successful Response"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "summary": "Create Evaluation Run",
-        "tags": [
-          "agent-studio"
-        ]
-      }
-    },
     "/api/agent-studio/agents/{logical_agent_id}/fork": {
       "post": {
         "operationId": "fork_agent_api_agent_studio_agents__logical_agent_id__fork_post",
@@ -10249,7 +9490,7 @@
         ]
       },
       "post": {
-        "description": "Invoke the agent once with a single typed input for the interactive\nTest/Playground tab, against either the current draft (``version_id``\nomitted) or one exact, immutable ``AgentVersion`` (``version_id`` set).\n\nHonestly fails with 503 when no playground execution adapter is wired\n(see ``playground_invoker.UnavailablePlaygroundInvoker``) rather than\npersisting or returning a fabricated response -- no run record is\ncreated at all in that case. Requires ``CONTRIBUTOR`` or above, matching\nevaluation-run creation. Side effects are always the deterministic\n``SideEffectPolicy.DRY_RUN``.",
+        "description": "Invoke the agent once with a single typed input for the interactive\nTest/Playground tab, against either the current draft (``version_id``\nomitted) or one exact, immutable ``AgentVersion`` (``version_id`` set).\n\nHonestly fails with 503 when no playground execution adapter is wired\n(see ``playground_invoker.UnavailablePlaygroundInvoker``) rather than\npersisting or returning a fabricated response -- no run record is\ncreated at all in that case. Requires ``CONTRIBUTOR`` or above, matching\ntest-run creation. Side effects are always the deterministic\n``SideEffectPolicy.DRY_RUN``.",
         "operationId": "create_test_run_api_agent_studio_agents__logical_agent_id__test_runs_post",
         "parameters": [
           {
@@ -11204,7 +10445,7 @@
     },
     "/api/agent-studio/releases/{release_id}/attestation": {
       "get": {
-        "description": "Return a signed, objective ``ReleaseAttestation`` for one release.\n\nDerived read-only from the release's own immutable ``ReleaseGateReport``\n(never re-run, never influenced by advisory evaluations); intended for\nharness/runtime startup to verify hard release gates passed before\ntrusting a release. Raises 404 if the release does not exist in this\nscope, or has never had release gates run against it.",
+        "description": "Return a signed, objective ``ReleaseAttestation`` for one release.\n\nDerived read-only from the release's own immutable ``ReleaseGateReport``\n(never re-run); intended for\nharness/runtime startup to verify hard release gates passed before\ntrusting a release. Raises 404 if the release does not exist in this\nscope, or has never had release gates run against it.",
         "operationId": "get_release_attestation_route_api_agent_studio_releases__release_id__attestation_get",
         "parameters": [
           {

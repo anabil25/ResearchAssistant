@@ -91,11 +91,10 @@ Open <http://localhost:3000>.
 | **Matching Explorer** | Apply hard filters, resolve entities, compute deterministic evidence-weighted PI / facility / method scores, compare candidates, and confirm the shortlist. |
 | **Dataset Lab** | Select assets, profile schema and quality, generate an analysis plan, compute deterministic metrics, explain model output, and gate scale-out on approval. |
 | **Institutional Q&A** | Get identity-filtered, citation-backed answers from policy and handbook documents; the agent abstains explicitly when a question is outside its authorized scope. |
-| **Workflow Automation** | Build templates, define typed DAG steps, set triggers, configure bounded retries and approval gates, dry-run, and maintain durable history. |
+| **Screening Studio** | Apply review criteria to authorized papers, inspect deterministic inclusion decisions, and discover public candidates without treating them as authorized evidence. |
 
-The workbench also includes a governed **Library**, authoritative **Runs &
-Approvals**, visible connector setup, and complete project **Settings** for
-agents/models, retrieval, governance, and evaluation.
+The workbench also includes a governed **Library**, visible connector setup,
+and project **Settings** for models, retrieval, and governance.
 
 ### Online research and industry connectors
 
@@ -601,7 +600,6 @@ agents/                  # Hosted Agent source (Python 3.13 remote build)
   institution/           #   institution-agent
   screening/             #   screening-agent
   shared/                #   shared config, credential helpers, evidence contracts
-  evals/                 #   evaluation datasets and eval YAML manifests
 
 packages/
   research_core/         #   evidence, citation, approval, and score contracts

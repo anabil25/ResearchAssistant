@@ -10,11 +10,10 @@ test double, and a real Application-Insights-backed implementation that is
 only ever wired in when ``Settings.agent_studio_app_insights_resource_id``
 is actually configured.
 
-Unlike ``evaluation_runner.py``/``playground_invoker.py`` (which always
-return the explicit-unavailable adapter because *execution* requires the
-harness-owned runtime, out of scope for this platform session), querying
-Application Insights for already-emitted telemetry is squarely within this
-platform's own ownership -- so ``build_observability_provider`` mirrors
+Unlike ``playground_invoker.py`` (which returns an explicit-unavailable
+adapter when execution is not configured), querying Application Insights
+for already-emitted telemetry is squarely within this platform's own
+ownership -- so ``build_observability_provider`` mirrors
 ``build_model_discovery``: real when configured, explicit ``503``-raising
 ``UnavailableObservabilityProvider`` otherwise. Nothing here is cached or
 persisted by this platform; every call re-queries the source freshly.
