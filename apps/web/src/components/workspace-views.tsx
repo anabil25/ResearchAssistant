@@ -39,7 +39,6 @@ export type WorkspaceViewId =
   | "library"
   | "settings"
   | "agents"
-  | "prompt-builder"
   | ReachableCapabilityId;
 
 export interface CapabilityCard {

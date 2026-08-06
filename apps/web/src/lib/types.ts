@@ -123,32 +123,6 @@ export interface FoundryAgentInventoryItem {
   model: string | null;
 }
 
-export interface FoundryProjectContext {
-  project_id: string;
-}
-
-export interface FoundryModelDeployment {
-  deployment_name: string;
-  model_name: string;
-  model_format: string;
-  capacity: number | null;
-}
-
-export interface PromptAgentDraft {
-  logical_agent_id: string;
-  manifest: Record<string, unknown> & {
-    instructions: string;
-    capabilities: unknown[];
-    model_deployment: FoundryModelDeployment | null;
-  };
-  etag: string;
-}
-
-export interface PromptCapabilityBinding {
-  binding_id: string;
-  descriptor_ref: { id: string };
-  operation_ref: { id: string };
-}
 export type AutomationStudioResult =
   components["schemas"]["AutomationStudioResult"];
 export type StudioResult = AutomationStudioResult;

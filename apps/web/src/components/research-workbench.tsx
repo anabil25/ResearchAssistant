@@ -16,7 +16,7 @@ import {
 import { useCallback, useEffect, useRef, useState } from "react";
 
 import { StudioForCapability } from "@/components/studio-components";
-import { FoundryAgentCatalog, PromptAgentBuilder } from "@/components/foundry-agent-studio";
+import { FoundryAgentCatalog } from "@/components/foundry-agent-studio";
 import { ProjectSettingsView } from "@/components/project-settings";
 import {
   CAPABILITY_CARDS,
@@ -40,7 +40,6 @@ function viewTitle(view: WorkspaceViewId): string {
   if (view === "library") return "Evidence Library";
   if (view === "settings") return "Project Settings";
   if (view === "agents") return "Agents";
-  if (view === "prompt-builder") return "Prompt builder";
   return (
     CAPABILITY_CARDS.find((capability) => capability.id === view)?.shortTitle ??
     "Research Assistant"
@@ -53,7 +52,6 @@ function isWorkspaceView(candidate: string | null): candidate is WorkspaceViewId
     candidate === "library" ||
     candidate === "settings" ||
     candidate === "agents" ||
-    candidate === "prompt-builder" ||
     CAPABILITY_CARDS.some((capability) => capability.id === candidate)
   );
 }
@@ -547,8 +545,8 @@ export function ResearchWorkbench() {
         <nav className="rail-nav utility-nav" aria-label="Project utilities">
           <button
             className="rail-link"
-            data-active={view === "agents" || view === "prompt-builder"}
-            aria-current={view === "agents" || view === "prompt-builder" ? "page" : undefined}
+            data-active={view === "agents"}
+            aria-current={view === "agents" ? "page" : undefined}
             onClick={() => navigate("agents")}
           >
             <Bot size={17} />
@@ -621,13 +619,7 @@ export function ResearchWorkbench() {
               onRefresh={refresh}
             />
           ) : view === "agents" ? (
-            <FoundryAgentCatalog
-              onCreatePrompt={() => navigate("prompt-builder")}
-            />
-          ) : view === "prompt-builder" ? (
-            <PromptAgentBuilder
-              onViewAgents={() => navigate("agents")}
-            />
+            <FoundryAgentCatalog />
           ) : (
             <StudioForCapability
               capability={view}

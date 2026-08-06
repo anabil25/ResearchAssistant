@@ -21,8 +21,6 @@ import type {
   ConnectionView,
   ConnectorSetting,
   FoundryAgentInventoryItem,
-  FoundryModelDeployment,
-  FoundryProjectContext,
   LibraryItem,
   MemoryScope,
   MemoryScopeControl,
@@ -31,8 +29,6 @@ import type {
   PersonalProjectUpdate,
   ProjectSummary,
   ProjectSettings,
-  PromptAgentDraft,
-  PromptCapabilityBinding,
   RunSummary,
   StudioResult,
   WorkflowBlueprint,
@@ -724,54 +720,6 @@ export async function getAgentStudioCatalog(): Promise<AgentSummary[]> {
 export async function getFoundryAgentInventory(
 ): Promise<FoundryAgentInventoryItem[]> {
   return agentStudioFetch<FoundryAgentInventoryItem[]>("/foundry/agents");
-}
-
-/** The server-authorized Foundry project; distinct from a personal workspace project. */
-export async function getFoundryProjectContext(): Promise<FoundryProjectContext> {
-  return agentStudioFetch<FoundryProjectContext>("/foundry/context");
-}
-
-/** Project-deployed models available for a prompt-agent draft. */
-export async function getFoundryProjectModels(): Promise<FoundryModelDeployment[]> {
-  return agentStudioFetch<FoundryModelDeployment[]>("/models");
-}
-
-/** Creates the server-owned base draft before client-selected prompt fields are applied. */
-export async function createPromptAgentDraft(payload: {
-  logical_agent_id: string;
-  project_id: string;
-  display_name: string;
-  description: string;
-}): Promise<PromptAgentDraft> {
-  return agentStudioFetch<PromptAgentDraft>("/agents", {
-    method: "POST",
-    body: JSON.stringify({ ...payload, owner_kind: "user" }),
-  });
-}
-
-/** Attaches one governed capability; callers then persist the returned binding in their draft. */
-export async function attachPromptCapability(payload: {
-  descriptor_id: string;
-  operation: string;
-}): Promise<PromptCapabilityBinding> {
-  return agentStudioFetch<PromptCapabilityBinding>("/capabilities/attach", {
-    method: "POST",
-    body: JSON.stringify(payload),
-  });
-}
-
-/** Saves a whole server-created draft guarded by its current ETag. */
-export async function savePromptAgentDraft(
-  draft: PromptAgentDraft,
-): Promise<PromptAgentDraft> {
-  return agentStudioFetch<PromptAgentDraft>(
-    `/agents/${encodeURIComponent(draft.logical_agent_id)}/draft`,
-    {
-      method: "PUT",
-      headers: { "If-Match": draft.etag },
-      body: JSON.stringify({ manifest: draft.manifest }),
-    },
-  );
 }
 
 /** Exact, immutable version contract for one released version. */

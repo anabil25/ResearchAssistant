@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  Bot,
   CheckCircle2,
   CircleDashed,
   Globe2,
@@ -19,7 +18,7 @@ interface ProjectSettingsViewProps {
   onRefresh: () => Promise<void>;
 }
 
-const SETTINGS_SECTIONS = ["General", "Agents", "Connections"] as const;
+const SETTINGS_SECTIONS = ["General", "Connections"] as const;
 type SettingsSection = (typeof SETTINGS_SECTIONS)[number];
 
 export function ProjectSettingsView({
@@ -58,8 +57,8 @@ export function ProjectSettingsView({
           <span className="eyebrow">Project control plane</span>
           <h1>Project Settings</h1>
           <p>
-            Manage project defaults, inspect deployed agents, and configure
-            research connections without exposing stored secret values.
+            Manage project defaults and configure research connections without
+            exposing stored secret values.
           </p>
         </div>
       </header>
@@ -79,8 +78,6 @@ export function ProjectSettingsView({
             >
               {item === "General" ? (
                 <Settings size={16} />
-              ) : item === "Agents" ? (
-                <Bot size={16} />
               ) : (
                 <Globe2 size={16} />
               )}
@@ -223,62 +220,6 @@ export function ProjectSettingsView({
                 </form>
               ) : (
                 <div className="loading-block">Loading project settings...</div>
-              )}
-            </section>
-          ) : null}
-
-          {section === "Agents" ? (
-            <section className="settings-section">
-              <div className="settings-section-heading">
-                <div>
-                  <h2>Deployed agents</h2>
-                  <p>
-                    Live agent assignments reported by the current project.
-                  </p>
-                </div>
-                {data ? (
-                  <span className="subtle-chip">{data.agents.length} reported</span>
-                ) : null}
-              </div>
-              {data ? (
-                data.agents.length ? (
-                  <div className="agent-setting-grid">
-                    {data.agents.map((agent) => (
-                      <article className="panel agent-setting-card" key={agent.id}>
-                        <div>
-                          <span className="agent-status-dot" />
-                          <span>
-                            <strong>{agent.name}</strong>
-                            <small>{agent.deployment}</small>
-                          </span>
-                          <em>{agent.status}</em>
-                        </div>
-                        <dl>
-                          <div>
-                            <dt>Model tier</dt>
-                            <dd>{agent.model_tier}</dd>
-                          </div>
-                          <div>
-                            <dt>Web boundary</dt>
-                            <dd>{agent.web_access}</dd>
-                          </div>
-                        </dl>
-                        <div className="agent-workflow">
-                          {agent.workflow_steps.map((step) => (
-                            <span key={step}>{step}</span>
-                          ))}
-                        </div>
-                      </article>
-                    ))}
-                  </div>
-                ) : (
-                  <div className="empty-workspace">
-                    <Bot size={22} />
-                    <strong>No deployed agents were reported</strong>
-                  </div>
-                )
-              ) : (
-                <div className="loading-block">Loading deployed agents...</div>
               )}
             </section>
           ) : null}
