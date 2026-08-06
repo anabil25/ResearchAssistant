@@ -18,7 +18,7 @@
             "version": "2026-07-09"
           },
           "sku": {
-            "capacity": 200,
+            "capacity": 100,
             "name": "DataZoneStandard"
           }
         },
@@ -30,7 +30,7 @@
             "version": "2026-03-17"
           },
           "sku": {
-            "capacity": 200,
+            "capacity": 100,
             "name": "DataZoneStandard"
           }
         },

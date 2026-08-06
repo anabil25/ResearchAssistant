@@ -16,7 +16,7 @@ services:
                 version: "2026-07-09"
               name: gpt-5.6-sol
               sku:
-                capacity: 200
+                capacity: 100
                 name: DataZoneStandard
             - model:
                 format: OpenAI
@@ -24,7 +24,7 @@ services:
                 version: "2026-03-17"
               name: gpt-5.4-mini
               sku:
-                capacity: 200
+                capacity: 100
                 name: DataZoneStandard
             - model:
                 format: OpenAI

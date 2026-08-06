@@ -66,7 +66,6 @@ MODEL_RATE_LIMIT_RETRY_DELAYS = (5.0, 15.0)
 TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 TOOLBOX_FEATURE_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
 DEFAULT_TOOLBOX_NAME = "research-shared"
-DEFAULT_TOOLBOX_VERSION = "3"
 
 
 def _managed_identity_client_id(client_id: str | None) -> str | None:
@@ -104,7 +103,7 @@ def shared_toolbox(
     timeout: float = 120.0,
 ) -> MCPStreamableHTTPTool:
     resolved_name = name or os.environ.get("TOOLBOX_NAME", DEFAULT_TOOLBOX_NAME)
-    resolved_version = version or os.environ.get("TOOLBOX_VERSION", DEFAULT_TOOLBOX_VERSION)
+    resolved_version = version or os.environ.get("TOOLBOX_VERSION") or None
     credential = credential or get_async_credential()
     http_client = httpx.AsyncClient(
         auth=_BearerRefresh(get_bearer_token_provider(credential, TOOLBOX_SCOPE)),
@@ -115,8 +114,13 @@ def shared_toolbox(
     if configured_endpoint is not None:
         url = configured_endpoint
     else:
-        project_endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"]
-        url = f"{project_endpoint.rstrip('/')}/toolboxes/{resolved_name}/versions/{resolved_version}/mcp?api-version=v1"
+        # Version numbers restart at 1 in every new project, so follow the toolbox's
+        # default version unless one was pinned explicitly.
+        project_endpoint = os.environ["FOUNDRY_PROJECT_ENDPOINT"].rstrip("/")
+        base = f"{project_endpoint}/toolboxes/{resolved_name}"
+        if resolved_version:
+            base = f"{base}/versions/{resolved_version}"
+        url = f"{base}/mcp?api-version=v1"
     return MCPStreamableHTTPTool(
         name=resolved_name,
         url=url,

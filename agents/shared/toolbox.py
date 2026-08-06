@@ -22,7 +22,6 @@ from .credentials import get_async_credential
 TOOLBOX_SCOPE = "https://ai.azure.com/.default"
 TOOLBOX_FEATURE_HEADER = {"Foundry-Features": "Toolboxes=V1Preview"}
 DEFAULT_TOOLBOX_NAME = "research-shared"
-DEFAULT_TOOLBOX_VERSION = "3"
 
 
 class _BearerRefresh(httpx.Auth):
@@ -45,8 +44,13 @@ class _BearerRefresh(httpx.Auth):
         yield request
 
 
-def toolbox_url(endpoint: str, name: str, version: str) -> str:
-    return f"{endpoint.rstrip('/')}/toolboxes/{name}/versions/{version}/mcp?api-version=v1"
+def toolbox_url(endpoint: str, name: str, version: str | None = None) -> str:
+    # Version numbers restart at 1 in every new project, so an unpinned caller must
+    # follow the toolbox's default version rather than a number baked into the image.
+    base = f"{endpoint.rstrip('/')}/toolboxes/{name}"
+    if version:
+        base = f"{base}/versions/{version}"
+    return f"{base}/mcp?api-version=v1"
 
 
 def shared_toolbox(
@@ -63,7 +67,7 @@ def shared_toolbox(
     """
     resolved_endpoint = endpoint or os.environ["FOUNDRY_PROJECT_ENDPOINT"]
     resolved_name = name or os.environ.get("TOOLBOX_NAME", DEFAULT_TOOLBOX_NAME)
-    resolved_version = version or os.environ.get("TOOLBOX_VERSION", DEFAULT_TOOLBOX_VERSION)
+    resolved_version = version or os.environ.get("TOOLBOX_VERSION") or None
     # Managed identity directly where one exists: the full DefaultAzureCredential
     # chain probes sources a hosted container does not have, and blocks.
     cred = credential or get_async_credential()
