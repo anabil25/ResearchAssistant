@@ -353,9 +353,9 @@
       <h1>Research Assistant on Azure</h1>
       <p class="lead">
         An evidence-governed research accelerator for higher education: researchers work in a Next.js workbench
-        that coordinates <b>seven Foundry Hosted Agents</b> across six studios —
-        Literature, Grant, Matching, Dataset Lab, Institutional Q&amp;A, and Workflow Automation —
-        with deterministic approval gates on every write.
+        whose API calls <b>seven Foundry Hosted Agents</b> across six studios —
+        Literature, Grant, Matching, Dataset Lab, Screening, and Institutional Q&amp;A —
+        plus a workflow-automation surface, with deterministic approval gates on every write.
       </p>
       <div class="cta">
         <a class="btn btn-primary" id="getStarted" href="#">🚀 Get started — deploy</a>
@@ -376,6 +376,7 @@
         <span class="chip">📚 <b>6</b> research studios</span>
         <span class="chip">🔎 AI Search <b>+ Doc Intelligence</b></span>
         <span class="chip">✋ <b>Approval gates</b> on writes</span>
+        <span class="chip">🧰 <b>1</b> governed Toolbox</span>
         <span class="chip">🌐 <b>12</b> public connectors</span>
         <span class="chip">☁️ <b>Container Apps</b> + private endpoints</span>
       </div>
@@ -384,7 +385,7 @@
     <!-- Architecture overview — shown on README tab only -->
     <section class="arch-overview" id="archOverview">
       <h2>How it works</h2>
-      <p class="arch-sub">Seven Foundry Hosted Agents coordinate across six research studios. Every public-source call leaves through one governed API Management egress.</p>
+      <p class="arch-sub">The research API resolves identity, evidence, and approvals, then calls one Hosted specialist per capability. Every public-source call leaves through one governed API Management egress.</p>
       <div class="arch-mermaid" id="archDiagram">
         <div class="loading"><span class="spinner"></span> Rendering diagram…</div>
       </div>
@@ -397,14 +398,20 @@
         <span><i style="background:#e5e7eb"></i> Observability</span>
       </div>
       <p class="arch-note">
+        <b>There is no agent-to-agent fan-out.</b> The API derives tenant identity, filters
+        Azure AI Search, resolves citations, and records approvals, then invokes exactly one
+        Hosted specialist for the requested capability. <code>research-coordinator</code> is
+        deployed as the workflow-orchestration surface, but graph validation is deterministic
+        Python — it is not a runtime router.
+        <br/><br/>
         <b>API Management is the only path to the public internet.</b> Nothing else in the
-        solution egresses. It publishes each research source twice — as an MCP server the
-        Foundry Toolboxes bind to, and as a normalized REST API the research API calls with
-        its managed identity. Inbound calls must present an Entra token whose <code>oid</code>
-        matches the API, Foundry project, or gateway identity; per-operation policies validate
-        every parameter, normalize each upstream response, and apply rate limits. Source API
-        keys live only as APIM named values, so no agent, container, or model ever sees a
-        credential.
+        solution egresses. It publishes each research source twice — as an MCP server that the
+        single shared Foundry Toolbox (<code>research-shared</code>, immutable versions) binds
+        to, and as a normalized REST API the research API calls with its managed identity.
+        Public discovery is opt-in per turn; <code>institution-agent</code> has no tools at all.
+        Per-operation policies validate every parameter, normalize each upstream response, and
+        apply rate limits, and source API keys live only as APIM named values — so no agent,
+        container, or model ever sees a credential.
       </p>
     </section>
 
@@ -452,23 +459,24 @@
   const ARCH_MERMAID_SRC = `
 flowchart TB
     Researcher(["Researcher"])
-    Web["<b>Next.js Workbench</b><br/>6 studios · Library · Approvals"]
-    API["<b>FastAPI Research API</b><br/>authz · citations · scoring · approvals"]
+    Web["<b>Next.js Workbench</b><br/>6 studios · Library · Settings · Approvals"]
+    API["<b>FastAPI Research API</b><br/>identity · retrieval · citations<br/>scoring · approvals · run state"]
 
-    Coord["<b>research-coordinator</b>"]
-    Offline["<b>5 offline specialists</b><br/>literature · grant · matching<br/>dataset · institution"]
-    Online["<b>3 online specialists</b><br/>literature · grant · matching"]
+    Tooled["<b>5 tool-bound specialists</b><br/>literature · grant · matching<br/>dataset · screening"]
+    Inst["<b>institution-agent</b><br/>no tools · authorized policy only"]
+    Coord["<b>research-coordinator</b><br/>workflow orchestration surface"]
 
-    Toolbox["<b>4 Foundry Toolboxes</b><br/>versioned MCP surfaces"]
+    Toolbox["<b>1 shared Foundry Toolbox</b><br/>research-shared · immutable versions<br/>tool_search · web_search · code_interpreter"]
     APIM["<b>Azure API Management</b><br/><i>sole public egress</i>"]
-    Sources["<b>12 public research sources</b><br/>PubMed · Crossref · OpenAlex · arXiv<br/>ClinicalTrials · Grants.gov · ORCID · ROR"]
+    Sources["<b>12 public research sources</b><br/>PubMed · Europe PMC · Crossref · OpenAlex · arXiv<br/>ClinicalTrials · Grants.gov · NIH RePORTER<br/>DataCite · ORCID · ROR · Semantic Scholar"]
 
-    Search[("<b>Azure AI Search</b><br/>tenant-filtered")]
-    Cosmos[("<b>Cosmos DB</b><br/>runs · approvals")]
+    Search[("<b>Azure AI Search</b><br/>tenant-filtered evidence")]
+    Cosmos[("<b>Cosmos DB</b><br/>projects · runs · approvals")]
     Blob[("<b>Blob Storage</b><br/>private endpoint")]
-    DocI["<b>Document Intelligence</b>"]
-    Models[("<b>Foundry models</b><br/>gpt-5.6-sol · gpt-5.4-mini")]
-    Obs["<b>App Insights</b>"]
+    DocI["<b>Document Intelligence</b><br/>prebuilt-layout ingestion"]
+    Models[("<b>Foundry model deployments</b><br/>gpt-5.6-sol · gpt-5.4-mini<br/>text-embedding-3-large")]
+    Memory[("<b>Foundry memory store</b>")]
+    Obs["<b>App Insights</b> + Log Analytics"]
 
     Researcher --> Web
     Web -->|"internal ingress"| API
@@ -476,14 +484,16 @@ flowchart TB
     API --> Cosmos
     API --> Blob
     API --> DocI
+    API -->|"embeddings"| Models
+    API -.-> Memory
     API -.-> Obs
-    API -->|"bounded task"| Coord
-    Coord --> Offline
-    Coord --> Online
-    Offline --> Models
-    Online --> Models
-    Online -.->|"MCP · opt-in"| Toolbox
-    Toolbox -->|"per-source MCP tools"| APIM
+    API -->|"typed envelope per capability"| Tooled
+    API -->|"server-resolved passages"| Inst
+    API -.->|"deployed · not in the request path"| Coord
+    Tooled --> Models
+    Inst --> Models
+    Tooled -.->|"MCP · opt-in per turn"| Toolbox
+    Toolbox -->|"per-connector MCP servers"| APIM
     API -.->|"normalized REST"| APIM
     APIM -->|"bounded metadata"| Sources
 
@@ -497,10 +507,10 @@ flowchart TB
 
     class Researcher person
     class Web,API app
-    class Coord,Offline,Online agent
+    class Coord,Tooled,Inst agent
     class Toolbox,APIM gateway
     class Sources ext
-    class Search,Cosmos,Blob,DocI,Models data
+    class Search,Cosmos,Blob,DocI,Models,Memory data
     class Obs obs
 `;
   const $  = (s, r = document) => r.querySelector(s);
