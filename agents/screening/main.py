@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
+import random
 import sys
 from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
@@ -31,19 +33,25 @@ from agent_framework import (
     AgentResponse,
     ChatContext,
     ChatMiddleware,
+    ChatResponse,
+    ChatResponseUpdate,
     InlineSkill,
     InMemoryHistoryProvider,
     Message,
+    ResponseStream,
     SkillFrontmatter,
     SkillsProvider,
     create_harness_agent,
     tool,
 )
+from agent_framework.exceptions import ChatClientException
 from agent_framework.foundry import FoundryChatClient
 from agent_framework_foundry_hosting import ResponsesHostServer  # type: ignore[import-untyped]
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 from shared.credentials import get_async_credential
 from shared.toolbox import shared_toolbox
+
+logger = logging.getLogger("research_assistant.screening")
 
 #: Concurrent calls to the small deployment, across every in-flight tool call.
 #: The model issues several `screen_papers` calls at once, so a per-call limit
@@ -51,6 +59,7 @@ from shared.toolbox import shared_toolbox
 SCREENING_CONCURRENCY = 4
 SCREENING_ATTEMPTS = 3
 _SCREENING_LIMIT = asyncio.Semaphore(SCREENING_CONCURRENCY)
+MODEL_RATE_LIMIT_RETRY_DELAYS = (5.0, 15.0)
 
 INSTRUCTIONS = """\
 You support systematic-review evidence work in two explicit modes.
@@ -579,12 +588,148 @@ class DiscoveryModelMiddleware(ChatMiddleware):
         await call_next()
 
 
+def _exception_nodes(error: BaseException) -> tuple[BaseException, ...]:
+    pending = [error]
+    resolved: list[BaseException] = []
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if id(current) in seen:
+            continue
+        seen.add(id(current))
+        resolved.append(current)
+        for linked in (current.__cause__, current.__context__):
+            if linked is not None:
+                pending.append(linked)
+        pending.extend(item for item in current.args if isinstance(item, BaseException))
+    return tuple(resolved)
+
+
+def _is_rate_limit_error(error: BaseException) -> bool:
+    return any(
+        "rate limit" in str(item).casefold()
+        or "too many requests" in str(item).casefold()
+        or "429" in str(item)
+        for item in _exception_nodes(error)
+    )
+
+
+def _retry_after_seconds(error: BaseException, fallback: float) -> float:
+    for item in _exception_nodes(error):
+        response = getattr(item, "response", None)
+        headers = getattr(response, "headers", None) or getattr(item, "headers", None)
+        if headers is None:
+            continue
+        retry_after_ms = headers.get("retry-after-ms")
+        if retry_after_ms is not None:
+            try:
+                return max(0.0, float(retry_after_ms) / 1_000)
+            except (TypeError, ValueError):
+                pass
+        retry_after = headers.get("retry-after")
+        if retry_after is not None:
+            try:
+                return max(0.0, float(retry_after))
+            except (TypeError, ValueError):
+                pass
+    return fallback + random.uniform(0.0, 1.0)
+
+
+class RateLimitRetryMiddleware(ChatMiddleware):
+    """Retry a throttled model call only before that call emits any update.
+
+    Each tool continuation is its own chat-client invocation. Retrying that
+    invocation before its first update is safe: completed tool results are
+    already messages in the context and tools are not replayed. Once any update
+    has been yielded, retrying could duplicate text or tool calls, so the error
+    is allowed to fail honestly instead.
+    """
+
+    async def process(
+        self,
+        context: ChatContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        if not context.stream:
+            await self._run_non_streaming(context, call_next)
+            return
+
+        await call_next()
+        if not isinstance(context.result, ResponseStream):
+            return
+        initial = context.result
+        final_response: ChatResponse[Any] | None = None
+        wrapped: ResponseStream[ChatResponseUpdate, ChatResponse[Any]]
+
+        async def updates() -> Any:
+            nonlocal final_response
+            current = initial
+            for attempt in range(len(MODEL_RATE_LIMIT_RETRY_DELAYS) + 1):
+                emitted = False
+                try:
+                    async for update in current:
+                        emitted = True
+                        yield update
+                    final_response = await current.get_final_response()
+                    return
+                except ChatClientException as exc:
+                    if (
+                        emitted
+                        or not _is_rate_limit_error(exc)
+                        or attempt == len(MODEL_RATE_LIMIT_RETRY_DELAYS)
+                    ):
+                        raise
+                    delay = _retry_after_seconds(
+                        exc,
+                        MODEL_RATE_LIMIT_RETRY_DELAYS[attempt],
+                    )
+                    logger.warning(
+                        "Model rate limited before streaming; retrying in %.1f seconds.",
+                        delay,
+                    )
+                    await asyncio.sleep(delay)
+                    await call_next()
+                    if not isinstance(context.result, ResponseStream):
+                        raise RuntimeError(
+                            "Streaming retry did not return a ResponseStream."
+                        ) from exc
+                    current = context.result
+                    context.result = wrapped
+
+        async def finalize(_updates: Any) -> ChatResponse[Any]:
+            if final_response is None:
+                raise RuntimeError("Model retry stream ended without a final response.")
+            return final_response
+
+        wrapped = ResponseStream(updates(), finalizer=finalize)
+        context.result = wrapped
+
+    async def _run_non_streaming(
+        self,
+        context: ChatContext,
+        call_next: Callable[[], Awaitable[None]],
+    ) -> None:
+        for attempt in range(len(MODEL_RATE_LIMIT_RETRY_DELAYS) + 1):
+            try:
+                await call_next()
+                return
+            except ChatClientException as exc:
+                if (
+                    not _is_rate_limit_error(exc)
+                    or attempt == len(MODEL_RATE_LIMIT_RETRY_DELAYS)
+                ):
+                    raise
+                await asyncio.sleep(
+                    _retry_after_seconds(exc, MODEL_RATE_LIMIT_RETRY_DELAYS[attempt])
+                )
+
+
 def _client(model: str) -> FoundryChatClient:
     return FoundryChatClient(
         project_endpoint=os.environ["FOUNDRY_PROJECT_ENDPOINT"],
         model=model,
         credential=get_async_credential(),
-        middleware=[DiscoveryModelMiddleware()],
+        middleware=[DiscoveryModelMiddleware(), RateLimitRetryMiddleware()],
     )
 
 
