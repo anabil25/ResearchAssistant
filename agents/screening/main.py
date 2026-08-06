@@ -16,7 +16,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Sequence
 from contextvars import ContextVar
 from enum import StrEnum
 from pathlib import Path
@@ -552,6 +552,32 @@ def request_mode(request: ScreeningRequest) -> RequestMode:
     return RequestMode.EXTERNAL_DISCOVERY
 
 
+def latest_request_mode(messages: Sequence[Message]) -> RequestMode | None:
+    """Resolve the latest deterministic request mode across loop feedback.
+
+    AgentLoopMiddleware appends plain-text user feedback between passes. That
+    feedback must not shadow the structured request digest and silently move an
+    external-discovery retry back onto the lead adjudication model.
+    """
+    for message in reversed(messages):
+        if message.role != "user":
+            continue
+        try:
+            payload = json.loads(message.text)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(payload, dict):
+            continue
+        mode = payload.get("mode")
+        if not isinstance(mode, str):
+            continue
+        try:
+            return RequestMode(mode)
+        except ValueError:
+            continue
+    return None
+
+
 class DiscoveryModelMiddleware(ChatMiddleware):
     """Use the efficient model for read-only discovery, not adjudication."""
 
@@ -560,22 +586,14 @@ class DiscoveryModelMiddleware(ChatMiddleware):
         context: ChatContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
-        for message in reversed(context.messages):
-            if message.role != "user":
-                continue
-            try:
-                payload = json.loads(message.text)
-            except json.JSONDecodeError:
-                break
-            if payload.get("mode") == RequestMode.EXTERNAL_DISCOVERY:
-                context.options = {
-                    **(context.options or {}),
-                    "model": os.environ.get(
-                        "SCREENING_DISCOVERY_MODEL",
-                        os.environ.get("SCREENING_SCREENER_MODEL", "gpt-5.4-mini"),
-                    ),
-                }
-            break
+        if latest_request_mode(context.messages) == RequestMode.EXTERNAL_DISCOVERY:
+            context.options = {
+                **(context.options or {}),
+                "model": os.environ.get(
+                    "SCREENING_DISCOVERY_MODEL",
+                    os.environ.get("SCREENING_SCREENER_MODEL", "gpt-5.4-mini"),
+                ),
+            }
         await call_next()
 
 

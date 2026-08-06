@@ -14,6 +14,7 @@ from typing import Any
 
 import httpx
 from agent_framework import MCPStreamableHTTPTool
+from azure.ai.agentserver.core import get_request_context
 from azure.identity.aio import get_bearer_token_provider
 
 from .credentials import get_async_credential
@@ -39,6 +40,8 @@ class _BearerRefresh(httpx.Auth):
         self, request: httpx.Request
     ) -> AsyncGenerator[httpx.Request, httpx.Response]:
         request.headers["Authorization"] = f"Bearer {await self._token()}"
+        for key, value in get_request_context().platform_headers().items():
+            request.headers[key] = value
         yield request
 
 
