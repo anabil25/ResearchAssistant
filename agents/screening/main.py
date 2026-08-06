@@ -16,7 +16,7 @@ import asyncio
 import json
 import os
 import sys
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable
 from contextvars import ContextVar
 from enum import StrEnum
 from pathlib import Path
@@ -156,6 +156,12 @@ class ScreeningReport(BaseModel):
 _CORPUS: ContextVar[dict[str, Paper] | None] = ContextVar("screening_corpus", default=None)
 _CRITERIA: ContextVar[tuple[tuple[str, ...], tuple[str, ...]]] = ContextVar(
     "screening_criteria", default=((), ())
+)
+#: Request mode is computed once at the envelope boundary and inherited by
+#: loop passes and tool-continuation model calls. Message lists are rebuilt by
+#: those layers, so they are not a reliable policy or model-routing carrier.
+_REQUEST_MODE: ContextVar[RequestMode | None] = ContextVar(
+    "screening_request_mode", default=None
 )
 #: Decisions the screening tool has produced this turn, keyed by evidence id.
 #: Mutated in place so a tool running in a child task stays visible to the
@@ -418,10 +424,12 @@ class EnvelopeMiddleware(AgentMiddleware):
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
         request = self._request(context.messages)
+        _REQUEST_MODE.set(None)
         if request is not None:
             corpus = {paper.evidence_id: paper for paper in request.evidence}
             _CORPUS.set(dict(corpus))
             _CRITERIA.set((request.inclusion_criteria, request.exclusion_criteria))
+            _REQUEST_MODE.set(request_mode(request))
             _LEDGER.set({})
             _OUTSTANDING.set(None)
             context.messages = [
@@ -552,32 +560,6 @@ def request_mode(request: ScreeningRequest) -> RequestMode:
     return RequestMode.EXTERNAL_DISCOVERY
 
 
-def latest_request_mode(messages: Sequence[Message]) -> RequestMode | None:
-    """Resolve the latest deterministic request mode across loop feedback.
-
-    AgentLoopMiddleware appends plain-text user feedback between passes. That
-    feedback must not shadow the structured request digest and silently move an
-    external-discovery retry back onto the lead adjudication model.
-    """
-    for message in reversed(messages):
-        if message.role != "user":
-            continue
-        try:
-            payload = json.loads(message.text)
-        except json.JSONDecodeError:
-            continue
-        if not isinstance(payload, dict):
-            continue
-        mode = payload.get("mode")
-        if not isinstance(mode, str):
-            continue
-        try:
-            return RequestMode(mode)
-        except ValueError:
-            continue
-    return None
-
-
 class DiscoveryModelMiddleware(ChatMiddleware):
     """Use the efficient model for read-only discovery, not adjudication."""
 
@@ -586,7 +568,7 @@ class DiscoveryModelMiddleware(ChatMiddleware):
         context: ChatContext,
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
-        if latest_request_mode(context.messages) == RequestMode.EXTERNAL_DISCOVERY:
+        if _REQUEST_MODE.get() == RequestMode.EXTERNAL_DISCOVERY:
             context.options = {
                 **(context.options or {}),
                 "model": os.environ.get(
