@@ -590,7 +590,11 @@ def _duplicates_provider_fact(
 ) -> bool:
     text = claim.text.casefold()
     for opportunity in opportunities:
-        if opportunity.title.casefold() in text or opportunity.agency.casefold() in text:
+        if (
+            opportunity.title.casefold() in text
+            or opportunity.agency.casefold() in text
+            or opportunity.canonical_url.casefold() in text
+        ):
             return True
         if (
             opportunity.grants_gov_id.casefold() in text
