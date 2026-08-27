@@ -510,7 +510,7 @@ def _ready_for_review(ledger: GrantLedger) -> bool:
 
 
 def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]:
-    receipts = _grants_gov_lookups()
+    receipts = _verified_grants_gov_receipts()
     resolved: list[GrantOpportunity] = []
     seen: set[str] = set()
     for selected in report.selected_opportunities:
@@ -543,6 +543,23 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
             )
         )
     return tuple(resolved)
+
+
+def _verified_grants_gov_receipts() -> dict[str, GrantsGovReceipt]:
+    receipts = dict(_grants_gov_lookups())
+    for source in retrieved_sources():
+        if source.connector_id != "grants_gov" or source.operation != "lookup":
+            continue
+        try:
+            payload = json.loads(source.record_json)
+            record = GrantsGovRecord.model_validate(payload)
+        except (json.JSONDecodeError, ValidationError):
+            continue
+        receipts[record.grants_gov_id] = GrantsGovReceipt(
+            record=record,
+            verified_at=datetime.now(UTC).isoformat(),
+        )
+    return receipts
 
 
 def _verified_opportunity_claims(

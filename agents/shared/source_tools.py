@@ -22,6 +22,8 @@ class RetrievedSource(BaseModel):
 
     evidence_id: str
     connector_id: str
+    operation: str
+    record_json: str
     source_uri: str | None = None
     title: str | None = None
 
@@ -116,7 +118,12 @@ def _dict_payloads(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(found)
 
 
-def _record_reference(connector_id: str, record: dict[str, Any], fallback_uri: Any) -> RetrievedSource:
+def _record_reference(
+    connector_id: str,
+    operation: str,
+    record: dict[str, Any],
+    fallback_uri: Any,
+) -> RetrievedSource:
     canonical_record = {key: value for key, value in record.items() if key != "evidence_id"}
     canonical = json.dumps(canonical_record, sort_keys=True, separators=(",", ":"), default=str)
     digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()[:24]
@@ -125,12 +132,13 @@ def _record_reference(connector_id: str, record: dict[str, Any], fallback_uri: A
     return RetrievedSource(
         evidence_id=f"connector:{connector_id}:{digest}",
         connector_id=connector_id,
+        operation=operation,
+        record_json=canonical,
         source_uri=source_uri if isinstance(source_uri, str) else None,
         title=str(title)[:512] if title is not None else None,
     )
 
-
-def _capture_connector_records(connector_id: str, result: Any) -> None:
+def _capture_connector_records(connector_id: str, operation: str, result: Any) -> None:
     ledger = _RETRIEVED_SOURCES.get()
     if ledger is None:
         ledger = {}
@@ -145,11 +153,11 @@ def _capture_connector_records(connector_id: str, result: Any) -> None:
         for record in records:
             if not isinstance(record, dict):
                 continue
-            reference = _record_reference(connector_id, record, fallback_uri)
+            reference = _record_reference(connector_id, operation, record, fallback_uri)
             ledger[reference.evidence_id] = reference
 
 
-def _annotate_connector_result(connector_id: str, result: Any) -> Any:
+def _annotate_connector_result(connector_id: str, operation: str, result: Any) -> Any:
     if not isinstance(result, str):
         return result
     try:
@@ -166,6 +174,7 @@ def _annotate_connector_result(connector_id: str, result: Any) -> Any:
         if isinstance(record, dict):
             record["evidence_id"] = _record_reference(
                 connector_id,
+                operation,
                 record,
                 fallback_uri,
             ).evidence_id
@@ -213,5 +222,10 @@ class SourceToolBoundary(FunctionMiddleware):
 
         await call_next()
         if connector_id is not None:
-            _capture_connector_records(connector_id, context.result)
-            context.result = _annotate_connector_result(connector_id, context.result)
+            operation = name.partition("___")[2]
+            _capture_connector_records(connector_id, operation, context.result)
+            context.result = _annotate_connector_result(
+                connector_id,
+                operation,
+                context.result,
+            )
