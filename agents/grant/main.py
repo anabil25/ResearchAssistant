@@ -548,7 +548,10 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
 def _verified_grants_gov_receipts() -> dict[str, GrantsGovReceipt]:
     receipts = dict(_grants_gov_lookups())
     for source in retrieved_sources():
-        if source.connector_id != "grants_gov" or source.operation != "lookup":
+        if (
+            source.connector_id != "grants_gov"
+            or not source.operation.casefold().endswith("lookup")
+        ):
             continue
         try:
             payload = json.loads(source.record_json)
@@ -808,7 +811,8 @@ class GrantToolBoundary(FunctionMiddleware):
             raise MiddlewareTermination()
 
         await call_next()
-        if name != "grants_gov___lookup":
+        connector_id, _, operation = name.partition("___")
+        if connector_id != "grants_gov" or not operation.casefold().endswith("lookup"):
             return
         _record_grants_gov_lookup(context.result)
 
