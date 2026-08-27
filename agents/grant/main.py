@@ -758,6 +758,15 @@ def _record_grants_gov_lookup(result: Any, expected_id: str) -> None:
         return
 
 
+def _grants_gov_identifier(value: Any) -> str | None:
+    if isinstance(value, bool):
+        return None
+    candidate = str(value).strip() if isinstance(value, (str, int)) else ""
+    if not candidate.isascii() or not candidate.isdigit() or len(candidate) > 12:
+        return None
+    return candidate
+
+
 def _tool_connector_id(name: str) -> str | None:
     connector_id, separator, operation = name.partition("___")
     return connector_id if separator and connector_id and operation else None
@@ -793,8 +802,8 @@ class GrantToolBoundary(FunctionMiddleware):
             if isinstance(context.arguments, BaseModel)
             else dict(context.arguments)
         )
-        identifier = arguments.get("identifier")
-        if isinstance(identifier, str):
+        identifier = _grants_gov_identifier(arguments.get("identifier"))
+        if identifier is not None:
             _record_grants_gov_lookup(context.result, identifier)
 
 
