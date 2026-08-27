@@ -27,6 +27,42 @@ const malformedOpportunity = {
   canonical_url: canonicalUrl,
 };
 
+const verifiedOpportunities = [
+  validOpportunity,
+  {
+    ...validOpportunity,
+    grants_gov_id: "357194",
+    opportunity_number: "PAR-25-228",
+    title: "Investigator Initiated Innovation in Computational Genomics and Data Science",
+    canonical_url: "https://www.grants.gov/search-results-detail/357194",
+  },
+  {
+    ...validOpportunity,
+    grants_gov_id: "357195",
+    opportunity_number: "PAR-25-229",
+    title: "Computational Genomics and Data Science Exploratory Research",
+    canonical_url: "https://www.grants.gov/search-results-detail/357195",
+  },
+  {
+    ...validOpportunity,
+    grants_gov_id: "358856",
+    opportunity_number: "FOR-HG-26-001",
+    title: "Centers for Genomics Research Capacity Building",
+    status: "forecasted",
+    close_date: null,
+    canonical_url: "https://www.grants.gov/search-results-detail/358856",
+  },
+  {
+    ...validOpportunity,
+    grants_gov_id: "360642",
+    opportunity_number: "PAR-26-036",
+    title: "Centers of Excellence in Genomic Science",
+    status: "forecasted",
+    close_date: null,
+    canonical_url: "https://www.grants.gov/search-results-detail/360642",
+  },
+];
+
 const assistantMessage = {
   id: "reply-browser-test-message",
   role: "assistant",
@@ -36,8 +72,8 @@ const assistantMessage = {
   attachments: [],
   activity: [],
   duration_ms: 812,
-  source_count: 1,
-  opportunities: [validOpportunity, malformedOpportunity],
+  source_count: verifiedOpportunities.length,
+  opportunities: [...verifiedOpportunities, malformedOpportunity],
 };
 
 function json(route: Route, body: unknown): Promise<void> {
@@ -186,7 +222,7 @@ test("verified grants render as exact responsive policy-approved links", async (
 
   const results = page.getByRole("region", { name: "Verified grant opportunities" });
   await expect(results).toBeVisible();
-  await expect(results.getByText("1 result")).toBeVisible();
+  await expect(results.getByText("5 results")).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Opportunity" })).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Agency" })).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Availability" })).toBeVisible();
@@ -223,6 +259,19 @@ test("verified grants render as exact responsive policy-approved links", async (
     (element) => element.scrollWidth > element.clientWidth + 1,
   );
   expect(desktopOverflow).toBe(false);
+  const desktopScroll = await page.evaluate(() => {
+    const transcript = document.querySelector<HTMLElement>(".agent-chat-transcript");
+    return {
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: document.documentElement.clientHeight,
+      transcriptHeight: transcript?.scrollHeight ?? 0,
+      transcriptViewport: transcript?.clientHeight ?? 0,
+    };
+  });
+  expect(desktopScroll.documentHeight).toBe(desktopScroll.viewportHeight);
+  expect(desktopScroll.transcriptHeight).toBeGreaterThan(
+    desktopScroll.transcriptViewport,
+  );
   await page.screenshot({
     path: "test-results/grant-opportunities-desktop.png",
     fullPage: true,
@@ -242,6 +291,27 @@ test("verified grants render as exact responsive policy-approved links", async (
     }).length;
   });
   expect(mobileOverflow).toBe(0);
+  const mobileScroll = await page.evaluate(() => {
+    const transcript = document.querySelector<HTMLElement>(".agent-chat-transcript");
+    const composer = document.querySelector<HTMLElement>(".agent-chat-composer");
+    const composerBounds = composer?.getBoundingClientRect();
+    return {
+      documentHeight: document.documentElement.scrollHeight,
+      viewportHeight: document.documentElement.clientHeight,
+      transcriptHeight: transcript?.scrollHeight ?? 0,
+      transcriptViewport: transcript?.clientHeight ?? 0,
+      composerVisible: Boolean(
+        composerBounds &&
+          composerBounds.top < document.documentElement.clientHeight &&
+          composerBounds.bottom <= document.documentElement.clientHeight + 1
+      ),
+    };
+  });
+  expect(mobileScroll.documentHeight).toBe(mobileScroll.viewportHeight);
+  expect(mobileScroll.transcriptHeight).toBeGreaterThan(
+    mobileScroll.transcriptViewport,
+  );
+  expect(mobileScroll.composerVisible).toBe(true);
   await page.screenshot({
     path: "test-results/grant-opportunities-mobile.png",
     fullPage: true,

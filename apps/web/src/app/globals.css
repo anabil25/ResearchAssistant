@@ -135,6 +135,8 @@ button {
 
 .sr-only {
   position: absolute;
+  top: 0;
+  left: 0;
   width: 1px;
   height: 1px;
   padding: 0;
@@ -152,6 +154,12 @@ button {
   background:
     radial-gradient(circle at 54% -10%, rgb(213 226 208 / 58%), transparent 30rem),
     var(--paper);
+}
+
+.workbench-shell[data-chat-view="true"] {
+  height: 100dvh;
+  min-height: 0;
+  overflow: hidden;
 }
 
 .project-rail {
@@ -591,6 +599,20 @@ button {
 .workspace-main {
   min-width: 0;
   padding: 26px 28px 50px;
+}
+
+.workbench-shell[data-chat-view="true"] .workspace {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.workbench-shell[data-chat-view="true"] .workspace-main {
+  display: flex;
+  min-height: 0;
+  flex: 1;
 }
 
 .eyebrow {
@@ -5881,6 +5903,12 @@ button.library-row {
   box-sizing: border-box;
   flex-direction: column;
   margin: 0 auto;
+}
+
+.workbench-shell[data-chat-view="true"] .agent-chat {
+  height: auto;
+  min-height: 0;
+  flex: 1;
 }
 
 .agent-chat-dragging {

@@ -33,6 +33,7 @@ import {
   type WorkspaceData,
 } from "@/lib/api";
 import { useBlockingModalOpen } from "@/lib/blocking-modal";
+import { isChatCapability } from "@/lib/agent-surfaces";
 import type { ProjectSummary } from "@/lib/types";
 
 function viewTitle(view: WorkspaceViewId): string {
@@ -410,10 +411,14 @@ export function ResearchWorkbench() {
   };
 
   const activeProject = projects.find((project) => project.id === activeProjectId);
+  const chatView = CAPABILITY_CARDS.some(
+    ({ id }) => id === view && isChatCapability(id),
+  );
 
   return (
     <div
       className="workbench-shell"
+      data-chat-view={chatView ? "true" : undefined}
       data-workspace-ready={Boolean(data)}
       // The entire shell -- rail, main content, command palette -- is inert
       // while an application-modal dialog is open. That
