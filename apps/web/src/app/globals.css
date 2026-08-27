@@ -6091,9 +6091,7 @@ button.library-row {
 
 .grant-results-table-wrap {
   min-width: 0;
-  max-height: min(52vh, 430px);
-  overflow: auto;
-  scrollbar-gutter: stable;
+  overflow-x: auto;
 }
 
 .grant-results-table {
@@ -6120,12 +6118,8 @@ button.library-row {
 }
 
 .grant-results-table th {
-  position: sticky;
-  z-index: 1;
-  top: 0;
   padding: 6px 10px 7px;
   color: var(--muted);
-  background: var(--paper);
   font-size: var(--font-size-caption);
   font-weight: 700;
   text-align: left;
