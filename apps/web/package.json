@@ -36,7 +36,7 @@
     "@types/node": "24.13.3",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
-    "eslint": "^9",
+    "eslint": "^10",
     "eslint-config-next": "16.3.0-preview.6",
     "openapi-typescript": "7.10.1",
     "tailwindcss": "^4",
