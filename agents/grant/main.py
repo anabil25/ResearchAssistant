@@ -745,8 +745,13 @@ def _record_grants_gov_lookup(result: Any) -> None:
         warnings = payload.get("warnings")
         if not isinstance(records, list) or len(records) != 1 or warnings:
             return
+        raw_record = records[0]
+        if not isinstance(raw_record, dict):
+            return
         try:
-            record = GrantsGovRecord.model_validate(records[0])
+            record = GrantsGovRecord.model_validate(
+                {key: value for key, value in raw_record.items() if key != "evidence_id"}
+            )
         except ValidationError:
             return
         if str(payload.get("query")) != record.grants_gov_id:
