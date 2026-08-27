@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -40,6 +41,7 @@ from hashlib import sha256
 from typing import Annotated, Protocol, cast
 from uuid import uuid4
 
+import httpx
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
@@ -687,8 +689,11 @@ def _execute_chat_turn_stream(
                 continue
 
             reply = progress.reply
-            opportunities = _verified_grant_opportunities(reply.content)
-            content = _render_agent_reply(reply.content)
+            opportunities = _recover_grant_opportunities(reply.content)
+            content = _render_agent_reply(
+                reply.content,
+                opportunities=opportunities,
+            )
             follow_up = _next_steps(thread, reply.content, evidence_count=0)
             assistant_message = ChatMessage(
                 id=f"reply-{client_message_id}",
@@ -797,8 +802,11 @@ async def _execute_chat_turn(
         HostedAgentInvocationError,
     ) as exc:
         raise _gateway_failure(exc) from exc
-    opportunities = _verified_grant_opportunities(reply.content)
-    content = _render_agent_reply(reply.content)
+    opportunities = await _recover_grant_opportunities_async(reply.content)
+    content = _render_agent_reply(
+        reply.content,
+        opportunities=opportunities,
+    )
     follow_up = _next_steps(thread, reply.content, evidence_count=0)
     assistant_message = ChatMessage(
         id=f"reply-{client_message_id}",
@@ -912,6 +920,134 @@ def _verified_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
     return opportunities
 
 
+_GRANTS_GOV_DETAIL_PATTERN = re.compile(
+    r"^https://www\.grants\.gov/search-results-detail/([0-9]{1,12})$"
+)
+_GRANTS_GOV_LOOKUP_URL = "https://api.grants.gov/v1/api/fetchOpportunity"
+
+
+def _grants_gov_evidence_ids(raw: str) -> tuple[str, ...]:
+    payload = _final_payload(raw)
+    evidence = payload.get("evidence") if payload is not None else None
+    if not isinstance(evidence, list):
+        return ()
+    identifiers: list[str] = []
+    for item in evidence:
+        if not isinstance(item, dict):
+            continue
+        source_uri = item.get("source_uri")
+        match = (
+            _GRANTS_GOV_DETAIL_PATTERN.fullmatch(source_uri)
+            if isinstance(source_uri, str)
+            else None
+        )
+        if match and match.group(1) not in identifiers:
+            identifiers.append(match.group(1))
+        if len(identifiers) == 5:
+            break
+    return tuple(identifiers)
+
+
+def _grants_gov_date(value: object) -> str | None:
+    text = str(value or "").strip()
+    return text[:10] if re.match(r"^\d{4}-\d{2}-\d{2}(?:-|$)", text) else None
+
+
+def _verified_grant_from_lookup(
+    payload: object,
+    identifier: str,
+) -> VerifiedGrantOpportunity | None:
+    if not isinstance(payload, dict) or payload.get("errorcode") != 0:
+        return None
+    data = payload.get("data")
+    if not isinstance(data, dict) or str(data.get("id")) != identifier:
+        return None
+    errors = data.get("errorMessages")
+    if isinstance(errors, list) and errors:
+        return None
+    raw_synopsis = data.get("synopsis")
+    raw_agency = data.get("agencyDetails")
+    synopsis = raw_synopsis if isinstance(raw_synopsis, dict) else {}
+    agency = raw_agency if isinstance(raw_agency, dict) else {}
+    try:
+        return VerifiedGrantOpportunity(
+            grants_gov_id=identifier,
+            opportunity_number=str(data.get("opportunityNumber") or ""),
+            title=str(data.get("opportunityTitle") or ""),
+            agency=str(agency.get("agencyName") or synopsis.get("agencyName") or ""),
+            status=str(data.get("ost") or "").casefold(),
+            posted_date=_grants_gov_date(synopsis.get("postingDateStr")),
+            close_date=_grants_gov_date(synopsis.get("responseDateStr")),
+            archive_date=_grants_gov_date(synopsis.get("archiveDateStr")),
+            canonical_url=(
+                f"https://www.grants.gov/search-results-detail/{identifier}"
+            ),
+            relevance="unassessed",
+            relevance_rationale=(
+                "Verified on Grants.gov; review the full notice to confirm project fit."
+            ),
+            verified_at=utc_now(),
+        )
+    except ValidationError:
+        return None
+
+
+def _recover_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
+    opportunities = _verified_grant_opportunities(raw)
+    if opportunities:
+        return opportunities
+    identifiers = _grants_gov_evidence_ids(raw)
+    if not identifiers:
+        return []
+    recovered: list[VerifiedGrantOpportunity] = []
+    try:
+        with httpx.Client(
+            timeout=httpx.Timeout(20.0, connect=8.0),
+            follow_redirects=False,
+        ) as client:
+            for identifier in identifiers:
+                response = client.post(
+                    _GRANTS_GOV_LOOKUP_URL,
+                    json={"opportunityId": int(identifier)},
+                )
+                response.raise_for_status()
+                opportunity = _verified_grant_from_lookup(response.json(), identifier)
+                if opportunity is not None:
+                    recovered.append(opportunity)
+    except (httpx.HTTPError, ValueError):
+        logger.warning("Could not recover structured Grants.gov opportunities.")
+    return recovered
+
+
+async def _recover_grant_opportunities_async(
+    raw: str,
+) -> list[VerifiedGrantOpportunity]:
+    opportunities = _verified_grant_opportunities(raw)
+    if opportunities:
+        return opportunities
+    identifiers = _grants_gov_evidence_ids(raw)
+    if not identifiers:
+        return []
+    recovered: list[VerifiedGrantOpportunity] = []
+    try:
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(20.0, connect=8.0),
+            follow_redirects=False,
+        ) as client:
+            for identifier in identifiers:
+                response = await client.post(
+                    _GRANTS_GOV_LOOKUP_URL,
+                    json={"opportunityId": int(identifier)},
+                )
+                response.raise_for_status()
+                opportunity = _verified_grant_from_lookup(response.json(), identifier)
+                if opportunity is not None:
+                    recovered.append(opportunity)
+    except (httpx.HTTPError, ValueError):
+        logger.warning("Could not recover structured Grants.gov opportunities.")
+    return recovered
+
+
 def _is_grants_gov_evidence(value: object) -> bool:
     if not isinstance(value, dict):
         return False
@@ -922,13 +1058,21 @@ def _is_grants_gov_evidence(value: object) -> bool:
     )
 
 
-def _render_agent_reply(raw: str) -> str:
+def _render_agent_reply(
+    raw: str,
+    *,
+    opportunities: list[VerifiedGrantOpportunity] | None = None,
+) -> str:
     """Turn a typed contract response into readable Markdown, or pass prose through."""
     payload = _final_payload(raw)
     if payload is None:
         return raw
 
-    opportunities = _verified_grant_opportunities(raw)
+    opportunities = (
+        _verified_grant_opportunities(raw)
+        if opportunities is None
+        else opportunities
+    )
     raw_evidence = payload.get("evidence")
     evidence = raw_evidence if isinstance(raw_evidence, list) else []
     grants_gov_evidence_ids = {
