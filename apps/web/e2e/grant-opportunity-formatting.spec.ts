@@ -204,6 +204,10 @@ test("verified grants render as exact responsive policy-approved links", async (
   await expect(results).toContainText("Closes Feb 26, 2027");
   await expect(results).toContainText("Review fit");
   await expect(results).toContainText(validOpportunity.title);
+  const analysis = page.getByText("Analysis and limitations");
+  await expect(analysis).toBeVisible();
+  await expect(page.locator(".agent-chat-analysis")).not.toHaveAttribute("open", "");
+  await analysis.click();
   const answer = page.locator(".agent-chat-answer").last();
   await expect(answer.getByRole("link", { name: /RFA-HG-25-009/ })).toHaveAttribute(
     "href",

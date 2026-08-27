@@ -30,6 +30,7 @@ import {
   type ChangeEvent,
   type DragEvent,
   type KeyboardEvent as ReactKeyboardEvent,
+  type RefObject,
 } from "react";
 
 import {
@@ -221,37 +222,55 @@ function AgentActivityPanel({
 function AgentAnswer({
   message,
   live = false,
+  resultsRef,
 }: {
   message: ChatMessage;
   live?: boolean;
+  resultsRef?: RefObject<HTMLDivElement | null>;
 }) {
   const [expanded, setExpanded] = useState(false);
-  const isLong = !live && message.content.length > LONG_RESPONSE_CHARACTERS;
   const opportunities = message.opportunities ?? [];
+  const hasOpportunities = opportunities.length > 0;
+  const isLong = !live && !hasOpportunities && message.content.length > LONG_RESPONSE_CHARACTERS;
   const referenceLinks = verifiedGrantReferenceLinks(opportunities);
+  const renderedAnswer = message.content ? (
+    <Suspense fallback={<p>Rendering response...</p>}>
+      <ResearchMarkdown
+        content={message.content}
+        referenceLinks={referenceLinks}
+        label={`${message.agent_name ?? "Agent"} response`}
+      />
+    </Suspense>
+  ) : null;
 
   return (
     <>
-      <GrantOpportunityList opportunities={opportunities} />
-      <div
-        className="agent-chat-answer"
-        data-collapsed={isLong && !expanded ? "true" : "false"}
-      >
-        {message.content ? (
-          <Suspense fallback={<p>Rendering response...</p>}>
-            <ResearchMarkdown
-              content={message.content}
-              referenceLinks={referenceLinks}
-              label={`${message.agent_name ?? "Agent"} response`}
-            />
-          </Suspense>
-        ) : live ? (
+      {hasOpportunities ? (
+        <div ref={resultsRef} className="agent-chat-results-anchor">
+          <GrantOpportunityList opportunities={opportunities} />
+        </div>
+      ) : null}
+      {renderedAnswer && hasOpportunities ? (
+        <details className="agent-chat-analysis">
+          <summary>
+            <span>Analysis and limitations</span>
+            <ChevronDown size={15} aria-hidden="true" />
+          </summary>
+          <div className="agent-chat-answer">{renderedAnswer}</div>
+        </details>
+      ) : (
+        <div
+          className="agent-chat-answer"
+          data-collapsed={isLong && !expanded ? "true" : "false"}
+        >
+          {renderedAnswer ?? (live ? (
           <p className="agent-chat-live-answer">
             <CircleDashed className="spin" size={14} aria-hidden="true" />
             Preparing the response...
           </p>
-        ) : null}
-      </div>
+          ) : null)}
+        </div>
+      )}
       {isLong ? (
         <button
           type="button"
@@ -279,14 +298,17 @@ interface LiveChatMessage extends Omit<ChatMessage, "activity"> {
 function ChatMessageEntry({
   message,
   live = false,
+  resultsRef,
 }: {
   message: ChatMessage;
   live?: boolean;
+  resultsRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
     <article
       className={`agent-chat-message agent-chat-${message.role}`}
       data-live={live ? "true" : "false"}
+      data-has-opportunities={message.opportunities.length > 0 ? "true" : "false"}
     >
       <div className="agent-chat-message-meta">
         <span className="agent-chat-avatar" aria-hidden="true">
@@ -299,7 +321,7 @@ function ChatMessageEntry({
         {live ? <em className="agent-chat-live-label">Live</em> : null}
       </div>
       {message.role === "assistant" ? (
-        <AgentAnswer message={message} live={live} />
+        <AgentAnswer message={message} live={live} resultsRef={resultsRef} />
       ) : (
         <p className="agent-chat-text">{message.content}</p>
       )}
@@ -352,6 +374,7 @@ export function AgentChat({
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
+  const latestResultsRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<ChatThread | null>(null);
 
@@ -409,9 +432,10 @@ export function AgentChat({
 
   useEffect(() => {
     // jsdom and older engines omit scrollIntoView; autoscroll is cosmetic.
-    const end = transcriptEndRef.current;
-    if (typeof end?.scrollIntoView === "function") {
-      end.scrollIntoView({ block: "end" });
+    const results = !sending ? latestResultsRef.current : null;
+    const target = results ?? transcriptEndRef.current;
+    if (typeof target?.scrollIntoView === "function") {
+      target.scrollIntoView({ block: results ? "start" : "end" });
     }
   }, [
     thread?.messages.length,
@@ -639,6 +663,11 @@ export function AgentChat({
   };
 
   const messages = thread?.messages ?? [];
+  const latestMessage = messages.at(-1);
+  const latestOpportunityMessageId =
+    latestMessage?.role === "assistant" && latestMessage.opportunities.length > 0
+      ? latestMessage.id
+      : undefined;
   const Icon = copy.icon;
   const uploading = pending.some((item) => item.state === "uploading");
 
@@ -716,7 +745,15 @@ export function AgentChat({
         ) : null}
 
         {messages.map((message) => (
-          <ChatMessageEntry key={message.id} message={message} />
+          <ChatMessageEntry
+            key={message.id}
+            message={message}
+            resultsRef={
+              message.id === latestOpportunityMessageId
+                ? latestResultsRef
+                : undefined
+            }
+          />
         ))}
 
         {streamingMessage ? (

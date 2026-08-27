@@ -912,26 +912,35 @@ def _verified_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
     return opportunities
 
 
+def _is_grants_gov_evidence(value: object) -> bool:
+    if not isinstance(value, dict):
+        return False
+    evidence_id = str(value.get("evidence_id") or "")
+    source_uri = str(value.get("source_uri") or "")
+    return evidence_id.startswith("connector:grants_gov:") or source_uri.startswith(
+        "https://www.grants.gov/search-results-detail/"
+    )
+
+
 def _render_agent_reply(raw: str) -> str:
     """Turn a typed contract response into readable Markdown, or pass prose through."""
     payload = _final_payload(raw)
     if payload is None:
         return raw
 
-    opportunity_urls = {
-        opportunity.canonical_url
-        for opportunity in _verified_grant_opportunities(raw)
-    }
+    opportunities = _verified_grant_opportunities(raw)
     raw_evidence = payload.get("evidence")
     evidence = raw_evidence if isinstance(raw_evidence, list) else []
-    opportunity_evidence_ids = {
+    grants_gov_evidence_ids = {
         str(item.get("evidence_id"))
         for item in evidence
-        if isinstance(item, dict)
-        and item.get("source_uri") in opportunity_urls
+        if _is_grants_gov_evidence(item)
+        and isinstance(item, dict)
         and item.get("evidence_id")
     }
-    lines: list[str] = [str(payload.get("summary") or "").strip()]
+    lines: list[str] = (
+        [] if opportunities else [str(payload.get("summary") or "").strip()]
+    )
 
     claims = payload.get("claims") or []
     if isinstance(claims, list) and claims:
@@ -945,8 +954,10 @@ def _render_agent_reply(raw: str) -> str:
                 str(value) for value in claim.get("evidence_ids") or []
             }
             if (
+                opportunities
+                and
                 claim_evidence_ids
-                and claim_evidence_ids <= opportunity_evidence_ids
+                and claim_evidence_ids <= grants_gov_evidence_ids
             ):
                 continue
             support = str(claim.get("support") or "").replace("_", " ")
@@ -978,7 +989,7 @@ def _render_agent_reply(raw: str) -> str:
             if not isinstance(item, dict):
                 evidence_lines.append(f"- {_bullet(item)}")
                 continue
-            if item.get("source_uri") in opportunity_urls:
+            if opportunities and _is_grants_gov_evidence(item):
                 continue
             title = item.get("title") or item.get("evidence_id") or "Source"
             uri = item.get("source_uri")
