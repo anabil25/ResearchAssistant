@@ -164,15 +164,28 @@ def connector_apim_openapi() -> dict[str, Any]:
                         "required": True,
                         "schema": {"type": "string", "minLength": 2, "maxLength": 500},
                     },
+                    {
+                        "name": "limit",
+                        "in": "query",
+                        "required": True,
+                        "schema": {"type": "integer", "minimum": 1, "maximum": 25, "default": 5},
+                    },
                 ]
             elif operation.mcp_tool_name == "lookup":
                 path = f"/v1/connectors/{connector.id}/lookup"
+                identifier_schema: dict[str, Any] = {
+                    "type": "string",
+                    "minLength": 1,
+                    "maxLength": 255,
+                }
+                if connector.id == "grants_gov":
+                    identifier_schema.update(maxLength=12, pattern=r"^[0-9]+$")
                 parameters = [
                     {
                         "name": "identifier",
                         "in": "query",
                         "required": True,
-                        "schema": {"type": "string", "minLength": 1, "maxLength": 255},
+                        "schema": identifier_schema,
                     }
                 ]
             else:
@@ -509,6 +522,79 @@ def _lookup_policy(source: str) -> str:
     return _policy(inbound, outbound)
 
 
+def _grants_gov_lookup_policy() -> str:
+    provider = PROVIDERS["grants_gov"]
+    inbound = _common_inbound(lookup=True)
+    inbound.extend(
+        [
+            f'<set-backend-service base-url="{provider["base"]}" />',
+            '<rewrite-uri template="/v1/api/fetchOpportunity" copy-unmatched-params="false" />',
+            "<set-method>POST</set-method>",
+            '<set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>',
+            '<set-body>@{ return new JObject(new JProperty("opportunityId", Int64.Parse((string)context.Variables["normalizedIdentifier"]))).ToString(); }</set-body>',
+        ]
+    )
+    body = f"""
+@{{
+    var payload = context.Response.Body.As<JObject>();
+    var data = payload["data"] as JObject;
+    var records = new JArray();
+    var warnings = new JArray();
+    var requestedId = (string)context.Variables["normalizedIdentifier"];
+    var errors = data == null ? null : data["errorMessages"] as JArray;
+    var returnedId = data == null || data["id"] == null ? null : data["id"].ToString();
+    var valid = (int?)payload["errorcode"] == 0
+        && data != null
+        && returnedId == requestedId
+        && (errors == null || errors.Count == 0);
+    if (valid) {{
+        var synopsis = data["synopsis"] as JObject;
+        var agency = data["agencyDetails"] as JObject;
+        var posted = synopsis == null ? null : (string)synopsis["postingDateStr"];
+        var closes = synopsis == null ? null : (string)synopsis["responseDateStr"];
+        var archive = synopsis == null ? null : (string)synopsis["archiveDateStr"];
+        records.Add(new JObject(
+            new JProperty("grants_gov_id", returnedId),
+            new JProperty("opportunity_number", (string)data["opportunityNumber"]),
+            new JProperty("title", (string)data["opportunityTitle"]),
+            new JProperty("agency", agency == null ? (string)(synopsis == null ? null : synopsis["agencyName"]) : (string)agency["agencyName"]),
+            new JProperty("status", ((string)data["ost"] ?? "").ToLowerInvariant()),
+            new JProperty("posted_date", posted != null && posted.Length >= 10 ? posted.Substring(0, 10) : null),
+            new JProperty("close_date", closes != null && closes.Length >= 10 ? closes.Substring(0, 10) : null),
+            new JProperty("archive_date", archive != null && archive.Length >= 10 ? archive.Substring(0, 10) : null),
+            new JProperty("canonical_url", "https://www.grants.gov/search-results-detail/" + returnedId)
+        ));
+    }} else {{
+        if (errors != null) {{
+            foreach (var error in errors) {{
+                warnings.Add(error.ToString());
+            }}
+        }}
+        var message = data == null ? null : (string)data["message"];
+        if (warnings.Count == 0 && !String.IsNullOrWhiteSpace(message)) {{
+            warnings.Add(message);
+        }}
+    }}
+    return new JObject(
+        new JProperty("source", "grants_gov"),
+        new JProperty("query", requestedId),
+        new JProperty("records", records),
+        new JProperty("terms_url", "{provider["terms"]}"),
+        new JProperty("retrieved_from", "https://api.grants.gov/v1/api/fetchOpportunity"),
+        new JProperty("warnings", warnings),
+        new JProperty("notice", "{NOTICE}")
+    ).ToString();
+}}
+"""
+    return _policy(
+        inbound,
+        [
+            '<set-header name="Content-Type" exists-action="override"><value>application/json</value></set-header>',
+            f"<set-body>{_policy_expression(body)}</set-body>",
+        ],
+    )
+
+
 def _connector_operation_policy_map() -> dict[str, str]:
     policies: dict[str, str] = {"pubmedSearch": _pubmed_policy(lookup=False)}
     for source in PROVIDERS:
@@ -516,6 +602,7 @@ def _connector_operation_policy_map() -> dict[str, str]:
             _simple_search_policy(source)
         )
     policies["pubmedLookup"] = _pubmed_policy(lookup=True)
+    policies["grantsGovLookup"] = _grants_gov_lookup_policy()
     for source in (
         "europe_pmc",
         "crossref",

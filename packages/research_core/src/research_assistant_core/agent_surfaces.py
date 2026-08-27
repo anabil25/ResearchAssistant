@@ -16,18 +16,13 @@ from research_assistant_core.models import Capability, CapabilitySpec
 
 
 class AgentEndpoint(BaseModel):
-    """One deployed agent a researcher can talk to.
-
-    Public discovery is an explicit deployment capability. Callers must still
-    authorize connector use independently for every turn.
-    """
+    """One deployed agent a researcher can talk to."""
 
     model_config = ConfigDict(frozen=True)
 
     name: str
     label: str
     description: str
-    supports_public_discovery: bool = False
 
 
 class AgentSurface(BaseModel):
@@ -79,8 +74,6 @@ class AgentSurface(BaseModel):
 def _agent(
     stem: str,
     description: str,
-    *,
-    supports_public_discovery: bool = False,
 ) -> tuple[AgentEndpoint, ...]:
     """Declare the canonical deployment for one capability."""
     return (
@@ -88,7 +81,6 @@ def _agent(
             name=f"{stem}-agent",
             label="Research agent",
             description=description,
-            supports_public_discovery=supports_public_discovery,
         ),
     )
 
@@ -98,8 +90,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         capability=Capability.LITERATURE,
         agents=_agent(
             "literature",
-            "Synthesizes from the project library and public research sources.",
-            supports_public_discovery=True,
+            "Synthesizes from attached, library, and enabled research sources.",
         ),
         chat=True,
         title="Literature review synthesis",
@@ -128,8 +119,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         capability=Capability.GRANT,
         agents=_agent(
             "grant",
-            "Maps funding requirements from the library and public opportunity sources.",
-            supports_public_discovery=True,
+            "Finds verified opportunities and works from attached or library grant sources.",
         ),
         chat=True,
         title="Grant application studio",
@@ -156,8 +146,7 @@ AGENT_SURFACES: tuple[AgentSurface, ...] = (
         capability=Capability.MATCHING,
         agents=_agent(
             "matching",
-            "Matches experts and resources from the library and public registries.",
-            supports_public_discovery=True,
+            "Matches experts and resources from attached, library, and enabled registry sources.",
         ),
         chat=True,
         title="PI and resource matching",

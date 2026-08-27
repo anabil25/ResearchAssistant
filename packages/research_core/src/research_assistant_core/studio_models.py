@@ -6,7 +6,7 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
-from research_assistant_core.models import Capability, Citation, PublicDiscoveryRequest, RunStatus
+from research_assistant_core.models import Capability, Citation, RunStatus
 
 
 class EvidenceState(StrEnum):
@@ -20,8 +20,6 @@ class StudioRunRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     objective: str = Field(min_length=3, max_length=4000)
-    online_research: bool = False
-    public_discovery: PublicDiscoveryRequest | None = None
     inputs: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -43,7 +41,7 @@ class AgentInsight(BaseModel):
     evidence_state: EvidenceState
     referenced_source_ids: list[str] = Field(default_factory=list)
     unresolved_source_ids: list[str] = Field(default_factory=list)
-    online_research_used: bool = False
+    source_retrieval_used: bool = False
 
 
 class ReviewProtocol(BaseModel):

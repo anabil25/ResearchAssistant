@@ -9,7 +9,7 @@ allowlist and no separate "online" agent.
 from __future__ import annotations
 
 import os
-from collections.abc import AsyncGenerator
+from collections.abc import AsyncGenerator, Collection
 from typing import Any
 
 import httpx
@@ -60,8 +60,9 @@ def shared_toolbox(
     version: str | None = None,
     credential: Any | None = None,
     timeout: float = 120.0,
+    allowed_tools: Collection[str] | None = None,
 ) -> MCPStreamableHTTPTool:
-    """The project toolbox, unfiltered.
+    """The project toolbox, optionally limited to an explicit tool set.
 
     The caller owns the returned tool's lifetime and should ``close()`` it.
     """
@@ -81,4 +82,5 @@ def shared_toolbox(
         url=toolbox_url(resolved_endpoint, resolved_name, resolved_version),
         http_client=http_client,
         load_prompts=False,
+        allowed_tools=allowed_tools,
     )

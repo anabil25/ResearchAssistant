@@ -41,7 +41,7 @@ from .contracts import (
     bind_contracts,
     canonical_digest,
     lenient_output_model,
-    resolve_authorized_evidence,
+    resolve_admitted_sources,
 )
 from .errors import (
     AuthorizationError,
@@ -233,15 +233,14 @@ class ContractMiddleware(AgentMiddleware):
         parsed = lenient_model.model_validate(
             raw.model_dump() if isinstance(raw, BaseModel) else raw,
         )
-        authorized_evidence = self._merge_authorized_evidence(
+        admitted_sources = self._merge_admitted_sources(
             request_evidence,
             tool_evidence,
             parsed,
         )
-        # ``resolve_authorized_evidence`` downgrades any claim that is not backed by
-        # authorized evidence, which is what restores the strict claim invariant.
+        # Claims without an admitted source are downgraded before strict validation.
         normalized = self._contracts.output_model.model_validate(
-            resolve_authorized_evidence(parsed, authorized_evidence).model_dump(),
+            resolve_admitted_sources(parsed, admitted_sources).model_dump(),
         )
         messages = list(response.messages)
         replacement = Message(
@@ -325,7 +324,7 @@ class ContractMiddleware(AgentMiddleware):
             output_format_type=self._contracts.output_model,
         )
 
-    def _merge_authorized_evidence(
+    def _merge_admitted_sources(
         self,
         request_evidence: tuple[EvidenceRef, ...],
         tool_evidence: list[EvidenceRef],
@@ -550,7 +549,7 @@ class ConnectorToolAuthorizationMiddleware(FunctionMiddleware):
             context.result,
         )
         collector.extend(evidence)
-        context.result = GovernedFunctionMiddleware._expose_authorized_evidence(
+        context.result = GovernedFunctionMiddleware._expose_admitted_sources(
             context.result,
             evidence,
         )
@@ -693,7 +692,7 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
             context.result,
         )
         collector.extend(evidence)
-        context.result = self._expose_authorized_evidence(context.result, evidence)
+        context.result = self._expose_admitted_sources(context.result, evidence)
 
     def _emit_audit(
         self,
@@ -855,7 +854,7 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         return ()
 
     @staticmethod
-    def _expose_authorized_evidence(
+    def _expose_admitted_sources(
         result: Any,
         evidence: tuple[EvidenceRef, ...],
     ) -> Any:
@@ -865,13 +864,13 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
         if isinstance(result, BaseModel):
             return {
                 **result.model_dump(mode="json"),
-                "authorized_evidence": serialized,
+                "admitted_sources": serialized,
             }
         if isinstance(result, dict):
-            return {**result, "authorized_evidence": serialized}
+            return {**result, "admitted_sources": serialized}
         governed_content = Content.from_text(
             text=json.dumps(
-                {"authorized_evidence": serialized},
+                {"admitted_sources": serialized},
                 sort_keys=True,
                 separators=(",", ":"),
             )
@@ -886,7 +885,7 @@ class GovernedFunctionMiddleware(FunctionMiddleware):
             return f"{result}\n{governed_content.text}"
         return {
             "tool_output": result,
-            "authorized_evidence": serialized,
+            "admitted_sources": serialized,
         }
 
 

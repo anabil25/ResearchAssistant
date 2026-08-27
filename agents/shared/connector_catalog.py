@@ -127,6 +127,16 @@ def _clinical_trials_lookup_operation() -> ConnectorOperation:
     )
 
 
+def _grants_gov_lookup_operation() -> ConnectorOperation:
+    return ConnectorOperation(
+        id="grantsGovLookup",
+        mcp_tool_name="lookup",
+        method="GET",
+        path="/v1/connectors/grants_gov/opportunities/{opportunity_id}",
+        operation_class="read",
+    )
+
+
 def _datacite_lookup_operation() -> ConnectorOperation:
     return ConnectorOperation(
         id="dataciteLookup",
@@ -173,7 +183,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="PubMed",
         category="Literature",
         description="Biomedical citations and abstracts from NCBI.",
-        assigned_agents=("literature",),
+        assigned_agents=("literature", "screening"),
         terms_url="https://www.ncbi.nlm.nih.gov/home/about/policies/",
         capabilities=("Search", "Metadata"),
         operations=(
@@ -186,7 +196,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="Europe PMC",
         category="Literature",
         description="Life-sciences publications, grants, and links.",
-        assigned_agents=("literature",),
+        assigned_agents=("literature", "screening"),
         terms_url="https://europepmc.org/terms",
         capabilities=("Search", "Metadata"),
         operations=(
@@ -199,7 +209,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="Crossref",
         category="Literature",
         description="DOI metadata and scholarly work resolution.",
-        assigned_agents=("literature", "grant"),
+        assigned_agents=("literature", "grant", "screening"),
         terms_url="https://www.crossref.org/services/metadata-delivery/rest-api/",
         capabilities=("DOI resolution", "Metadata"),
         operations=(
@@ -212,7 +222,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="OpenAlex",
         category="Discovery",
         description="Open catalog of works, people, venues, and institutions.",
-        assigned_agents=("literature", "matching", "dataset"),
+        assigned_agents=("literature", "matching", "dataset", "screening"),
         terms_url="https://docs.openalex.org/how-to-use-the-api/rate-limits-and-authentication",
         capabilities=("Search", "Entity leads"),
         operations=(
@@ -225,7 +235,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="arXiv",
         category="Literature",
         description="Preprint metadata for supported disciplines.",
-        assigned_agents=("literature",),
+        assigned_agents=("literature", "screening"),
         terms_url="https://info.arxiv.org/help/api/tou.html",
         capabilities=("Search", "Preprints"),
         operations=(
@@ -238,7 +248,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="ClinicalTrials.gov",
         category="Clinical research",
         description="Clinical study records from the U.S. NLM.",
-        assigned_agents=("literature",),
+        assigned_agents=("literature", "screening"),
         terms_url="https://clinicaltrials.gov/about-site/terms-conditions",
         capabilities=("Trials", "Metadata"),
         operations=(
@@ -254,7 +264,10 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         assigned_agents=("grant",),
         terms_url="https://www.grants.gov/web/grants/legal-privacy.html",
         capabilities=("Opportunities", "Requirements"),
-        operations=(_search_operation("grants_gov"),),
+        operations=(
+            _search_operation("grants_gov"),
+            _grants_gov_lookup_operation(),
+        ),
     ),
     ConnectorDefinition(
         id="nih_reporter",
@@ -271,7 +284,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="DataCite",
         category="Datasets",
         description="DOI metadata for datasets and research outputs.",
-        assigned_agents=("literature", "dataset"),
+        assigned_agents=("literature", "dataset", "screening"),
         terms_url="https://support.datacite.org/docs/terms-and-conditions",
         capabilities=("Dataset discovery", "DOI resolution"),
         operations=(
@@ -307,7 +320,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         name="Semantic Scholar",
         category="Literature",
         description="Paper and citation graph metadata.",
-        assigned_agents=("literature",),
+        assigned_agents=("literature", "screening"),
         terms_url="https://www.semanticscholar.org/product/api/license",
         capabilities=("Search", "Citation graph"),
         auth_kind="API key recommended",

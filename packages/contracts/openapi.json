@@ -36,17 +36,12 @@
           "name": {
             "title": "Name",
             "type": "string"
-          },
-          "online": {
-            "title": "Online",
-            "type": "boolean"
           }
         },
         "required": [
           "name",
           "label",
-          "description",
-          "online"
+          "description"
         ],
         "title": "AgentChoice",
         "type": "object"
@@ -163,7 +158,7 @@
         "type": "object"
       },
       "AgentEndpoint": {
-        "description": "One deployed agent a researcher can talk to.\n\nPublic discovery is an explicit deployment capability. Callers must still\nauthorize connector use independently for every turn.",
+        "description": "One deployed agent a researcher can talk to.",
         "properties": {
           "description": {
             "title": "Description",
@@ -176,11 +171,6 @@
           "name": {
             "title": "Name",
             "type": "string"
-          },
-          "supports_public_discovery": {
-            "default": false,
-            "title": "Supports Public Discovery",
-            "type": "boolean"
           }
         },
         "required": [
@@ -255,17 +245,17 @@
           "evidence_state": {
             "$ref": "#/components/schemas/EvidenceState"
           },
-          "online_research_used": {
-            "default": false,
-            "title": "Online Research Used",
-            "type": "boolean"
-          },
           "referenced_source_ids": {
             "items": {
               "type": "string"
             },
             "title": "Referenced Source Ids",
             "type": "array"
+          },
+          "source_retrieval_used": {
+            "default": false,
+            "title": "Source Retrieval Used",
+            "type": "boolean"
           },
           "unresolved_source_ids": {
             "items": {
@@ -1722,6 +1712,7 @@
         "type": "object"
       },
       "AssistantRequest": {
+        "additionalProperties": false,
         "properties": {
           "capability": {
             "anyOf": [
@@ -1738,16 +1729,6 @@
             "minLength": 3,
             "title": "Message",
             "type": "string"
-          },
-          "public_discovery": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PublicDiscoveryRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -3534,6 +3515,13 @@
           "id": {
             "title": "Id",
             "type": "string"
+          },
+          "opportunities": {
+            "items": {
+              "$ref": "#/components/schemas/VerifiedGrantOpportunity"
+            },
+            "title": "Opportunities",
+            "type": "array"
           },
           "role": {
             "title": "Role",
@@ -5832,11 +5820,6 @@
             "title": "Name",
             "type": "string"
           },
-          "online_research_default": {
-            "default": false,
-            "title": "Online Research Default",
-            "type": "boolean"
-          },
           "project_id": {
             "title": "Project Id",
             "type": "string"
@@ -6028,40 +6011,6 @@
           "detail"
         ],
         "title": "ProposalRiskEscalation",
-        "type": "object"
-      },
-      "PublicDiscoveryRequest": {
-        "additionalProperties": false,
-        "description": "Explicit per-turn consent for public connector discovery.",
-        "properties": {
-          "connector_ids": {
-            "anyOf": [
-              {
-                "items": {
-                  "type": "string"
-                },
-                "type": "array"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Connector Ids"
-          },
-          "public_context": {
-            "anyOf": [
-              {
-                "maxLength": 40000,
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Public Context"
-          }
-        },
-        "title": "PublicDiscoveryRequest",
         "type": "object"
       },
       "PublishPromptAgentRequest": {
@@ -6444,6 +6393,7 @@
         "type": "object"
       },
       "ResearchRequest": {
+        "additionalProperties": false,
         "properties": {
           "context": {
             "additionalProperties": true,
@@ -6462,16 +6412,6 @@
             "minLength": 1,
             "title": "Project Id",
             "type": "string"
-          },
-          "public_discovery": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PublicDiscoveryRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
           },
           "query": {
             "maxLength": 4000,
@@ -7346,21 +7286,6 @@
             "minLength": 3,
             "title": "Objective",
             "type": "string"
-          },
-          "online_research": {
-            "default": false,
-            "title": "Online Research",
-            "type": "boolean"
-          },
-          "public_discovery": {
-            "anyOf": [
-              {
-                "$ref": "#/components/schemas/PublicDiscoveryRequest"
-              },
-              {
-                "type": "null"
-              }
-            ]
           }
         },
         "required": [
@@ -7612,6 +7537,114 @@
           "type"
         ],
         "title": "ValidationError",
+        "type": "object"
+      },
+      "VerifiedGrantOpportunity": {
+        "additionalProperties": false,
+        "properties": {
+          "agency": {
+            "maxLength": 512,
+            "minLength": 1,
+            "title": "Agency",
+            "type": "string"
+          },
+          "archive_date": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Archive Date"
+          },
+          "canonical_url": {
+            "maxLength": 2048,
+            "minLength": 1,
+            "title": "Canonical Url",
+            "type": "string"
+          },
+          "close_date": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Close Date"
+          },
+          "grants_gov_id": {
+            "pattern": "^[0-9]{1,12}$",
+            "title": "Grants Gov Id",
+            "type": "string"
+          },
+          "opportunity_number": {
+            "maxLength": 256,
+            "minLength": 1,
+            "title": "Opportunity Number",
+            "type": "string"
+          },
+          "posted_date": {
+            "anyOf": [
+              {
+                "pattern": "^\\d{4}-\\d{2}-\\d{2}$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Posted Date"
+          },
+          "relevance": {
+            "enum": [
+              "direct",
+              "adjacent"
+            ],
+            "title": "Relevance",
+            "type": "string"
+          },
+          "relevance_rationale": {
+            "maxLength": 2000,
+            "minLength": 1,
+            "title": "Relevance Rationale",
+            "type": "string"
+          },
+          "status": {
+            "maxLength": 64,
+            "minLength": 1,
+            "title": "Status",
+            "type": "string"
+          },
+          "title": {
+            "maxLength": 1000,
+            "minLength": 1,
+            "title": "Title",
+            "type": "string"
+          },
+          "verified_at": {
+            "format": "date-time",
+            "title": "Verified At",
+            "type": "string"
+          }
+        },
+        "required": [
+          "grants_gov_id",
+          "opportunity_number",
+          "title",
+          "agency",
+          "status",
+          "canonical_url",
+          "relevance",
+          "relevance_rationale",
+          "verified_at"
+        ],
+        "title": "VerifiedGrantOpportunity",
         "type": "object"
       },
       "WorkspaceSummary": {

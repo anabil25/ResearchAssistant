@@ -357,7 +357,7 @@ def index_extracted_source(payload: dict[str, Any]) -> dict[str, Any]:
             payload,
             status="running",
             progress=50,
-            current_stage="Retrieve authorized evidence",
+            current_stage="Retrieve admitted sources",
         )
         if payload.get("workflow_kind") == "library_ingestion":
             _update_library(

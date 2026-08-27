@@ -63,7 +63,7 @@ class LenientClaim(Claim):
     Generated output is schema-conformant but cannot be constrained by the model
     provider across fields, so a model may emit ``supported`` with no evidence.
     Enforcing the invariant at parse time aborts the whole response; instead this
-    twin lets the payload land so ``resolve_authorized_evidence`` can downgrade the
+    twin lets the payload land so ``resolve_admitted_sources`` can downgrade the
     claim to ``unsupported``. The strict invariant is re-applied afterwards.
     """
 
@@ -82,6 +82,14 @@ class ResearchRequest(BaseModel):
     session_id: str = Field(min_length=1, max_length=256)
     sensitivity: Sensitivity
     evidence: tuple[EvidenceRef, ...] = ()
+    authorized_connector_ids: tuple[str, ...] = ()
+
+    @field_validator("authorized_connector_ids")
+    @classmethod
+    def connector_ids_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
+        if len(value) != len(set(value)):
+            raise ValueError("connector identifiers must be unique")
+        return value
 
 
 class ResearchResponse(BaseModel):
@@ -114,11 +122,6 @@ class ResearchResponse(BaseModel):
 
 
 class LiteratureRequest(ResearchRequest):
-    sensitivity: Literal[
-        Sensitivity.INTERNAL,
-        Sensitivity.CONFIDENTIAL,
-        Sensitivity.RESTRICTED,
-    ]
     review_question: str | None = Field(default=None, max_length=8_000)
 
 
@@ -128,98 +131,22 @@ class LiteratureResponse(ResearchResponse):
     search_urls: tuple[str, ...] = ()
 
 
-def _reject_public_evidence(
-    evidence: tuple[EvidenceRef, ...],
-) -> tuple[EvidenceRef, ...]:
-    if evidence:
-        raise ValueError("public requests cannot include caller-supplied evidence")
-    return evidence
-
-
-class PublicLiteratureRequest(ResearchRequest):
-    sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
-    review_question: str | None = Field(default=None, max_length=8_000)
-    authorized_connector_ids: tuple[str, ...] = ()
-    public_context: str | None = Field(default=None, max_length=40_000)
-    _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
-
-    @field_validator("authorized_connector_ids")
-    @classmethod
-    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("authorized connector identifiers must be unique")
-        return value
-
-
-class PublicLiteratureResponse(LiteratureResponse):
-    pass
-
-
 class GrantRequest(ResearchRequest):
-    sensitivity: Literal[
-        Sensitivity.INTERNAL,
-        Sensitivity.CONFIDENTIAL,
-        Sensitivity.RESTRICTED,
-    ]
     opportunity_id: str | None = Field(default=None, max_length=256)
 
 
 class GrantResponse(ResearchResponse):
     requirements: tuple[str, ...] = ()
-    ready_for_review: bool = False
-    opportunity_urls: tuple[str, ...] = ()
-
-
-class PublicGrantRequest(ResearchRequest):
-    sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
-    opportunity_id: str | None = Field(default=None, max_length=256)
-    authorized_connector_ids: tuple[str, ...] = ()
-    public_context: str | None = Field(default=None, max_length=40_000)
-    _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
-
-    @field_validator("authorized_connector_ids")
-    @classmethod
-    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("authorized connector identifiers must be unique")
-        return value
-
-
-class PublicGrantResponse(GrantResponse):
-    pass
+    ready_for_review: bool | None = None
 
 
 class MatchingRequest(ResearchRequest):
-    sensitivity: Literal[
-        Sensitivity.INTERNAL,
-        Sensitivity.CONFIDENTIAL,
-        Sensitivity.RESTRICTED,
-    ]
     required_facets: tuple[str, ...] = ()
 
 
 class MatchingResponse(ResearchResponse):
     record_ids: tuple[str, ...] = ()
     lead_record_ids: tuple[str, ...] = ()
-
-
-class PublicMatchingRequest(ResearchRequest):
-    sensitivity: Literal[Sensitivity.PUBLIC] = Sensitivity.PUBLIC
-    required_facets: tuple[str, ...] = ()
-    authorized_connector_ids: tuple[str, ...] = ()
-    public_context: str | None = Field(default=None, max_length=40_000)
-    _public_evidence_boundary = field_validator("evidence")(_reject_public_evidence)
-
-    @field_validator("authorized_connector_ids")
-    @classmethod
-    def authorized_connectors_are_unique(cls, value: tuple[str, ...]) -> tuple[str, ...]:
-        if len(value) != len(set(value)):
-            raise ValueError("authorized connector identifiers must be unique")
-        return value
-
-
-class PublicMatchingResponse(MatchingResponse):
-    pass
 
 
 class DatasetRequest(ResearchRequest):
@@ -310,11 +237,8 @@ class CoordinatorRequest(ResearchRequest):
 
 
 type SpecialistRequestPayload = (
-    PublicLiteratureRequest
-    | LiteratureRequest
-    | PublicGrantRequest
+    LiteratureRequest
     | GrantRequest
-    | PublicMatchingRequest
     | MatchingRequest
     | DatasetRequest
     | InstitutionRequest
@@ -338,19 +262,16 @@ class SpecialistRequest(BaseModel):
         if not isinstance(request, dict):
             return value
         raw_capability = value.get("capability")
-        raw_sensitivity = request.get("sensitivity")
-        if not isinstance(raw_capability, str) or not isinstance(raw_sensitivity, str):
+        if not isinstance(raw_capability, str):
             return value
         try:
             capability = SpecialistCapability(raw_capability)
-            sensitivity = Sensitivity(raw_sensitivity)
         except ValueError:
             return value
-        public = sensitivity == Sensitivity.PUBLIC
         contracts: dict[SpecialistCapability, type[ResearchRequest]] = {
-            SpecialistCapability.LITERATURE: (PublicLiteratureRequest if public else LiteratureRequest),
-            SpecialistCapability.GRANT: PublicGrantRequest if public else GrantRequest,
-            SpecialistCapability.MATCHING: (PublicMatchingRequest if public else MatchingRequest),
+            SpecialistCapability.LITERATURE: LiteratureRequest,
+            SpecialistCapability.GRANT: GrantRequest,
+            SpecialistCapability.MATCHING: MatchingRequest,
             SpecialistCapability.DATASET: DatasetRequest,
             SpecialistCapability.INSTITUTION: InstitutionRequest,
         }
@@ -360,15 +281,9 @@ class SpecialistRequest(BaseModel):
     @model_validator(mode="after")
     def capability_matches_request(self) -> SpecialistRequest:
         expected: dict[SpecialistCapability, tuple[type[ResearchRequest], ...]] = {
-            SpecialistCapability.LITERATURE: (
-                PublicLiteratureRequest,
-                LiteratureRequest,
-            ),
-            SpecialistCapability.GRANT: (PublicGrantRequest, GrantRequest),
-            SpecialistCapability.MATCHING: (
-                PublicMatchingRequest,
-                MatchingRequest,
-            ),
+            SpecialistCapability.LITERATURE: (LiteratureRequest,),
+            SpecialistCapability.GRANT: (GrantRequest,),
+            SpecialistCapability.MATCHING: (MatchingRequest,),
             SpecialistCapability.DATASET: (DatasetRequest,),
             SpecialistCapability.INSTITUTION: (InstitutionRequest,),
         }
@@ -378,11 +293,8 @@ class SpecialistRequest(BaseModel):
 
 
 type SpecialistResponse = (
-    PublicLiteratureResponse
-    | LiteratureResponse
-    | PublicGrantResponse
+    LiteratureResponse
     | GrantResponse
-    | PublicMatchingResponse
     | MatchingResponse
     | DatasetResponse
     | InstitutionResponse
@@ -472,16 +384,16 @@ def lenient_output_model(model: type[ResearchResponse]) -> type[ResearchResponse
     return twin
 
 
-def resolve_authorized_evidence(
+def resolve_admitted_sources(
     response: ResearchResponse,
-    authorized_evidence: tuple[EvidenceRef, ...],
+    admitted_sources: tuple[EvidenceRef, ...],
 ) -> ResearchResponse:
-    authorized_by_id = {item.evidence_id: item for item in authorized_evidence}
-    authorized_evidence_ids = frozenset(authorized_by_id)
+    admitted_by_id = {item.evidence_id: item for item in admitted_sources}
+    admitted_source_ids = frozenset(admitted_by_id)
     output_ids = {item.evidence_id for item in response.evidence} | {
         evidence_id for claim in response.claims for evidence_id in claim.evidence_ids
     }
-    evidence = tuple(item for item in authorized_evidence if item.evidence_id in output_ids)
+    evidence = tuple(item for item in admitted_sources if item.evidence_id in output_ids)
     claims = tuple(
         (
             claim.model_copy(
@@ -492,7 +404,7 @@ def resolve_authorized_evidence(
             )
             if (
                 claim.support in {SupportStatus.SUPPORTED, SupportStatus.CONFLICTING}
-                and (not claim.evidence_ids or bool(set(claim.evidence_ids) - authorized_evidence_ids))
+                and (not claim.evidence_ids or bool(set(claim.evidence_ids) - admitted_source_ids))
             )
             else claim
         )
@@ -504,9 +416,9 @@ def resolve_authorized_evidence(
             (
                 item.model_copy(
                     update={
-                        "response": resolve_authorized_evidence(
+                        "response": resolve_admitted_sources(
                             item.response,
-                            authorized_evidence,
+                            admitted_sources,
                         )
                     }
                 )
@@ -521,11 +433,8 @@ def resolve_authorized_evidence(
 INPUT_CONTRACTS: dict[str, type[ResearchRequest]] = {
     "CoordinatorRequestV2": CoordinatorRequest,
     "LiteratureRequestV2": LiteratureRequest,
-    "PublicLiteratureRequestV2": PublicLiteratureRequest,
     "GrantRequestV2": GrantRequest,
-    "PublicGrantRequestV2": PublicGrantRequest,
     "MatchingRequestV2": MatchingRequest,
-    "PublicMatchingRequestV2": PublicMatchingRequest,
     "DatasetRequestV2": DatasetRequest,
     "InstitutionRequestV2": InstitutionRequest,
 }
@@ -533,11 +442,8 @@ INPUT_CONTRACTS: dict[str, type[ResearchRequest]] = {
 OUTPUT_CONTRACTS: dict[str, type[ResearchResponse]] = {
     "CoordinatorDecisionV2": CoordinatorResponse,
     "LiteratureSynthesisV2": LiteratureResponse,
-    "PublicLiteratureResearchV2": PublicLiteratureResponse,
     "GrantPackageV2": GrantResponse,
-    "PublicGrantResearchV2": PublicGrantResponse,
     "MatchingShortlistV2": MatchingResponse,
-    "PublicMatchingResearchV2": PublicMatchingResponse,
     "DatasetAnalysisV2": DatasetResponse,
     "InstitutionalAnswerV2": InstitutionResponse,
 }
@@ -591,15 +497,9 @@ class AgentContractBinding:
     output_model: type[ResearchResponse]
 
 
-def bind_contracts(
-    manifest: AgentManifest,
-    *,
-    public: bool = False,
-) -> AgentContractBinding:
-    input_schema = manifest.public_input_schema if public else manifest.input_schema
-    output_schema = manifest.public_output_schema if public else manifest.output_schema
-    if input_schema is None or output_schema is None:
-        raise ContractError("Agent manifest does not declare a public discovery contract")
+def bind_contracts(manifest: AgentManifest) -> AgentContractBinding:
+    input_schema = manifest.input_schema
+    output_schema = manifest.output_schema
     try:
         input_model = INPUT_CONTRACTS[input_schema.schema_id]
         output_model = OUTPUT_CONTRACTS[output_schema.schema_id]
@@ -669,7 +569,7 @@ class KnowledgeBinding(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     binding_id: str = Field(pattern=r"^[a-z][a-z0-9_.-]{1,127}$")
-    kind: Literal["authorized_evidence", "foundry_toolbox"]
+    kind: Literal["source_records", "foundry_toolbox"]
     source_ref: str = Field(min_length=1, max_length=512)
     connection_ref: str = Field(min_length=1, max_length=512)
     schema_digest: str = Field(pattern=r"^[0-9a-f]{64}$")
@@ -692,7 +592,7 @@ class PinnedSpecialist(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
     capability: SpecialistCapability
-    sensitivity: Sensitivity
+    allowed_sensitivities: tuple[Sensitivity, ...] = tuple(Sensitivity)
     registry_agent_ref: str = Field(pattern=r"^foundry://project/agents/[A-Za-z0-9._-]+$")
     agent_version: str = Field(pattern=r"^\d+\.\d+\.\d+$")
     private_specialist_ref: str | None = Field(default=None, max_length=512)
@@ -719,9 +619,11 @@ class SpecialistPolicy(BaseModel):
 
     @model_validator(mode="after")
     def specialists_are_unique(self) -> SpecialistPolicy:
-        keys = [(specialist.capability, specialist.sensitivity) for specialist in self.specialists]
-        if len(keys) != len(set(keys)):
-            raise ValueError("specialist capability and sensitivity bindings must be unique")
+        capabilities = [specialist.capability for specialist in self.specialists]
+        if len(capabilities) != len(set(capabilities)):
+            raise ValueError("specialist capability bindings must be unique")
+        if any(not specialist.allowed_sensitivities for specialist in self.specialists):
+            raise ValueError("specialists must allow at least one sensitivity")
         return self
 
 
@@ -875,11 +777,9 @@ class AgentManifest(BaseModel):
     instructions: str = Field(min_length=1)
     input_schema: SchemaReference
     output_schema: SchemaReference
-    public_input_schema: SchemaReference | None = None
-    public_output_schema: SchemaReference | None = None
     capability_bindings: tuple[CapabilityBinding, ...] = ()
     model_policy: ModelPolicy
-    discovery_model_policy: ModelPolicy | None = None
+    retrieval_model_policy: ModelPolicy | None = None
     runtime_requirements: RuntimeRequirements
     knowledge_bindings: tuple[KnowledgeBinding, ...]
     evidence_policy: EvidencePolicy
@@ -913,20 +813,18 @@ class AgentManifest(BaseModel):
             raise ValueError(
                 "capability binding scopes must exactly match the manifest deployment scope"
             )
-        if self.online and "public" not in self.instructions.lower():
-            raise ValueError("online manifests must state their public-data boundary")
-        if (self.public_input_schema is None) != (self.public_output_schema is None):
-            raise ValueError("public input and output schemas must be declared together")
-        if self.supports_public_discovery != (self.discovery_model_policy is not None):
+        if self.online and "source" not in self.instructions.lower():
+            raise ValueError("retrieval-enabled manifests must state their source boundary")
+        if self.online != (self.retrieval_model_policy is not None):
             raise ValueError(
-                "public discovery contracts require a dedicated discovery model policy"
+                "retrieval-enabled manifests require a dedicated retrieval model policy"
             )
-        if self.discovery_model_policy is not None and (
-            self.discovery_model_policy.performance_class != "fast"
-            or not self.discovery_model_policy.tool_calling_required
+        if self.retrieval_model_policy is not None and (
+            self.retrieval_model_policy.performance_class != "fast"
+            or not self.retrieval_model_policy.tool_calling_required
         ):
             raise ValueError(
-                "public discovery requires a fast tool-calling model policy"
+                "source retrieval requires a fast tool-calling model policy"
             )
         if self.specialist_policy is not None and self.id != "coordinator":
             raise ValueError("specialist policy is only valid for the coordinator")
@@ -966,8 +864,8 @@ class AgentManifest(BaseModel):
         return any(binding.access == "public" for binding in self.knowledge_bindings)
 
     @property
-    def supports_public_discovery(self) -> bool:
-        return self.public_input_schema is not None
+    def supports_source_retrieval(self) -> bool:
+        return self.retrieval_model_policy is not None
 
     @property
     def connector_sources(self) -> tuple[str, ...]:

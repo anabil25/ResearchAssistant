@@ -408,7 +408,8 @@
         solution egresses. It publishes each research source twice — as an MCP server that the
         single shared Foundry Toolbox (<code>research-shared</code>, immutable versions) binds
         to, and as a normalized REST API the research API calls with its managed identity.
-        Public discovery is opt-in per turn; <code>institution-agent</code> has no tools at all.
+        Connector access is derived from saved administrator policy and the assigned
+        specialist; <code>institution-agent</code> has no external tools at all.
         Per-operation policies validate every parameter, normalize each upstream response, and
         apply rate limits, and source API keys live only as APIM named values — so no agent,
         container, or model ever sees a credential.

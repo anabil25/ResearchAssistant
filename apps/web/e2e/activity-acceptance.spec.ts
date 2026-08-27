@@ -19,7 +19,7 @@ test("live Screening streams safe activity before the final answer", async ({ pa
   await page.goto("/?view=screening");
   await expect(page.getByRole("heading", { name: "Screening Studio" })).toBeVisible();
   await page.getByPlaceholder("Ask the agent anything, or drop a file here").fill(
-    "Use the screening-protocol skill to explain why no screening can be performed when no papers or inclusion criteria are supplied. Do not perform external discovery.",
+    "Use the screening-protocol skill to explain why no screening can be performed when no papers or inclusion criteria are supplied. Use only the supplied turn data.",
   );
   await page.getByRole("button", { name: "Send" }).click();
 

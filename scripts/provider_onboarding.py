@@ -188,6 +188,10 @@ def _connector_mcp_policy(arm_audience: str) -> str:
     )
 
 
+def arm_token_audience(resource_manager_endpoint: str) -> str:
+    return resource_manager_endpoint.rstrip("/")
+
+
 class ApimOnboarder:
     """Minimal ARM client for the APIM resources this onboarding owns."""
 
@@ -631,7 +635,7 @@ class ApimOnboarder:
         self._await_async_operation(response, f"import {CONNECTOR_API_ID}")
         self._await_api(CONNECTOR_API_ID)
 
-        arm_audience = f"{self._resource_manager_endpoint}/"
+        arm_audience = arm_token_audience(self._resource_manager_endpoint)
         self._put(
             f"/apis/{CONNECTOR_API_ID}/policies/policy",
             {

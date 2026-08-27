@@ -46,9 +46,10 @@ def capabilities_for_manifest(
             retry=RetryPolicy(max_attempts=1),
             redact_fields=frozenset({"dataset"}),
         ),
-        "literature.public_lookup": _public_lookup("literature.public_lookup", destination),
-        "grant.public_lookup": _public_lookup("grant.public_lookup", destination),
-        "matching.public_lookup": _public_lookup("matching.public_lookup", destination),
+        "literature.source_lookup": _source_lookup("literature.source_lookup", destination),
+        "grant.source_lookup": _source_lookup("grant.source_lookup", destination),
+        "matching.source_lookup": _source_lookup("matching.source_lookup", destination),
+        "dataset.source_lookup": _source_lookup("dataset.source_lookup", destination),
     }
     return tuple(definitions[item] for item in manifest.capability_ids)
 
@@ -66,11 +67,11 @@ def _session_file_analysis(capability_id: str, destination: str | None) -> Capab
     )
 
 
-def _public_lookup(capability_id: str, destination: str | None) -> CapabilityDescriptor:
+def _source_lookup(capability_id: str, destination: str | None) -> CapabilityDescriptor:
     return CapabilityDescriptor(
         id=capability_id,
         operation=OperationClass.READ,
-        required_scopes=frozenset({"research.public.read"}),
+        required_scopes=frozenset({"research.sources.read"}),
         allowed_destinations=(destination,) if destination else (),
         timeout_seconds=120,
         retry=RetryPolicy(max_attempts=3, delays_seconds=(1, 3)),

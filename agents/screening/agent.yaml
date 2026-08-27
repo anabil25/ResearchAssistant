@@ -6,7 +6,7 @@ container:
     resources:
         cpu: "0.5"
         memory: 1Gi
-description: Applies systematic-review inclusion criteria to an authorized library.
+description: Screens supplied papers and retrieves systematic-review candidates.
 environmentVariables:
     - name: SCREENING_LEAD_MODEL
       value: gpt-5.6-sol

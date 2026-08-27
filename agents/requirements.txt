@@ -1,9 +1,14 @@
 agent-framework-core==1.12.0
 agent-framework-foundry==1.10.2
 agent-framework-foundry-hosting==1.0.0b260721
+aiohttp==3.14.3
 azure-ai-projects==2.3.0
 azure-identity==1.25.3
+cryptography==50.0.0
+debugpy==1.8.19
+h2==4.4.1
 openai==2.46.0
 pydantic==2.13.4
+pypdf==6.15.0
 python-dotenv==1.2.2
 typing-extensions==4.15.0

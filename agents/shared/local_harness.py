@@ -22,7 +22,7 @@ from .contracts import (
     ResearchResponse,
     bind_contracts,
     lenient_output_model,
-    resolve_authorized_evidence,
+    resolve_admitted_sources,
 )
 from .errors import ContractError, ErrorDetail, error_from_exception
 from .idempotency import IdempotencyStore
@@ -129,7 +129,7 @@ class LocalHarness:
                 raw.model_dump() if isinstance(raw, BaseModel) else raw,
             )
             response = self._contracts.output_model.model_validate(
-                resolve_authorized_evidence(parsed, request.evidence).model_dump(),
+                resolve_admitted_sources(parsed, request.evidence).model_dump(),
             )
         except ValidationError as exc:
             return LocalResult(

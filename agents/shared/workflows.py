@@ -26,9 +26,6 @@ from .contracts import (
     InstitutionRequest,
     LiteratureRequest,
     MatchingRequest,
-    PublicGrantRequest,
-    PublicLiteratureRequest,
-    PublicMatchingRequest,
     ResearchRequest,
     Sensitivity,
     SpecialistCapability,
@@ -58,21 +55,16 @@ class CoordinatorRouter:
         self,
         *,
         specialist_policy: SpecialistPolicy | None = None,
-        offline_names: dict[SpecialistCapability, str] | None = None,
-        online_names: dict[SpecialistCapability, str] | None = None,
+        specialist_names: dict[SpecialistCapability, str] | None = None,
     ) -> None:
         policy = specialist_policy or get_manifest("coordinator").specialist_policy
         if policy is None:
             raise ContractError("Coordinator manifest requires a specialist policy")
         self._policy = policy
-        pinned_offline = {
-            item.capability: item.agent_name for item in policy.specialists if item.sensitivity != Sensitivity.PUBLIC
+        self._specialists = {item.capability: item for item in policy.specialists}
+        self._targets = specialist_names or {
+            item.capability: item.agent_name for item in policy.specialists
         }
-        pinned_online = {
-            item.capability: item.agent_name for item in policy.specialists if item.sensitivity == Sensitivity.PUBLIC
-        }
-        self._offline = offline_names or pinned_offline
-        self._online = online_names or pinned_online
 
     def route(self, request: CoordinatorRequest) -> tuple[SpecialistRequest, ...]:
         if len(request.requested_capabilities) > self._policy.budget_units:
@@ -103,19 +95,20 @@ class CoordinatorRouter:
         capability: SpecialistCapability,
         sensitivity: Sensitivity,
     ) -> str | None:
-        targets = self._online if sensitivity == Sensitivity.PUBLIC else self._offline
-        return targets.get(capability)
+        specialist = self._specialists.get(capability)
+        if specialist is None or sensitivity not in specialist.allowed_sensitivities:
+            return None
+        return self._targets.get(capability)
 
     @staticmethod
     def _typed_request(
         request: CoordinatorRequest,
         capability: SpecialistCapability,
     ) -> SpecialistRequestPayload:
-        public = request.sensitivity == Sensitivity.PUBLIC
         contracts: dict[SpecialistCapability, type[ResearchRequest]] = {
-            SpecialistCapability.LITERATURE: (PublicLiteratureRequest if public else LiteratureRequest),
-            SpecialistCapability.GRANT: (PublicGrantRequest if public else GrantRequest),
-            SpecialistCapability.MATCHING: (PublicMatchingRequest if public else MatchingRequest),
+            SpecialistCapability.LITERATURE: LiteratureRequest,
+            SpecialistCapability.GRANT: GrantRequest,
+            SpecialistCapability.MATCHING: MatchingRequest,
             SpecialistCapability.DATASET: DatasetRequest,
             SpecialistCapability.INSTITUTION: InstitutionRequest,
         }
@@ -290,10 +283,7 @@ class FoundrySpecialistInvoker:
             ),
         )
         manifest = _specialist_manifest(request)
-        contracts = bind_contracts(
-            manifest,
-            public=request.request.sensitivity == Sensitivity.PUBLIC,
-        )
+        contracts = bind_contracts(manifest)
         agent_request = contracts.input_model.model_validate(_specialist_payload(request, manifest.id))
         try:
             with self._project_factory(

@@ -11,7 +11,6 @@ import {
   ClipboardCheck,
   FileText,
   FlaskConical,
-  Globe2,
   Paperclip,
   SendHorizontal,
   ShieldCheck,
@@ -41,6 +40,7 @@ import {
   uploadChatFile,
 } from "@/lib/api";
 import { classifyAsyncError } from "@/components/async-state";
+import { GrantOpportunityList } from "@/components/grant-opportunity-list";
 import {
   agentSurface,
   isChatCapability as surfaceIsChat,
@@ -245,6 +245,7 @@ function AgentAnswer({
           </p>
         ) : null}
       </div>
+      <GrantOpportunityList opportunities={message.opportunities ?? []} />
       {isLong ? (
         <button
           type="button"
@@ -526,6 +527,7 @@ export function AgentChat({
       activity: [],
       duration_ms: null,
       source_count: 0,
+      opportunities: [],
     };
     setThread({ ...activeThread, messages: [...activeThread.messages, optimistic] });
     threadRef.current = { ...activeThread, messages: [...activeThread.messages, optimistic] };
@@ -542,6 +544,7 @@ export function AgentChat({
       activity: [],
       duration_ms: 0,
       source_count: 0,
+      opportunities: [],
     });
     try {
       const onStreamEvent = (event: ChatStreamEvent) => {
@@ -668,7 +671,7 @@ export function AgentChat({
 
       {boundAgent ? (
         <p className="agent-chat-agent-note">
-          {boundAgent.online ? <Globe2 size={15} /> : <ShieldCheck size={15} />}
+          <ShieldCheck size={15} />
           <span>{boundAgent.description}</span>
         </p>
       ) : null}

@@ -91,24 +91,22 @@ Open <http://localhost:3000>.
 | **Matching Explorer** | Apply hard filters, resolve entities, compute deterministic evidence-weighted PI / facility / method scores, compare candidates, and confirm the shortlist. |
 | **Dataset Lab** | Select assets, profile schema and quality, generate an analysis plan, compute deterministic metrics, explain model output, and gate scale-out on approval. |
 | **Institutional Q&A** | Get identity-filtered, citation-backed answers from policy and handbook documents; the agent abstains explicitly when a question is outside its authorized scope. |
-| **Screening Studio** | Apply review criteria to authorized papers, inspect deterministic inclusion decisions, and discover public candidates without treating them as authorized evidence. |
+| **Screening Studio** | Apply review criteria to supplied, uploaded, or retrieved papers and inspect deterministic inclusion decisions and unresolved cases. |
 
 The workbench also includes a governed **Library**, visible connector setup,
 and project **Settings** for models, retrieval, and governance.
 
-### Online research and industry connectors
+### Research sources and industry connectors
 
-Online research is **off by default** and can be enabled only on a public
-literature, grant-opportunity, or matching run. Those canonical specialists
-receive only the assigned shared Toolbox connector and Web Search tools for an
-explicitly acknowledged public query; there are no separate online
-deployments. Institutional, dataset, and screening workflows cannot enable
-public web tools. Web results remain untrusted until stored and verified, and
-can flow outside the Azure compliance/geographic boundary under Grounding
-with Bing terms.
+Each specialist works from one source set that can include supplied records,
+session files, and records returned by enabled research connectors. The API
+derives connector access from saved administrator policy and specialist
+assignments for every request; callers do not choose a separate source mode.
+Institutional Q&A remains file-based and cannot call external tools. Retrieved
+content is untrusted data, and every connector call stays behind APIM admission,
+normalization, provenance, and outbound-data controls.
 
-The API applies saved connector enablement and specialist assignments before
-retrieving bounded public metadata:
+Available connector domains include:
 
 | Domain | Sources |
 |--------|---------|

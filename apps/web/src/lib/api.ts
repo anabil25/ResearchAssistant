@@ -216,7 +216,6 @@ export async function runStudio(
   capability: CapabilityId,
   objective: string,
   options: {
-    onlineResearch?: boolean;
     inputs?: Record<string, unknown>;
   } = {},
   projectId?: string,
@@ -225,7 +224,6 @@ export async function runStudio(
     method: "POST",
     body: JSON.stringify({
       objective,
-      online_research: options.onlineResearch ?? false,
       inputs: options.inputs ?? {},
     }),
   }, projectId);
@@ -496,8 +494,8 @@ export async function uploadChatFile(
 //     AgentReleaseSummary/CapabilityView/ConnectionView); changed capability
 //     maturity to ga|preview|retired|unknown; made connections/memory/
 //     specialists rich objects; split immutable Release rows from mutable
-//     Draft status; replaced the flat public boundary flag with a
-//     structured summary; replaced free-form manifest-change proposals with
+//     Draft status; added a structured source-policy summary; replaced
+//     free-form manifest-change proposals with
 //     a concurrency-safe (etag) builder-message -> proposal -> apply flow.
 //   Round 3 — split the single `/capabilities` read into three canonical
 //     resource shapes: `/capabilities/descriptors` (immutable operation

@@ -172,6 +172,38 @@ class ResearchConnectorRegistry:
                 terms_url="https://europepmc.org/terms",
                 retrieved_from="https://www.ebi.ac.uk/europepmc/webservices/rest/article",
             )
+        if normalized == "grants_gov":
+            opportunity_id = identifier.strip()
+            if (
+                not opportunity_id.isascii()
+                or not opportunity_id.isdecimal()
+                or not 1 <= len(opportunity_id) <= 12
+            ):
+                raise ValueError(
+                    "Grants.gov identifier must be a numeric opportunity ID with at most 12 digits"
+                )
+            payload = self._post_json(
+                "https://api.grants.gov/v1/api/fetchOpportunity",
+                payload={"opportunityId": int(opportunity_id)},
+            )
+            data = payload.get("data")
+            errors = data.get("errorMessages") if isinstance(data, dict) else None
+            record = (
+                self._grants_gov_lookup_record(data)
+                if payload.get("errorcode") == 0
+                and isinstance(data, dict)
+                and str(data.get("id")) == opportunity_id
+                and not errors
+                else None
+            )
+            return ConnectorResult(
+                source="grants_gov",
+                query=opportunity_id,
+                records=[record] if record is not None else [],
+                terms_url="https://www.grants.gov/web/grants/legal.html",
+                retrieved_from="https://api.grants.gov/v1/api/fetchOpportunity",
+                warnings=[str(item) for item in errors] if isinstance(errors, list) else [],
+            )
         if normalized == "clinical_trials":
             nct_id = identifier.strip().upper()
             if (
@@ -585,16 +617,10 @@ class ResearchConnectorRegistry:
         )
         opportunities = payload.get("data", {}).get("oppHits", [])
         records = [
-            {
-                "id": item.get("id"),
-                "number": item.get("number"),
-                "title": item.get("title"),
-                "agency": item.get("agency"),
-                "open_date": item.get("openDate"),
-                "close_date": item.get("closeDate"),
-                "url": f"https://www.grants.gov/search-results-detail/{item.get('id')}",
-            }
+            record
             for item in opportunities
+            if isinstance(item, dict)
+            and (record := self._grants_gov_search_record(item)) is not None
         ]
         return ConnectorResult(
             source="grants_gov",
@@ -603,6 +629,53 @@ class ResearchConnectorRegistry:
             terms_url="https://www.grants.gov/web/grants/legal.html",
             retrieved_from="https://api.grants.gov/v1/api/search2",
         )
+
+    @staticmethod
+    def _grants_gov_date(value: Any) -> str | None:
+        text = str(value or "").strip()
+        slash_date = re.fullmatch(r"(\d{2})/(\d{2})/(\d{4})", text)
+        if slash_date:
+            month, day, year = slash_date.groups()
+            return f"{year}-{month}-{day}"
+        if re.match(r"^\d{4}-\d{2}-\d{2}(?:-|$)", text):
+            return text[:10]
+        return None
+
+    @classmethod
+    def _grants_gov_search_record(cls, item: dict[str, Any]) -> dict[str, Any] | None:
+        opportunity_id = str(item.get("id") or "").strip()
+        if not opportunity_id.isascii() or not opportunity_id.isdecimal():
+            return None
+        return {
+            "grants_gov_id": opportunity_id,
+            "opportunity_number": item.get("number"),
+            "title": item.get("title"),
+            "agency": item.get("agency"),
+            "status": str(item.get("oppStatus") or "").casefold() or None,
+            "posted_date": cls._grants_gov_date(item.get("openDate")),
+            "close_date": cls._grants_gov_date(item.get("closeDate")),
+            "archive_date": None,
+            "canonical_url": f"https://www.grants.gov/search-results-detail/{opportunity_id}",
+        }
+
+    @classmethod
+    def _grants_gov_lookup_record(cls, data: dict[str, Any]) -> dict[str, Any]:
+        opportunity_id = str(data["id"])
+        raw_synopsis = data.get("synopsis")
+        raw_agency = data.get("agencyDetails")
+        synopsis: dict[str, Any] = raw_synopsis if isinstance(raw_synopsis, dict) else {}
+        agency: dict[str, Any] = raw_agency if isinstance(raw_agency, dict) else {}
+        return {
+            "grants_gov_id": opportunity_id,
+            "opportunity_number": data.get("opportunityNumber"),
+            "title": data.get("opportunityTitle"),
+            "agency": agency.get("agencyName") or synopsis.get("agencyName"),
+            "status": str(data.get("ost") or "").casefold() or None,
+            "posted_date": cls._grants_gov_date(synopsis.get("postingDateStr")),
+            "close_date": cls._grants_gov_date(synopsis.get("responseDateStr")),
+            "archive_date": cls._grants_gov_date(synopsis.get("archiveDateStr")),
+            "canonical_url": f"https://www.grants.gov/search-results-detail/{opportunity_id}",
+        }
 
     def _search_nih_reporter(self, query: str, limit: int) -> ConnectorResult:
         payload = self._post_json(

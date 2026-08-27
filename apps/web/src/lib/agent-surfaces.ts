@@ -64,7 +64,7 @@ const SURFACES: Record<string, AgentSurfaceView> = {
     eyebrow: "Evidence review",
     chat_title: "Screening Studio",
     chat_description:
-      "State the inclusion and exclusion criteria, then ask the screening agent to decide each paper in the authorized project index.",
+      "State the inclusion and exclusion criteria, then ask the screening agent to decide each available paper.",
     suggestions: [
       "Screen for randomised trials of AI triage in adult emergency care.",
       "Exclude editorials, protocols without results, and paediatric-only studies.",

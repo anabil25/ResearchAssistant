@@ -443,6 +443,30 @@ class ChatActivity(BaseModel):
     detail: str | None = Field(default=None, max_length=500)
 
 
+class VerifiedGrantOpportunity(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    grants_gov_id: str = Field(pattern=r"^[0-9]{1,12}$")
+    opportunity_number: str = Field(min_length=1, max_length=256)
+    title: str = Field(min_length=1, max_length=1_000)
+    agency: str = Field(min_length=1, max_length=512)
+    status: str = Field(min_length=1, max_length=64)
+    posted_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    close_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    archive_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    canonical_url: str = Field(min_length=1, max_length=2048)
+    relevance: Literal["direct", "adjacent"]
+    relevance_rationale: str = Field(min_length=1, max_length=2_000)
+    verified_at: datetime
+
+    @model_validator(mode="after")
+    def exact_canonical_url(self) -> VerifiedGrantOpportunity:
+        expected = f"https://www.grants.gov/search-results-detail/{self.grants_gov_id}"
+        if self.canonical_url != expected:
+            raise ValueError("Grants.gov canonical URL must match the opportunity identifier")
+        return self
+
+
 class ChatMessage(BaseModel):
     id: str
     role: Literal["user", "assistant"]
@@ -453,6 +477,7 @@ class ChatMessage(BaseModel):
     activity: list[ChatActivity] = Field(default_factory=list)
     duration_ms: int | None = Field(default=None, ge=0)
     source_count: int = Field(default=0, ge=0)
+    opportunities: list[VerifiedGrantOpportunity] = Field(default_factory=list)
 
 
 class ChatThread(BaseModel):
@@ -484,7 +509,6 @@ class ProjectSettings(BaseModel):
     name: str
     description: str
     default_classification: str
-    online_research_default: bool = False
     retention_days: int = Field(ge=30, le=3650)
     citation_coverage_threshold: float = Field(ge=0, le=1)
     require_human_approval: bool
@@ -511,7 +535,6 @@ def default_project_settings(
         name=name,
         description=description,
         default_classification="internal",
-        online_research_default=False,
         retention_days=2555,
         citation_coverage_threshold=1.0,
         require_human_approval=True,
@@ -1365,6 +1388,7 @@ class WorkspaceStore:
             "matching",
             "dataset",
             "institution",
+            "screening",
         }
         if not set(update.assigned_agents).issubset(allowed_agents):
             raise ValueError("Connector assignment contains an unknown specialist.")
@@ -1425,8 +1449,6 @@ class WorkspaceStore:
     def update_settings(self, update: ProjectSettings) -> ProjectSettings:
         if update.project_id != self._settings.project_id:
             raise ValueError("The project identifier cannot be changed.")
-        if update.online_research_default:
-            raise ValueError("Online research must remain opt-in per run.")
         with self._lock:
             self._settings = deepcopy(update)
             return deepcopy(self._settings)

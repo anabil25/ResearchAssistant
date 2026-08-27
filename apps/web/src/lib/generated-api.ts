@@ -1693,8 +1693,6 @@ export interface components {
             label: string;
             /** Name */
             name: string;
-            /** Online */
-            online: boolean;
         };
         /** AgentClaimView */
         AgentClaimView: {
@@ -1755,9 +1753,6 @@ export interface components {
         /**
          * AgentEndpoint
          * @description One deployed agent a researcher can talk to.
-         *
-         *     Public discovery is an explicit deployment capability. Callers must still
-         *     authorize connector use independently for every turn.
          */
         AgentEndpoint: {
             /** Description */
@@ -1766,11 +1761,6 @@ export interface components {
             label: string;
             /** Name */
             name: string;
-            /**
-             * Supports Public Discovery
-             * @default false
-             */
-            supports_public_discovery: boolean;
         };
         /** AgentEvidenceView */
         AgentEvidenceView: {
@@ -1790,13 +1780,13 @@ export interface components {
             /** Content */
             content: string;
             evidence_state: components["schemas"]["EvidenceState"];
-            /**
-             * Online Research Used
-             * @default false
-             */
-            online_research_used: boolean;
             /** Referenced Source Ids */
             referenced_source_ids?: string[];
+            /**
+             * Source Retrieval Used
+             * @default false
+             */
+            source_retrieval_used: boolean;
             /** Unresolved Source Ids */
             unresolved_source_ids?: string[];
         };
@@ -2441,7 +2431,6 @@ export interface components {
             capability?: components["schemas"]["Capability"] | null;
             /** Message */
             message: string;
-            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
         };
         /** AssistantResponse */
         AssistantResponse: {
@@ -3238,6 +3227,8 @@ export interface components {
             duration_ms?: number | null;
             /** Id */
             id: string;
+            /** Opportunities */
+            opportunities?: components["schemas"]["VerifiedGrantOpportunity"][];
             /** Role */
             role: string;
             /**
@@ -4307,11 +4298,6 @@ export interface components {
             model_profile: string;
             /** Name */
             name: string;
-            /**
-             * Online Research Default
-             * @default false
-             */
-            online_research_default: boolean;
             /** Project Id */
             project_id: string;
             /** Require Human Approval */
@@ -4397,16 +4383,6 @@ export interface components {
             category: components["schemas"]["ProposalRiskCategory"];
             /** Detail */
             detail: string;
-        };
-        /**
-         * PublicDiscoveryRequest
-         * @description Explicit per-turn consent for public connector discovery.
-         */
-        PublicDiscoveryRequest: {
-            /** Connector Ids */
-            connector_ids?: string[] | null;
-            /** Public Context */
-            public_context?: string | null;
         };
         /**
          * PublishPromptAgentRequest
@@ -4608,7 +4584,6 @@ export interface components {
             group_ids: string[];
             /** Project Id */
             project_id: string;
-            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
             /** Query */
             query: string;
             /** Tenant Id */
@@ -4997,12 +4972,6 @@ export interface components {
             };
             /** Objective */
             objective: string;
-            /**
-             * Online Research
-             * @default false
-             */
-            online_research: boolean;
-            public_discovery?: components["schemas"]["PublicDiscoveryRequest"] | null;
         };
         /**
          * TemplateListResponse
@@ -5126,6 +5095,39 @@ export interface components {
             msg: string;
             /** Error Type */
             type: string;
+        };
+        /** VerifiedGrantOpportunity */
+        VerifiedGrantOpportunity: {
+            /** Agency */
+            agency: string;
+            /** Archive Date */
+            archive_date?: string | null;
+            /** Canonical Url */
+            canonical_url: string;
+            /** Close Date */
+            close_date?: string | null;
+            /** Grants Gov Id */
+            grants_gov_id: string;
+            /** Opportunity Number */
+            opportunity_number: string;
+            /** Posted Date */
+            posted_date?: string | null;
+            /**
+             * Relevance
+             * @enum {string}
+             */
+            relevance: "direct" | "adjacent";
+            /** Relevance Rationale */
+            relevance_rationale: string;
+            /** Status */
+            status: string;
+            /** Title */
+            title: string;
+            /**
+             * Verified At
+             * Format: date-time
+             */
+            verified_at: string;
         };
         /** WorkspaceSummary */
         WorkspaceSummary: {

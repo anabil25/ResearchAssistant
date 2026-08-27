@@ -91,6 +91,13 @@
     "operationId": "grantsGovSearch"
   },
   {
+    "apiId": "research-grants-gov-mcp-v1",
+    "description": "Authoritative U.S. federal opportunity records.",
+    "displayName": "lookup",
+    "name": "grants_gov_lookup",
+    "operationId": "grantsGovLookup"
+  },
+  {
     "apiId": "research-nih-reporter-mcp-v1",
     "description": "NIH funded-project and investigator metadata.",
     "displayName": "search",

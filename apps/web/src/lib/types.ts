@@ -56,7 +56,6 @@ export interface ChatAgentChoice {
   name: string;
   label: string;
   description: string;
-  online: boolean;
 }
 
 export interface ChatAttachment {
@@ -73,6 +72,21 @@ export interface ChatActivity {
   detail: string | null;
 }
 
+export interface VerifiedGrantOpportunity {
+  grants_gov_id: string;
+  opportunity_number: string;
+  title: string;
+  agency: string;
+  status: string;
+  posted_date: string | null;
+  close_date: string | null;
+  archive_date: string | null;
+  canonical_url: string;
+  relevance: "direct" | "adjacent";
+  relevance_rationale: string;
+  verified_at: string;
+}
+
 export interface ChatMessage {
   id: string;
   role: "user" | "assistant";
@@ -83,6 +97,7 @@ export interface ChatMessage {
   activity?: ChatActivity[];
   duration_ms?: number | null;
   source_count?: number;
+  opportunities: VerifiedGrantOpportunity[];
 }
 
 export interface ChatThread {
@@ -140,7 +155,7 @@ export interface WorkflowBlueprint {
   title: string;
   purpose: string;
   primary_artifact: string;
-  online_research_policy: string;
+  source_policy: string;
   stages: WorkflowStage[];
 }
 
@@ -708,56 +723,6 @@ export interface SpecialistView {
 }
 
 /**
- * Behavioral/data-boundary summary — not a flat `read_only|read_write` flag.
- * `mode` must only ever be set from an explicit, structured boundary
- * supplied by a real Agent Studio endpoint — never guessed from free text
- * or an agent's id. `null` means no such structured boundary exists yet and
- * must be shown as "Not available yet" rather than inferred.
- */
-export interface PublicBoundaryView {
-  mode: "none" | "public_online" | null;
-  sources: string[] | null;
-  outbound_data_boundary: string | null;
-  write_destinations: string[] | null;
-  approval_required: boolean | null;
-}
-
-export function defaultPublicBoundary(): PublicBoundaryView {
-  return {
-    mode: null,
-    sources: null,
-    outbound_data_boundary: null,
-    write_destinations: null,
-    approval_required: null,
-  };
-}
-
-/**
- * Builds the legacy-fallback public-boundary display from the real, live
- * `AgentSetting.web_access` free-text field. This field is unstructured
- * internal-display text, not a governed public-boundary contract, so `mode`
- * (and every other structured field) is always `null` here regardless of
- * content — independent review found the previous substring heuristic
- * (`includes("public")` => `public_online`) genuinely misclassified real
- * agents: a canonical agent can support both authorized evidence and
- * request-scoped public discovery, so free text containing "public" cannot
- * identify the active mode or its data boundary. The raw `web_access` text
- * is still surfaced verbatim as
- * `outbound_data_boundary` purely for human context — it never asserts a
- * boundary. Only a real Agent Studio endpoint (not yet implemented) may
- * ever set `mode` to a non-null value.
- */
-export function derivePublicBoundaryFromWebAccess(
-  webAccess: string | undefined,
-): PublicBoundaryView {
-  if (!webAccess) return defaultPublicBoundary();
-  return {
-    ...defaultPublicBoundary(),
-    outbound_data_boundary: webAccess,
-  };
-}
-
-/**
  * Purely immutable identity of one agent version — content-addressed hash,
  * exact pinned model/capability versions, and creation lineage. Never
  * carries deployment/environment/health state — see `DeploymentSummary`
@@ -839,7 +804,6 @@ export interface AgentContractView {
   safety: string | null;
   tests: string | null;
   deployment: string | null;
-  public_boundary: PublicBoundaryView | null;
 }
 
 /**
@@ -855,7 +819,6 @@ export interface AgentSummary {
   purpose: string | null;
   boundary: string | null;
   discovered_project_model: string | null;
-  public_boundary: PublicBoundaryView;
   capability: CapabilityId | null;
   /** `"legacy_agents_endpoint"` until `/api/agent-studio/agents` exists; then `"agent_studio"` is authoritative. */
   source: "agent_studio" | "legacy_agents_endpoint";

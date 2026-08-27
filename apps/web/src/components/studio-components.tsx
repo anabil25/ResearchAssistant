@@ -16,7 +16,6 @@ import type {
 } from "@/lib/types";
 
 export interface StudioRunOptions {
-  onlineResearch?: boolean;
   inputs?: Record<string, unknown>;
 }
 

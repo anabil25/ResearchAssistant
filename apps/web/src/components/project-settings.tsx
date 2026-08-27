@@ -200,14 +200,6 @@ export function ProjectSettingsView({
                       />
                     </label>
                   </div>
-                  <div className="locked-setting">
-                    <Globe2 size={18} />
-                    <div>
-                      <strong>Online research is opt-in per run</strong>
-                      <span>A project default cannot enable public web tools.</span>
-                    </div>
-                    <span>Off</span>
-                  </div>
                   <div className="settings-actions">
                     <button
                       className="primary-button"

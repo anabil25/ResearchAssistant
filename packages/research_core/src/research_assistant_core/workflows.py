@@ -21,7 +21,7 @@ class WorkflowBlueprint:
     purpose: str
     stages: tuple[WorkflowStage, ...]
     primary_artifact: str
-    online_research_policy: str
+    source_policy: str
 
 
 WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
@@ -58,7 +58,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Review synthesis and evidence matrix",
-        online_research_policy="optional-public-only",
+        source_policy="attached-library-and-enabled-research",
     ),
     Capability.GRANT: WorkflowBlueprint(
         capability=Capability.GRANT,
@@ -114,7 +114,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Grant application package",
-        online_research_policy="opportunity-only",
+        source_policy="attached-library-and-verified-opportunity",
     ),
     Capability.MATCHING: WorkflowBlueprint(
         capability=Capability.MATCHING,
@@ -156,7 +156,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Verified collaborator and resource shortlist",
-        online_research_policy="public-metadata-only",
+        source_policy="attached-library-and-enabled-registry",
     ),
     Capability.DATASET: WorkflowBlueprint(
         capability=Capability.DATASET,
@@ -194,7 +194,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Dataset profile, analysis plan, and verified summary",
-        online_research_policy="metadata-only",
+        source_policy="attached-and-approved-compute",
     ),
     Capability.INSTITUTIONAL_QA: WorkflowBlueprint(
         capability=Capability.INSTITUTIONAL_QA,
@@ -230,7 +230,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Version-aware institutional answer",
-        online_research_policy="forbidden",
+        source_policy="permission-filtered-institutional",
     ),
     Capability.ORCHESTRATION: WorkflowBlueprint(
         capability=Capability.ORCHESTRATION,
@@ -260,7 +260,7 @@ WORKFLOW_BLUEPRINTS: dict[Capability, WorkflowBlueprint] = {
             ),
         ),
         primary_artifact="Versioned workflow definition",
-        online_research_policy="per-step",
+        source_policy="per-step",
     ),
 }
 

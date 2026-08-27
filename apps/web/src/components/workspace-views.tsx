@@ -141,13 +141,9 @@ export function Overview({
             </span>
             <span>
               <strong>
-                {data
-                  ? data.settings.online_research_default
-                    ? "On"
-                    : "Off"
-                  : "—"}
+                {data ? `${data.summary.connector_ready}/${data.summary.connector_total}` : "—"}
               </strong>
-              project web default
+              research sources ready
             </span>
           </div>
         </div>
@@ -161,7 +157,7 @@ export function Overview({
           <strong>Proof before prose</strong>
           <p>
             Claims become verified only after their source IDs resolve to
-            authorized stored passages.
+            admitted source records.
           </p>
         </div>
       </section>

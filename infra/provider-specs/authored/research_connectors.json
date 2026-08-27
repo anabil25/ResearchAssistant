@@ -109,6 +109,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -188,6 +199,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -269,6 +291,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -348,6 +381,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -429,6 +473,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -455,6 +510,47 @@
         ]
       }
     },
+    "/v1/connectors/grants_gov/lookup": {
+      "get": {
+        "description": "Authoritative U.S. federal opportunity records.",
+        "operationId": "grantsGovLookup",
+        "parameters": [
+          {
+            "in": "query",
+            "name": "identifier",
+            "required": true,
+            "schema": {
+              "maxLength": 12,
+              "minLength": 1,
+              "pattern": "^[0-9]+$",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/ConnectorResult"
+                }
+              }
+            },
+            "description": "Normalized public metadata evidence."
+          },
+          "422": {
+            "description": "Invalid connector input."
+          },
+          "502": {
+            "description": "Upstream provider unavailable."
+          }
+        },
+        "summary": "Grants.gov lookup",
+        "tags": [
+          "grants_gov"
+        ]
+      }
+    },
     "/v1/connectors/grants_gov/search": {
       "get": {
         "description": "Authoritative U.S. federal opportunity records.",
@@ -468,6 +564,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -508,6 +615,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -589,6 +707,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -628,6 +757,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],
@@ -709,6 +849,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -789,6 +940,17 @@
               "minLength": 2,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
+            }
           }
         ],
         "responses": {
@@ -828,6 +990,17 @@
               "maxLength": 500,
               "minLength": 2,
               "type": "string"
+            }
+          },
+          {
+            "in": "query",
+            "name": "limit",
+            "required": true,
+            "schema": {
+              "default": 5,
+              "maximum": 25,
+              "minimum": 1,
+              "type": "integer"
             }
           }
         ],

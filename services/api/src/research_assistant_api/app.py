@@ -357,17 +357,7 @@ app.openapi = custom_openapi  # type: ignore[method-assign]
 
 CAPABILITY_AGENTS = agents_for_capability()
 
-#: One agent per capability now reaches public sources through the shared
-#: toolbox, so opting into online research no longer selects a different agent.
-CAPABILITY_ONLINE_AGENTS = CAPABILITY_AGENTS
-
 STUDIO_RESULT = AutomationStudioResult
-
-ONLINE_ALLOWED = {
-    Capability.LITERATURE,
-    Capability.GRANT,
-    Capability.MATCHING,
-}
 
 
 @app.middleware("http")
@@ -449,7 +439,7 @@ def workflows() -> list[dict[str, Any]]:
             "title": blueprint.title,
             "purpose": blueprint.purpose,
             "primary_artifact": blueprint.primary_artifact,
-            "online_research_policy": blueprint.online_research_policy,
+            "source_policy": blueprint.source_policy,
             "stages": [
                 {
                     "id": stage.id,
@@ -934,6 +924,13 @@ async def _probe_connector(
         return "unavailable"
 
 
+def _connector_probe_capability(assigned_agents: list[str]) -> Capability:
+    return next(
+        (item for item in Capability if item.value in assigned_agents),
+        Capability.LITERATURE,
+    )
+
+
 @app.post(
     "/api/connectors/{connector_id}/test",
     response_model=ConnectorSetting,
@@ -950,10 +947,7 @@ async def test_connector(connector_id: str, request: Request) -> ConnectorSettin
     )
     if connector is None:
         raise HTTPException(status_code=404, detail="Connector not found.")
-    capability = next(
-        (Capability(agent) for agent in connector.assigned_agents if agent in {item.value for item in ONLINE_ALLOWED}),
-        Capability.LITERATURE,
-    )
+    capability = _connector_probe_capability(connector.assigned_agents)
     status_result = await _probe_connector(
         cast(ConnectorGateway, request.app.state.connector_gateway),
         capability,

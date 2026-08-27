@@ -3,13 +3,14 @@ from __future__ import annotations
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field, model_validator
-from research_assistant_core.models import Capability, PublicDiscoveryRequest
+from research_assistant_core.models import Capability
 
 
 class AssistantRequest(BaseModel):
+    model_config = {"extra": "forbid"}
+
     message: str = Field(min_length=3, max_length=8000)
     capability: Capability | None = None
-    public_discovery: PublicDiscoveryRequest | None = None
 
 
 class AssistantResponse(BaseModel):

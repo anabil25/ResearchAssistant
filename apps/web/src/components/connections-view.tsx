@@ -34,6 +34,7 @@ const CONNECTOR_SPECIALISTS = [
   "matching",
   "dataset",
   "institution",
+  "screening",
 ] as const;
 
 export function connectorStatusInfo(connector: ConnectorSetting): {
@@ -542,8 +543,7 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
               <fieldset className="agent-assignments connector-manager-agents">
                 <legend>Assigned agents</legend>
                 <p>
-                  Only selected agents can use this connection during an
-                  opted-in public metadata run.
+                  Only selected agents can use this connection for source retrieval.
                 </p>
                 <div>
                   {CONNECTOR_SPECIALISTS.map((agent) => (

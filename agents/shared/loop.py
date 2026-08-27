@@ -2,8 +2,8 @@
 
 The model never decides whether to iterate. A Python predicate parses the typed
 response and re-invokes only while the response is *objectively improvable*:
-either it failed the strict output contract, or it ignored evidence the runtime
-had already authorized for the turn.
+either it failed the strict output contract, or it ignored a source the runtime
+had already admitted for the turn.
 
 An abstention over an empty evidence set is a correct terminal answer and must
 never be looped on -- re-asking a model that has nothing to cite is how citation
@@ -23,11 +23,11 @@ from .contracts import AgentManifest, bind_contracts
 
 _CONTRACT_GAP = (
     "Your previous response did not satisfy the output contract. Re-answer using "
-    "the same evidence, citing an authorized evidence_id for every supported claim."
+    "the same sources, citing an evidence_id from the admitted sources for every supported claim."
 )
-_IGNORED_EVIDENCE_GAP = (
-    "Authorized evidence was supplied for this turn but your previous response "
-    "made no claim about it. Assess the supplied evidence and answer, or state "
+_IGNORED_SOURCE_GAP = (
+    "Sources were admitted for this turn but your previous response made no claim "
+    "about them. Assess the supplied sources and answer, or state "
     "explicitly why it cannot support a claim."
 )
 
@@ -37,8 +37,8 @@ def _message_text(message: Any) -> str:
     return text if isinstance(text, str) else ""
 
 
-def _authorized_evidence_count(manifest: AgentManifest, messages: Sequence[Any]) -> int:
-    """Size of the evidence set the runtime authorized for this turn."""
+def _admitted_source_count(manifest: AgentManifest, messages: Sequence[Any]) -> int:
+    """Size of the source set the runtime admitted for this turn."""
     input_model = bind_contracts(manifest).input_model
     for message in reversed(list(messages)):
         try:
@@ -81,8 +81,8 @@ def sufficiency_predicate(
             output_model.model_validate_json(raw)
         except ValidationError:
             return True, _CONTRACT_GAP
-        if _claim_count(raw) == 0 and _authorized_evidence_count(manifest, original_messages):
-            return True, _IGNORED_EVIDENCE_GAP
+        if _claim_count(raw) == 0 and _admitted_source_count(manifest, original_messages):
+            return True, _IGNORED_SOURCE_GAP
         return False, None
 
     return should_continue

@@ -131,6 +131,11 @@
         "displayName": "search",
         "name": "grants_gov_search",
         "operationId": "grantsGovSearch"
+      },
+      {
+        "displayName": "lookup",
+        "name": "grants_gov_lookup",
+        "operationId": "grantsGovLookup"
       }
     ]
   },
