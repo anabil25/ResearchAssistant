@@ -82,7 +82,7 @@ export interface VerifiedGrantOpportunity {
   close_date: string | null;
   archive_date: string | null;
   canonical_url: string;
-  relevance: "direct" | "adjacent";
+  relevance: "direct" | "adjacent" | "unassessed";
   relevance_rationale: string;
   verified_at: string;
 }

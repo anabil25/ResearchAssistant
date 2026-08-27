@@ -455,7 +455,7 @@ class VerifiedGrantOpportunity(BaseModel):
     close_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     archive_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     canonical_url: str = Field(min_length=1, max_length=2048)
-    relevance: Literal["direct", "adjacent"]
+    relevance: Literal["direct", "adjacent", "unassessed"]
     relevance_rationale: str = Field(min_length=1, max_length=2_000)
     verified_at: datetime
 

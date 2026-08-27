@@ -1,6 +1,10 @@
 "use client";
 
 import hardenReactMarkdown from "harden-react-markdown";
+import {
+  findAndReplace,
+  type FindAndReplaceList,
+} from "mdast-util-find-and-replace";
 import ReactMarkdown from "react-markdown";
 import rehypeSanitize from "rehype-sanitize";
 import remarkGfm from "remark-gfm";
@@ -63,7 +67,45 @@ export interface ResearchMarkdownProps {
   content: string;
   citations?: Citation[];
   unresolvedSourceIds?: string[];
+  referenceLinks?: Readonly<Record<string, string>>;
   label?: string;
+}
+
+type MarkdownTree = Parameters<typeof findAndReplace>[0];
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function remarkReferenceLinks(
+  referenceLinks: Readonly<Record<string, string>> = {},
+) {
+  const replacements: FindAndReplaceList = Object.entries(referenceLinks).flatMap(
+    ([reference, candidate]) => {
+      const decision = evaluateExternalUrlPolicy(
+        candidate,
+        RESEARCH_SOURCE_URL_POLICY,
+      );
+      if (!reference.trim() || !decision.allowed) return [];
+      return [
+        [
+          new RegExp(`\\b${escapeRegExp(reference)}\\b`, "gi"),
+          (match: string) => ({
+            type: "link" as const,
+            url: decision.url,
+            children: [{ type: "text" as const, value: match }],
+          }),
+        ],
+      ];
+    },
+  );
+
+  return (tree: MarkdownTree) => {
+    if (replacements.length === 0) return;
+    findAndReplace(tree, replacements, {
+      ignore: ["code", "inlineCode", "link", "linkReference"],
+    });
+  };
 }
 
 const researchMarkdownComponents = {
@@ -117,6 +159,7 @@ export function ResearchMarkdown({
   content,
   citations = [],
   unresolvedSourceIds = [],
+  referenceLinks = {},
   label = "Research artifact",
 }: ResearchMarkdownProps) {
   return (
@@ -129,7 +172,10 @@ export function ResearchMarkdown({
         imageBlockPolicy="indicator"
         linkBlockPolicy="indicator"
         rehypePlugins={[rehypeSanitize]}
-        remarkPlugins={[remarkGfm]}
+        remarkPlugins={[
+          remarkGfm,
+          [remarkReferenceLinks, referenceLinks],
+        ]}
         skipHtml
         components={researchMarkdownComponents}
       >

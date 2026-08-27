@@ -5116,7 +5116,7 @@ export interface components {
              * Relevance
              * @enum {string}
              */
-            relevance: "direct" | "adjacent";
+            relevance: "direct" | "adjacent" | "unassessed";
             /** Relevance Rationale */
             relevance_rationale: string;
             /** Status */

@@ -918,6 +918,19 @@ def _render_agent_reply(raw: str) -> str:
     if payload is None:
         return raw
 
+    opportunity_urls = {
+        opportunity.canonical_url
+        for opportunity in _verified_grant_opportunities(raw)
+    }
+    raw_evidence = payload.get("evidence")
+    evidence = raw_evidence if isinstance(raw_evidence, list) else []
+    opportunity_evidence_ids = {
+        str(item.get("evidence_id"))
+        for item in evidence
+        if isinstance(item, dict)
+        and item.get("source_uri") in opportunity_urls
+        and item.get("evidence_id")
+    }
     lines: list[str] = [str(payload.get("summary") or "").strip()]
 
     claims = payload.get("claims") or []
@@ -927,6 +940,14 @@ def _render_agent_reply(raw: str) -> str:
         for claim in claims:
             if not isinstance(claim, dict):
                 findings.append(f"- {_bullet(claim)}")
+                continue
+            claim_evidence_ids = {
+                str(value) for value in claim.get("evidence_ids") or []
+            }
+            if (
+                claim_evidence_ids
+                and claim_evidence_ids <= opportunity_evidence_ids
+            ):
                 continue
             support = str(claim.get("support") or "").replace("_", " ")
             if support == "unsupported":
@@ -951,16 +972,20 @@ def _render_agent_reply(raw: str) -> str:
         lines.append("\n**Code**\n")
         lines.append(f"```python\n{payload['code']}\n```")
 
-    evidence = payload.get("evidence") or []
-    if isinstance(evidence, list) and evidence:
-        lines.append("\n**Evidence**\n")
+    if evidence:
+        evidence_lines: list[str] = []
         for item in evidence:
             if not isinstance(item, dict):
-                lines.append(f"- {_bullet(item)}")
+                evidence_lines.append(f"- {_bullet(item)}")
+                continue
+            if item.get("source_uri") in opportunity_urls:
                 continue
             title = item.get("title") or item.get("evidence_id") or "Source"
             uri = item.get("source_uri")
-            lines.append(f"- [{title}]({uri})" if uri else f"- {title}")
+            evidence_lines.append(f"- [{title}]({uri})" if uri else f"- {title}")
+        if evidence_lines:
+            lines.append("\n**Evidence**\n")
+            lines.extend(evidence_lines)
 
     if payload.get("ready_for_review") is not None:
         state = "Ready for review" if payload["ready_for_review"] else "Not ready for review"

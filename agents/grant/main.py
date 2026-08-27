@@ -274,6 +274,7 @@ class GrantClaim(BaseModel):
 class OpportunityRelevance(StrEnum):
     DIRECT = "direct"
     ADJACENT = "adjacent"
+    UNASSESSED = "unassessed"
 
 
 class GrantsGovRecord(BaseModel):
@@ -513,7 +514,7 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
     resolved: list[GrantOpportunity] = []
     seen: set[str] = set()
     for selected in report.selected_opportunities:
-        if selected.grants_gov_id in seen:
+        if selected.grants_gov_id in seen or len(resolved) == 5:
             continue
         receipt = receipts.get(selected.grants_gov_id)
         if receipt is None:
@@ -524,6 +525,20 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
                 **receipt.record.model_dump(),
                 relevance=selected.relevance,
                 relevance_rationale=selected.relevance_rationale,
+                verified_at=receipt.verified_at,
+            )
+        )
+    for grants_gov_id, receipt in receipts.items():
+        if grants_gov_id in seen or len(resolved) == 5:
+            continue
+        seen.add(grants_gov_id)
+        resolved.append(
+            GrantOpportunity(
+                **receipt.record.model_dump(),
+                relevance=OpportunityRelevance.UNASSESSED,
+                relevance_rationale=(
+                    "Verified on Grants.gov; review the full notice to confirm project fit."
+                ),
                 verified_at=receipt.verified_at,
             )
         )

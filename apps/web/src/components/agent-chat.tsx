@@ -40,7 +40,10 @@ import {
   uploadChatFile,
 } from "@/lib/api";
 import { classifyAsyncError } from "@/components/async-state";
-import { GrantOpportunityList } from "@/components/grant-opportunity-list";
+import {
+  GrantOpportunityList,
+  verifiedGrantReferenceLinks,
+} from "@/components/grant-opportunity-list";
 import {
   agentSurface,
   isChatCapability as surfaceIsChat,
@@ -224,9 +227,12 @@ function AgentAnswer({
 }) {
   const [expanded, setExpanded] = useState(false);
   const isLong = !live && message.content.length > LONG_RESPONSE_CHARACTERS;
+  const opportunities = message.opportunities ?? [];
+  const referenceLinks = verifiedGrantReferenceLinks(opportunities);
 
   return (
     <>
+      <GrantOpportunityList opportunities={opportunities} />
       <div
         className="agent-chat-answer"
         data-collapsed={isLong && !expanded ? "true" : "false"}
@@ -235,6 +241,7 @@ function AgentAnswer({
           <Suspense fallback={<p>Rendering response...</p>}>
             <ResearchMarkdown
               content={message.content}
+              referenceLinks={referenceLinks}
               label={`${message.agent_name ?? "Agent"} response`}
             />
           </Suspense>
@@ -245,7 +252,6 @@ function AgentAnswer({
           </p>
         ) : null}
       </div>
-      <GrantOpportunityList opportunities={message.opportunities ?? []} />
       {isLong ? (
         <button
           type="button"

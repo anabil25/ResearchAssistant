@@ -14,8 +14,8 @@ const validOpportunity = {
   close_date: "2027-02-26",
   archive_date: "2027-04-03",
   canonical_url: canonicalUrl,
-  relevance: "direct",
-  relevance_rationale: "The notice explicitly supports early-career genomics research.",
+  relevance: "unassessed",
+  relevance_rationale: "Verified on Grants.gov; review the full notice to confirm project fit.",
   verified_at: now,
 };
 
@@ -30,7 +30,7 @@ const malformedOpportunity = {
 const assistantMessage = {
   id: "reply-browser-test-message",
   role: "assistant",
-  content: "One directly relevant opportunity is currently posted.",
+  content: "RFA-HG-25-009 is the strongest verified match. Grants.gov record 357744 is currently posted.",
   created_at: now,
   agent_name: "grant-agent",
   attachments: [],
@@ -186,9 +186,13 @@ test("verified grants render as exact responsive policy-approved links", async (
 
   const results = page.getByRole("region", { name: "Verified grant opportunities" });
   await expect(results).toBeVisible();
-  await expect(results.getByText("1 verified")).toBeVisible();
+  await expect(results.getByText("1 result")).toBeVisible();
+  await expect(results.getByRole("columnheader", { name: "Opportunity" })).toBeVisible();
+  await expect(results.getByRole("columnheader", { name: "Agency" })).toBeVisible();
+  await expect(results.getByRole("columnheader", { name: "Availability" })).toBeVisible();
+  await expect(results.getByRole("columnheader", { name: "Fit" })).toBeVisible();
   const link = results.getByRole("link", {
-    name: /RFA-HG-25-009: Supporting Talented Early Career Researchers in Genomics/,
+    name: /RFA-HG-25-009/,
   });
   await expect(link).toHaveAttribute("href", canonicalUrl);
   await expect(link).toHaveAttribute("target", "_blank");
@@ -198,6 +202,17 @@ test("verified grants render as exact responsive policy-approved links", async (
   await expect(results.getByText("MALFORMED", { exact: false })).toHaveCount(0);
   await expect(results).toContainText("National Institutes of Health");
   await expect(results).toContainText("Closes Feb 26, 2027");
+  await expect(results).toContainText("Review fit");
+  await expect(results).toContainText(validOpportunity.title);
+  const answer = page.locator(".agent-chat-answer").last();
+  await expect(answer.getByRole("link", { name: /RFA-HG-25-009/ })).toHaveAttribute(
+    "href",
+    canonicalUrl,
+  );
+  await expect(answer.getByRole("link", { name: /357744/ })).toHaveAttribute(
+    "href",
+    canonicalUrl,
+  );
   await expect(page.locator(".agent-chat-assistant").last()).not.toContainText(canonicalUrl);
 
   const desktopOverflow = await results.evaluate(
@@ -214,7 +229,9 @@ test("verified grants render as exact responsive policy-approved links", async (
   const mobileOverflow = await page.evaluate(() => {
     const viewportWidth = document.documentElement.clientWidth;
     return Array.from(
-      document.querySelectorAll<HTMLElement>(".grant-results, .grant-result, .grant-result h3"),
+      document.querySelectorAll<HTMLElement>(
+        ".grant-results, .grant-results-table, .grant-results-table tr, .grant-results-table td",
+      ),
     ).filter((element) => {
       const rect = element.getBoundingClientRect();
       return rect.left < -1 || rect.right > viewportWidth + 1 || element.scrollWidth > element.clientWidth + 1;
