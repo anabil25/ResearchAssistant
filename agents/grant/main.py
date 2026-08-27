@@ -737,9 +737,9 @@ def _dict_payloads(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(found)
 
 
-def _record_grants_gov_lookup(result: Any, expected_id: str) -> None:
+def _record_grants_gov_lookup(result: Any) -> None:
     for payload in _dict_payloads(result):
-        if payload.get("source") != "grants_gov" or str(payload.get("query")) != expected_id:
+        if payload.get("source") != "grants_gov":
             continue
         records = payload.get("records")
         warnings = payload.get("warnings")
@@ -749,22 +749,13 @@ def _record_grants_gov_lookup(result: Any, expected_id: str) -> None:
             record = GrantsGovRecord.model_validate(records[0])
         except ValidationError:
             return
-        if record.grants_gov_id != expected_id:
+        if str(payload.get("query")) != record.grants_gov_id:
             return
-        _grants_gov_lookups()[expected_id] = GrantsGovReceipt(
+        _grants_gov_lookups()[record.grants_gov_id] = GrantsGovReceipt(
             record=record,
             verified_at=datetime.now(UTC).isoformat(),
         )
         return
-
-
-def _grants_gov_identifier(value: Any) -> str | None:
-    if isinstance(value, bool):
-        return None
-    candidate = str(value).strip() if isinstance(value, (str, int)) else ""
-    if not candidate.isascii() or not candidate.isdigit() or len(candidate) > 12:
-        return None
-    return candidate
 
 
 def _tool_connector_id(name: str) -> str | None:
@@ -797,14 +788,7 @@ class GrantToolBoundary(FunctionMiddleware):
         await call_next()
         if name != "grants_gov___lookup":
             return
-        arguments = (
-            context.arguments.model_dump(mode="json")
-            if isinstance(context.arguments, BaseModel)
-            else dict(context.arguments)
-        )
-        identifier = _grants_gov_identifier(arguments.get("identifier"))
-        if identifier is not None:
-            _record_grants_gov_lookup(context.result, identifier)
+        _record_grants_gov_lookup(context.result)
 
 
 def outstanding_work(result: Any, corpus: dict[str, EvidenceItem]) -> frozenset[str]:
