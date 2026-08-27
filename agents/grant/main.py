@@ -550,7 +550,8 @@ def _verified_grants_gov_receipts() -> dict[str, GrantsGovReceipt]:
     for source in retrieved_sources():
         if (
             source.connector_id != "grants_gov"
-            or not source.operation.casefold().endswith("lookup")
+            or source.retrieved_from
+            != "https://api.grants.gov/v1/api/fetchOpportunity"
         ):
             continue
         try:

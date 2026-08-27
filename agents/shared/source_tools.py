@@ -24,6 +24,7 @@ class RetrievedSource(BaseModel):
     connector_id: str
     operation: str
     record_json: str
+    retrieved_from: str | None = None
     source_uri: str | None = None
     title: str | None = None
 
@@ -134,6 +135,7 @@ def _record_reference(
         connector_id=connector_id,
         operation=operation,
         record_json=canonical,
+        retrieved_from=fallback_uri if isinstance(fallback_uri, str) else None,
         source_uri=source_uri if isinstance(source_uri, str) else None,
         title=str(title)[:512] if title is not None else None,
     )
