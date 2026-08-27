@@ -1,88 +1,61 @@
 targetScope = 'resourceGroup'
 
+param azdEnvironmentName string
+param tags string = ''
 param name string
 param location string
-param tags object = {}
-param logAnalyticsWorkspaceName string
-param appInsightsConnectionString string
-param infrastructureSubnetId string
-param foundryProjectEndpoint string
-param openAIEndpoint string
+param containerAppsEnvironmentName string
+param containerRegistryName string
+param imageName string
 param apiIdentityResourceId string
 param apiIdentityClientId string
-param apiIdentityPrincipalId string
-param acrResourceId string
+param applicationResourceToken string
+param foundryProjectEndpoint string
+param openAIEndpoint string
 param searchEndpoint string
 param searchIndexName string
+param embeddingDeploymentName string
+param documentIntelligenceEndpoint string
 param cosmosEndpoint string
 param cosmosDatabaseName string
+param storageAccountName string
+param storageBlobEndpoint string
+param sourceContainerName string
+param artifactContainerName string
 param agentStudioCosmosDatabaseName string
 param agentStudioMetadataContainerName string
 param agentStudioMemoryContainerName string
 param agentStudioAuditContainerName string
 param agentStudioCatalogContainerName string
-param storageAccountName string
-param storageBlobEndpoint string
-param sourceContainerName string
-param artifactContainerName string
 param agentStudioBundleContainerName string
-param documentIntelligenceEndpoint string
-param embeddingDeploymentName string
-param workspaceTenantId string
-param workspaceProjectId string
+param appInsightsConnectionString string
 param connectorGatewayUrl string
 param connectorGatewayTokenScope string
+param workspaceTenantId string
+param workspaceProjectId string
+param entraAuthEnforced string = 'false'
+param entraTenantId string = ''
+param entraApiClientId string = ''
 param warmReplicaCount int = 1
 
-@description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
-param entraTenantId string = ''
+var enableEntraAuth = toLower(entraAuthEnforced) == 'true'
+var effectiveTags = union(empty(tags) ? {} : base64ToJson(tags), {
+  'azd-env-name': azdEnvironmentName
+  'azd-service-name': 'api'
+})
 
-@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. This registration is not created by this template -- see the module header comment.')
-param entraApiClientId string = ''
-
-@description('Enable Azure Container Apps built-in authentication (EasyAuth), enforcing a valid Entra ID bearer token on every ingress request to the api container app before it is invoked. Defaults to false so existing deployments are unaffected until an operator has created the Entra App Registration referenced by entraApiClientId. The api container always reports the true value of this flag to itself via RESEARCH_ENTRA_AUTH_ENFORCED, rather than assuming enforcement is active on faith.')
-param enableEntraAuth bool = false
-
-var placeholderImage = 'mcr.microsoft.com/azuredocs/containerapps-helloworld:latest'
-var acrPullRoleId = subscriptionResourceId(
-  'Microsoft.Authorization/roleDefinitions',
-  '7f951dda-4ed3-4680-a7ca-43fe172d538d'
-)
-var acrName = last(split(acrResourceId, '/'))
-
-resource workspace 'Microsoft.OperationalInsights/workspaces@2025-02-01' existing = {
-  name: logAnalyticsWorkspaceName
+resource environment 'Microsoft.App/managedEnvironments@2026-01-01' existing = {
+  name: containerAppsEnvironmentName
 }
 
 resource acr 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
-  name: acrName
-}
-
-resource environment 'Microsoft.App/managedEnvironments@2026-01-01' = {
-  name: 'cae-${name}'
-  location: location
-  tags: tags
-  properties: {
-    vnetConfiguration: {
-      infrastructureSubnetId: infrastructureSubnetId
-    }
-    appLogsConfiguration: {
-      destination: 'log-analytics'
-      logAnalyticsConfiguration: {
-        customerId: workspace.properties.customerId
-        sharedKey: workspace.listKeys().primarySharedKey
-      }
-    }
-    zoneRedundant: false
-  }
+  name: containerRegistryName
 }
 
 resource api 'Microsoft.App/containerApps@2026-01-01' = {
-  name: 'ca-api-${name}'
+  name: name
   location: location
-  tags: union(tags, {
-    'azd-service-name': 'api'
-  })
+  tags: effectiveTags
   identity: {
     type: 'SystemAssigned,UserAssigned'
     userAssignedIdentities: {
@@ -116,11 +89,11 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
       containers: [
         {
           name: 'api'
-          image: placeholderImage
+          image: imageName
           env: [
             {
               name: 'RESEARCH_ENVIRONMENT'
-              value: '${name}-azure'
+              value: '${applicationResourceToken}-azure'
             }
             {
               name: 'RESEARCH_REQUIRE_APPROVAL_CONTEXT_RESOLVER'
@@ -232,7 +205,7 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
             }
             {
               name: 'RESEARCH_ENTRA_AUTH_ENFORCED'
-              value: string(enableEntraAuth)
+              value: entraAuthEnforced
             }
           ]
           probes: [
@@ -288,21 +261,8 @@ resource api 'Microsoft.App/containerApps@2026-01-01' = {
       }
     }
   }
-  dependsOn: [
-    apiIdentityAcrPull
-  ]
 }
 
-// Azure Container Apps built-in authentication (EasyAuth). When enabled,
-// this validates the Entra ID bearer token (audience/issuer/signature) on
-// every ingress request to the api container app *before* the request
-// reaches the container, and injects the `x-ms-client-principal` header
-// that `research_assistant_api.identity.resolve_identity` trusts -- see
-// that module's docstring and `config.Settings.entra_auth_enforced` for the
-// corresponding app-level trust boundary and fail-closed startup guard.
-// Gated behind enableEntraAuth (default false) because it requires an
-// operator to have first created the Entra App Registration referenced by
-// entraApiClientId -- an out-of-band step this template does not perform.
 resource apiAuthConfig 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if (enableEntraAuth) {
   parent: api
   name: 'current'
@@ -331,124 +291,8 @@ resource apiAuthConfig 'Microsoft.App/containerApps/authConfigs@2026-01-01' = if
   }
 }
 
-resource web 'Microsoft.App/containerApps@2026-01-01' = {
-  name: 'ca-web-${name}'
-  location: location
-  tags: union(tags, {
-    'azd-service-name': 'web'
-  })
-  identity: {
-    type: 'SystemAssigned,UserAssigned'
-    userAssignedIdentities: {
-      '${apiIdentityResourceId}': {}
-    }
-  }
-  properties: {
-    environmentId: environment.id
-    configuration: {
-      activeRevisionsMode: 'Single'
-      registries: [
-        {
-          server: acr.properties.loginServer
-          identity: apiIdentityResourceId
-        }
-      ]
-      ingress: {
-        allowInsecure: false
-        external: true
-        targetPort: 3000
-        traffic: [
-          {
-            latestRevision: true
-            weight: 100
-          }
-        ]
-        transport: 'auto'
-      }
-    }
-    template: {
-      containers: [
-        {
-          name: 'web'
-          image: placeholderImage
-          env: [
-            {
-              name: 'INTERNAL_API_URL'
-              value: 'https://${api.properties.configuration.ingress.fqdn}'
-            }
-          ]
-          probes: [
-            {
-              type: 'Startup'
-              httpGet: {
-                path: '/health'
-                port: 3000
-              }
-              periodSeconds: 5
-              failureThreshold: 36
-            }
-            {
-              type: 'Liveness'
-              httpGet: {
-                path: '/health'
-                port: 3000
-              }
-              initialDelaySeconds: 10
-              periodSeconds: 30
-              failureThreshold: 3
-            }
-            {
-              type: 'Readiness'
-              httpGet: {
-                path: '/health'
-                port: 3000
-              }
-              initialDelaySeconds: 5
-              periodSeconds: 10
-              failureThreshold: 3
-            }
-          ]
-          resources: {
-            cpu: json('0.5')
-            memory: '1Gi'
-          }
-        }
-      ]
-      scale: {
-        minReplicas: warmReplicaCount
-        maxReplicas: 5
-        rules: [
-          {
-            name: 'web-http'
-            http: {
-              metadata: {
-                concurrentRequests: '50'
-              }
-            }
-          }
-        ]
-      }
-    }
-  }
-  dependsOn: [
-    apiIdentityAcrPull
-  ]
-}
-
-resource apiIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(acr.id, apiIdentityPrincipalId, acrPullRoleId)
-  scope: acr
-  properties: {
-    principalId: apiIdentityPrincipalId
-    principalType: 'ServicePrincipal'
-    roleDefinitionId: acrPullRoleId
-  }
-}
-
-output environmentId string = environment.id
-output environmentName string = environment.name
-output webName string = web.name
-output webUrl string = 'https://${web.properties.configuration.ingress.fqdn}'
-output webPrincipalId string = web.identity.principalId
-output apiName string = api.name
-output apiUrl string = 'https://${api.properties.configuration.ingress.fqdn}'
+output SERVICE_API_NAME string = api.name
+output SERVICE_API_URI string = 'https://${api.properties.configuration.ingress.fqdn}'
+output SERVICE_API_IMAGE_NAME string = imageName
+output SERVICE_API_ID string = api.id
+output SERVICE_API_IDENTITY_PRINCIPAL_ID string = api.identity.principalId

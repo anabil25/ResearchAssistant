@@ -56,5 +56,9 @@ Thumbs.db
 tests/
 **/tests/
 **/tests/**
+!/tests/
+!/tests/test_configure_agent_rbac.py
+!/tests/test_deployment_contract.py
+!/tests/test_live_release.py
 
 # Sample data

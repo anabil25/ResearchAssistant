@@ -1,10 +1,11 @@
 # yaml-language-server: $schema=https://raw.githubusercontent.com/Azure/azure-dev/main/schemas/v1.0/azure.yaml.json
 
 requiredVersions:
+    azd: '=1.32.0'
     extensions:
-        azure.ai.agents: '>=1.0.0-beta.7'
-        azure.ai.projects: '>=1.0.0-beta.3'
-        microsoft.foundry: '>=1.0.0-beta.1'
+        azure.ai.agents: '=1.0.0-beta.12'
+        azure.ai.projects: '=1.0.0-beta.7'
+        microsoft.foundry: '=1.0.0-beta.2'
 name: research-assistant
 services:
     ai-project:
@@ -38,11 +39,36 @@ services:
         project: .
         host: containerapp
         language: python
+        module: app/api
+        apiVersion: '2026-01-01'
+        uses:
+            - research-coordinator
+            - literature-agent
+            - grant-agent
+            - matching-agent
+            - dataset-agent
+            - institution-agent
+            - screening-agent
         docker:
             path: ./services/api/Dockerfile
             context: .
             image: research-assistant-api
             remoteBuild: true
+        hooks:
+            predeploy:
+                windows:
+                    shell: pwsh
+                    run: ./scripts/reconcile-agents.ps1
+                posix:
+                    shell: sh
+                    run: ./scripts/reconcile-agents.sh
+            postdeploy:
+                windows:
+                    shell: pwsh
+                    run: ./scripts/verify-deployment.ps1 api
+                posix:
+                    shell: sh
+                    run: ./scripts/verify-deployment.sh api
     dataset-agent:
         project: ./agents
         host: azure.ai.agent
@@ -84,6 +110,12 @@ services:
         language: python
         uses:
             - ai-project
+            - literature-agent
+            - grant-agent
+            - matching-agent
+            - dataset-agent
+            - institution-agent
+            - screening-agent
         $ref: ./agents/coordinator/agent.yaml
     screening-agent:
         project: ./agents
@@ -96,19 +128,24 @@ services:
         project: ./apps/web
         host: containerapp
         language: js
+        module: app/web
+        apiVersion: '2026-01-01'
+        uses:
+            - api
         docker:
             path: ./Dockerfile
             remoteBuild: true
+        hooks:
+            postdeploy:
+                windows:
+                    shell: pwsh
+                    run: ../../scripts/verify-deployment.ps1 web
+                posix:
+                    shell: sh
+                    run: ../../scripts/verify-deployment.sh web
 infra:
     provider: bicep
 hooks:
-    postdeploy:
-        windows:
-            shell: pwsh
-            run: ./scripts/postdeploy.ps1
-        posix:
-            shell: sh
-            run: ./scripts/postdeploy.sh
     postprovision:
         windows:
             shell: pwsh

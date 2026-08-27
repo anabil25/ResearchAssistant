@@ -64,4 +64,7 @@ jobs:
         run: git diff --exit-code -- packages/contracts/openapi.json apps/web/src/lib/generated-api.ts
 
       - name: Compile Bicep
-        run: az bicep build --file infra/main.bicep --stdout > /dev/null
+        run: |
+          az bicep build --file infra/main.bicep --stdout > /dev/null
+          az bicep build --file infra/app/api.bicep --stdout > /dev/null
+          az bicep build --file infra/app/web.bicep --stdout > /dev/null

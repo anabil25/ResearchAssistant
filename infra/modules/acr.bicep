@@ -37,7 +37,7 @@ var acrPullRoleId = subscriptionResourceId(
 
 // Resources
 
-resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
+resource registry 'Microsoft.ContainerRegistry/registries@2025-11-01' = {
   name: name
   location: location
   tags: tags
@@ -51,6 +51,12 @@ resource registry 'Microsoft.ContainerRegistry/registries@2023-07-01' = {
     adminUserEnabled: false
     publicNetworkAccess: 'Enabled'
     zoneRedundancy: 'Disabled'
+    roleAssignmentMode: 'LegacyRegistryPermissions'
+    policies: {
+      azureADAuthenticationAsArmPolicy: {
+        status: 'enabled'
+      }
+    }
   }
 }
 
@@ -102,6 +108,7 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview
 
 // Outputs
 
+output name string = registry.name
 output loginServer string = registry.properties.loginServer
 output resourceId string = registry.id
 output connectionName string = foundryAccount::project::acrConnection.name

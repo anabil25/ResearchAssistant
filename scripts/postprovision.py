@@ -2,9 +2,12 @@ from __future__ import annotations
 
 import json
 import os
+import random
 import subprocess
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -40,7 +43,7 @@ from scripts.provider_onboarding import (
 
 ROOT = Path(__file__).resolve().parents[1]
 RETRY_DELAYS = (0, 30, 60, 90, 120)
-TOOLBOX_PROJECT_RETRY_DELAYS = (0, 15, 30, 60, 90, 120, 180, 240, 300)
+TOOLBOX_READINESS_RETRY_DELAYS = (0, 10, 20, 40, 60, 60, 60, 60)
 AZ_CLI = "az.cmd" if os.name == "nt" else "az"
 AZD_CLI = "azd.exe" if os.name == "nt" else "azd"
 FOUNDRY_TOOLBOX_SCOPE = "https://ai.azure.com/.default"
@@ -53,7 +56,17 @@ MEMORY_STORE_NAME = "research_shared_memory"
 MEMORY_DEFAULT_TTL_SECONDS = 2592000
 
 
-class ToolboxProjectUnavailable(RuntimeError):
+class FoundryProjectUnavailable(RuntimeError):
+    def __init__(self, message: str, *, retry_after_seconds: float | None = None) -> None:
+        super().__init__(message)
+        self.retry_after_seconds = retry_after_seconds
+
+
+class ToolboxProjectUnavailable(FoundryProjectUnavailable):
+    pass
+
+
+class AmbiguousToolboxCreate(RuntimeError):
     pass
 
 
@@ -330,28 +343,21 @@ def create_index(
 
 
 def wait_for_acr_pull_roles() -> None:
-    resource_group = required_env("AZURE_RESOURCE_GROUP")
     acr_id = required_env("AZURE_CONTAINER_REGISTRY_RESOURCE_ID")
-    registry = required_env("AZURE_CONTAINER_REGISTRY_ENDPOINT")
-    targets = [
-        required_env("SERVICE_WEB_NAME"),
-        required_env("SERVICE_API_NAME"),
-    ]
-    for app_name in targets:
-        registry_identity = subprocess.run(
+    principal = required_env("AZURE_MANAGED_IDENTITY_PRINCIPAL_ID")
+    for attempt in range(1, 6):
+        role = subprocess.run(
             [
                 AZ_CLI,
-                "containerapp",
-                "show",
-                "--resource-group",
-                resource_group,
-                "--name",
-                app_name,
+                "role",
+                "assignment",
+                "list",
+                "--scope",
+                acr_id,
+                "--assignee-object-id",
+                principal,
                 "--query",
-                (
-                    "properties.configuration.registries"
-                    f"[?server=='{registry}'].identity | [0]"
-                ),
+                "[?roleDefinitionName=='AcrPull'].roleDefinitionName",
                 "--output",
                 "tsv",
             ],
@@ -360,86 +366,19 @@ def wait_for_acr_pull_roles() -> None:
             text=True,
             encoding="utf-8",
         ).stdout.strip()
-        if not registry_identity:
-            raise RuntimeError(f"Container App {app_name} has no ACR identity")
-
-        if registry_identity == "system":
-            principal = subprocess.run(
-                [
-                    AZ_CLI,
-                    "containerapp",
-                    "identity",
-                    "show",
-                    "--resource-group",
-                    resource_group,
-                    "--name",
-                    app_name,
-                    "--query",
-                    "principalId",
-                    "--output",
-                    "tsv",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            ).stdout.strip()
-        else:
-            principal = subprocess.run(
-                [
-                    AZ_CLI,
-                    "identity",
-                    "show",
-                    "--ids",
-                    registry_identity,
-                    "--query",
-                    "principalId",
-                    "--output",
-                    "tsv",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            ).stdout.strip()
-        if not principal:
+        if role == "AcrPull":
+            print("AcrPull confirmed for the Container Apps workload identity.")
+            return
+        if attempt == 5:
             raise RuntimeError(
-                f"Container App {app_name} ACR identity has no principal"
+                "AcrPull was not visible for the Container Apps workload identity "
+                "after five minutes"
             )
-
-        for attempt in range(1, 6):
-            role = subprocess.run(
-                [
-                    AZ_CLI,
-                    "role",
-                    "assignment",
-                    "list",
-                    "--scope",
-                    acr_id,
-                    "--assignee-object-id",
-                    principal,
-                    "--query",
-                    "[?roleDefinitionName=='AcrPull'].roleDefinitionName",
-                    "--output",
-                    "tsv",
-                ],
-                check=True,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-            ).stdout.strip()
-            if role == "AcrPull":
-                print(f"AcrPull confirmed for {app_name}.")
-                break
-            if attempt == 5:
-                raise RuntimeError(
-                    f"AcrPull was not visible for {app_name} after five minutes"
-                )
-            print(
-                f"Waiting 60s for {app_name} AcrPull propagation "
-                f"({attempt}/5)."
-            )
-            time.sleep(60)
+        print(
+            "Waiting 60s for Container Apps workload identity AcrPull propagation "
+            f"({attempt}/5)."
+        )
+        time.sleep(60)
 
 
 def connector_connection_payload(
@@ -590,9 +529,33 @@ def _toolbox_json_request(
         headers["Mcp-Session-Id"] = session_id
     request = Request(
         url,
-        data=json.dumps(payload, separators=(",", ":")).encode("utf-8"),
+        data=(
+            None
+            if method == "GET"
+            else json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        ),
         headers=headers,
         method=method,
+    )
+    toolbox_request = "/toolboxes" in url
+    toolbox_collection_request = method == "GET" and "/toolboxes?" in url
+    toolbox_create_request = method == "POST" and url.endswith("/versions?api-version=v1")
+    readiness_request = (
+        toolbox_request
+        and payload.get("method") in {"initialize", "notifications/initialized", "tools/list"}
+    )
+    promotion_request = (
+        toolbox_request
+        and method == "PATCH"
+        and "/versions/" not in url
+        and set(payload) == {"default_version"}
+    )
+    memory_store_request = method == "POST" and "/memory_stores" in url
+    transient_request = (
+        toolbox_collection_request
+        or readiness_request
+        or promotion_request
+        or memory_store_request
     )
     try:
         with urlopen(request, timeout=30) as response:
@@ -603,21 +566,82 @@ def _toolbox_json_request(
             response_session_id = response.headers.get("Mcp-Session-Id")
             return body, response_session_id if isinstance(response_session_id, str) else None
     except HTTPError as exc:
-        if exc.code == 404:
-            raise ToolboxProjectUnavailable("Foundry project or Toolbox is not ready") from exc
         detail = exc.read().decode("utf-8", errors="replace")[:600]
+        if toolbox_create_request and exc.code in {404, 429, 500, 502, 503, 504}:
+            raise AmbiguousToolboxCreate(
+                f"Foundry Toolbox version create returned HTTP {exc.code}: {detail}"
+            ) from exc
+        if transient_request and exc.code in {404, 429, 500, 502, 503, 504}:
+            error_type = ToolboxProjectUnavailable if not memory_store_request else FoundryProjectUnavailable
+            raise error_type(
+                f"Foundry data-plane endpoint returned transient HTTP {exc.code}",
+                retry_after_seconds=_parse_retry_after(exc.headers.get("Retry-After")),
+            ) from exc
         raise RuntimeError(f"Foundry Toolbox request failed with HTTP {exc.code}: {detail}") from exc
-    except (URLError, json.JSONDecodeError, OSError) as exc:
+    except json.JSONDecodeError as exc:
         raise RuntimeError("Foundry Toolbox request failed") from exc
+    except (URLError, OSError) as exc:
+        if transient_request:
+            error_type = ToolboxProjectUnavailable if not memory_store_request else FoundryProjectUnavailable
+            raise error_type("Foundry data-plane endpoint is temporarily unreachable") from exc
+        raise RuntimeError("Foundry Toolbox request failed") from exc
+
+
+def _parse_retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        return max(0.0, float(value))
+    except ValueError:
+        try:
+            retry_at = parsedate_to_datetime(value)
+        except (TypeError, ValueError, OverflowError):
+            return None
+        if retry_at.tzinfo is None:
+            retry_at = retry_at.replace(tzinfo=UTC)
+        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
 
 
 def _assert_mcp_success(payload: dict[str, Any], operation: str) -> dict[str, Any]:
     if "error" in payload:
+        if _is_transient_builtin_tool_source_error(payload["error"], operation):
+            raise ToolboxProjectUnavailable(
+                "Foundry built-in Toolbox tool sources are not ready"
+            )
         raise RuntimeError(f"Foundry Toolbox MCP {operation} failed: {payload['error']}")
     result = payload.get("result")
     if not isinstance(result, dict):
         raise RuntimeError(f"Foundry Toolbox MCP {operation} returned no result")
     return result
+
+
+def _is_transient_builtin_tool_source_error(error: object, operation: str) -> bool:
+    if operation != "tools/list" or not isinstance(error, dict) or error.get("code") != -32007:
+        return False
+    message = error.get("message")
+    if not isinstance(message, str):
+        return False
+    details_start = message.find('{"errors"')
+    if details_start < 0:
+        return False
+    try:
+        details = json.loads(message[details_start:])
+    except json.JSONDecodeError:
+        return False
+    failures = details.get("errors") if isinstance(details, dict) else None
+    if not isinstance(failures, list) or not failures:
+        return False
+    built_in_sources = {"web_search", "code_interpreter"}
+    for failure in failures:
+        if not isinstance(failure, dict) or failure.get("name") not in built_in_sources:
+            return False
+        source_error = failure.get("error")
+        if not isinstance(source_error, dict) or source_error.get("code") != "NOT_FOUND":
+            return False
+        source_message = source_error.get("message")
+        if not isinstance(source_message, str) or "RAPI MCP endpoint returned HTTP 404" not in source_message:
+            return False
+    return True
 
 
 def _validate_toolbox_version(
@@ -662,6 +686,10 @@ def _validate_toolbox_version(
     tools = result.get("tools")
     if not isinstance(tools, list):
         raise RuntimeError("Foundry Toolbox MCP tools/list returned no tools array")
+    if not tools:
+        raise ToolboxProjectUnavailable(
+            f"Foundry Toolbox {toolbox_name} version {version} advertised no tools yet"
+        )
     names: set[str] = set()
     for tool in tools:
         if isinstance(tool, dict):
@@ -684,50 +712,219 @@ def _reconcile_toolbox(
     mcp_targets: dict[str, str],
 ) -> str:
     base_url = _toolbox_base_url(project_endpoint, toolbox_name)
-    created, _ = _toolbox_json_request(
+    version = _create_or_recover_toolbox_version(
         credential,
-        method="POST",
-        url=f"{base_url}/versions?api-version=v1",
-        payload=toolbox_version_payload(toolbox_name, mcp_targets),
-    )
-    version = created.get("version")
-    if not isinstance(version, str) or not version:
-        raise RuntimeError(f"Foundry Toolbox {toolbox_name} version creation returned no version")
-    _validate_toolbox_version(
-        credential,
-        project_endpoint=project_endpoint,
         toolbox_name=toolbox_name,
-        version=version,
+        project_endpoint=project_endpoint,
+        desired=toolbox_version_payload(toolbox_name, mcp_targets),
     )
-    _toolbox_json_request(
+    with_toolbox_readiness_retry(
+        toolbox_name,
+        lambda: _validate_toolbox_version(
+            credential,
+            project_endpoint=project_endpoint,
+            toolbox_name=toolbox_name,
+            version=version,
+        ),
+    )
+    _promote_toolbox_version(
         credential,
-        method="PATCH",
-        url=f"{base_url}?api-version=v1",
-        payload={"default_version": version},
+        toolbox_name=toolbox_name,
+        project_endpoint=project_endpoint,
+        version=version,
     )
     return f"{base_url}/mcp?api-version=v1"
 
 
-def with_toolbox_project_retry[T](
+def with_toolbox_readiness_retry[T](
     toolbox_name: str,
     operation: Callable[[], T],
+    *,
+    phase: str = "version readiness",
+    delays: tuple[float, ...] = TOOLBOX_READINESS_RETRY_DELAYS,
+    sleep: Callable[[float], None] | None = None,
+    jitter: Callable[[float, float], float] | None = None,
 ) -> T:
-    last_error: ToolboxProjectUnavailable | None = None
-    for attempt, delay in enumerate(TOOLBOX_PROJECT_RETRY_DELAYS, start=1):
-        if delay:
+    return with_foundry_readiness_retry(
+        f"Toolbox {toolbox_name}",
+        operation,
+        phase=phase,
+        delays=delays,
+        sleep=sleep,
+        jitter=jitter,
+    )
+
+
+def with_foundry_readiness_retry[T](
+    resource_label: str,
+    operation: Callable[[], T],
+    *,
+    phase: str,
+    delays: tuple[float, ...] = TOOLBOX_READINESS_RETRY_DELAYS,
+    sleep: Callable[[float], None] | None = None,
+    jitter: Callable[[float, float], float] | None = None,
+) -> T:
+    effective_sleep = sleep or time.sleep
+    effective_jitter = jitter or random.uniform
+    last_error: FoundryProjectUnavailable | None = None
+    started = time.monotonic()
+    for attempt, base_delay in enumerate(delays, start=1):
+        if base_delay:
+            retry_after = last_error.retry_after_seconds if last_error else None
+            delay = max(base_delay, retry_after or 0.0)
+            delay += effective_jitter(0.0, min(delay * 0.2, 5.0))
             print(
-                f"Waiting {delay}s for Foundry project Toolbox readiness "
-                f"({attempt}/{len(TOOLBOX_PROJECT_RETRY_DELAYS)})."
+                f"Waiting {delay:.1f}s for Foundry {resource_label} {phase} "
+                f"({attempt}/{len(delays)})."
             )
-            time.sleep(delay)
+            effective_sleep(delay)
         try:
-            return operation()
-        except ToolboxProjectUnavailable as exc:
+            result = operation()
+            if attempt > 1:
+                print(
+                    f"Foundry {resource_label} {phase} succeeded after {attempt} attempts "
+                    f"over {time.monotonic() - started:.1f}s."
+                )
+            return result
+        except FoundryProjectUnavailable as exc:
             last_error = exc
     raise RuntimeError(
-        f"Foundry project did not become ready for Toolbox {toolbox_name} "
-        f"after {sum(TOOLBOX_PROJECT_RETRY_DELAYS)}s"
+        f"Foundry {resource_label} {phase} failed after {len(delays)} attempts "
+        f"over {time.monotonic() - started:.1f}s"
     ) from last_error
+
+
+def _promote_toolbox_version(
+    credential: TokenCredential,
+    *,
+    toolbox_name: str,
+    project_endpoint: str,
+    version: str,
+) -> None:
+    base_url = _toolbox_base_url(project_endpoint, toolbox_name)
+    with_toolbox_readiness_retry(
+        toolbox_name,
+        lambda: _toolbox_json_request(
+            credential,
+            method="PATCH",
+            url=f"{base_url}?api-version=v1",
+            payload={"default_version": version},
+        ),
+        phase="default-version promotion",
+    )
+
+
+def _wait_for_toolbox_service_ready(
+    credential: TokenCredential,
+    *,
+    project_endpoint: str,
+) -> None:
+    collection_url = f"{project_endpoint.rstrip('/')}/toolboxes?api-version=v1"
+    with_toolbox_readiness_retry(
+        "service",
+        lambda: _toolbox_json_request(
+            credential,
+            method="GET",
+            url=collection_url,
+            payload={},
+        ),
+        phase="control-plane routing",
+    )
+
+
+def _matching_toolbox_version(
+    credential: TokenCredential,
+    *,
+    toolbox_name: str,
+    project_endpoint: str,
+    desired: dict[str, Any],
+) -> str | None:
+    base_url = _toolbox_base_url(project_endpoint, toolbox_name)
+    try:
+        payload, _ = _toolbox_json_request(
+            credential,
+            method="GET",
+            url=f"{base_url}/versions?api-version=v1",
+            payload={},
+        )
+    except RuntimeError as exc:
+        if "HTTP 404" in str(exc):
+            return None
+        raise
+    versions = payload.get("data")
+    if not isinstance(versions, list):
+        raise RuntimeError(f"Foundry Toolbox {toolbox_name} version list returned no data array")
+    matches: list[tuple[int, str]] = []
+    for candidate in versions:
+        if not isinstance(candidate, dict):
+            continue
+        version = candidate.get("version")
+        if not isinstance(version, str) or not version:
+            continue
+        if any(candidate.get(key) != value for key, value in desired.items()):
+            continue
+        created_at = candidate.get("created_at")
+        matches.append((created_at if isinstance(created_at, int) else 0, version))
+    return max(matches)[1] if matches else None
+
+
+def _create_or_recover_toolbox_version(
+    credential: TokenCredential,
+    *,
+    toolbox_name: str,
+    project_endpoint: str,
+    desired: dict[str, Any],
+) -> str:
+    existing = _matching_toolbox_version(
+        credential,
+        toolbox_name=toolbox_name,
+        project_endpoint=project_endpoint,
+        desired=desired,
+    )
+    if existing:
+        print(f"Reusing exact Foundry Toolbox {toolbox_name} version {existing}.")
+        return existing
+
+    _wait_for_toolbox_service_ready(credential, project_endpoint=project_endpoint)
+    base_url = _toolbox_base_url(project_endpoint, toolbox_name)
+    try:
+        created, _ = _toolbox_json_request(
+            credential,
+            method="POST",
+            url=f"{base_url}/versions?api-version=v1",
+            payload=desired,
+        )
+    except AmbiguousToolboxCreate as exc:
+        def recover() -> str:
+            version = _matching_toolbox_version(
+                credential,
+                toolbox_name=toolbox_name,
+                project_endpoint=project_endpoint,
+                desired=desired,
+            )
+            if not version:
+                raise ToolboxProjectUnavailable(
+                    f"Foundry Toolbox {toolbox_name} create outcome is not visible yet"
+                )
+            return version
+
+        try:
+            recovered = with_toolbox_readiness_retry(
+                toolbox_name,
+                recover,
+                phase="ambiguous create reconciliation",
+            )
+        except RuntimeError:
+            raise RuntimeError(
+                f"Could not reconcile the ambiguous Foundry Toolbox {toolbox_name} create"
+            ) from exc
+        print(f"Recovered Foundry Toolbox {toolbox_name} version {recovered} after an ambiguous create.")
+        return recovered
+
+    version = created.get("version")
+    if not isinstance(version, str) or not version:
+        raise RuntimeError(f"Foundry Toolbox {toolbox_name} version creation returned no version")
+    return version
 
 
 def configure_connector_connections(
@@ -763,12 +960,10 @@ def _shared_toolbox_tool_names(
     credential: TokenCredential,
     *,
     project_endpoint: str,
-    version: str,
+    version: str | None,
 ) -> frozenset[str]:
-    endpoint = (
-        f"{_toolbox_base_url(project_endpoint, SHARED_TOOLBOX_NAME)}"
-        f"/versions/{version}/mcp?api-version=v1"
-    )
+    version_path = f"/versions/{version}" if version else ""
+    endpoint = f"{_toolbox_base_url(project_endpoint, SHARED_TOOLBOX_NAME)}{version_path}/mcp?api-version=v1"
     initialize, session_id = _toolbox_json_request(
         credential,
         method="POST",
@@ -801,8 +996,12 @@ def _shared_toolbox_tool_names(
     )
     result = _assert_mcp_success(listed, "tools/list")
     tools = result.get("tools")
-    if not isinstance(tools, list) or not tools:
+    if not isinstance(tools, list):
         raise RuntimeError("Shared Toolbox version advertised no tools")
+    if not tools:
+        raise ToolboxProjectUnavailable(
+            f"Shared Toolbox version {version} advertised no tools yet"
+        )
     return frozenset(
         tool["name"] for tool in tools if isinstance(tool, dict) and isinstance(tool.get("name"), str)
     )
@@ -833,35 +1032,52 @@ def _reconcile_shared_toolbox(
     guardrail_id: str = "",
 ) -> str:
     base_url = _toolbox_base_url(project_endpoint, SHARED_TOOLBOX_NAME)
-    created, _ = _toolbox_json_request(
+    version = _create_or_recover_toolbox_version(
         credential,
-        method="POST",
-        url=f"{base_url}/versions?api-version=v1",
-        payload=shared_toolbox_payload(
+        toolbox_name=SHARED_TOOLBOX_NAME,
+        project_endpoint=project_endpoint,
+        desired=shared_toolbox_payload(
             connector_targets,
             guardrail_id,
         ),
     )
-    version = created.get("version")
-    if not isinstance(version, str) or not version:
-        raise RuntimeError("Shared Toolbox version creation returned no version")
-    names = _shared_toolbox_tool_names(
+    names = with_toolbox_readiness_retry(
+        SHARED_TOOLBOX_NAME,
+        lambda: _shared_toolbox_tool_names(
+            credential,
+            project_endpoint=project_endpoint,
+            version=version,
+        ),
+    )
+    expected = expected_shared_tool_names()
+    if names != expected:
+        raise RuntimeError(
+            f"Shared Toolbox version {version} inventory does not match the governed catalog "
+            f"(missing={sorted(expected - names)}, unexpected={sorted(names - expected)})"
+        )
+    print(f"Shared Toolbox version {version} advertises {len(names)} tool(s).")
+    _promote_toolbox_version(
         credential,
+        toolbox_name=SHARED_TOOLBOX_NAME,
         project_endpoint=project_endpoint,
         version=version,
     )
-    missing = expected_shared_tool_names() - names
-    if missing:
-        raise RuntimeError(
-            f"Shared Toolbox version {version} is missing pinned tools: {sorted(missing)}"
-        )
-    print(f"Shared Toolbox version {version} advertises {len(names)} tool(s).")
-    _toolbox_json_request(
-        credential,
-        method="PATCH",
-        url=f"{base_url}?api-version=v1",
-        payload={"default_version": version},
+    consumer_names = with_toolbox_readiness_retry(
+        SHARED_TOOLBOX_NAME,
+        lambda: _shared_toolbox_tool_names(
+            credential,
+            project_endpoint=project_endpoint,
+            version=None,
+        ),
+        phase="consumer endpoint activation",
     )
+    if consumer_names != expected:
+        raise RuntimeError(
+            "Shared Toolbox consumer inventory does not match the promoted version "
+            f"(missing={sorted(expected - consumer_names)}, "
+            f"unexpected={sorted(consumer_names - expected)})"
+        )
+    print(f"Shared Toolbox consumer endpoint advertises {len(consumer_names)} tool(s).")
     return f"{base_url}/mcp?api-version=v1"
 
 
@@ -877,14 +1093,11 @@ def configure_shared_toolbox(
         required_env("AZURE_CONNECTOR_MCP_URLS")
     )
 
-    endpoint = with_toolbox_project_retry(
-        SHARED_TOOLBOX_NAME,
-        lambda: _reconcile_shared_toolbox(
-            effective_credential,
-            project_endpoint=project_endpoint,
-            connector_targets=governed_targets,
-            guardrail_id=optional_env("AZURE_AGENTIC_GUARDRAIL_ID"),
-        ),
+    endpoint = _reconcile_shared_toolbox(
+        effective_credential,
+        project_endpoint=project_endpoint,
+        connector_targets=governed_targets,
+        guardrail_id=optional_env("AZURE_AGENTIC_GUARDRAIL_ID"),
     )
     subprocess.run([AZD_CLI, "env", "set", "TOOLBOX_SHARED_MCP_ENDPOINT", endpoint], check=True)
     return endpoint
@@ -908,35 +1121,42 @@ def configure_agent_memory(credential: TokenCredential | None = None) -> str:
         f"{project_endpoint.rstrip('/')}/memory_stores"
         f"?api-version={FOUNDRY_MEMORY_API_VERSION}"
     )
-    try:
-        _toolbox_json_request(
-            effective_credential,
-            method="POST",
-            url=url,
-            payload={
-                "name": MEMORY_STORE_NAME,
-                "description": "Shared research memory for user profile, chat summary, and procedural recall.",
-                "definition": {
-                    "kind": "default",
-                    "chat_model": chat_deployment,
-                    "embedding_model": embedding_deployment,
-                    "options": {
-                        "chat_summary_enabled": True,
-                        "user_profile_enabled": True,
-                        "procedural_memory_enabled": True,
-                        "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
-                        "user_profile_details": (
-                            "Store research interests and workflow preferences only. "
-                            "Never store credentials, precise location, financial, or health data."
-                        ),
+    def ensure_memory_store() -> None:
+        try:
+            _toolbox_json_request(
+                effective_credential,
+                method="POST",
+                url=url,
+                payload={
+                    "name": MEMORY_STORE_NAME,
+                    "description": "Shared research memory for user profile, chat summary, and procedural recall.",
+                    "definition": {
+                        "kind": "default",
+                        "chat_model": chat_deployment,
+                        "embedding_model": embedding_deployment,
+                        "options": {
+                            "chat_summary_enabled": True,
+                            "user_profile_enabled": True,
+                            "procedural_memory_enabled": True,
+                            "default_ttl_seconds": MEMORY_DEFAULT_TTL_SECONDS,
+                            "user_profile_details": (
+                                "Store research interests and workflow preferences only. "
+                                "Never store credentials, precise location, financial, or health data."
+                            ),
+                        },
                     },
                 },
-            },
-        )
-    except RuntimeError as exc:
-        expected = f"Memory Store with Name {MEMORY_STORE_NAME} already exists"
-        if expected not in str(exc):
-            raise
+            )
+        except RuntimeError as exc:
+            expected = f"Memory Store with Name {MEMORY_STORE_NAME} already exists"
+            if expected not in str(exc):
+                raise
+
+    with_foundry_readiness_retry(
+        f"memory store {MEMORY_STORE_NAME}",
+        ensure_memory_store,
+        phase="upsert",
+    )
     subprocess.run([AZD_CLI, "env", "set", "MEMORY_STORE_NAME", MEMORY_STORE_NAME], check=True)
     print(f"Memory store {MEMORY_STORE_NAME} is configured.")
     return MEMORY_STORE_NAME

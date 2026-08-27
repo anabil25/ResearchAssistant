@@ -6,7 +6,7 @@ repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
 python="$repo_root/.venv-provision/bin/python"
 
 if [ ! -x "$python" ]; then
-  "$script_dir/postprovision.sh"
+  sh "$script_dir/ensure-provision-env.sh"
 fi
 
 (cd "$repo_root" && "$python" -m scripts.configure_agent_rbac)

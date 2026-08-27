@@ -76,10 +76,10 @@ param apimNamedValueWriterRoleId string
 @description('Entra ID tenant id used by Azure Container Apps built-in authentication (EasyAuth) to validate incoming bearer tokens. Required when enableEntraAuth is true.')
 param entraTenantId string = ''
 
-@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. Not created by this template -- see modules/container-apps.bicep.')
+@description('Client (application) id of the Entra App Registration representing this API, used as the allowed token audience for Container Apps built-in authentication. Required when enableEntraAuth is true. Not created by this template -- see app/api.bicep.')
 param entraApiClientId string = ''
 
-@description('Enable Azure Container Apps built-in authentication (EasyAuth) on the api container app. Defaults to false; see modules/container-apps.bicep for the full trust-boundary rationale.')
+@description('Enable Azure Container Apps built-in authentication (EasyAuth) on the API container app. Defaults to false; see app/api.bicep for the full trust-boundary rationale.')
 param enableEntraAuth bool = false
 
 // Variables
@@ -356,44 +356,16 @@ resource apiModelUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
   }
 }
 
-module containerApps 'container-apps.bicep' = if (includeAcr) {
-  name: 'research-container-apps'
+module containerAppsEnvironment 'container-apps-environment.bicep' = if (includeAcr) {
+  name: 'research-container-apps-environment'
   params: {
     name: take(applicationResourceToken, 8)
     location: applicationLocation
     tags: tags
     logAnalyticsWorkspaceName: monitoring.outputs.workspaceName
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
     infrastructureSubnetId: privateNetwork!.outputs.containerAppsSubnetId
-    foundryProjectEndpoint: 'https://${foundryAccount.name}.services.ai.azure.com/api/projects/${foundryAccount::project.name}'
-    openAIEndpoint: 'https://${foundryAccount.name}.openai.azure.com/'
-    apiIdentityResourceId: identities.outputs.apiResourceId
-    apiIdentityClientId: identities.outputs.apiClientId
     apiIdentityPrincipalId: identities.outputs.apiPrincipalId
     acrResourceId: acr!.outputs.resourceId
-    searchEndpoint: search.outputs.endpoint
-    searchIndexName: search.outputs.indexName
-    cosmosEndpoint: cosmos.outputs.endpoint
-    cosmosDatabaseName: cosmos.outputs.databaseName
-    agentStudioCosmosDatabaseName: cosmos.outputs.agentStudioDatabaseName
-    agentStudioMetadataContainerName: cosmos.outputs.agentStudioMetadataContainerName
-    agentStudioMemoryContainerName: cosmos.outputs.agentStudioMemoryContainerName
-    agentStudioAuditContainerName: cosmos.outputs.agentStudioAuditContainerName
-    agentStudioCatalogContainerName: cosmos.outputs.agentStudioCatalogContainerName
-    storageAccountName: storage.outputs.accountName
-    storageBlobEndpoint: storage.outputs.blobEndpoint
-    sourceContainerName: storage.outputs.sourcesContainer
-    artifactContainerName: storage.outputs.artifactsContainer
-    agentStudioBundleContainerName: storage.outputs.agentStudioBundlesContainer
-    documentIntelligenceEndpoint: documentIntelligence.outputs.endpoint
-    embeddingDeploymentName: embeddingDeploymentName
-    workspaceTenantId: subscription().tenantId
-    workspaceProjectId: foundryAccount::project.name
-    connectorGatewayUrl: 'https://${apiManagementName}.azure-api.net/research-connectors'
-    connectorGatewayTokenScope: '${environment().resourceManager}.default'
-    entraTenantId: entraTenantId
-    entraApiClientId: entraApiClientId
-    enableEntraAuth: enableEntraAuth
   }
 }
 
@@ -496,6 +468,13 @@ output AZURE_OPENAI_ENDPOINT string = 'https://${foundryAccount.name}.openai.azu
 output AZURE_AI_EMBEDDING_DEPLOYMENT_NAME string = embeddingDeploymentName
 output AZURE_AI_CHAT_DEPLOYMENT_NAME string = chatDeploymentName
 output FOUNDRY_PROJECT_ENDPOINT string = 'https://${foundryAccount.name}.services.ai.azure.com/api/projects/${foundryAccount::project.name}'
+output AZURE_TAGS string = base64(string(tags))
+output AZURE_APPLICATION_LOCATION string = applicationLocation
+output AZURE_APPLICATION_RESOURCE_TOKEN string = take(applicationResourceToken, 8)
+output AZURE_CONTAINER_ENVIRONMENT_ID string = includeAcr ? containerAppsEnvironment!.outputs.environmentId : ''
+output AZURE_CONTAINER_ENVIRONMENT_NAME string = includeAcr ? containerAppsEnvironment!.outputs.environmentName : ''
+output AZURE_CONTAINER_ENVIRONMENT_DEFAULT_DOMAIN string = includeAcr ? containerAppsEnvironment!.outputs.defaultDomain : ''
+output AZURE_CONTAINER_REGISTRY_NAME string = includeAcr ? acr!.outputs.name : ''
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = includeAcr ? acr!.outputs.loginServer : ''
 output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = includeAcr ? acr!.outputs.resourceId : ''
 output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = includeAcr ? acr!.outputs.connectionName : ''
@@ -504,6 +483,8 @@ output AZURE_FOUNDRY_MANAGED_ISOLATION_MODE string = ''
 output APPLICATIONINSIGHTS_CONNECTION_STRING string = monitoring.outputs.appInsightsConnectionString
 output AZURE_LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceId
 output AZURE_MANAGED_IDENTITY_CLIENT_ID string = identities.outputs.apiClientId
+output AZURE_MANAGED_IDENTITY_PRINCIPAL_ID string = identities.outputs.apiPrincipalId
+output AZURE_MANAGED_IDENTITY_RESOURCE_ID string = identities.outputs.apiResourceId
 output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.accountName
 output AZURE_STORAGE_BLOB_ENDPOINT string = storage.outputs.blobEndpoint
 output AZURE_STORAGE_SOURCE_CONTAINER string = storage.outputs.sourcesContainer
@@ -521,10 +502,17 @@ output AZURE_COSMOS_AGENT_STUDIO_MEMORY_CONTAINER string = cosmos.outputs.agentS
 output AZURE_COSMOS_AGENT_STUDIO_AUDIT_CONTAINER string = cosmos.outputs.agentStudioAuditContainerName
 output AZURE_COSMOS_AGENT_STUDIO_CATALOG_CONTAINER string = cosmos.outputs.agentStudioCatalogContainerName
 output AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT string = documentIntelligence.outputs.endpoint
-output WEB_URL string = includeAcr ? containerApps!.outputs.webUrl : ''
-output API_URL string = includeAcr ? containerApps!.outputs.apiUrl : ''
-output API_NAME string = includeAcr ? containerApps!.outputs.apiName : ''
-output WEB_NAME string = includeAcr ? containerApps!.outputs.webName : ''
+output RESEARCH_CONNECTOR_GATEWAY_URL string = includeAcr ? 'https://${apiManagementName}.azure-api.net/research-connectors' : ''
+output RESEARCH_CONNECTOR_GATEWAY_TOKEN_SCOPE string = '${environment().resourceManager}.default'
+output RESEARCH_WORKSPACE_TENANT_ID string = subscription().tenantId
+output RESEARCH_WORKSPACE_PROJECT_ID string = foundryAccount::project.name
+output RESEARCH_ENTRA_AUTH_ENFORCED string = string(enableEntraAuth)
+output RESEARCH_ENTRA_TENANT_ID string = entraTenantId
+output RESEARCH_ENTRA_API_CLIENT_ID string = entraApiClientId
+output WEB_URL string = includeAcr ? containerAppsEnvironment!.outputs.webUrl : ''
+output API_URL string = includeAcr ? containerAppsEnvironment!.outputs.apiUrl : ''
+output API_NAME string = includeAcr ? containerAppsEnvironment!.outputs.apiName : ''
+output WEB_NAME string = includeAcr ? containerAppsEnvironment!.outputs.webName : ''
 output AZURE_API_MANAGEMENT_NAME string = includeAcr ? apiManagement!.outputs.serviceName : ''
 output AZURE_API_MANAGEMENT_GATEWAY_URL string = includeAcr ? apiManagement!.outputs.gatewayUrl : ''
 output AZURE_API_MANAGEMENT_PRINCIPAL_ID string = includeAcr ? apiManagement!.outputs.principalId : ''

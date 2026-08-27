@@ -160,8 +160,12 @@ flowchart LR
 - Literature, grant, and matching each consume a stable Foundry Toolbox
   consumer endpoint. Toolbox versions are immutable; provisioning creates a
   complete candidate version, validates its version-specific MCP `tools/list`
-  inventory against the checked-in connector catalog, then promotes it as the
-  default version. A connector Settings change never rebuilds a Toolbox.
+  inventory against the checked-in connector catalog with bounded transient
+  retries, then promotes it as the default version and verifies the same exact
+  inventory through the unversioned consumer endpoint. The create operation
+  is never included in the retry scope, so a readiness delay cannot create
+  duplicate candidate versions. A connector Settings change never rebuilds a
+  Toolbox.
 - The Settings UI is the authoritative selector for a run. The API resolves
   enabled, ready, assigned connector IDs and sends them in a typed public
   hosted-agent envelope. Hosted middleware exposes only the matching
@@ -274,10 +278,30 @@ The web and API remain warm for the demo profile.
 
 1. `preprovision` validates every required service/SKU and exact model in the
   selected region.
-2. Bicep provisions resources and data-plane roles.
+2. Bicep provisions shared resources, data-plane roles, ACR, and the Container
+  Apps environment. ACR explicitly uses legacy RBAC permissions and permits
+  ARM-audience authentication for managed-identity image pulls. Provisioning
+  does not create API/web application revisions.
 3. `postprovision` creates the Search index, uploads synthetic evidence,
-   creates connector-specific Foundry project connections, and reconciles and
-   validates Toolbox versions before promoting them.
-4. `azd deploy` creates Hosted Agent versions and deploys Container Apps.
-5. `postdeploy` grants the coordinator only the Foundry delegation role.
-6. Smoke checks verify the deployed endpoints.
+   creates connector-specific Foundry project connections, and creates each
+   immutable Toolbox candidate once. It polls only that version's MCP endpoint
+   with bounded exponential backoff and jitter, honors `Retry-After`, validates
+  the exact inventory, promotes the candidate, and validates the consumer
+  endpoint. The deterministic memory-store upsert uses a separate bounded
+  project-readiness retry.
+4. `azd deploy --all` packages independently, while `uses:` edges stage Azure
+  deployment: six specialists -> coordinator -> API -> web.
+5. The API predeploy gate requires all seven newest Hosted Agent versions to be
+  active, synchronizes local version pointers, and verifies each runtime
+  identity's Foundry User assignment.
+6. API and web service modules create one revision from the exact immutable ACR
+  image emitted by azd. Single-revision mode keeps the prior healthy revision
+  live until startup and readiness checks pass.
+7. Service postdeploy gates require exact-image, latest-ready, Healthy/Running,
+  replica, and probe matches. The web gate also verifies its health route and
+  the proxied API health/readiness routes.
+
+`Skipped` in azd's deploy summary means a graph step was canceled or blocked;
+it is not proof that no remote side effect occurred. Reruns are expected and
+safe: recovered active agent versions are reconciled before application
+deployment, and provisioning cannot overwrite a healthy application image.

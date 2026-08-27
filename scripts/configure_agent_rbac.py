@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import subprocess
+import time
 from typing import Any
 
 from azure.ai.projects import AIProjectClient
@@ -22,6 +23,8 @@ AGENT_NAMES = (
 )
 FOUNDRY_USER_ROLE_ID = "53ca6127-db72-4b80-b1b0-d745d6d5456d"
 AZ_CLI = "az.cmd" if os.name == "nt" else "az"
+ROLE_VISIBILITY_ATTEMPTS = 12
+ROLE_VISIBILITY_DELAY_SECONDS = 5
 
 
 def run_json(command: list[str]) -> Any:
@@ -69,6 +72,40 @@ def agent_environment_values(
             f"{base}/endpoint/protocols/openai/responses?api-version=v1"
         ),
     }
+
+
+def wait_for_role_assignment(
+    principal_id: str,
+    scope: str,
+    *,
+    attempts: int = ROLE_VISIBILITY_ATTEMPTS,
+    delay_seconds: float = ROLE_VISIBILITY_DELAY_SECONDS,
+) -> None:
+    for attempt in range(1, attempts + 1):
+        role_ids = run_json(
+            [
+                AZ_CLI,
+                "role",
+                "assignment",
+                "list",
+                "--assignee-object-id",
+                principal_id,
+                "--scope",
+                scope,
+                "--query",
+                "[].roleDefinitionId",
+                "--output",
+                "json",
+            ]
+        )
+        if any(str(role_id).lower().endswith(FOUNDRY_USER_ROLE_ID) for role_id in role_ids):
+            return
+        if attempt < attempts:
+            time.sleep(delay_seconds)
+    raise RuntimeError(
+        f"Foundry User role was not visible for Hosted Agent identity {principal_id} "
+        f"after {attempts} checks"
+    )
 
 
 def sync_agent_environment_outputs() -> None:
@@ -146,6 +183,7 @@ def main() -> None:
             ],
             check=True,
         )
+        wait_for_role_assignment(principal_id, project_scope)
         print(f"Granted Foundry User to {agent_name} ({principal_id}).")
 
 

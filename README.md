@@ -163,13 +163,15 @@ flows.
 
 ## Prerequisites (read this in full — it prevents 90% of deploy failures)
 
-### 1. Tooling + minimum versions
+### 1. Tooling versions
 
-| Tool | Minimum version | Check | Install |
+| Tool | Required version | Check | Install |
 |------|----------------|-------|---------|
-| Azure Developer CLI (`azd`) | 1.27+ | `azd version` | https://aka.ms/azd-install |
+| Azure Developer CLI (`azd`) | 1.32.0 | `azd version` | https://aka.ms/azd-install |
 | Azure CLI (`az`) | 2.84+ | `az version` | https://aka.ms/azure-cli |
-| `azure.ai.agents` azd extension | 1.0.0-beta.7+ | `azd extension list` | `azd extension add azure.ai.agents` |
+| `azure.ai.agents` azd extension | 1.0.0-beta.12 | `azd extension list --installed` | `azd extension install azure.ai.agents --version 1.0.0-beta.12` |
+| `azure.ai.projects` azd extension | 1.0.0-beta.7 | `azd extension list --installed` | Installed with the Agents extension |
+| `microsoft.foundry` azd extension | 1.0.0-beta.2 | `azd extension list --installed` | `azd extension install microsoft.foundry --version 1.0.0-beta.2` |
 | Python | 3.12 (API/ingestion); 3.13 (agent build) | `python --version` | https://www.python.org/downloads/ |
 | `uv` | 0.10+ | `uv --version` | https://docs.astral.sh/uv/getting-started/installation/ |
 | Node.js | 24 LTS | `node --version` | https://nodejs.org/ |
@@ -358,13 +360,29 @@ azd up
      user action.
   2. Reconciles mutable APIM connector APIs, policies, MCP surfaces, and
      missing optional secret slots without overwriting user-managed keys.
-  3. Reconciles Foundry connections, Toolboxes, memory, and deployment data.
-- `azd deploy --all` deploys all seven direct-code Hosted Agents and remotely
-  builds the FastAPI and Next.js Container App images.
-- `postdeploy` publishes Hosted Agent IDs and grants each runtime identity its
-  required Foundry role. Provisioning fails closed before deployment if any
-  required Search, APIM, Toolbox, memory, or ACR-readiness step does not
-  complete, so agents never deploy with missing generated inputs.
+    3. Reconciles Foundry connections, Toolboxes, memory, and deployment data.
+      Each immutable Toolbox version is created once, polled through its
+      version-specific MCP endpoint with bounded exponential backoff, and
+      promoted only after its exact tool inventory is ready. The unversioned
+      consumer endpoint is then checked for the same inventory, and the
+      deterministic memory-store upsert has its own bounded project-readiness
+      retry.
+- `azd deploy --all` packages services concurrently, then follows the declared
+  dependency graph: six specialists, coordinator, API, and web. A failed agent
+  blocks both application revisions.
+- Before the API deploys, its service gate reconciles the latest active Hosted
+  Agent versions into the azd environment and verifies each runtime identity's
+  required Foundry role.
+- API and web use revision-based Container Apps deployment. Their Bicep modules
+  receive the exact image just published by azd, so provisioning never creates
+  or restores a placeholder revision. Each service postdeploy gate verifies the
+  exact image, latest-ready revision, probes, replicas, and HTTP health before
+  the dependent service can proceed.
+- In single-revision mode, an existing healthy revision keeps serving until
+  its replacement passes startup and readiness probes.
+- ACR is pinned to legacy RBAC permissions with ARM-audience authentication
+  enabled, so the workload identity's `AcrPull` assignment remains the
+  explicit image-pull contract.
 
 Open the workbench — when `azd up` finishes it prints the Container App URL.
 You can also fetch it any time:
@@ -525,7 +543,9 @@ same checkout.
 | Model / Search "not available in region" | Region doesn't offer that SKU/model | Redeploy to a supported region (Prerequisites §5), e.g. East US 2 or Sweden Central. |
 | `postprovision` fails with `search.windows.net timed out` or endpoint unreachable | Governed subscription's Azure Policy disabled public network access; `postprovision` runs from your machine | See [Deploying into a governed / network-restricted subscription](#deploying-into-a-governed--network-restricted-subscription). Fastest fix: run `azd up` from Azure Cloud Shell. |
 | `postprovision` warns `KB blob upload skipped (AuthorizationFailure)` | Storage Blob Data Contributor role assignment hadn't propagated when `postprovision` ran | Non-fatal — `postprovision` retries with backoff. Re-run `azd provision` once the role has propagated. |
+| `postprovision` reports built-in Toolbox tools as `NOT_FOUND`, or the memory API reports `Project not found` | A new Foundry project's data-plane subservices have not all become routable | The hook retries only idempotent candidate validation, promotion, consumer activation, and memory upsert operations with bounded backoff. If the budget expires, confirm tool-region support, then rerun `azd provision`; no application revision has deployed yet. |
 | Hosted Agent setup fails with `cannot import name '…'` | Drifted package in the deployer's Python environment | `postprovision` builds an isolated `.venv-provision/` with exact pins — ensure Python 3.12+ is on `PATH` and re-run `azd provision`. |
+| One service is `Failed` and others are `Skipped` | azd's fail-fast graph canceled in-flight sibling work after the first failure; remote builds or agent activation can still finish in Azure | Diagnose the first `Failed` service, inspect live agent/revision state, then rerun `azd deploy --all`. The dependency gates reconcile recovered agents and prevent API/web from advancing prematurely. |
 | Workbench loads but chat errors | `postprovision` didn't finish (no index / agents), or the web app cannot reach the API | Re-run `azd provision` (idempotent), verify `INTERNAL_API_URL` app setting, and check `azd env get-value SERVICE_WEB_URI`. |
 | Semantic Scholar returns limited/empty results | Anonymous provider quota is exhausted | Add the optional key in **Settings > Connections**, then run the connector test. |
 | `pip-audit` flags a vulnerability | Dependency CVE in the lockfile | Run `uv lock --upgrade-package <pkg>` and re-run the quality gate. |
