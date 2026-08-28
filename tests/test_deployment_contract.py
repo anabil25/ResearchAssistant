@@ -142,12 +142,16 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert "$quotaAttempts = 20" in preprovision_windows
     assert "$resourceGroup = $environmentName" in preprovision_windows
     assert "get-value AZURE_RESOURCE_GROUP" not in preprovision_windows
+    assert "subscriptions/$subscription/locations?api-version=2022-12-01" in preprovision_windows
+    assert "account list-locations" not in preprovision_windows
     assert "--subscription $subscription" in preprovision_windows
     assert "$existingCapacity" in preprovision_windows
     assert "deleted model quota to be released" in preprovision_windows
     assert "quota_attempts=20" in preprovision_posix
     assert 'resource_group="$environment_name"' in preprovision_posix
     assert "get-value AZURE_RESOURCE_GROUP" not in preprovision_posix
+    assert "subscriptions/$subscription/locations?api-version=2022-12-01" in preprovision_posix
+    assert "account list-locations" not in preprovision_posix
     assert '--subscription "$subscription"' in preprovision_posix
     assert "existing_capacity" in preprovision_posix
     assert "deleted model quota to be released" in preprovision_posix

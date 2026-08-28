@@ -46,9 +46,10 @@ if [ -z "$tenant_id" ]; then
 fi
 azd env set AZURE_TENANT_ID "$tenant_id"
 
-display_location="$(az account list-locations \
-  --subscription "$subscription" \
-  --query "[?name=='$location'].displayName | [0]" \
+display_location="$(az rest \
+  --method get \
+  --url "https://management.azure.com/subscriptions/$subscription/locations?api-version=2022-12-01" \
+  --query "value[?name=='$location'].displayName | [0]" \
   --output tsv)"
 if [ -z "$display_location" ]; then
   echo "Azure location '$location' is not recognized." >&2

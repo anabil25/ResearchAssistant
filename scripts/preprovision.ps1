@@ -48,9 +48,10 @@ if (-not $tenantId) {
 }
 azd env set AZURE_TENANT_ID $tenantId
 
-$displayLocation = az account list-locations `
-  --subscription $subscription `
-  --query "[?name=='$location'].displayName | [0]" `
+$displayLocation = az rest `
+  --method get `
+  --url "https://management.azure.com/subscriptions/$subscription/locations?api-version=2022-12-01" `
+  --query "value[?name=='$location'].displayName | [0]" `
   --output tsv
 if (-not $displayLocation) {
   throw "Azure location '$location' is not recognized."
