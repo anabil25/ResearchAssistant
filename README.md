@@ -179,8 +179,8 @@ flows.
 ### 2. Azure subscription + RBAC roles the deploying user needs
 
 `infra/main.bicep` is subscription-scoped: `azd up` creates the resource
-group, all resources, and role assignments wiring the managed identity to
-Search, Storage, Blob, Foundry, Cosmos, and Key Vault.
+group, all resources, and least-privilege role assignments for the API,
+web, Foundry project, Hosted Agent, and developer identities.
 
 Creating role assignments requires `Microsoft.Authorization/roleAssignments/write`.
 The deploying identity needs one of:
@@ -199,16 +199,16 @@ roles it assigns:
 | Resource | ARM type | Role(s) assigned to managed identity |
 |----------|----------|--------------------------------------|
 | Resource Group | `Microsoft.Resources/resourceGroups` | — |
-| Managed Identity | `Microsoft.ManagedIdentity/userAssignedIdentities` | All other roles are granted to this principal |
+| Managed Identities | `Microsoft.ManagedIdentity/userAssignedIdentities` | API data-plane roles; web receives only ACR Pull |
 | Log Analytics + App Insights | `Microsoft.OperationalInsights/workspaces`, `Microsoft.Insights/components` | — |
 | Key Vault | `Microsoft.KeyVault/vaults` | Key Vault Secrets User |
 | Storage + private endpoint | `Microsoft.Storage/storageAccounts` (Standard, Hot) | Storage Blob Data Contributor |
 | Azure AI Search | `Microsoft.Search/searchServices` | Search Index Data Contributor + Search Service Contributor |
-| Azure AI Foundry (+ project + model deployments) | `Microsoft.CognitiveServices/accounts` (kind AIServices) | Azure AI Developer + Cognitive Services OpenAI User |
+| Microsoft Foundry (+ project + model deployments) | `Microsoft.CognitiveServices/accounts` (kind AIServices) | API: Foundry Project Manager; agent runtimes: Foundry User |
 | Document Intelligence | `Microsoft.CognitiveServices/accounts` (kind FormRecognizer) | Cognitive Services User |
 | Cosmos DB + private endpoint | `Microsoft.DocumentDB/databaseAccounts` | Cosmos DB Built-in Data Contributor |
 | Container Apps Environment + VNet | `Microsoft.App/managedEnvironments` | — |
-| Container Apps (web + api) | `Microsoft.App/containerApps` | — |
+| Container Apps (web + api) | `Microsoft.App/containerApps` | Dedicated UAMIs with ACR Pull; web never receives API data permissions |
 
 ### 3. Azure AI Foundry model deployment quota
 
@@ -390,7 +390,7 @@ azd up
 - In single-revision mode, an existing healthy revision keeps serving until
   its replacement passes startup and readiness probes.
 - ACR is pinned to legacy RBAC permissions with ARM-audience authentication
-  enabled, so the workload identity's `AcrPull` assignment remains the
+  enabled, so each workload identity's `AcrPull` assignment remains the
   explicit image-pull contract.
 
 Open the workbench — when `azd up` finishes it prints the Container App URL.

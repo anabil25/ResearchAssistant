@@ -24,6 +24,7 @@ DEFAULT_HTTP_TIMEOUT_SECONDS = 60
 DEFAULT_AGENT_TIMEOUT_SECONDS = 480
 MAX_SSE_BYTES = 2_000_000
 ACR_PULL_ROLE_ID = "7f951dda-4ed3-4680-a7ca-43fe172d538d"
+FOUNDRY_PROJECT_MANAGER_ROLE_ID = "eadc314b-1a2d-4efa-be10-5d325db5065e"
 EXPECTED_AGENTS = (
     "research-coordinator",
     "literature-agent",
@@ -346,6 +347,12 @@ def verify_platform_release() -> dict[str, str]:
                 f"Verified Hosted Agent {name} version {expected_versions[name]} "
                 "active with source and RBAC attestation."
             )
+        _require_role(
+            values["AZURE_MANAGED_IDENTITY_PRINCIPAL_ID"],
+            project_scope,
+            FOUNDRY_PROJECT_MANAGER_ROLE_ID,
+        )
+        print("Verified API Foundry Project Manager publishing permission.")
 
         expected_connections = _expected_connections(values)
         resource_manager_endpoint = _resource_manager_endpoint()
@@ -398,7 +405,12 @@ def verify_platform_release() -> dict[str, str]:
             acr_scope,
             ACR_PULL_ROLE_ID,
         )
-        print("Verified Foundry project and Container Apps AcrPull assignments.")
+        _require_role(
+            values["AZURE_WEB_MANAGED_IDENTITY_PRINCIPAL_ID"],
+            acr_scope,
+            ACR_PULL_ROLE_ID,
+        )
+        print("Verified Foundry project, API, and web AcrPull assignments.")
     finally:
         project.close()
         credential.close()

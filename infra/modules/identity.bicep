@@ -10,6 +10,15 @@ resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-3
   tags: tags
 }
 
+resource webIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2024-11-30' = {
+  name: 'id-web-${name}'
+  location: location
+  tags: tags
+}
+
 output apiClientId string = apiIdentity.properties.clientId
 output apiPrincipalId string = apiIdentity.properties.principalId
 output apiResourceId string = apiIdentity.id
+output webClientId string = webIdentity.properties.clientId
+output webPrincipalId string = webIdentity.properties.principalId
+output webResourceId string = webIdentity.id

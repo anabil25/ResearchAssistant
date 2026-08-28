@@ -6,6 +6,7 @@ param tags object = {}
 param logAnalyticsWorkspaceName string
 param infrastructureSubnetId string
 param apiIdentityPrincipalId string
+param webIdentityPrincipalId string
 param acrResourceId string
 
 var acrPullRoleId = subscriptionResourceId(
@@ -48,6 +49,16 @@ resource apiIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01'
   scope: acr
   properties: {
     principalId: apiIdentityPrincipalId
+    principalType: 'ServicePrincipal'
+    roleDefinitionId: acrPullRoleId
+  }
+}
+
+resource webIdentityAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(acr.id, webIdentityPrincipalId, acrPullRoleId)
+  scope: acr
+  properties: {
+    principalId: webIdentityPrincipalId
     principalType: 'ServicePrincipal'
     roleDefinitionId: acrPullRoleId
   }

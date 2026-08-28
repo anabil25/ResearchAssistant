@@ -346,41 +346,45 @@ def create_index(
 
 def wait_for_acr_pull_roles() -> None:
     acr_id = required_env("AZURE_CONTAINER_REGISTRY_RESOURCE_ID")
-    principal = required_env("AZURE_MANAGED_IDENTITY_PRINCIPAL_ID")
-    for attempt in range(1, 6):
-        role = subprocess.run(
-            [
-                AZ_CLI,
-                "role",
-                "assignment",
-                "list",
-                "--scope",
-                acr_id,
-                "--assignee-object-id",
-                principal,
-                "--query",
-                "[?roleDefinitionName=='AcrPull'].roleDefinitionName",
-                "--output",
-                "tsv",
-            ],
-            check=True,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-        ).stdout.strip()
-        if role == "AcrPull":
-            print("AcrPull confirmed for the Container Apps workload identity.")
-            return
-        if attempt == 5:
-            raise RuntimeError(
-                "AcrPull was not visible for the Container Apps workload identity "
-                "after five minutes"
+    principals = {
+        "API": required_env("AZURE_MANAGED_IDENTITY_PRINCIPAL_ID"),
+        "web": required_env("AZURE_WEB_MANAGED_IDENTITY_PRINCIPAL_ID"),
+    }
+    for label, principal in principals.items():
+        for attempt in range(1, 6):
+            role = subprocess.run(
+                [
+                    AZ_CLI,
+                    "role",
+                    "assignment",
+                    "list",
+                    "--scope",
+                    acr_id,
+                    "--assignee-object-id",
+                    principal,
+                    "--query",
+                    "[?roleDefinitionName=='AcrPull'].roleDefinitionName",
+                    "--output",
+                    "tsv",
+                ],
+                check=True,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+            ).stdout.strip()
+            if role == "AcrPull":
+                print(f"AcrPull confirmed for the {label} workload identity.")
+                break
+            if attempt == 5:
+                raise RuntimeError(
+                    f"AcrPull was not visible for the {label} workload identity "
+                    "after five minutes"
+                )
+            print(
+                f"Waiting 60s for {label} workload identity AcrPull propagation "
+                f"({attempt}/5)."
             )
-        print(
-            "Waiting 60s for Container Apps workload identity AcrPull propagation "
-            f"({attempt}/5)."
-        )
-        time.sleep(60)
+            time.sleep(60)
 
 
 def connector_connection_payload(

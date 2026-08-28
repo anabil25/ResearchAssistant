@@ -268,7 +268,8 @@ not an implicit behavior change.
 - Container Registry Basic
 - Container Apps environment with web/API
 - Log Analytics and workspace-based Application Insights
-- API user-assigned managed identity
+- API user-assigned managed identity with application data-plane permissions
+- dedicated web user-assigned managed identity with ACR Pull only
 - VNet-integrated Container Apps environment
 - Blob and Cosmos private endpoints and private DNS zone links
 
@@ -278,7 +279,8 @@ The web and API remain warm for the demo profile.
 
 1. `preprovision` validates every required service/SKU and exact model in the
   selected region.
-2. Bicep provisions shared resources, data-plane roles, ACR, and the Container
+2. Bicep provisions shared resources, data-plane roles, separate API/web
+  workload identities, ACR, and the Container
   Apps environment. ACR explicitly uses legacy RBAC permissions and permits
   ARM-audience authentication for managed-identity image pulls. Provisioning
   does not create API/web application revisions. `FOUNDRY_PROJECT_NAME` is a

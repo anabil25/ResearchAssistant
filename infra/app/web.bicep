@@ -7,7 +7,7 @@ param location string
 param containerAppsEnvironmentName string
 param containerRegistryName string
 param imageName string
-param apiIdentityResourceId string
+param webIdentityResourceId string
 param internalApiUrl string
 param warmReplicaCount int = 1
 
@@ -31,7 +31,7 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
   identity: {
     type: 'SystemAssigned,UserAssigned'
     userAssignedIdentities: {
-      '${apiIdentityResourceId}': {}
+      '${webIdentityResourceId}': {}
     }
   }
   properties: {
@@ -41,7 +41,7 @@ resource web 'Microsoft.App/containerApps@2026-01-01' = {
       registries: [
         {
           server: acr.properties.loginServer
-          identity: apiIdentityResourceId
+          identity: webIdentityResourceId
         }
       ]
       ingress: {

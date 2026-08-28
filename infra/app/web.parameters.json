@@ -9,7 +9,7 @@
     "containerAppsEnvironmentName": { "value": "${AZURE_CONTAINER_ENVIRONMENT_NAME}" },
     "containerRegistryName": { "value": "${AZURE_CONTAINER_REGISTRY_NAME}" },
     "imageName": { "value": "${SERVICE_WEB_IMAGE_NAME}" },
-    "apiIdentityResourceId": { "value": "${AZURE_MANAGED_IDENTITY_RESOURCE_ID}" },
+    "webIdentityResourceId": { "value": "${AZURE_WEB_MANAGED_IDENTITY_RESOURCE_ID}" },
     "internalApiUrl": { "value": "${SERVICE_API_URI}" }
   }
 }

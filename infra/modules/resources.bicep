@@ -307,13 +307,13 @@ module documentIntelligence 'document-intelligence.bicep' = {
   }
 }
 
-resource apiFoundryUser 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
-  name: guid(foundryAccount::project.id, 'id-api-${resourceToken}', foundryUserRoleId)
+resource apiFoundryProjectManager 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(foundryAccount::project.id, 'id-api-${resourceToken}', foundryProjectManagerRoleId)
   scope: foundryAccount::project
   properties: {
     principalId: identities.outputs.apiPrincipalId
     principalType: 'ServicePrincipal'
-    roleDefinitionId: foundryUserRoleId
+    roleDefinitionId: foundryProjectManagerRoleId
   }
 }
 
@@ -371,6 +371,7 @@ module containerAppsEnvironment 'container-apps-environment.bicep' = if (include
     logAnalyticsWorkspaceName: monitoring.outputs.workspaceName
     infrastructureSubnetId: privateNetwork!.outputs.containerAppsSubnetId
     apiIdentityPrincipalId: identities.outputs.apiPrincipalId
+    webIdentityPrincipalId: identities.outputs.webPrincipalId
     acrResourceId: acr!.outputs.resourceId
   }
 }
@@ -491,6 +492,9 @@ output AZURE_LOG_ANALYTICS_WORKSPACE_ID string = monitoring.outputs.workspaceId
 output AZURE_MANAGED_IDENTITY_CLIENT_ID string = identities.outputs.apiClientId
 output AZURE_MANAGED_IDENTITY_PRINCIPAL_ID string = identities.outputs.apiPrincipalId
 output AZURE_MANAGED_IDENTITY_RESOURCE_ID string = identities.outputs.apiResourceId
+output AZURE_WEB_MANAGED_IDENTITY_CLIENT_ID string = identities.outputs.webClientId
+output AZURE_WEB_MANAGED_IDENTITY_PRINCIPAL_ID string = identities.outputs.webPrincipalId
+output AZURE_WEB_MANAGED_IDENTITY_RESOURCE_ID string = identities.outputs.webResourceId
 output AZURE_STORAGE_ACCOUNT_NAME string = storage.outputs.accountName
 output AZURE_STORAGE_BLOB_ENDPOINT string = storage.outputs.blobEndpoint
 output AZURE_STORAGE_SOURCE_CONTAINER string = storage.outputs.sourcesContainer

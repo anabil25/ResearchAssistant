@@ -637,6 +637,7 @@ def test_postprovision_checks_workload_identity_without_reading_apps(
 ) -> None:
     monkeypatch.setenv("AZURE_CONTAINER_REGISTRY_RESOURCE_ID", "/subscriptions/test/acr")
     monkeypatch.setenv("AZURE_MANAGED_IDENTITY_PRINCIPAL_ID", "principal-id")
+    monkeypatch.setenv("AZURE_WEB_MANAGED_IDENTITY_PRINCIPAL_ID", "web-principal-id")
     commands: list[list[str]] = []
 
     def completed(command: list[str], **_kwargs: object) -> SimpleNamespace:
@@ -647,10 +648,35 @@ def test_postprovision_checks_workload_identity_without_reading_apps(
 
     postprovision.wait_for_acr_pull_roles()
 
-    assert len(commands) == 1
-    assert commands[0][1:4] == ["role", "assignment", "list"]
-    assert "containerapp" not in commands[0]
+    assert len(commands) == 2
+    assert all(command[1:4] == ["role", "assignment", "list"] for command in commands)
+    assert all("containerapp" not in command for command in commands)
     assert "principal-id" in commands[0]
+    assert "web-principal-id" in commands[1]
+
+
+def test_web_uses_a_dedicated_pull_only_identity() -> None:
+    identity = (ROOT / "infra" / "modules" / "identity.bicep").read_text(encoding="utf-8")
+    environment = (
+        ROOT / "infra" / "modules" / "container-apps-environment.bicep"
+    ).read_text(encoding="utf-8")
+    web = (ROOT / "infra" / "app" / "web.bicep").read_text(encoding="utf-8")
+    web_parameters = json.loads(
+        (ROOT / "infra" / "app" / "web.parameters.json").read_text(encoding="utf-8")
+    )["parameters"]
+    resources = (ROOT / "infra" / "modules" / "resources.bicep").read_text(
+        encoding="utf-8"
+    )
+
+    assert "resource webIdentity" in identity
+    assert "resource webIdentityAcrPull" in environment
+    assert "param webIdentityResourceId string" in web
+    assert "apiIdentityResourceId" not in web
+    assert web_parameters["webIdentityResourceId"]["value"] == (
+        "${AZURE_WEB_MANAGED_IDENTITY_RESOURCE_ID}"
+    )
+    assert "resource apiFoundryProjectManager" in resources
+    assert "roleDefinitionId: foundryProjectManagerRoleId" in resources
 
 
 def test_tools_list_retries_wrapped_builtin_source_404() -> None:
