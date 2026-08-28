@@ -245,6 +245,29 @@ def test_down_completion_prefers_current_incarnation_over_stale_output() -> None
     assert observed == target
 
 
+def test_down_completion_uses_environment_name_after_azd_clears_group_output() -> None:
+    target = DeletionTarget(
+        subscription_id="subscription-1",
+        resource_group="rg-research",
+        foundry_account_name="cog-current-incarnation",
+    )
+
+    observed = wait_for_down_completion(
+        {
+            "AZURE_ENV_NAME": target.resource_group,
+            "AZURE_SUBSCRIPTION_ID": target.subscription_id,
+            "FOUNDRY_ACCOUNT_NAME": target.foundry_account_name,
+        },
+        read_state=lambda actual: (False, False) if actual == target else (True, True),
+        attempts=1,
+        delay_seconds=0,
+        stable_absences=1,
+        sleep=lambda _delay: None,
+    )
+
+    assert observed == target
+
+
 def test_failed_down_verification_never_rotates_identity() -> None:
     writes: list[tuple[str, str]] = []
 

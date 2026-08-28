@@ -167,7 +167,8 @@ def _deletion_target(values: Mapping[str, object]) -> DeletionTarget:
     normalized = _normalized_values(values)
     required = {
         "AZURE_SUBSCRIPTION_ID": normalized.get("AZURE_SUBSCRIPTION_ID"),
-        "AZURE_RESOURCE_GROUP": normalized.get("AZURE_RESOURCE_GROUP"),
+        "AZURE_RESOURCE_GROUP": normalized.get("AZURE_RESOURCE_GROUP")
+        or normalized.get("AZURE_ENV_NAME"),
         "AZURE_AI_ACCOUNT_NAME": normalized.get("FOUNDRY_ACCOUNT_NAME")
         or normalized.get("AZURE_AI_ACCOUNT_NAME"),
     }
