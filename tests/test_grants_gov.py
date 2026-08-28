@@ -464,6 +464,47 @@ def test_lookup_receipts_require_an_explicit_model_selection() -> None:
     assert opportunities == ()
 
 
+def test_exact_request_materializes_its_receipt_without_model_selection() -> None:
+    record = GrantsGovRecord(
+        grants_gov_id="357744",
+        opportunity_number="RFA-HG-25-009",
+        title="Supporting Talented Early Career Researchers in Genomics",
+        agency="National Institutes of Health",
+        status="posted",
+        canonical_url="https://www.grants.gov/search-results-detail/357744",
+    )
+    request_token = _REQUEST.set(
+        GrantRequest(
+            query="Look up Grants.gov opportunity ID 357744.",
+            tenant_id="tenant-1",
+            project_id="project-1",
+            principal_id="user-1",
+            session_id="session-1",
+            sensitivity="internal",
+            authorized_connector_ids=("grants_gov",),
+            opportunity_id="357744",
+        )
+    )
+    lookup_token = _GRANTS_GOV_LOOKUPS.set(
+        {
+            "357744": GrantsGovReceipt(
+                record=record,
+                verified_at="2026-08-28T12:00:00+00:00",
+            )
+        }
+    )
+    try:
+        opportunities = _verified_opportunities(
+            GrantReport(summary="The exact opportunity was looked up.")
+        )
+    finally:
+        _GRANTS_GOV_LOOKUPS.reset(lookup_token)
+        _REQUEST.reset(request_token)
+
+    assert [item.grants_gov_id for item in opportunities] == ["357744"]
+    assert opportunities[0].opportunity_number == "RFA-HG-25-009"
+
+
 def test_coverage_gate_repairs_an_omitted_selection_after_lookup() -> None:
     report = GrantReport(summary="One opportunity was looked up.")
     result = SimpleNamespace(

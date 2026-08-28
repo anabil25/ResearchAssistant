@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -1361,10 +1362,42 @@ def _contract_envelope(
             }
             for item in attachments
         ]
+    if thread.capability == Capability.GRANT:
+        opportunity_id = _grant_opportunity_id(thread, text)
+        if opportunity_id is not None:
+            envelope["opportunity_id"] = opportunity_id
     if thread.capability == Capability.DATASET:
         latest = attachments[-1] if attachments else None
         envelope["dataset_id"] = latest.path if latest else f"{thread.id}-session-dataset"
     return json.dumps(envelope, separators=(",", ":"))
+
+
+_EXACT_GRANT_ID = re.compile(
+    r"\bgrants\.gov\s+opportunity(?:\s+id)?\s+([0-9]{1,12})\b",
+    re.IGNORECASE,
+)
+_GRANT_CONTEXT_REFERENCES = (
+    "preceding request",
+    "previous request",
+    "that opportunity",
+    "the same opportunity",
+)
+
+
+def _grant_opportunity_id(thread: ChatThread, text: str) -> str | None:
+    exact = _EXACT_GRANT_ID.search(text)
+    if exact is not None:
+        return exact.group(1)
+    normalized = text.casefold()
+    if not any(marker in normalized for marker in _GRANT_CONTEXT_REFERENCES):
+        return None
+    prior_ids = {
+        opportunity.grants_gov_id
+        for message in thread.messages
+        if message.role == "assistant"
+        for opportunity in message.opportunities
+    }
+    return next(iter(prior_ids)) if len(prior_ids) == 1 else None
 
 
 def build_agent_chat_gateway(settings: Settings) -> ChatGateway:

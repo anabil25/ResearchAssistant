@@ -7,6 +7,7 @@ from typing import Any
 import pytest
 from research_assistant_api.agent_chat import (
     ChatMessageCreate,
+    _contract_envelope,
     _execute_chat_turn_stream,
 )
 from research_assistant_api.config import Settings
@@ -20,7 +21,13 @@ from research_assistant_api.foundry import (
     stream_response_events,
 )
 from research_assistant_api.identity import IdentityContext
-from research_assistant_api.workspace import ChatThread, WorkspaceStore, utc_now
+from research_assistant_api.workspace import (
+    ChatMessage,
+    ChatThread,
+    VerifiedGrantOpportunity,
+    WorkspaceStore,
+    utc_now,
+)
 from research_assistant_core.models import Capability
 
 
@@ -244,6 +251,76 @@ def test_polled_failed_response_is_rejected_before_its_output(
 
     with pytest.raises(HostedAgentInvocationError, match="ended with status failed"):
         create_response_with_retries(client, "grant-agent", {"input": "test"})
+
+
+def test_grant_envelope_binds_exact_and_context_referenced_opportunity() -> None:
+    store = WorkspaceStore(tenant_id="tenant-1", project_id="project-1")
+    now = utc_now()
+    opportunity = VerifiedGrantOpportunity.model_validate(_verified_opportunity())
+    thread = ChatThread(
+        id="thread-1",
+        project_id="project-1",
+        tenant_id="tenant-1",
+        capability=Capability.GRANT,
+        agent_name="grant-agent",
+        owner_principal_id="user-1",
+        conversation_id="conversation-1",
+        session_id="session-1",
+        delegated_user_identity="opaque-user",
+        created_at=now,
+        updated_at=now,
+        messages=[
+            ChatMessage(
+                id="reply-1",
+                role="assistant",
+                content="Verified.",
+                created_at=now,
+                opportunities=[opportunity],
+            )
+        ],
+    )
+    identity = IdentityContext(
+        user_id="user-1",
+        display_name="User One",
+        tenant_id="tenant-1",
+        groups=(),
+        source="test",
+    )
+    settings = Settings.model_validate(
+        {
+            "environment": "test",
+            "foundry_project_endpoint": "https://foundry.example.test/api/projects/test",
+            "cosmos_endpoint": "https://cosmos.example.test",
+            "storage_blob_endpoint": "https://storage.example.test",
+            "search_endpoint": "https://search.example.test",
+            "workspace_tenant_id": "tenant-1",
+            "workspace_project_id": "project-1",
+        }
+    )
+
+    exact = json.loads(
+        _contract_envelope(
+            thread,
+            store=store,
+            identity=identity,
+            settings=settings,
+            text="Look up Grants.gov opportunity ID 357744.",
+            attachments=[],
+        )
+    )
+    follow_up = json.loads(
+        _contract_envelope(
+            thread,
+            store=store,
+            identity=identity,
+            settings=settings,
+            text="Re-check the opportunity from my preceding request.",
+            attachments=[],
+        )
+    )
+
+    assert exact["opportunity_id"] == "357744"
+    assert follow_up["opportunity_id"] == "357744"
 
 
 def test_stream_rejects_invalid_terminal_contract_without_persisting_it() -> None:

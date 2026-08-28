@@ -528,6 +528,21 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
                 verified_at=receipt.verified_at,
             )
         )
+    request = _REQUEST.get()
+    exact_id = request.opportunity_id if request is not None else None
+    if exact_id is not None and exact_id not in seen and exact_id in receipts:
+        receipt = receipts[exact_id]
+        resolved.append(
+            GrantOpportunity(
+                **receipt.record.model_dump(),
+                relevance=OpportunityRelevance.UNASSESSED,
+                relevance_rationale=(
+                    "This exact Grants.gov opportunity was requested and verified "
+                    "through the provider lookup."
+                ),
+                verified_at=receipt.verified_at,
+            )
+        )
     return tuple(resolved)
 
 
