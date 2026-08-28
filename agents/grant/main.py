@@ -513,14 +513,19 @@ def _verified_opportunities(
     report: GrantReport,
     *,
     exact_id: str | None = None,
+    receipts: Mapping[str, GrantsGovReceipt] | None = None,
 ) -> tuple[GrantOpportunity, ...]:
-    receipts = _verified_grants_gov_receipts()
+    verified_receipts = (
+        _verified_grants_gov_receipts()
+        if receipts is None
+        else dict(receipts)
+    )
     resolved: list[GrantOpportunity] = []
     seen: set[str] = set()
     for selected in report.selected_opportunities:
         if selected.grants_gov_id in seen or len(resolved) == 5:
             continue
-        receipt = receipts.get(selected.grants_gov_id)
+        receipt = verified_receipts.get(selected.grants_gov_id)
         if receipt is None:
             continue
         seen.add(selected.grants_gov_id)
@@ -532,8 +537,12 @@ def _verified_opportunities(
                 verified_at=receipt.verified_at,
             )
         )
-    if exact_id is not None and exact_id not in seen and exact_id in receipts:
-        receipt = receipts[exact_id]
+    if (
+        exact_id is not None
+        and exact_id not in seen
+        and exact_id in verified_receipts
+    ):
+        receipt = verified_receipts[exact_id]
         resolved.append(
             GrantOpportunity(
                 **receipt.record.model_dump(),
@@ -643,11 +652,16 @@ def source_grounded_report(
     ledger: GrantLedger,
     *,
     exact_id: str | None = None,
+    receipts: Mapping[str, GrantsGovReceipt] | None = None,
 ) -> GrantReport:
     evidence = {key: _evidence_ref(item) for key, item in corpus.items()}
     evidence.update(_retrieved_source_refs())
     authorized_ids = set(evidence)
-    opportunities = _verified_opportunities(report, exact_id=exact_id)
+    opportunities = _verified_opportunities(
+        report,
+        exact_id=exact_id,
+        receipts=receipts,
+    )
     recorded_claims = tuple(_safe_claim(item, authorized_ids) for item in ledger.claims)
     model_claims = _safe_model_claims(
         report.claims,
@@ -1117,9 +1131,10 @@ class EnvelopeMiddleware(AgentMiddleware):
         call_next: Callable[[], Awaitable[None]],
     ) -> None:
         request = self._request(context.messages)
+        receipts: dict[str, GrantsGovReceipt] = {}
         _REQUEST.set(None)
         _REQUEST_MODE.set(None)
-        _GRANTS_GOV_LOOKUPS.set({})
+        _GRANTS_GOV_LOOKUPS.set(receipts)
         bind_session_files(())
         bind_source_tools((), ())
         if request is not None:
@@ -1148,6 +1163,7 @@ class EnvelopeMiddleware(AgentMiddleware):
                         response,
                         mode,
                         exact_id=request.opportunity_id,
+                        receipts=receipts,
                     )
                 )
             elif isinstance(context.result, AgentResponse):
@@ -1155,6 +1171,7 @@ class EnvelopeMiddleware(AgentMiddleware):
                     context.result,
                     mode,
                     exact_id=request.opportunity_id,
+                    receipts=receipts,
                 )
 
     @staticmethod
@@ -1220,6 +1237,7 @@ class EnvelopeMiddleware(AgentMiddleware):
         mode: RequestMode,
         *,
         exact_id: str | None,
+        receipts: Mapping[str, GrantsGovReceipt],
     ) -> AgentResponse[Any]:
         report = final_report(response)
         if mode == RequestMode.EMPTY:
@@ -1240,6 +1258,7 @@ class EnvelopeMiddleware(AgentMiddleware):
             opportunities = _verified_opportunities(
                 source_free_report,
                 exact_id=exact_id,
+                receipts=receipts,
             )
             claims = _safe_model_claims(
                 source_free_report.claims,
@@ -1273,6 +1292,7 @@ class EnvelopeMiddleware(AgentMiddleware):
                 _corpus(),
                 _ledger(),
                 exact_id=exact_id,
+                receipts=receipts,
             )
         messages = list(response.messages)
         payload = resolved.model_dump_json()

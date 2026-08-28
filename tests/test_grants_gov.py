@@ -162,6 +162,7 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
 
         def finalize(_updates: object) -> AgentResponse[GrantReport]:
             _REQUEST.set(None)
+            _GRANTS_GOV_LOOKUPS.set(None)
             return response
 
         async def call_next() -> None:
