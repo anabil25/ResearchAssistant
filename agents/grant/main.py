@@ -398,6 +398,7 @@ _REQUEST: ContextVar[GrantRequest | None] = ContextVar("grant_request", default=
 _GRANTS_GOV_LOOKUPS: ContextVar[dict[str, GrantsGovReceipt] | None] = ContextVar(
     "grant_grants_gov_lookups", default=None
 )
+_GRANTS_GOV_RECEIPTS_KEY = "_grant_grants_gov_receipts"
 _LEDGER: ContextVar[GrantLedger | None] = ContextVar("grant_ledger", default=None)
 _OUTSTANDING: ContextVar[frozenset[str] | None] = ContextVar(
     "grant_outstanding", default=None
@@ -760,7 +761,11 @@ def _dict_payloads(value: Any) -> tuple[dict[str, Any], ...]:
     return tuple(found)
 
 
-def _record_grants_gov_lookup(result: Any) -> None:
+def _record_grants_gov_lookup(
+    result: Any,
+    *,
+    receipts: dict[str, GrantsGovReceipt] | None = None,
+) -> None:
     for payload in _dict_payloads(result):
         if payload.get("source") != "grants_gov":
             continue
@@ -779,7 +784,8 @@ def _record_grants_gov_lookup(result: Any) -> None:
             return
         if str(payload.get("query")) != record.grants_gov_id:
             return
-        _grants_gov_lookups()[record.grants_gov_id] = GrantsGovReceipt(
+        target = receipts if receipts is not None else _grants_gov_lookups()
+        target[record.grants_gov_id] = GrantsGovReceipt(
             record=record,
             verified_at=datetime.now(UTC).isoformat(),
         )
@@ -817,7 +823,11 @@ class GrantToolBoundary(FunctionMiddleware):
         connector_id, _, operation = name.partition("___")
         if connector_id != "grants_gov" or not operation.casefold().endswith("lookup"):
             return
-        _record_grants_gov_lookup(context.result)
+        invocation_receipts = context.kwargs.get(_GRANTS_GOV_RECEIPTS_KEY)
+        _record_grants_gov_lookup(
+            context.result,
+            receipts=(invocation_receipts if isinstance(invocation_receipts, dict) else None),
+        )
 
 
 def outstanding_work(result: Any, corpus: dict[str, EvidenceItem]) -> frozenset[str]:
@@ -1135,6 +1145,7 @@ class EnvelopeMiddleware(AgentMiddleware):
         _REQUEST.set(None)
         _REQUEST_MODE.set(None)
         _GRANTS_GOV_LOOKUPS.set(receipts)
+        context.function_invocation_kwargs[_GRANTS_GOV_RECEIPTS_KEY] = receipts
         bind_session_files(())
         bind_source_tools((), ())
         if request is not None:

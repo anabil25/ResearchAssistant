@@ -124,6 +124,7 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
             messages=[Message(role="user", contents=[request.model_dump_json()])],
             stream=True,
             result=None,
+            function_invocation_kwargs={},
         ),
     )
 
@@ -166,8 +167,20 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
             return response
 
         async def call_next() -> None:
-            _record_grants_gov_lookup(
-                json.dumps(
+            function_context = cast(
+                FunctionInvocationContext,
+                SimpleNamespace(
+                    function=SimpleNamespace(
+                        name="grants_gov___grants_gov_lookup"
+                    ),
+                    arguments={"identifier": 357744},
+                    kwargs=dict(context.function_invocation_kwargs),
+                    result=None,
+                ),
+            )
+
+            async def invoke_lookup() -> None:
+                function_context.result = json.dumps(
                     {
                         "source": "grants_gov",
                         "query": "357744",
@@ -184,7 +197,12 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
                         "warnings": [],
                     }
                 )
-            )
+
+            lookup_token = _GRANTS_GOV_LOOKUPS.set({})
+            try:
+                await GrantToolBoundary().process(function_context, invoke_lookup)
+            finally:
+                _GRANTS_GOV_LOOKUPS.reset(lookup_token)
             context.result = ResponseStream[
                 AgentResponseUpdate,
                 AgentResponse[GrantReport],
@@ -552,6 +570,7 @@ def test_shared_lookup_ledger_builds_verified_opportunities() -> None:
         SimpleNamespace(
             function=SimpleNamespace(name="grants_gov___grants_gov_lookup"),
             arguments={"identifier": 357744},
+            kwargs={},
             result=None,
         ),
     )
