@@ -9,7 +9,7 @@ python3 "$script_dir/deployment_incarnation.py" ensure
 subscription="$(azd env get-value AZURE_SUBSCRIPTION_ID)"
 location="$(azd env get-value AZURE_LOCATION)"
 environment_name="$(azd env get-value AZURE_ENV_NAME)"
-resource_group="$(azd env get-value AZURE_RESOURCE_GROUP)"
+resource_group="$environment_name"
 foundry_account="$(azd env get-value FOUNDRY_ACCOUNT_NAME)"
 
 if [ -z "$subscription" ] || [ -z "$location" ] || [ -z "$environment_name" ] || [ -z "$resource_group" ] || [ -z "$foundry_account" ]; then

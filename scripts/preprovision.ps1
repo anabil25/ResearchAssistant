@@ -18,7 +18,7 @@ if ($LASTEXITCODE -ne 0) {
 $subscription = azd env get-value AZURE_SUBSCRIPTION_ID
 $location = azd env get-value AZURE_LOCATION
 $environmentName = azd env get-value AZURE_ENV_NAME
-$resourceGroup = azd env get-value AZURE_RESOURCE_GROUP
+$resourceGroup = $environmentName
 $foundryAccount = azd env get-value FOUNDRY_ACCOUNT_NAME
 if (-not $subscription -or -not $location -or -not $environmentName -or -not $resourceGroup -or -not $foundryAccount) {
   throw "The azd subscription, location, environment, resource group, and Foundry account must be set."

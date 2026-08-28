@@ -140,10 +140,14 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert 'if [ ! -s "$model_rows" ]' in preprovision_posix
     assert 'done < "$model_rows"' in preprovision_posix
     assert "$quotaAttempts = 20" in preprovision_windows
+    assert "$resourceGroup = $environmentName" in preprovision_windows
+    assert "get-value AZURE_RESOURCE_GROUP" not in preprovision_windows
     assert "--subscription $subscription" in preprovision_windows
     assert "$existingCapacity" in preprovision_windows
     assert "deleted model quota to be released" in preprovision_windows
     assert "quota_attempts=20" in preprovision_posix
+    assert 'resource_group="$environment_name"' in preprovision_posix
+    assert "get-value AZURE_RESOURCE_GROUP" not in preprovision_posix
     assert '--subscription "$subscription"' in preprovision_posix
     assert "existing_capacity" in preprovision_posix
     assert "deleted model quota to be released" in preprovision_posix
