@@ -216,6 +216,14 @@ def arm_token_audience(resource_manager_endpoint: str) -> str:
     return resource_manager_endpoint.rstrip("/")
 
 
+def apim_tool_resource_name(logical_name: str, service_name: str) -> str:
+    normalized_service = service_name.strip().casefold()
+    if not normalized_service:
+        raise ValueError("APIM service name cannot be empty")
+    service_digest = hashlib.sha256(normalized_service.encode("utf-8")).hexdigest()[:12]
+    return f"{logical_name}_{service_digest}"
+
+
 class ApimOnboarder:
     """Minimal ARM client for the APIM resources this onboarding owns."""
 
@@ -231,6 +239,7 @@ class ApimOnboarder:
     ) -> None:
         self._credential = credential
         self._resource_manager_endpoint = resource_manager_endpoint.rstrip("/")
+        self._service_name = service_name
         self._base = (
             f"{self._resource_manager_endpoint}/subscriptions/{subscription_id}"
             f"/resourceGroups/{resource_group}"
@@ -490,7 +499,9 @@ class ApimOnboarder:
             connector["apiId"]: set() for connector in connectors
         }
         for tool in tools:
-            expected[tool["apiId"]].add(tool["name"])
+            expected[tool["apiId"]].add(
+                apim_tool_resource_name(tool["name"], self._service_name)
+            )
 
         current: dict[str, set[str]] = {}
         for api_id in expected:
@@ -504,10 +515,14 @@ class ApimOnboarder:
             return {api_id: len(names) for api_id, names in expected.items()}
 
         for tool in sorted(tools, key=lambda item: (item["apiId"], item["name"])):
-            if tool["name"] in current[tool["apiId"]]:
+            resource_name = apim_tool_resource_name(
+                tool["name"],
+                self._service_name,
+            )
+            if resource_name in current[tool["apiId"]]:
                 continue
             self._put_with_retry(
-                f"/apis/{tool['apiId']}/tools/{tool['name']}",
+                f"/apis/{tool['apiId']}/tools/{resource_name}",
                 {
                     "properties": {
                         "displayName": tool["displayName"],
@@ -518,7 +533,7 @@ class ApimOnboarder:
                         ),
                     }
                 },
-                label=f"APIM MCP tool {tool['apiId']}/{tool['name']}",
+                label=f"APIM MCP tool {tool['apiId']}/{resource_name}",
             )
 
         last_missing: dict[str, list[str]] = {}

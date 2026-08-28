@@ -36,12 +36,13 @@ class ConnectorOperation:
 
     @property
     def apim_tool_name(self) -> str:
-        """Return the globally unique APIM tool resource id.
+        """Return the connector-unique base for an APIM tool resource id.
 
         The MCP-facing name comes from ``displayName``. APIM returns a persistent
         502 when a tool resource id collides with an operation identifier after
-        service-side normalization, so every ARM id gets a separate ``research``
-        namespace in addition to its connector and action names.
+        service-side normalization, so the base gets a separate ``research``
+        namespace. Onboarding appends a digest of the rotating APIM service name
+        so purged service incarnations never reuse a control-plane tool id.
         """
         operation_name = re.sub(r"(?<!^)(?=[A-Z])", "_", self.id).lower()
         return f"research_{operation_name}"

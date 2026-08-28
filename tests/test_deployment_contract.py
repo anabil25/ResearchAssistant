@@ -20,7 +20,10 @@ from scripts.postprovision import (
     ToolboxProjectUnavailable,
     _assert_mcp_success,
 )
-from scripts.provider_onboarding import connector_project_connection_ids
+from scripts.provider_onboarding import (
+    apim_tool_resource_name,
+    connector_project_connection_ids,
+)
 from scripts.verify_deployment import (
     PLACEHOLDER_IMAGE,
     revision_status,
@@ -919,3 +922,19 @@ def test_apim_tool_put_retries_a_transient_transport_reset(
     assert result is response
     assert attempts == 2
     assert sleeps == []
+
+
+def test_apim_tool_resource_name_rotates_with_the_service() -> None:
+    first = apim_tool_resource_name(
+        "research_arxiv_lookup",
+        "apim-first-incarnation",
+    )
+    second = apim_tool_resource_name(
+        "research_arxiv_lookup",
+        "apim-second-incarnation",
+    )
+
+    assert first.startswith("research_arxiv_lookup_")
+    assert second.startswith("research_arxiv_lookup_")
+    assert first != second
+    assert len(first) == len("research_arxiv_lookup_") + 12
