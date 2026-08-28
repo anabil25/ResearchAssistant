@@ -509,7 +509,11 @@ def _ready_for_review(ledger: GrantLedger) -> bool:
     )
 
 
-def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]:
+def _verified_opportunities(
+    report: GrantReport,
+    *,
+    exact_id: str | None = None,
+) -> tuple[GrantOpportunity, ...]:
     receipts = _verified_grants_gov_receipts()
     resolved: list[GrantOpportunity] = []
     seen: set[str] = set()
@@ -528,8 +532,6 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
                 verified_at=receipt.verified_at,
             )
         )
-    request = _REQUEST.get()
-    exact_id = request.opportunity_id if request is not None else None
     if exact_id is not None and exact_id not in seen and exact_id in receipts:
         receipt = receipts[exact_id]
         resolved.append(
@@ -639,11 +641,13 @@ def source_grounded_report(
     report: GrantReport,
     corpus: dict[str, EvidenceItem],
     ledger: GrantLedger,
+    *,
+    exact_id: str | None = None,
 ) -> GrantReport:
     evidence = {key: _evidence_ref(item) for key, item in corpus.items()}
     evidence.update(_retrieved_source_refs())
     authorized_ids = set(evidence)
-    opportunities = _verified_opportunities(report)
+    opportunities = _verified_opportunities(report, exact_id=exact_id)
     recorded_claims = tuple(_safe_claim(item, authorized_ids) for item in ledger.claims)
     model_claims = _safe_model_claims(
         report.claims,
@@ -1140,10 +1144,18 @@ class EnvelopeMiddleware(AgentMiddleware):
                         "Streaming grant invocation did not return a ResponseStream."
                     )
                 context.result = context.result.with_result_hook(
-                    lambda response: self._reconcile(response, mode)
+                    lambda response: self._reconcile(
+                        response,
+                        mode,
+                        exact_id=request.opportunity_id,
+                    )
                 )
             elif isinstance(context.result, AgentResponse):
-                context.result = self._reconcile(context.result, mode)
+                context.result = self._reconcile(
+                    context.result,
+                    mode,
+                    exact_id=request.opportunity_id,
+                )
 
     @staticmethod
     def _request(messages: list[Message]) -> GrantRequest | None:
@@ -1203,7 +1215,12 @@ class EnvelopeMiddleware(AgentMiddleware):
         return compacted
 
     @staticmethod
-    def _reconcile(response: AgentResponse[Any], mode: RequestMode) -> AgentResponse[Any]:
+    def _reconcile(
+        response: AgentResponse[Any],
+        mode: RequestMode,
+        *,
+        exact_id: str | None,
+    ) -> AgentResponse[Any]:
         report = final_report(response)
         if mode == RequestMode.EMPTY:
             resolved = empty_report()
@@ -1220,7 +1237,10 @@ class EnvelopeMiddleware(AgentMiddleware):
             read_ids = set(read_session_file_ids())
             evidence = {**file_refs, **_retrieved_source_refs()}
             authorized_ids = read_ids | set(evidence) - set(file_refs)
-            opportunities = _verified_opportunities(source_free_report)
+            opportunities = _verified_opportunities(
+                source_free_report,
+                exact_id=exact_id,
+            )
             claims = _safe_model_claims(
                 source_free_report.claims,
                 authorized_ids,
@@ -1248,7 +1268,12 @@ class EnvelopeMiddleware(AgentMiddleware):
                 report = GrantReport(
                     summary="Supplied grant sources were analyzed; no synthesis was returned."
                 )
-            resolved = source_grounded_report(report, _corpus(), _ledger())
+            resolved = source_grounded_report(
+                report,
+                _corpus(),
+                _ledger(),
+                exact_id=exact_id,
+            )
         messages = list(response.messages)
         payload = resolved.model_dump_json()
         for index in range(len(messages) - 1, -1, -1):

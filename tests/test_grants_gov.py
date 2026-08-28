@@ -160,6 +160,10 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
             response_format=GrantReport,
         )
 
+        def finalize(_updates: object) -> AgentResponse[GrantReport]:
+            _REQUEST.set(None)
+            return response
+
         async def call_next() -> None:
             _record_grants_gov_lookup(
                 json.dumps(
@@ -183,7 +187,7 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
             context.result = ResponseStream[
                 AgentResponseUpdate,
                 AgentResponse[GrantReport],
-            ](updates(), finalizer=lambda _updates: response)
+            ](updates(), finalizer=finalize)
 
         await EnvelopeMiddleware().process(context, call_next)
         assert isinstance(context.result, ResponseStream)
@@ -473,18 +477,6 @@ def test_exact_request_materializes_its_receipt_without_model_selection() -> Non
         status="posted",
         canonical_url="https://www.grants.gov/search-results-detail/357744",
     )
-    request_token = _REQUEST.set(
-        GrantRequest(
-            query="Look up Grants.gov opportunity ID 357744.",
-            tenant_id="tenant-1",
-            project_id="project-1",
-            principal_id="user-1",
-            session_id="session-1",
-            sensitivity="internal",
-            authorized_connector_ids=("grants_gov",),
-            opportunity_id="357744",
-        )
-    )
     lookup_token = _GRANTS_GOV_LOOKUPS.set(
         {
             "357744": GrantsGovReceipt(
@@ -495,11 +487,11 @@ def test_exact_request_materializes_its_receipt_without_model_selection() -> Non
     )
     try:
         opportunities = _verified_opportunities(
-            GrantReport(summary="The exact opportunity was looked up.")
+            GrantReport(summary="The exact opportunity was looked up."),
+            exact_id="357744",
         )
     finally:
         _GRANTS_GOV_LOOKUPS.reset(lookup_token)
-        _REQUEST.reset(request_token)
 
     assert [item.grants_gov_id for item in opportunities] == ["357744"]
     assert opportunities[0].opportunity_number == "RFA-HG-25-009"
