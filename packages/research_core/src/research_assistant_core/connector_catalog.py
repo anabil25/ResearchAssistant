@@ -36,14 +36,15 @@ class ConnectorOperation:
 
     @property
     def apim_tool_name(self) -> str:
-        """Return the MCP tool id exposed to agents.
+        """Return the globally unique APIM tool resource id.
 
-        MCP tools are conventionally snake_case. APIM also rejects tool ids that
-        collide with its own operation identifiers (``arxivSearch``) or the bare
-        action names (``search``/``lookup``) with a persistent 502, so snake_case
-        keeps the tool namespace disjoint from the APIM operation namespace.
+        The MCP-facing name comes from ``displayName``. APIM returns a persistent
+        502 when a tool resource id collides with an operation identifier after
+        service-side normalization, so every ARM id gets a separate ``research``
+        namespace in addition to its connector and action names.
         """
-        return re.sub(r"(?<!^)(?=[A-Z])", "_", self.id).lower()
+        operation_name = re.sub(r"(?<!^)(?=[A-Z])", "_", self.id).lower()
+        return f"research_{operation_name}"
 
 
 @dataclass(frozen=True, slots=True)

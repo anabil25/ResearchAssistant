@@ -471,6 +471,28 @@ def test_all_hosted_agents_publish_the_baked_source_digest() -> None:
         )
 
 
+def test_apim_tool_resource_ids_are_globally_disjoint_from_operations() -> None:
+    definitions = connector_definitions()
+    tool_ids = [
+        operation.apim_tool_name
+        for connector in definitions
+        for operation in connector.operations
+    ]
+    operation_ids = {
+        "".join(character for character in operation.id.casefold() if character.isalnum())
+        for connector in definitions
+        for operation in connector.operations
+    }
+
+    assert len(tool_ids) == len(set(tool_ids))
+    assert all(tool_id.startswith("research_") for tool_id in tool_ids)
+    assert not {
+        "".join(character for character in tool_id.casefold() if character.isalnum())
+        for tool_id in tool_ids
+    } & operation_ids
+    assert not set(tool_ids) & {"search", "lookup"}
+
+
 def test_hosted_agent_rejects_a_mismatched_deployed_source_digest(
     tmp_path: Path,
 ) -> None:

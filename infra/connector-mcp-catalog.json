@@ -9,12 +9,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "pubmed_search",
+        "name": "research_pubmed_search",
         "operationId": "pubmedSearch"
       },
       {
         "displayName": "lookup",
-        "name": "pubmed_lookup",
+        "name": "research_pubmed_lookup",
         "operationId": "pubmedLookup"
       }
     ]
@@ -29,12 +29,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "europe_pmc_search",
+        "name": "research_europe_pmc_search",
         "operationId": "europePmcSearch"
       },
       {
         "displayName": "lookup",
-        "name": "europe_pmc_lookup",
+        "name": "research_europe_pmc_lookup",
         "operationId": "europePmcLookup"
       }
     ]
@@ -49,12 +49,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "crossref_search",
+        "name": "research_crossref_search",
         "operationId": "crossrefSearch"
       },
       {
         "displayName": "lookup",
-        "name": "crossref_lookup",
+        "name": "research_crossref_lookup",
         "operationId": "crossrefLookup"
       }
     ]
@@ -69,12 +69,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "openalex_search",
+        "name": "research_openalex_search",
         "operationId": "openalexSearch"
       },
       {
         "displayName": "lookup",
-        "name": "openalex_lookup",
+        "name": "research_openalex_lookup",
         "operationId": "openalexLookup"
       }
     ]
@@ -89,12 +89,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "arxiv_search",
+        "name": "research_arxiv_search",
         "operationId": "arxivSearch"
       },
       {
         "displayName": "lookup",
-        "name": "arxiv_lookup",
+        "name": "research_arxiv_lookup",
         "operationId": "arxivLookup"
       }
     ]
@@ -109,12 +109,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "clinical_trials_search",
+        "name": "research_clinical_trials_search",
         "operationId": "clinicalTrialsSearch"
       },
       {
         "displayName": "lookup",
-        "name": "clinical_trials_lookup",
+        "name": "research_clinical_trials_lookup",
         "operationId": "clinicalTrialsLookup"
       }
     ]
@@ -129,12 +129,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "grants_gov_search",
+        "name": "research_grants_gov_search",
         "operationId": "grantsGovSearch"
       },
       {
         "displayName": "lookup",
-        "name": "grants_gov_lookup",
+        "name": "research_grants_gov_lookup",
         "operationId": "grantsGovLookup"
       }
     ]
@@ -149,7 +149,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "nih_reporter_search",
+        "name": "research_nih_reporter_search",
         "operationId": "nihReporterSearch"
       }
     ]
@@ -164,12 +164,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "datacite_search",
+        "name": "research_datacite_search",
         "operationId": "dataciteSearch"
       },
       {
         "displayName": "lookup",
-        "name": "datacite_lookup",
+        "name": "research_datacite_lookup",
         "operationId": "dataciteLookup"
       }
     ]
@@ -184,7 +184,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "orcid_search",
+        "name": "research_orcid_search",
         "operationId": "orcidSearch"
       }
     ]
@@ -199,12 +199,12 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "ror_search",
+        "name": "research_ror_search",
         "operationId": "rorSearch"
       },
       {
         "displayName": "lookup",
-        "name": "ror_lookup",
+        "name": "research_ror_lookup",
         "operationId": "rorLookup"
       }
     ]
@@ -219,7 +219,7 @@
     "tools": [
       {
         "displayName": "search",
-        "name": "semantic_scholar_search",
+        "name": "research_semantic_scholar_search",
         "operationId": "semanticScholarSearch"
       }
     ]
