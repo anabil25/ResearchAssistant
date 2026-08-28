@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
 
+import httpx
 import pytest
 import yaml
 from research_assistant_core.connector_catalog import connector_definitions
@@ -886,3 +887,35 @@ def test_server_retry_after_is_capped() -> None:
         response,
     )
     assert error.retry_after == 300
+
+
+def test_apim_tool_put_retries_a_transient_transport_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from scripts.provider_onboarding import ApimOnboarder
+
+    onboarder = ApimOnboarder.__new__(ApimOnboarder)
+    attempts = 0
+    sleeps: list[float] = []
+    response = httpx.Response(200, request=httpx.Request("PUT", "https://example.test"))
+
+    def put(_path: str, _body: dict[str, Any], *, api_version: str) -> httpx.Response:
+        nonlocal attempts
+        del api_version
+        attempts += 1
+        if attempts == 1:
+            raise httpx.ConnectError(
+                "connection reset",
+                request=httpx.Request("PUT", "https://example.test"),
+            )
+        return response
+
+    monkeypatch.setattr(onboarder, "_put", put)
+    monkeypatch.setattr("scripts.provider_onboarding.APIM_TOOL_RETRY_DELAYS", (0, 0))
+    monkeypatch.setattr("scripts.provider_onboarding.time.sleep", sleeps.append)
+
+    result = onboarder._put_with_retry("/apis/test/tools/test", {}, label="test tool")
+
+    assert result is response
+    assert attempts == 2
+    assert sleeps == []

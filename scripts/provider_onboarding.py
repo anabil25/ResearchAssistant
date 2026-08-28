@@ -409,6 +409,7 @@ class ApimOnboarder:
         api_version: str = APIM_API_VERSION,
     ) -> httpx.Response:
         last_error: ApimRequestError | None = None
+        last_transport_error: httpx.TransportError | None = None
         for attempt, configured_delay in enumerate(APIM_TOOL_RETRY_DELAYS, start=1):
             delay = last_error.retry_after if last_error and last_error.retry_after is not None else configured_delay
             if delay:
@@ -423,7 +424,12 @@ class ApimOnboarder:
                 if exc.status_code not in {409, 429} and exc.status_code < 500:
                     raise
                 last_error = exc
-        raise RuntimeError(f"{label} failed after bounded APIM retries") from last_error
+                last_transport_error = None
+            except httpx.TransportError as exc:
+                last_transport_error = exc
+                last_error = None
+        cause = last_error or last_transport_error
+        raise RuntimeError(f"{label} failed after bounded APIM retries") from cause
 
     def _await_async_operation(self, response: httpx.Response, label: str) -> None:
         """Surface the real failure detail from an APIM async operation."""
