@@ -23,6 +23,7 @@ from research_assistant_api.workspace import (
     ApprovalRecord,
     ApprovalState,
     ChatThread,
+    ChatThreadConflictError,
     ConnectorSetting,
     ConnectorUpdate,
     DatasetApprovalAuditEntry,
@@ -45,6 +46,7 @@ from research_assistant_api.workspace import (
     WorkspaceStore,
     WorkspaceSummary,
     default_project_settings,
+    reconcile_required_connectors,
     utc_now,
 )
 
@@ -148,9 +150,14 @@ class CosmosWorkspaceStore(WorkspaceStore):
 
         connector_documents = self._query(self._projects_container, "connector")
         if connector_documents:
-            self._connectors = [
+            loaded_connectors = [
                 ConnectorSetting.model_validate(document["payload"]) for document in connector_documents
             ]
+            self._connectors, changed_connectors = reconcile_required_connectors(
+                loaded_connectors
+            )
+            for connector in changed_connectors:
+                self._persist_connector(connector)
         else:
             for connector in self._connectors:
                 self._persist_connector(connector)
@@ -243,22 +250,82 @@ class CosmosWorkspaceStore(WorkspaceStore):
             }
         )
 
-    def _persist_chat_thread(self, thread: ChatThread) -> None:
-        self._runs_container.upsert_item(
-            {
-                "id": f"chat-thread::{thread.id}",
-                "documentType": "chat_thread",
-                "tenantId": self.tenant_id,
-                "projectId": thread.project_id,
-                "tenantRunKey": f"{self.tenant_id}|{thread.id}",
-                "payload": thread.model_dump(mode="json"),
-            }
-        )
+    def _chat_thread_document(self, thread: ChatThread) -> dict[str, Any]:
+        return {
+            "id": f"chat-thread::{thread.id}",
+            "documentType": "chat_thread",
+            "tenantId": self.tenant_id,
+            "projectId": thread.project_id,
+            "tenantRunKey": f"{self.tenant_id}|{thread.id}",
+            "payload": thread.model_dump(mode="json"),
+        }
+
+    def _read_chat_thread_document(self, thread_id: str) -> dict[str, Any] | None:
+        try:
+            document = self._runs_container.read_item(
+                item=f"chat-thread::{thread_id}",
+                partition_key=f"{self.tenant_id}|{thread_id}",
+            )
+        except CosmosResourceNotFoundError:
+            return None
+        if (
+            document.get("documentType") != "chat_thread"
+            or document.get("tenantId") != self.tenant_id
+            or document.get("projectId") != self.project_id
+        ):
+            return None
+        return document
+
+    def chat_thread(self, thread_id: str, *, owner_principal_id: str) -> ChatThread | None:
+        """Point-read the durable thread so every replica sees the latest turn."""
+        with self._lock:
+            document = self._read_chat_thread_document(thread_id)
+            if document is None:
+                self._chat_threads.pop(thread_id, None)
+                return None
+            record = ChatThread.model_validate(document["payload"]).model_copy(
+                update={"storage_etag": document.get("_etag")}
+            )
+            self._chat_threads[thread_id] = record
+            if record.owner_principal_id != owner_principal_id:
+                return None
+            return record.model_copy(deep=True)
 
     def save_chat_thread(self, thread: ChatThread) -> ChatThread:
-        record = super().save_chat_thread(thread)
-        self._persist_chat_thread(record)
-        return record
+        if thread.tenant_id != self.tenant_id or thread.project_id != self.project_id:
+            raise ValueError("A chat thread cannot move between workspaces.")
+        with self._lock:
+            existing = self._read_chat_thread_document(thread.id)
+            if existing is not None:
+                current = ChatThread.model_validate(existing["payload"])
+                if current.owner_principal_id != thread.owner_principal_id:
+                    raise ValueError("A chat thread cannot change owner.")
+                if not thread.storage_etag or existing.get("_etag") != thread.storage_etag:
+                    raise ChatThreadConflictError(
+                        "The chat thread changed while this turn was running."
+                    )
+            record = thread.model_copy(deep=True, update={"updated_at": utc_now()})
+            document = self._chat_thread_document(record)
+            try:
+                if existing is None:
+                    persisted = self._runs_container.create_item(document)
+                else:
+                    persisted = self._runs_container.replace_item(
+                        item=existing["id"],
+                        body=document,
+                        etag=existing.get("_etag"),
+                        match_condition=MatchConditions.IfNotModified,
+                    )
+            except CosmosHttpResponseError as exc:
+                if exc.status_code not in {404, 409, 412}:
+                    raise
+                raise ChatThreadConflictError(
+                    "The chat thread changed while this turn was running."
+                ) from exc
+            if isinstance(persisted, dict):
+                record = record.model_copy(update={"storage_etag": persisted.get("_etag")})
+            self._chat_threads[record.id] = record
+            return record.model_copy(deep=True)
 
     def _persist_dataset_approval(
         self,

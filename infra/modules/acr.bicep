@@ -34,6 +34,7 @@ var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
+var acrConnectionName = '${take(name, 19)}-${uniqueString(foundryAccount.id, foundryProjectName)}'
 
 // Resources
 
@@ -83,7 +84,7 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-04-01-preview
 
     // Project-scoped connection so Foundry can resolve the registry by name.
     resource acrConnection 'connections' = {
-      name: '${name}-conn'
+      name: acrConnectionName
       properties: {
         category: 'ContainerRegistry'
         target: registry.properties.loginServer

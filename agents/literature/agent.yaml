@@ -8,6 +8,8 @@ container:
         memory: 1Gi
 description: Produces skeptical, source-grounded literature comparisons and synthesis.
 environmentVariables:
+    - name: AGENT_SOURCE_TREE_DIGEST
+      value: ${AGENT_SOURCE_TREE_DIGEST}
     - name: LITERATURE_LEAD_MODEL
       value: gpt-5.6-sol
     - name: LITERATURE_WORKER_MODEL

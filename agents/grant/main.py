@@ -319,7 +319,7 @@ class GrantsGovReceipt:
 
 
 class GrantReport(BaseModel):
-    model_config = ConfigDict(frozen=True)
+    model_config = ConfigDict(frozen=True, extra="forbid")
 
     summary: str
     claims: tuple[GrantClaim, ...] = ()
@@ -528,42 +528,11 @@ def _verified_opportunities(report: GrantReport) -> tuple[GrantOpportunity, ...]
                 verified_at=receipt.verified_at,
             )
         )
-    for grants_gov_id, receipt in receipts.items():
-        if grants_gov_id in seen or len(resolved) == 5:
-            continue
-        seen.add(grants_gov_id)
-        resolved.append(
-            GrantOpportunity(
-                **receipt.record.model_dump(),
-                relevance=OpportunityRelevance.UNASSESSED,
-                relevance_rationale=(
-                    "Verified on Grants.gov; review the full notice to confirm project fit."
-                ),
-                verified_at=receipt.verified_at,
-            )
-        )
     return tuple(resolved)
 
 
 def _verified_grants_gov_receipts() -> dict[str, GrantsGovReceipt]:
-    receipts = dict(_grants_gov_lookups())
-    for source in retrieved_sources():
-        if (
-            source.connector_id != "grants_gov"
-            or source.retrieved_from
-            != "https://api.grants.gov/v1/api/fetchOpportunity"
-        ):
-            continue
-        try:
-            payload = json.loads(source.record_json)
-            record = GrantsGovRecord.model_validate(payload)
-        except (json.JSONDecodeError, ValidationError):
-            continue
-        receipts[record.grants_gov_id] = GrantsGovReceipt(
-            record=record,
-            verified_at=datetime.now(UTC).isoformat(),
-        )
-    return receipts
+    return dict(_grants_gov_lookups())
 
 
 def _verified_opportunity_claims(
@@ -827,6 +796,8 @@ def outstanding_work(result: Any, corpus: dict[str, EvidenceItem]) -> frozenset[
         for item in report.selected_opportunities
         if item.grants_gov_id not in _grants_gov_lookups()
     }
+    if _grants_gov_lookups() and not report.selected_opportunities:
+        gaps.update(f"selection:{item}" for item in _grants_gov_lookups())
     if not corpus:
         return frozenset(gaps)
     ledger = _ledger()
@@ -850,7 +821,17 @@ def coverage_gate(*, last_result: Any, **_: Any) -> tuple[bool, str | None]:
         return False, None
     previous = _OUTSTANDING.get()
     _OUTSTANDING.set(outstanding)
-    if previous is not None and not outstanding < previous:
+    if (
+        previous is not None
+        and previous != _CONTRACT_GAP
+        and not outstanding < previous
+        and not (
+            {item.removeprefix("selection:") for item in outstanding}
+            == {item.removeprefix("lookup:") for item in previous}
+            and all(item.startswith("selection:") for item in outstanding)
+            and all(item.startswith("lookup:") for item in previous)
+        )
+    ):
         return False, None
     return True, _gap_feedback(outstanding)
 
@@ -868,6 +849,17 @@ def _gap_feedback(outstanding: frozenset[str]) -> str:
             "Selected Grants.gov opportunities still require lookup: "
             f"{', '.join(lookup_ids[:20])}. Call `grants_gov___lookup` for each ID, "
             "then re-emit the report."
+        )
+    selection_ids = sorted(
+        item.removeprefix("selection:")
+        for item in outstanding
+        if item.startswith("selection:")
+    )
+    if selection_ids:
+        return (
+            "Verified Grants.gov lookup receipts still require an explicit selection: "
+            f"{', '.join(selection_ids[:20])}. Add each recommended ID to "
+            "`selected_opportunities` with a relevance assessment, then re-emit the report."
         )
     source_ids = sorted(item.removeprefix("source:") for item in outstanding if item.startswith("source:"))
     if source_ids:
@@ -1125,8 +1117,18 @@ class EnvelopeMiddleware(AgentMiddleware):
                 Message(role="user", contents=[self._digest(request)]),
             ]
         await call_next()
-        if request is not None and isinstance(context.result, AgentResponse):
-            context.result = self._reconcile(context.result, request_mode(request))
+        if request is not None:
+            mode = request_mode(request)
+            if context.stream:
+                if not isinstance(context.result, ResponseStream):
+                    raise RuntimeError(
+                        "Streaming grant invocation did not return a ResponseStream."
+                    )
+                context.result = context.result.with_result_hook(
+                    lambda response: self._reconcile(response, mode)
+                )
+            elif isinstance(context.result, AgentResponse):
+                context.result = self._reconcile(context.result, mode)
 
     @staticmethod
     def _request(messages: list[Message]) -> GrantRequest | None:

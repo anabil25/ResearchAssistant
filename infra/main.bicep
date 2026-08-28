@@ -57,6 +57,10 @@ param resourceTokenSalt string = ''
 @maxLength(32)
 param foundryProjectName string
 
+@description('Optional Foundry account name override. Empty uses the deterministic shared resource token.')
+@maxLength(64)
+param foundryAccountName string = ''
+
 @description('Model deployments to provision on the Foundry account.')
 param deployments deploymentsType = []
 
@@ -111,6 +115,7 @@ module resources 'modules/resources.bicep' = {
     tags: tags
     resourceTokenSalt: resourceTokenSalt
     foundryProjectName: foundryProjectName
+    foundryAccountName: foundryAccountName
     deployments: deployments
     includeAcr: includeAcr
     principalId: principalId

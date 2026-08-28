@@ -353,6 +353,14 @@ azd up
 - `azd provision` runs `infra/main.bicep` — creates the RG, all resources,
   model deployments, role assignments, VNet, private Blob/Cosmos endpoints,
   and DNS.
+- `FOUNDRY_PROJECT_NAME` owns the project routing key independently of the
+  reusable azd environment name. `AZURE_DEPLOYMENT_INCARNATION` salts all
+  generated resource names, and new environments derive their Foundry account
+  and project names from that incarnation. The official `postdown` hook rotates
+  all three values only after resources are removed, so the next `azd up`
+  cannot recreate a same-named Foundry account with a stale session or
+  conversation routing key. Existing deployed environments preserve their
+  unsalted names until their first successful `azd down`.
 - `postprovision` hook then:
   1. Creates an empty evidence Search index; ingestion remains an explicit
      user action.
@@ -365,9 +373,12 @@ azd up
       consumer endpoint is then checked for the same inventory, and the
       deterministic memory-store upsert has its own bounded project-readiness
       retry.
-- `azd deploy --all` packages services concurrently, then follows the declared
-  dependency graph: six specialists, coordinator, API, and web. A failed agent
-  blocks both application revisions.
+- After provisioning, the `postup` release hook deploys one service at a time:
+  the AI project, six specialists, coordinator, API, then web. Each confirmed
+  specialist writes its immutable version before the coordinator starts. If azd
+  returns an early 409 or image-status failure, the hook proceeds only when a
+  bounded SDK check proves that this attempt produced a newer active version;
+  an unchanged old version never counts as success.
 - Before the API deploys, its service gate reconciles the latest active Hosted
   Agent versions into the azd environment and verifies each runtime identity's
   required Foundry role.
@@ -467,30 +478,28 @@ ingestion, the task is not resumed automatically.
 ```powershell
 uv run ruff check packages services agents scripts tests
 uv run mypy packages/research_core/src packages/research_connectors/src services/api/src services/worker/src agents/shared scripts tests
-uv run pytest -q --cov --cov-report=term-missing --cov-report=html:coverage/python/html --cov-report=json:coverage/python/coverage.json --cov-report=xml:coverage/python/coverage.xml --cov-fail-under=100
+uv run pytest -q -k "not live"
 uv run pip-audit
 az bicep build --file infra\main.bicep --stdout
 
 Set-Location apps\web
 npm run ci
-npm run test:e2e
+npm exec -- playwright test e2e/grant-opportunity-formatting.spec.ts --project=chromium
 npm audit --audit-level=moderate
 ```
 
-The Python and Jest coverage commands enforce 100% line and branch coverage;
-Jest also enforces 100% statements and functions. Python writes retained HTML,
-JSON, and XML reports; Jest writes HTML/lcov, JSON, and Cobertura reports.
-The Playwright configuration starts both backend services and the Next.js app,
-retains behavioral and WCAG assertions, fails on unexpected browser console or
-request errors, and machine-validates every manifest Playwright ID against an
-executable test title. It writes 42 desktop, tablet, and mobile screenshots
-for core, loading, empty, error, and authorization states under
-`apps/web/test-results`.
+The local Python gate excludes tests whose names contain `live`; those require a
+running deployment. The repository does not currently define a global coverage
+threshold. The local Playwright gate uses mocked API responses to verify exact
+Grants.gov links, malformed-record rejection, and desktop/mobile layout without
+calling a Hosted Agent.
 
-> **Note:** `uv run pytest --cov-fail-under=100` on its own enforces nothing:
-> `[tool.pytest.ini_options] addopts` does not include `--cov`, so `pytest-cov`
-> never activates and the threshold has no coverage data to check. It exits 0
-> and prints no coverage table. Use the full command above.
+After serial deployment, `postup` runs `scripts.verify_release`. It independently
+looks up a fixed Grants.gov ID, persists a successful connector probe, validates
+the deployed grant-agent SSE and stored message against that provider record,
+then runs `npm run test:release` against `SERVICE_WEB_URI`. Any mismatch, leaked
+request data, missing table row, browser error, or invalid canonical link fails
+`azd up`.
 
 ### Running the E2E gate concurrently
 
@@ -543,7 +552,10 @@ same checkout.
 | `postprovision` warns `KB blob upload skipped (AuthorizationFailure)` | Storage Blob Data Contributor role assignment hadn't propagated when `postprovision` ran | Non-fatal — `postprovision` retries with backoff. Re-run `azd provision` once the role has propagated. |
 | `postprovision` reports built-in Toolbox tools as `NOT_FOUND`, or the memory API reports `Project not found` | A new Foundry project's data-plane subservices have not all become routable | The hook retries only idempotent candidate validation, promotion, consumer activation, and memory upsert operations with bounded backoff. If the budget expires, confirm tool-region support, then rerun `azd provision`; no application revision has deployed yet. |
 | Hosted Agent setup fails with `cannot import name '…'` | Drifted package in the deployer's Python environment | `postprovision` builds an isolated `.venv-provision/` with exact pins — ensure Python 3.12+ is on `PATH` and re-run `azd provision`. |
-| One service is `Failed` and others are `Skipped` | azd's fail-fast graph canceled in-flight sibling work after the first failure; remote builds or agent activation can still finish in Azure | Diagnose the first `Failed` service, inspect live agent/revision state, then rerun `azd deploy --all`. The dependency gates reconcile recovered agents and prevent API/web from advancing prematurely. |
+| An agent stage prints 409 or `ImageError`, then continues | Foundry committed or activated the new version after azd read a stale status | No action is required when the serial hook prints `Recovered ... version ... active`; it verified a newer version and persisted that exact pointer. If the bounded check cannot prove a newer active version, `azd up` stops at that agent and later services do not start. |
+| Agent inventory works but all session/conversation routes return `404 Project not found` after `azd down` + `azd up` | The recreated Foundry account reused a stale account-level data-plane routing key | Set `FOUNDRY_ACCOUNT_NAME` to a globally fresh account name and rerun `azd up`. Changing only `FOUNDRY_PROJECT_NAME` is insufficient. The template creates a new Foundry account/project/model branch while preserving healthy shared services and application revisions until cutover. |
+| A fresh project fails because its ACR connection “can only be updated by the workspace that created it” | Foundry connection names are account-wide, even though ARM nests them under projects | Use the repository template unchanged: it derives a deterministic project hash in the connection name while keeping the registry target and managed-identity contract stable. |
+| Postprovision reports that `research-connector-...` can only be updated by another workspace | Connector project connection names are also account-wide | The live postprovision path derives bounded IDs from both connector and project, then passes the exact same map into the shared Toolbox payload. Rerun `azd up`; connector labels and MCP tool names stay unchanged. |
 | Workbench loads but chat errors | `postprovision` didn't finish (no index / agents), or the web app cannot reach the API | Re-run `azd provision` (idempotent), verify `INTERNAL_API_URL` app setting, and check `azd env get-value SERVICE_WEB_URI`. |
 | Semantic Scholar returns limited/empty results | Anonymous provider quota is exhausted | Add the optional key in **Settings > Connections**, then run the connector test. |
 | `pip-audit` flags a vulnerability | Dependency CVE in the lockfile | Run `uv lock --upgrade-package <pkg>` and re-run the quality gate. |

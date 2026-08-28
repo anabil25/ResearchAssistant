@@ -37,6 +37,7 @@ from scripts.azd_env import sync_canonical_azd_outputs
 from scripts.provider_onboarding import (
     CONNECTOR_SUBSCRIPTION_ID,
     SHARED_TOOLBOX_NAME,
+    connector_project_connection_ids,
     reconcile_connector_gateway,
     shared_toolbox_payload,
 )
@@ -54,6 +55,7 @@ APIM_SUBSCRIPTION_HEADER = "Ocp-Apim-Subscription-Key"
 FOUNDRY_MEMORY_API_VERSION = "2025-11-15-preview"
 MEMORY_STORE_NAME = "research_shared_memory"
 MEMORY_DEFAULT_TTL_SECONDS = 2592000
+MAX_SERVER_RETRY_SECONDS = 300.0
 
 
 class FoundryProjectUnavailable(RuntimeError):
@@ -446,6 +448,7 @@ def toolbox_version_payload(
     mcp_targets: dict[str, str],
 ) -> dict[str, Any]:
     """Build one complete, immutable Toolbox version from governed metadata."""
+    connection_ids = connector_project_connection_ids(required_env("AZURE_AI_PROJECT_ID"))
     if toolbox_name == "research-dataset":
         return {
             "description": "Sandboxed Foundry data analysis tools",
@@ -476,7 +479,7 @@ def toolbox_version_payload(
                 "type": "mcp",
                 "server_label": connector.id,
                 "server_url": mcp_targets[connector.id],
-                "project_connection_id": connector.toolbox_connection_id,
+                "project_connection_id": connection_ids[connector.id],
                 "require_approval": "never",
             }
         )
@@ -591,7 +594,7 @@ def _parse_retry_after(value: str | None) -> float | None:
     if not value:
         return None
     try:
-        return max(0.0, float(value))
+        return min(MAX_SERVER_RETRY_SECONDS, max(0.0, float(value)))
     except ValueError:
         try:
             retry_at = parsedate_to_datetime(value)
@@ -599,7 +602,10 @@ def _parse_retry_after(value: str | None) -> float | None:
             return None
         if retry_at.tzinfo is None:
             retry_at = retry_at.replace(tzinfo=UTC)
-        return max(0.0, (retry_at - datetime.now(UTC)).total_seconds())
+        return min(
+            MAX_SERVER_RETRY_SECONDS,
+            max(0.0, (retry_at - datetime.now(UTC)).total_seconds()),
+        )
 
 
 def _assert_mcp_success(payload: dict[str, Any], operation: str) -> dict[str, Any]:
@@ -931,6 +937,7 @@ def configure_connector_connections(
     credential: TokenCredential | None = None,
 ) -> dict[str, str]:
     project_id = required_env("AZURE_AI_PROJECT_ID")
+    connection_ids = connector_project_connection_ids(project_id)
     mcp_targets = connector_mcp_targets(required_env("AZURE_CONNECTOR_MCP_URLS"))
     effective_credential = credential or DefaultAzureCredential()
     resource_manager_endpoint = _resource_manager_endpoint()
@@ -940,7 +947,7 @@ def configure_connector_connections(
     )
     for connector in connector_definitions():
         connection_url = (
-            f"{resource_manager_endpoint}{project_id}/connections/{connector.toolbox_connection_id}"
+            f"{resource_manager_endpoint}{project_id}/connections/{connection_ids[connector.id]}"
             f"?api-version={FOUNDRY_CONNECTION_API_VERSION}"
         )
         _arm_json_request(
@@ -1029,6 +1036,7 @@ def _reconcile_shared_toolbox(
     *,
     project_endpoint: str,
     connector_targets: dict[str, str],
+    connector_connection_ids: dict[str, str],
     guardrail_id: str = "",
 ) -> str:
     base_url = _toolbox_base_url(project_endpoint, SHARED_TOOLBOX_NAME)
@@ -1038,6 +1046,7 @@ def _reconcile_shared_toolbox(
         project_endpoint=project_endpoint,
         desired=shared_toolbox_payload(
             connector_targets,
+            connector_connection_ids,
             guardrail_id,
         ),
     )
@@ -1092,11 +1101,13 @@ def configure_shared_toolbox(
     governed_targets = connector_targets or connector_mcp_targets(
         required_env("AZURE_CONNECTOR_MCP_URLS")
     )
+    connection_ids = connector_project_connection_ids(required_env("AZURE_AI_PROJECT_ID"))
 
     endpoint = _reconcile_shared_toolbox(
         effective_credential,
         project_endpoint=project_endpoint,
         connector_targets=governed_targets,
+        connector_connection_ids=connection_ids,
         guardrail_id=optional_env("AZURE_AGENTIC_GUARDRAIL_ID"),
     )
     subprocess.run([AZD_CLI, "env", "set", "TOOLBOX_SHARED_MCP_ENDPOINT", endpoint], check=True)

@@ -394,6 +394,7 @@ class ConnectorSetting(BaseModel):
     description: str
     auth_kind: str
     secret_status: str
+    required: bool = False
     enabled: bool
     test_status: str
     last_tested_at: datetime | None = None
@@ -502,6 +503,14 @@ class ChatThread(BaseModel):
     updated_at: datetime
     messages: list[ChatMessage] = Field(default_factory=list)
     attachments: list[ChatAttachment] = Field(default_factory=list)
+    active_turn_id: str | None = None
+    active_turn_lease_id: str | None = None
+    active_turn_expires_at: datetime | None = None
+    storage_etag: str | None = Field(default=None, exclude=True, repr=False)
+
+
+class ChatThreadConflictError(ValueError):
+    """The durable chat thread changed after this request loaded it."""
 
 
 class ProjectSettings(BaseModel):
@@ -653,10 +662,18 @@ class WorkspaceStore:
         self._connectors = [
             connector.model_copy(
                 update={
-                    "enabled": False,
-                    "secret_status": "not_configured",
+                    "enabled": connector.required,
+                    "secret_status": (
+                        connector.secret_status
+                        if connector.required
+                        else "not_configured"
+                    ),
                     "test_status": "not_configured",
-                    "assigned_agents": [],
+                    "assigned_agents": (
+                        list(connector.assigned_agents)
+                        if connector.required
+                        else []
+                    ),
                 }
             )
             for connector in _connector_catalog()
@@ -1392,8 +1409,6 @@ class WorkspaceStore:
         }
         if not set(update.assigned_agents).issubset(allowed_agents):
             raise ValueError("Connector assignment contains an unknown specialist.")
-        if connector_id in {"pubmed", "grants_gov"} and not update.enabled:
-            raise ValueError("Required project connectors cannot be disabled.")
         with self._lock:
             connector = next(
                 (item for item in self._connectors if item.id == connector_id),
@@ -1401,6 +1416,17 @@ class WorkspaceStore:
             )
             if connector is None:
                 return None
+            definition = next(
+                item for item in connector_definitions() if item.id == connector_id
+            )
+            if connector.required and (
+                not update.enabled
+                or tuple(update.assigned_agents) != definition.assigned_agents
+            ):
+                raise ValueError(
+                    f"Required project connector '{connector.name}' must stay enabled "
+                    f"and assigned to: {', '.join(definition.assigned_agents)}."
+                )
             connector.enabled = update.enabled
             connector.assigned_agents = update.assigned_agents
             return deepcopy(connector)
@@ -1441,6 +1467,68 @@ class WorkspaceStore:
             record = thread.model_copy(deep=True, update={"updated_at": utc_now()})
             self._chat_threads[thread.id] = record
             return deepcopy(record)
+
+    def claim_chat_turn(
+        self,
+        thread: ChatThread,
+        turn_id: str,
+        *,
+        lease_minutes: int = 20,
+    ) -> ChatThread:
+        with self._lock:
+            current = self.chat_thread(
+                thread.id,
+                owner_principal_id=thread.owner_principal_id,
+            )
+            if current is None:
+                raise ChatThreadConflictError("The chat thread is no longer available.")
+            now = utc_now()
+            if current.active_turn_id is not None and (
+                current.active_turn_expires_at is None
+                or current.active_turn_expires_at > now
+            ):
+                raise ChatThreadConflictError(
+                    "Another chat turn is already in progress."
+                )
+            return self.save_chat_thread(
+                current.model_copy(
+                    update={
+                        "active_turn_id": turn_id,
+                        "active_turn_lease_id": uuid4().hex,
+                        "active_turn_expires_at": now + timedelta(minutes=lease_minutes),
+                    }
+                )
+            )
+
+    def release_chat_turn(self, thread: ChatThread, turn_id: str) -> None:
+        with self._lock:
+            for _attempt in range(3):
+                current = self.chat_thread(
+                    thread.id,
+                    owner_principal_id=thread.owner_principal_id,
+                )
+                if (
+                    current is None
+                    or current.active_turn_id != turn_id
+                    or current.active_turn_lease_id != thread.active_turn_lease_id
+                ):
+                    return
+                try:
+                    self.save_chat_thread(
+                        current.model_copy(
+                            update={
+                                "active_turn_id": None,
+                                "active_turn_lease_id": None,
+                                "active_turn_expires_at": None,
+                            }
+                        )
+                    )
+                    return
+                except ChatThreadConflictError:
+                    continue
+            raise ChatThreadConflictError(
+                "The chat turn lease could not be released after bounded retries."
+            )
 
     def settings(self) -> ProjectSettings:
         with self._lock:
@@ -1502,6 +1590,7 @@ def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
         description=definition.description,
         auth_kind=definition.auth_kind,
         secret_status=definition.secret_status,
+        required=definition.required,
         enabled=True,
         test_status=definition.test_status,
         assigned_agents=list(definition.assigned_agents),
@@ -1521,3 +1610,39 @@ def _connector(definition: ConnectorDefinition) -> ConnectorSetting:
 
 def _connector_catalog() -> list[ConnectorSetting]:
     return [_connector(definition) for definition in connector_definitions()]
+
+
+def reconcile_required_connectors(
+    connectors: list[ConnectorSetting],
+) -> tuple[list[ConnectorSetting], list[ConnectorSetting]]:
+    definitions = {item.id: item for item in connector_definitions()}
+    reconciled: list[ConnectorSetting] = []
+    changed: list[ConnectorSetting] = []
+    seen_ids: set[str] = set()
+    for connector in connectors:
+        seen_ids.add(connector.id)
+        definition = definitions.get(connector.id)
+        if definition is None:
+            reconciled.append(connector)
+            continue
+        updates: dict[str, object] = {}
+        if connector.required != definition.required:
+            updates["required"] = definition.required
+        if definition.required:
+            expected_agents = list(definition.assigned_agents)
+            if not connector.enabled:
+                updates["enabled"] = True
+            if connector.assigned_agents != expected_agents:
+                updates["assigned_agents"] = expected_agents
+        resolved = connector.model_copy(update=updates) if updates else connector
+        reconciled.append(resolved)
+        if updates:
+            changed.append(resolved)
+    for definition in definitions.values():
+        if definition.required and definition.id not in seen_ids:
+            missing = _connector(definition).model_copy(
+                update={"test_status": "not_configured"}
+            )
+            reconciled.append(missing)
+            changed.append(missing)
+    return reconciled, changed

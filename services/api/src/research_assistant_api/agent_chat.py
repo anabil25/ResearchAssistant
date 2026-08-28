@@ -32,7 +32,6 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
-import re
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -41,12 +40,11 @@ from hashlib import sha256
 from typing import Annotated, Protocol, cast
 from uuid import uuid4
 
-import httpx
 from azure.ai.projects import AIProjectClient
 from azure.core.credentials import TokenCredential
 from fastapi import APIRouter, File, HTTPException, Request, UploadFile, status
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, model_validator
 from research_assistant_core.agent_surfaces import (
     chat_capabilities,
     endpoint_for,
@@ -69,6 +67,7 @@ from research_assistant_api.foundry import (
     HostedAgentReply,
     build_hosted_agent_reply,
     create_response_with_retries,
+    parse_hosted_agent_payload,
     stream_response_events,
 )
 from research_assistant_api.identity import IdentityContext, resolve_identity
@@ -77,6 +76,7 @@ from research_assistant_api.workspace import (
     ChatAttachment,
     ChatMessage,
     ChatThread,
+    ChatThreadConflictError,
     VerifiedGrantOpportunity,
     WorkspaceStore,
     utc_now,
@@ -141,6 +141,65 @@ class ChatMessageView(BaseModel):
     opportunities: list[VerifiedGrantOpportunity] = Field(default_factory=list)
 
 
+class _AgentReplyEnvelope(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    summary: str = Field(min_length=1)
+    claims: list[object] = Field(default_factory=list)
+    code: str | None = None
+    computed_outputs: list[object] = Field(default_factory=list)
+    conflicts: list[object] = Field(default_factory=list)
+    consensus: list[object] = Field(default_factory=list)
+    decisions: list[object] = Field(default_factory=list)
+    disagreements: list[object] = Field(default_factory=list)
+    effective_dates: list[object] = Field(default_factory=list)
+    evidence: list[object] = Field(default_factory=list)
+    lead_record_ids: list[object] = Field(default_factory=list)
+    limitations: list[object] = Field(default_factory=list)
+    opportunities: list[VerifiedGrantOpportunity] = Field(default_factory=list)
+    ready_for_review: bool | None = None
+    record_ids: list[object] = Field(default_factory=list)
+    requirements: list[object] = Field(default_factory=list)
+    search_urls: list[object] = Field(default_factory=list)
+    selected_opportunities: list[object] = Field(default_factory=list)
+    unresolved: list[object] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def validate_public_contract(self) -> _AgentReplyEnvelope:
+        if not self.summary.strip():
+            raise ValueError("Agent reply summary must not be blank")
+        identifiers = [item.grants_gov_id for item in self.opportunities]
+        if len(identifiers) != len(set(identifiers)):
+            raise ValueError("Agent reply contains duplicate Grants.gov opportunities")
+        return self
+
+
+_AGENT_REPLY_FIELDS: dict[str, frozenset[str]] = {
+    "literature-agent": frozenset(
+        {"summary", "claims", "limitations", "evidence", "consensus", "disagreements", "search_urls"}
+    ),
+    "grant-agent": frozenset(
+        {
+            "summary",
+            "claims",
+            "limitations",
+            "evidence",
+            "requirements",
+            "ready_for_review",
+            "selected_opportunities",
+            "opportunities",
+        }
+    ),
+    "matching-agent": frozenset(
+        {"summary", "claims", "limitations", "evidence", "record_ids", "lead_record_ids"}
+    ),
+    "dataset-agent": frozenset(
+        {"summary", "claims", "limitations", "evidence", "code", "computed_outputs"}
+    ),
+    "screening-agent": frozenset({"summary", "decisions", "conflicts", "unresolved"}),
+}
+
+
 class ChatThreadView(BaseModel):
     """Read model for a thread. Carries no session, conversation, or owner id."""
 
@@ -160,8 +219,7 @@ class ChatThreadCreate(BaseModel):
 
 class ChatMessageCreate(BaseModel):
     text: str = Field(min_length=1, max_length=MAX_MESSAGE_CHARS)
-    client_message_id: str | None = Field(
-        default=None,
+    client_message_id: str = Field(
         min_length=16,
         max_length=120,
         pattern=r"^[A-Za-z0-9_-]+$",
@@ -368,6 +426,41 @@ def _load_thread(store: WorkspaceStore, thread_id: str, identity: IdentityContex
     return thread
 
 
+def _save_thread(store: WorkspaceStore, thread: ChatThread) -> ChatThread:
+    try:
+        return store.save_chat_thread(thread)
+    except ChatThreadConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="The chat changed while this request was running. Retry the turn.",
+        ) from exc
+
+
+def _claim_turn(
+    store: WorkspaceStore,
+    thread: ChatThread,
+    client_message_id: str,
+) -> ChatThread:
+    try:
+        return store.claim_chat_turn(thread, client_message_id)
+    except ChatThreadConflictError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail="Another chat turn is already in progress. Retry this turn shortly.",
+        ) from exc
+
+
+def _release_turn(
+    store: WorkspaceStore,
+    thread: ChatThread,
+    client_message_id: str,
+) -> None:
+    try:
+        store.release_chat_turn(thread, client_message_id)
+    except Exception:
+        logger.exception("Could not release the durable lease for chat %s.", thread.id)
+
+
 def _validate_agent(capability: Capability, agent_name: str) -> AgentChoice:
     for choice in _capability_agents(capability):
         if choice.name == agent_name:
@@ -455,7 +548,8 @@ async def open_chat_thread(payload: ChatThreadCreate, request: Request) -> ChatT
     ) as exc:
         raise _gateway_failure(exc) from exc
     now = utc_now()
-    thread = store.save_chat_thread(
+    thread = _save_thread(
+        store,
         ChatThread(
             id=f"chat-{uuid4().hex[:16]}",
             project_id=store.project_id,
@@ -468,7 +562,7 @@ async def open_chat_thread(payload: ChatThreadCreate, request: Request) -> ChatT
             delegated_user_identity=delegated_user_identity,
             created_at=now,
             updated_at=now,
-        )
+        ),
     )
     return _thread_view(thread)
 
@@ -487,6 +581,14 @@ async def upload_chat_file(
 ) -> ChatAttachmentView:
     store, identity = _workspace_access(request)
     thread = _load_thread(store, thread_id, identity)
+    if thread.active_turn_id is not None and (
+        thread.active_turn_expires_at is None
+        or thread.active_turn_expires_at > utc_now()
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail="Wait for the active chat turn before changing its attachments.",
+        )
     if file.content_type not in ALLOWED_UPLOAD_TYPES:
         raise HTTPException(
             status_code=415,
@@ -521,7 +623,10 @@ async def upload_chat_file(
         uploaded_at=utc_now(),
     )
     remaining = [item for item in thread.attachments if item.path != attachment.path]
-    store.save_chat_thread(thread.model_copy(update={"attachments": [*remaining, attachment]}))
+    _save_thread(
+        store,
+        thread.model_copy(update={"attachments": [*remaining, attachment]}),
+    )
     return _attachment_view(attachment)
 
 
@@ -533,19 +638,23 @@ async def send_chat_message(
 ) -> ChatMessageView:
     store, identity = _workspace_access(request)
     thread = _load_thread(store, thread_id, identity)
-    client_message_id = payload.client_message_id or f"legacy-{uuid4().hex}"
+    client_message_id = payload.client_message_id
     assistant_id = f"reply-{client_message_id}"
     existing = next((message for message in thread.messages if message.id == assistant_id), None)
     if existing is not None:
         return _message_view(existing)
+    _require_ready_agent_connectors(thread, store)
 
     turn_key = (thread.id, identity.user_id, client_message_id)
     if turn_key in _ACTIVE_STREAM_TURNS:
         raise HTTPException(status_code=409, detail="This chat turn is already streaming.")
+    gateway = _gateway(request)
+    thread = _claim_turn(store, thread, client_message_id)
     active = _ACTIVE_CHAT_TURNS.get(turn_key)
     if active is None:
         active = asyncio.create_task(
             _execute_chat_turn(
+                gateway=gateway,
                 thread=thread,
                 payload=payload,
                 request=request,
@@ -585,7 +694,7 @@ async def stream_chat_message(
     """Stream observable Hosted Agent progress, then persist one canonical turn."""
     store, identity = _workspace_access(request)
     thread = _load_thread(store, thread_id, identity)
-    client_message_id = payload.client_message_id or f"legacy-{uuid4().hex}"
+    client_message_id = payload.client_message_id
     assistant_id = f"reply-{client_message_id}"
     existing = next((message for message in thread.messages if message.id == assistant_id), None)
     if existing is not None:
@@ -598,30 +707,20 @@ async def stream_chat_message(
             ]
         )
         return StreamingResponse(body, media_type="text/event-stream")
+    _require_ready_agent_connectors(thread, store)
 
     turn_key = (thread.id, identity.user_id, client_message_id)
     if turn_key in _ACTIVE_STREAM_TURNS or turn_key in _ACTIVE_CHAT_TURNS:
         raise HTTPException(status_code=409, detail="This chat turn is already in progress.")
-    _ACTIVE_STREAM_TURNS.add(turn_key)
-
-    pending = [item for item in thread.attachments if not _already_announced(thread, item)]
-    settings = cast(Settings, request.app.state.settings)
-    envelope = _contract_envelope(
-        thread,
-        store=store,
-        identity=identity,
-        settings=settings,
-        text=payload.text,
-        attachments=pending,
-    )
+    gateway = _gateway(request)
     body = _execute_chat_turn_stream(
-        gateway=_gateway(request),
+        gateway=gateway,
         thread=thread,
         store=store,
         payload=payload,
         client_message_id=client_message_id,
-        pending=pending,
-        envelope=envelope,
+        identity=identity,
+        settings=cast(Settings, request.app.state.settings),
         turn_key=turn_key,
     )
     return StreamingResponse(
@@ -641,21 +740,35 @@ def _execute_chat_turn_stream(
     store: WorkspaceStore,
     payload: ChatMessageCreate,
     client_message_id: str,
-    pending: list[ChatAttachment],
-    envelope: str,
+    identity: IdentityContext,
+    settings: Settings,
     turn_key: tuple[str, str, str],
 ) -> Iterator[str]:
     started_at = utc_now()
-    yield _sse_event(
-        "started",
-        {
-            "type": "started",
-            "message_id": f"reply-{client_message_id}",
-            "agent_name": thread.agent_name,
-            "created_at": started_at.isoformat(),
-        },
-    )
+    completed = False
+    claimed = False
     try:
+        thread = store.claim_chat_turn(thread, client_message_id)
+        claimed = True
+        _ACTIVE_STREAM_TURNS.add(turn_key)
+        pending = [item for item in thread.attachments if not _already_announced(thread, item)]
+        envelope = _contract_envelope(
+            thread,
+            store=store,
+            identity=identity,
+            settings=settings,
+            text=payload.text,
+            attachments=pending,
+        )
+        yield _sse_event(
+            "started",
+            {
+                "type": "started",
+                "message_id": f"reply-{client_message_id}",
+                "agent_name": thread.agent_name,
+                "created_at": started_at.isoformat(),
+            },
+        )
         for progress in gateway.stream(
             agent_name=thread.agent_name,
             conversation_id=thread.conversation_id,
@@ -679,19 +792,21 @@ def _execute_chat_turn_stream(
                     },
                 )
                 continue
-            if progress.type == "text_delta" and progress.delta:
-                yield _sse_event(
-                    "text_delta",
-                    {"type": "text_delta", "delta": progress.delta},
-                )
-                continue
             if progress.type != "completed" or progress.reply is None:
                 continue
 
             reply = progress.reply
-            opportunities = _recover_grant_opportunities(reply.content)
-            content = _render_agent_reply(
+            final_payload = _validated_final_payload(
                 reply.content,
+                agent_name=thread.agent_name,
+            )
+            opportunities = _verified_grant_opportunities(reply.content)
+            content = _validate_public_reply(
+                _render_agent_reply(
+                    reply.content,
+                    opportunities=opportunities,
+                ),
+                payload=final_payload,
                 opportunities=opportunities,
             )
             follow_up = _next_steps(thread, reply.content, evidence_count=0)
@@ -723,9 +838,15 @@ def _execute_chat_turn_stream(
             )
             store.save_chat_thread(
                 thread.model_copy(
-                    update={"messages": [*thread.messages, user_message, assistant_message]}
+                    update={
+                        "messages": [*thread.messages, user_message, assistant_message],
+                        "active_turn_id": None,
+                        "active_turn_lease_id": None,
+                        "active_turn_expires_at": None,
+                    }
                 )
             )
+            completed = True
             yield _sse_event(
                 "completed",
                 {
@@ -748,6 +869,15 @@ def _execute_chat_turn_stream(
             "error",
             {"type": "error", "detail": str(exc), "status": status_code},
         )
+    except ChatThreadConflictError:
+        yield _sse_event(
+            "error",
+            {
+                "type": "error",
+                "detail": "The chat changed while this request was running. Retry the turn.",
+                "status": 409,
+            },
+        )
     except Exception:
         logger.exception("Unexpected failure while streaming Hosted Agent %s.", thread.agent_name)
         yield _sse_event(
@@ -760,10 +890,13 @@ def _execute_chat_turn_stream(
         )
     finally:
         _ACTIVE_STREAM_TURNS.discard(turn_key)
+        if claimed and not completed:
+            _release_turn(store, thread, client_message_id)
 
 
 async def _execute_chat_turn(
     *,
+    gateway: ChatGateway,
     thread: ChatThread,
     payload: ChatMessageCreate,
     request: Request,
@@ -771,7 +904,6 @@ async def _execute_chat_turn(
     identity: IdentityContext,
     client_message_id: str,
 ) -> ChatMessageView:
-    gateway = _gateway(request)
     pending = [item for item in thread.attachments if not _already_announced(thread, item)]
     user_message = ChatMessage(
         id=client_message_id,
@@ -780,57 +912,79 @@ async def _execute_chat_turn(
         created_at=utc_now(),
         attachments=list(pending),
     )
+    completed = False
     try:
-        reply = await run_in_threadpool(
-            gateway.send,
-            agent_name=thread.agent_name,
-            conversation_id=thread.conversation_id,
-            session_id=thread.session_id,
-            user_identity=thread.delegated_user_identity,
-            text=_contract_envelope(
-                thread,
-                store=store,
-                identity=identity,
-                settings=cast(Settings, request.app.state.settings),
-                text=payload.text,
-                attachments=pending,
-            ),
-        )
-    except (
-        HostedAgentConfigurationError,
-        HostedAgentNotReadyError,
-        HostedAgentInvocationError,
-    ) as exc:
-        raise _gateway_failure(exc) from exc
-    opportunities = await _recover_grant_opportunities_async(reply.content)
-    content = _render_agent_reply(
-        reply.content,
-        opportunities=opportunities,
-    )
-    follow_up = _next_steps(thread, reply.content, evidence_count=0)
-    assistant_message = ChatMessage(
-        id=f"reply-{client_message_id}",
-        role="assistant",
-        content=f"{content}\n\n{follow_up}" if follow_up else content,
-        created_at=utc_now(),
-        agent_name=reply.agent_name,
-        activity=[
-            ChatActivity(
-                kind=item.kind,
-                label=item.label,
-                status=item.status,
-                detail=item.detail,
+        try:
+            reply = await run_in_threadpool(
+                gateway.send,
+                agent_name=thread.agent_name,
+                conversation_id=thread.conversation_id,
+                session_id=thread.session_id,
+                user_identity=thread.delegated_user_identity,
+                text=_contract_envelope(
+                    thread,
+                    store=store,
+                    identity=identity,
+                    settings=cast(Settings, request.app.state.settings),
+                    text=payload.text,
+                    attachments=pending,
+                ),
             )
-            for item in reply.activity
-        ],
-        duration_ms=reply.duration_ms,
-        source_count=reply.source_count,
-        opportunities=opportunities,
-    )
-    store.save_chat_thread(
-        thread.model_copy(update={"messages": [*thread.messages, user_message, assistant_message]})
-    )
-    return _message_view(assistant_message)
+            final_payload = _validated_final_payload(
+                reply.content,
+                agent_name=thread.agent_name,
+            )
+            opportunities = _verified_grant_opportunities(reply.content)
+            content = _validate_public_reply(
+                _render_agent_reply(
+                    reply.content,
+                    opportunities=opportunities,
+                ),
+                payload=final_payload,
+                opportunities=opportunities,
+            )
+        except (
+            HostedAgentConfigurationError,
+            HostedAgentNotReadyError,
+            HostedAgentInvocationError,
+        ) as exc:
+            raise _gateway_failure(exc) from exc
+        follow_up = _next_steps(thread, reply.content, evidence_count=0)
+        assistant_message = ChatMessage(
+            id=f"reply-{client_message_id}",
+            role="assistant",
+            content=f"{content}\n\n{follow_up}" if follow_up else content,
+            created_at=utc_now(),
+            agent_name=reply.agent_name,
+            activity=[
+                ChatActivity(
+                    kind=item.kind,
+                    label=item.label,
+                    status=item.status,
+                    detail=item.detail,
+                )
+                for item in reply.activity
+            ],
+            duration_ms=reply.duration_ms,
+            source_count=reply.source_count,
+            opportunities=opportunities,
+        )
+        _save_thread(
+            store,
+            thread.model_copy(
+                update={
+                    "messages": [*thread.messages, user_message, assistant_message],
+                    "active_turn_id": None,
+                    "active_turn_lease_id": None,
+                    "active_turn_expires_at": None,
+                }
+            )
+        )
+        completed = True
+        return _message_view(assistant_message)
+    finally:
+        if not completed:
+            _release_turn(store, thread, client_message_id)
 
 
 def _already_announced(thread: ChatThread, attachment: ChatAttachment) -> bool:
@@ -848,6 +1002,18 @@ def _already_announced(thread: ChatThread, attachment: ChatAttachment) -> bool:
 #: fields, so this carries the shared required keys plus only the extras a
 #: given agent declares.
 _INTERNAL_SENSITIVITY = "internal"
+
+_PRIVATE_REPLY_MARKERS = (
+    "authorized_connector_ids",
+    "principal_id",
+    "project_id",
+    "selected_opportunities",
+    "sensitivity",
+    "session_files",
+    "session_id",
+    "tenant_id",
+    "your reply did not match",
+)
 
 #: Specialists answer with their typed output contract, so the raw reply is a
 #: JSON document. Rendering it verbatim in the transcript is unreadable; these
@@ -877,26 +1043,66 @@ def _bullet(value: object) -> str:
 
 
 def _final_payload(raw: str) -> dict[str, object] | None:
-    """The last typed payload in a reply.
+    """Return the last complete typed payload in a Hosted Agent reply."""
+    try:
+        payload = parse_hosted_agent_payload(raw)
+    except HostedAgentInvocationError:
+        return None
+    return payload if "summary" in payload else None
 
-    A hosted turn that called a tool returns every assistant message joined, so
-    the transcript is several JSON documents back to back rather than one.
-    """
-    decoder = json.JSONDecoder()
-    text = raw.strip()
-    index = 0
-    found: dict[str, object] | None = None
-    while index < len(text):
-        try:
-            value, offset = decoder.raw_decode(text, index)
-        except ValueError:
-            break
-        if isinstance(value, dict) and "summary" in value:
-            found = value
-        index = offset
-        while index < len(text) and text[index].isspace():
-            index += 1
-    return found
+
+def _validated_final_payload(raw: str, *, agent_name: str) -> dict[str, object]:
+    payload = _final_payload(raw)
+    if payload is None:
+        raise HostedAgentInvocationError(
+            "The Hosted Agent returned an invalid structured response."
+        )
+    allowed_fields = _AGENT_REPLY_FIELDS.get(agent_name)
+    if allowed_fields is None or not set(payload).issubset(allowed_fields):
+        raise HostedAgentInvocationError(
+            "The Hosted Agent returned an invalid structured response."
+        )
+    try:
+        _AgentReplyEnvelope.model_validate(payload)
+    except ValidationError as exc:
+        raise HostedAgentInvocationError(
+            "The Hosted Agent returned an invalid structured response."
+        ) from exc
+    return payload
+
+
+def _validate_public_reply(
+    content: str,
+    *,
+    payload: dict[str, object],
+    opportunities: list[VerifiedGrantOpportunity],
+) -> str:
+    public_text = "\n".join([
+        content,
+        *_string_values(payload),
+        *(item.model_dump_json() for item in opportunities),
+    ])
+    normalized = public_text.casefold()
+    if any(marker in normalized for marker in _PRIVATE_REPLY_MARKERS):
+        raise HostedAgentInvocationError(
+            "The Hosted Agent returned unsafe structured response content."
+        )
+    if content.lstrip().startswith(("{", "[")):
+        raise HostedAgentInvocationError(
+            "The Hosted Agent returned unsafe structured response content."
+        )
+    return content
+
+
+def _string_values(value: object) -> Iterator[str]:
+    if isinstance(value, str):
+        yield value
+    elif isinstance(value, dict):
+        for item in value.values():
+            yield from _string_values(item)
+    elif isinstance(value, list):
+        for item in value:
+            yield from _string_values(item)
 
 
 def _verified_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
@@ -918,134 +1124,6 @@ def _verified_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
         seen_ids.add(opportunity.grants_gov_id)
         opportunities.append(opportunity)
     return opportunities
-
-
-_GRANTS_GOV_DETAIL_PATTERN = re.compile(
-    r"^https://www\.grants\.gov/search-results-detail/([0-9]{1,12})$"
-)
-_GRANTS_GOV_LOOKUP_URL = "https://api.grants.gov/v1/api/fetchOpportunity"
-
-
-def _grants_gov_evidence_ids(raw: str) -> tuple[str, ...]:
-    payload = _final_payload(raw)
-    evidence = payload.get("evidence") if payload is not None else None
-    if not isinstance(evidence, list):
-        return ()
-    identifiers: list[str] = []
-    for item in evidence:
-        if not isinstance(item, dict):
-            continue
-        source_uri = item.get("source_uri")
-        match = (
-            _GRANTS_GOV_DETAIL_PATTERN.fullmatch(source_uri)
-            if isinstance(source_uri, str)
-            else None
-        )
-        if match and match.group(1) not in identifiers:
-            identifiers.append(match.group(1))
-        if len(identifiers) == 5:
-            break
-    return tuple(identifiers)
-
-
-def _grants_gov_date(value: object) -> str | None:
-    text = str(value or "").strip()
-    return text[:10] if re.match(r"^\d{4}-\d{2}-\d{2}(?:-|$)", text) else None
-
-
-def _verified_grant_from_lookup(
-    payload: object,
-    identifier: str,
-) -> VerifiedGrantOpportunity | None:
-    if not isinstance(payload, dict) or payload.get("errorcode") != 0:
-        return None
-    data = payload.get("data")
-    if not isinstance(data, dict) or str(data.get("id")) != identifier:
-        return None
-    errors = data.get("errorMessages")
-    if isinstance(errors, list) and errors:
-        return None
-    raw_synopsis = data.get("synopsis")
-    raw_agency = data.get("agencyDetails")
-    synopsis = raw_synopsis if isinstance(raw_synopsis, dict) else {}
-    agency = raw_agency if isinstance(raw_agency, dict) else {}
-    try:
-        return VerifiedGrantOpportunity(
-            grants_gov_id=identifier,
-            opportunity_number=str(data.get("opportunityNumber") or ""),
-            title=str(data.get("opportunityTitle") or ""),
-            agency=str(agency.get("agencyName") or synopsis.get("agencyName") or ""),
-            status=str(data.get("ost") or "").casefold(),
-            posted_date=_grants_gov_date(synopsis.get("postingDateStr")),
-            close_date=_grants_gov_date(synopsis.get("responseDateStr")),
-            archive_date=_grants_gov_date(synopsis.get("archiveDateStr")),
-            canonical_url=(
-                f"https://www.grants.gov/search-results-detail/{identifier}"
-            ),
-            relevance="unassessed",
-            relevance_rationale=(
-                "Verified on Grants.gov; review the full notice to confirm project fit."
-            ),
-            verified_at=utc_now(),
-        )
-    except ValidationError:
-        return None
-
-
-def _recover_grant_opportunities(raw: str) -> list[VerifiedGrantOpportunity]:
-    opportunities = _verified_grant_opportunities(raw)
-    if opportunities:
-        return opportunities
-    identifiers = _grants_gov_evidence_ids(raw)
-    if not identifiers:
-        return []
-    recovered: list[VerifiedGrantOpportunity] = []
-    try:
-        with httpx.Client(
-            timeout=httpx.Timeout(20.0, connect=8.0),
-            follow_redirects=False,
-        ) as client:
-            for identifier in identifiers:
-                response = client.post(
-                    _GRANTS_GOV_LOOKUP_URL,
-                    json={"opportunityId": int(identifier)},
-                )
-                response.raise_for_status()
-                opportunity = _verified_grant_from_lookup(response.json(), identifier)
-                if opportunity is not None:
-                    recovered.append(opportunity)
-    except (httpx.HTTPError, ValueError):
-        logger.warning("Could not recover structured Grants.gov opportunities.")
-    return recovered
-
-
-async def _recover_grant_opportunities_async(
-    raw: str,
-) -> list[VerifiedGrantOpportunity]:
-    opportunities = _verified_grant_opportunities(raw)
-    if opportunities:
-        return opportunities
-    identifiers = _grants_gov_evidence_ids(raw)
-    if not identifiers:
-        return []
-    recovered: list[VerifiedGrantOpportunity] = []
-    try:
-        async with httpx.AsyncClient(
-            timeout=httpx.Timeout(20.0, connect=8.0),
-            follow_redirects=False,
-        ) as client:
-            for identifier in identifiers:
-                response = await client.post(
-                    _GRANTS_GOV_LOOKUP_URL,
-                    json={"opportunityId": int(identifier)},
-                )
-                response.raise_for_status()
-                opportunity = _verified_grant_from_lookup(response.json(), identifier)
-                if opportunity is not None:
-                    recovered.append(opportunity)
-    except (httpx.HTTPError, ValueError):
-        logger.warning("Could not recover structured Grants.gov opportunities.")
-    return recovered
 
 
 def _is_grants_gov_evidence(value: object) -> bool:
@@ -1175,6 +1253,44 @@ def _ready_agent_connector_ids(
         and connector.test_status in {"ready", "ready_with_key"}
         and agent_id in connector.assigned_agents
     )
+
+
+def _require_ready_agent_connectors(
+    thread: ChatThread,
+    store: WorkspaceStore,
+) -> None:
+    from research_assistant_core.connector_catalog import connector_definitions
+
+    agent_id = thread.agent_name.removesuffix("-agent")
+    required = tuple(
+        item
+        for item in connector_definitions()
+        if item.required and agent_id in item.assigned_agents
+    )
+    if not required:
+        return
+    configured = {item.id: item for item in store.connectors()}
+    unavailable = [
+        definition.name
+        for definition in required
+        if (
+            (connector := configured.get(definition.id)) is None
+            or not connector.required
+            or not connector.enabled
+            or agent_id not in connector.assigned_agents
+            or connector.test_status not in {"ready", "ready_with_key"}
+        )
+    ]
+    if unavailable:
+        names = ", ".join(unavailable)
+        noun = "connector" if len(unavailable) == 1 else "connectors"
+        raise HTTPException(
+            status_code=503,
+            detail=(
+                f"Required {noun} {names} is not ready for {thread.agent_name}. "
+                "Test it in Project Settings, then retry."
+            ),
+        )
 
 
 def _resolved_nothing(raw: str) -> bool:

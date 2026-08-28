@@ -3439,18 +3439,11 @@
       "ChatMessageCreate": {
         "properties": {
           "client_message_id": {
-            "anyOf": [
-              {
-                "maxLength": 120,
-                "minLength": 16,
-                "pattern": "^[A-Za-z0-9_-]+$",
-                "type": "string"
-              },
-              {
-                "type": "null"
-              }
-            ],
-            "title": "Client Message Id"
+            "maxLength": 120,
+            "minLength": 16,
+            "pattern": "^[A-Za-z0-9_-]+$",
+            "title": "Client Message Id",
+            "type": "string"
           },
           "text": {
             "maxLength": 8000,
@@ -3460,7 +3453,8 @@
           }
         },
         "required": [
-          "text"
+          "text",
+          "client_message_id"
         ],
         "title": "ChatMessageCreate",
         "type": "object"
@@ -3836,6 +3830,11 @@
             },
             "title": "Operations",
             "type": "array"
+          },
+          "required": {
+            "default": false,
+            "title": "Required",
+            "type": "boolean"
           },
           "secret_status": {
             "title": "Secret Status",

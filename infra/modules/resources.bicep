@@ -49,6 +49,10 @@ param resourceTokenSalt string = ''
 @maxLength(32)
 param foundryProjectName string
 
+@description('Optional Foundry account name override. Empty uses the deterministic shared resource token.')
+@maxLength(64)
+param foundryAccountName string = ''
+
 @description('Model deployments to provision on the Foundry account.')
 param deployments deploymentsType = []
 
@@ -93,7 +97,9 @@ var applicationResourceToken = empty(resourceTokenSalt)
 
 var abbrs = loadJsonContent('../abbreviations.json')
 
-var foundryAccountName = '${abbrs.cognitiveServicesAccounts}${resourceToken}'
+var effectiveFoundryAccountName = empty(foundryAccountName)
+  ? '${abbrs.cognitiveServicesAccounts}${resourceToken}'
+  : foundryAccountName
 var apiManagementName = 'apim-${resourceToken}'
 var embeddingDeployments = filter(
   deployments,
@@ -131,7 +137,7 @@ var monitoringMetricsPublisherRoleId = subscriptionResourceId(
 // Resources
 
 resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
-  name: foundryAccountName
+  name: effectiveFoundryAccountName
   location: location
   tags: tags
   sku: {
@@ -143,7 +149,7 @@ resource foundryAccount 'Microsoft.CognitiveServices/accounts@2025-06-01' = {
   }
   properties: {
     allowProjectManagement: true
-    customSubDomainName: foundryAccountName
+    customSubDomainName: effectiveFoundryAccountName
     publicNetworkAccess: 'Enabled'
     disableLocalAuth: true
     networkAcls: {

@@ -8,4 +8,15 @@ if [ ! -x "$python" ]; then
   python="python3"
 fi
 
-(cd "$repo_root" && "$python" -m scripts.build_agent_source_tree)
+digest="$(cd "$repo_root" && "$python" -m scripts.build_agent_source_tree)"
+case "$digest" in
+  *[!0-9a-f]*|'')
+    echo "Hosted Agent source-tree digest is invalid." >&2
+    exit 1
+    ;;
+esac
+if [ "${#digest}" -ne 64 ]; then
+  echo "Hosted Agent source-tree digest is invalid." >&2
+  exit 1
+fi
+azd env set AGENT_SOURCE_TREE_DIGEST "$digest"

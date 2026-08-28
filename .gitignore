@@ -57,8 +57,15 @@ tests/
 **/tests/
 **/tests/**
 !/tests/
+!/tests/test_agent_chat_api.py
+!/tests/test_agents.py
+!/tests/test_api.py
 !/tests/test_configure_agent_rbac.py
 !/tests/test_deployment_contract.py
+!/tests/test_deployment_incarnation.py
+!/tests/test_foundry_stream.py
+!/tests/test_grants_gov.py
 !/tests/test_live_release.py
+!/tests/test_release_verification.py
 
 # Sample data

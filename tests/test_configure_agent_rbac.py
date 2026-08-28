@@ -56,7 +56,11 @@ def test_wait_for_role_assignment_times_out(monkeypatch: pytest.MonkeyPatch) -> 
 def test_sync_agent_environment_outputs_rejects_missing_agents(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    latest = SimpleNamespace(version="3", status="active")
+    latest = SimpleNamespace(
+        version="3",
+        status="active",
+        instance_identity=SimpleNamespace(principal_id="matching-principal"),
+    )
     only_one = SimpleNamespace(name="matching-agent", versions=SimpleNamespace(latest=latest))
     client = SimpleNamespace(agents=SimpleNamespace(list=lambda: [only_one]))
     monkeypatch.setenv("FOUNDRY_PROJECT_ENDPOINT", "https://example.test/projects/research")
@@ -91,7 +95,13 @@ def test_sync_agent_environment_outputs_rewrites_every_active_pointer(
     agents = [
         SimpleNamespace(
             name=name,
-            versions=SimpleNamespace(latest=SimpleNamespace(version="9", status="active")),
+            versions=SimpleNamespace(
+                latest=SimpleNamespace(
+                    version="9",
+                    status="active",
+                    instance_identity=SimpleNamespace(principal_id=f"{name}-principal"),
+                )
+            ),
         )
         for name in configure_agent_rbac.AGENT_NAMES
     ]
@@ -106,7 +116,7 @@ def test_sync_agent_environment_outputs_rewrites_every_active_pointer(
     monkeypatch.setattr(configure_agent_rbac, "AIProjectClient", lambda **_kwargs: client)
     monkeypatch.setattr("scripts.configure_agent_rbac.subprocess.run", completed)
 
-    configure_agent_rbac.sync_agent_environment_outputs()
+    principals = configure_agent_rbac.sync_agent_environment_outputs()
 
     version_updates = [
         command
@@ -115,6 +125,9 @@ def test_sync_agent_environment_outputs_rewrites_every_active_pointer(
     ]
     assert len(version_updates) == len(configure_agent_rbac.AGENT_NAMES)
     assert all(command[4] == "9" for command in version_updates)
+    assert principals == {
+        name: f"{name}-principal" for name in configure_agent_rbac.AGENT_NAMES
+    }
 
 
 def test_agent_instance_principal_id_rejects_incomplete_payload() -> None:

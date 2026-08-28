@@ -8,6 +8,8 @@ container:
         memory: 1Gi
 description: Screens supplied papers and retrieves systematic-review candidates.
 environmentVariables:
+    - name: AGENT_SOURCE_TREE_DIGEST
+      value: ${AGENT_SOURCE_TREE_DIGEST}
     - name: SCREENING_LEAD_MODEL
       value: gpt-5.6-sol
     - name: SCREENING_SCREENER_MODEL

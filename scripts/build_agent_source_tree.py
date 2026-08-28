@@ -13,13 +13,14 @@ from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
 
 SOURCE_MANIFEST_SCHEMA_VERSION = "1"
-SOURCE_INCLUSION_POLICY_VERSION = "1"
+SOURCE_INCLUSION_POLICY_VERSION = "2"
 SOURCE_MANIFEST_PRODUCER = "research-assistant.git-source-tree"
 DEFAULT_SOURCE_ROOT = PurePosixPath("agents")
 DEFAULT_OUTPUT = Path("agents/.release/source-tree.json")
 IGNORED_PACKAGE_DIRECTORIES = frozenset(
     {".foundry", ".release", ".venv", "__pycache__", "evals", "tests"}
 )
+IDENTITY_FILENAMES = frozenset({".agentignore", "agent.yaml", "requirements.txt"})
 
 
 class SourceIdentityBuildError(RuntimeError):
@@ -139,6 +140,10 @@ def _decode_git_path(value: bytes) -> str:
         raise SourceIdentityBuildError("Tracked source path is not valid UTF-8") from exc
 
 
+def _is_identity_file(path: PurePosixPath) -> bool:
+    return path.suffix == ".py" or path.name in IDENTITY_FILENAMES
+
+
 def committed_source_entries(
     repo_root: Path,
     *,
@@ -169,7 +174,7 @@ def committed_source_entries(
         parsed = PurePosixPath(relative_path)
         if any(part in IGNORED_PACKAGE_DIRECTORIES for part in parsed.parts):
             continue
-        if parsed.suffix != ".py" and parsed.name != "requirements.txt":
+        if not _is_identity_file(parsed):
             continue
         content = _git(root, "cat-file", "blob", f"{commit}:{tracked_path}")
         entries.append((relative_path, content))
@@ -187,7 +192,7 @@ def worktree_source_entries(
         relative = path.relative_to(root)
         if any(part in IGNORED_PACKAGE_DIRECTORIES for part in relative.parts):
             continue
-        if not path.is_file() or (path.suffix != ".py" and path.name != "requirements.txt"):
+        if not path.is_file() or not _is_identity_file(PurePosixPath(relative.as_posix())):
             continue
         entries.append((relative.as_posix(), path.read_bytes()))
     return tuple(entries)
@@ -207,8 +212,23 @@ def validate_worktree_matches_commit(
     worktree = worktree_source_entries(repo_root, source_root=source_root)
     if canonical_source_entries(worktree) != canonical_source_entries(committed):
         raise SourceIdentityBuildError(
-            "Identity-eligible agent source (.py + requirements.txt) differs from "
+            "Identity-eligible agent source (.py + requirements.txt + agent.yaml + "
+            ".agentignore) differs from "
             "committed content"
+        )
+
+
+def validate_release_worktree_is_clean(repo_root: Path) -> None:
+    status = _git(
+        repo_root.resolve(),
+        "status",
+        "--porcelain=v1",
+        "--untracked-files=all",
+    )
+    if status.strip():
+        raise SourceIdentityBuildError(
+            "The release worktree contains uncommitted or untracked files. "
+            "Commit the complete release before provisioning."
         )
 
 
@@ -304,6 +324,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         revision=arguments.revision,
         source_root=arguments.source_root,
     )
+    validate_release_worktree_is_clean(repo_root)
     validate_worktree_matches_commit(
         repo_root,
         revision=arguments.revision,

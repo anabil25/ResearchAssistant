@@ -3204,7 +3204,7 @@ export interface components {
         /** ChatMessageCreate */
         ChatMessageCreate: {
             /** Client Message Id */
-            client_message_id?: string | null;
+            client_message_id: string;
             /** Text */
             text: string;
         };
@@ -3359,6 +3359,11 @@ export interface components {
             name: string;
             /** Operations */
             operations?: string[];
+            /**
+             * Required
+             * @default false
+             */
+            required: boolean;
             /** Secret Status */
             secret_status: string;
             /**

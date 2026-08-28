@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -11,13 +12,14 @@ import pytest
 import yaml
 from research_assistant_core.connector_catalog import connector_definitions
 
-from scripts import postprovision
+from scripts import build_agent_source_tree, deploy_sequential, postprovision
 from scripts.postprovision import (
     AmbiguousToolboxCreate,
     FoundryProjectUnavailable,
     ToolboxProjectUnavailable,
     _assert_mcp_success,
 )
+from scripts.provider_onboarding import connector_project_connection_ids
 from scripts.verify_deployment import (
     PLACEHOLDER_IMAGE,
     revision_status,
@@ -95,6 +97,12 @@ def _healthy_state(service: str, image: str) -> tuple[dict[str, Any], dict[str, 
 def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     config = _azure_yaml()
     services = config["services"]
+    parameters = json.loads(
+        (ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8")
+    )
+    workflow_steps = [
+        step["azd"]["args"] for step in config["workflows"]["up"]["steps"]
+    ]
 
     for specialist in SPECIALISTS:
         assert services[specialist]["uses"] == ["ai-project"]
@@ -107,6 +115,374 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert services["web"]["apiVersion"] == "2026-01-01"
     assert config["hooks"]["predeploy"]["windows"]["run"] == "./scripts/predeploy.ps1"
     assert "prepackage" not in config["hooks"]
+    assert workflow_steps == [["provision"]]
+    assert config["hooks"]["postup"]["windows"]["run"] == "./scripts/postup.ps1"
+    assert config["hooks"]["postup"]["posix"]["run"] == "./scripts/postup.sh"
+    assert config["hooks"]["postup"]["windows"]["interactive"] is False
+    assert config["hooks"]["postup"]["posix"]["interactive"] is False
+    assert config["hooks"]["postdown"]["windows"]["run"] == "./scripts/postdown.ps1"
+    assert config["hooks"]["postdown"]["posix"]["run"] == "./scripts/postdown.sh"
+    assert config["hooks"]["postdown"]["windows"]["interactive"] is False
+    assert config["hooks"]["postdown"]["posix"]["interactive"] is False
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
+    assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
+    assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
+        "${AZURE_DEPLOYMENT_INCARNATION=}"
+    )
+    preprovision_windows = (ROOT / "scripts" / "preprovision.ps1").read_text(encoding="utf-8")
+    preprovision_posix = (ROOT / "scripts" / "preprovision.sh").read_text(encoding="utf-8")
+    for preprovision in (preprovision_windows, preprovision_posix):
+        assert "deployment_incarnation.py" in preprovision
+        assert "ensure" in preprovision
+    assert ") | while" not in preprovision_posix
+    assert "python3 -m scripts.build_agent_source_tree" in preprovision_posix
+    assert "if ! (cd \"$repo_root\" && python3 - \"$existing_deployments\" <<'PY'" in preprovision_posix
+    assert 'if [ ! -s "$model_rows" ]' in preprovision_posix
+    assert 'done < "$model_rows"' in preprovision_posix
+    assert "$quotaAttempts = 20" in preprovision_windows
+    assert "--subscription $subscription" in preprovision_windows
+    assert "$existingCapacity" in preprovision_windows
+    assert "deleted model quota to be released" in preprovision_windows
+    assert "quota_attempts=20" in preprovision_posix
+    assert '--subscription "$subscription"' in preprovision_posix
+    assert "existing_capacity" in preprovision_posix
+    assert "deleted model quota to be released" in preprovision_posix
+    cosmos = (ROOT / "infra" / "modules" / "cosmos.bicep").read_text(encoding="utf-8")
+    assert "defaultConsistencyLevel: 'Strong'" in cosmos
+    postdown_windows = (ROOT / "scripts" / "postdown.ps1").read_text(encoding="utf-8")
+    postdown_posix = (ROOT / "scripts" / "postdown.sh").read_text(encoding="utf-8")
+    for postdown in (postdown_windows, postdown_posix):
+        assert "scripts.deployment_incarnation rotate" in postdown
+    postup_windows = (ROOT / "scripts" / "postup.ps1").read_text(encoding="utf-8")
+    postup_posix = (ROOT / "scripts" / "postup.sh").read_text(encoding="utf-8")
+    for postup in (postup_windows, postup_posix):
+        assert "scripts.deploy_sequential" in postup
+        assert "scripts.verify_release" in postup
+    release_verifier = (ROOT / "scripts" / "verify_release.py").read_text(
+        encoding="utf-8"
+    )
+    assert "verify_platform_release()" in release_verifier
+    assert "validate_agent_inventory" in release_verifier
+    assert "validate_connection_inventory" in release_verifier
+    assert "_shared_toolbox_tool_names" in release_verifier
+    assert 'verify_container("api")' in release_verifier
+    assert 'verify_container("web")' in release_verifier
+    web_package = json.loads(
+        (ROOT / "apps" / "web" / "package.json").read_text(encoding="utf-8")
+    )
+    assert web_package["scripts"]["test:release"] == (
+        "playwright test e2e/live-grant-release.spec.ts --project=chromium"
+    )
+    live_grant_gate = (
+        ROOT / "apps" / "web" / "e2e" / "live-grant-release.spec.ts"
+    ).read_text(encoding="utf-8")
+    assert "api.grants.gov/v1/api/fetchOpportunity" in live_grant_gate
+    assert "/messages/stream" in live_grant_gate
+    assert "Verified grant opportunities" in live_grant_gate
+    assert deploy_sequential.DEPLOYMENT_ORDER == (
+        "ai-project",
+        "literature-agent",
+        "grant-agent",
+        "matching-agent",
+        "dataset-agent",
+        "institution-agent",
+        "screening-agent",
+        "research-coordinator",
+        "api",
+        "web",
+    )
+
+
+def test_sequential_agent_deploy_recovers_new_version_after_early_failure() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    version3_building = SimpleNamespace(version="3", status="provisioning", created_at=100)
+    version3_active = SimpleNamespace(version="3", status="active", created_at=100)
+    responses = iter([[version2], [version3_building], [version3_active]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+    persisted: list[tuple[str, deploy_sequential.AgentVersionState, str]] = []
+
+    state = deploy_sequential.deploy_agent_service(
+        "literature-agent",
+        operations,
+        "https://example.test/projects/research",
+        run_deploy=lambda _service: deploy_sequential.DeployAttempt(1, "ImageError"),
+        persist=lambda service, version, endpoint: persisted.append(
+            (service, version, endpoint)
+        ),
+        attempts=2,
+        delay_seconds=0,
+        sleep=lambda _delay: None,
+        now=lambda: 100,
+    )
+
+    assert state == deploy_sequential.AgentVersionState("3", "active", 100)
+    assert persisted == [
+        (
+            "literature-agent",
+            state,
+            "https://example.test/projects/research",
+        )
+    ]
+
+
+def test_sequential_deploy_prepares_one_source_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    events: list[str] = []
+    manifest = SimpleNamespace(source_tree_digest="a" * 64)
+    monkeypatch.setattr(
+        deploy_sequential,
+        "validate_release_worktree_is_clean",
+        lambda _root: events.append("release-clean"),
+    )
+    monkeypatch.setattr(
+        deploy_sequential,
+        "validate_worktree_matches_commit",
+        lambda _root: events.append("validated"),
+    )
+    monkeypatch.setattr(
+        deploy_sequential,
+        "build_source_tree_manifest",
+        lambda _root: manifest,
+    )
+    monkeypatch.setattr(
+        deploy_sequential,
+        "write_source_tree_manifest",
+        lambda actual, _path: events.append(
+            "manifest-written" if actual is manifest else "wrong-manifest"
+        ),
+    )
+
+    def run(command: list[str], **_kwargs: Any) -> SimpleNamespace:
+        assert command == [
+            "azd",
+            "env",
+            "set",
+            "AGENT_SOURCE_TREE_DIGEST",
+            "a" * 64,
+        ]
+        events.append("azd-persisted")
+        return SimpleNamespace(returncode=0)
+
+    monkeypatch.setattr("scripts.deploy_sequential.subprocess.run", run)
+    monkeypatch.delenv("AGENT_SOURCE_TREE_DIGEST", raising=False)
+
+    digest = deploy_sequential.prepare_agent_source_identity()
+
+    assert digest == "a" * 64
+    assert events == [
+        "release-clean",
+        "validated",
+        "manifest-written",
+        "azd-persisted",
+    ]
+    assert os.environ["AGENT_SOURCE_TREE_DIGEST"] == digest
+
+
+def test_release_identity_rejects_any_dirty_or_untracked_path(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        build_agent_source_tree,
+        "_git",
+        lambda _root, *_arguments: b" M services/api/app.py\n?? scripts/new_hook.py\n",
+    )
+
+    with pytest.raises(
+        build_agent_source_tree.SourceIdentityBuildError,
+        match="complete release",
+    ):
+        build_agent_source_tree.validate_release_worktree_is_clean(ROOT)
+
+
+def test_agent_source_identity_includes_deployment_definitions() -> None:
+    manifest = build_agent_source_tree.build_source_tree_manifest(ROOT)
+    _commit, entries = build_agent_source_tree.committed_source_entries(ROOT)
+    paths = {path for path, _content in entries}
+
+    assert manifest.inclusion_policy_version == "2"
+    assert ".agentignore" in paths
+    assert {f"{agent.removesuffix('-agent')}/agent.yaml" for agent in SPECIALISTS} <= paths
+    assert "coordinator/agent.yaml" in paths
+
+
+def test_azd_child_deploy_has_a_wall_clock_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def run(command: list[str], **kwargs: Any) -> SimpleNamespace:
+        assert command == ["azd", "deploy", "grant-agent", "--no-prompt"]
+        assert kwargs["timeout"] == 12.0
+        raise subprocess.TimeoutExpired(command, 12.0, output="partial output")
+
+    monkeypatch.setattr("scripts.deploy_sequential.subprocess.run", run)
+
+    result = deploy_sequential.run_azd_deploy(
+        "grant-agent",
+        timeout_seconds=12.0,
+    )
+
+    assert result.returncode == 124
+    assert "partial output" in result.output
+    assert "timed out after 12s" in result.output
+
+
+def test_sequential_agent_deploy_rejects_unchanged_old_version() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    responses = iter([[version2], [version2], [version2]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+
+    with pytest.raises(RuntimeError, match="Sequential deployment failed"):
+        deploy_sequential.deploy_agent_service(
+            "literature-agent",
+            operations,
+            "https://example.test/projects/research",
+            run_deploy=lambda _service: deploy_sequential.DeployAttempt(1, "ImageError"),
+            attempts=2,
+            delay_seconds=0,
+            sleep=lambda _delay: None,
+            now=lambda: 100,
+        )
+
+
+def test_sequential_agent_deploy_nominal_success_rejects_stale_old_version() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    responses = iter([[version2], [version2], [version2]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+
+    with pytest.raises(RuntimeError, match="Sequential deployment failed"):
+        deploy_sequential.deploy_agent_service(
+            "literature-agent",
+            operations,
+            "https://example.test/projects/research",
+            run_deploy=lambda _service: deploy_sequential.DeployAttempt(0, "Done"),
+            attempts=2,
+            delay_seconds=0,
+            sleep=lambda _delay: None,
+            now=lambda: 100,
+        )
+
+
+def test_sequential_agent_deploy_accepts_explicit_active_version_reuse() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: [version2]
+    )
+
+    state = deploy_sequential.deploy_agent_service(
+        "literature-agent",
+        operations,
+        "https://example.test/projects/research",
+        run_deploy=lambda _service: deploy_sequential.DeployAttempt(
+            0,
+            "Agent version 2 is already active.",
+        ),
+        persist=lambda _service, _version, _endpoint: None,
+        attempts=1,
+        delay_seconds=0,
+        sleep=lambda _delay: None,
+        now=lambda: 100,
+    )
+
+    assert state.version == "2"
+
+
+def test_sequential_agent_deploy_accepts_conflicting_version_that_becomes_active() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    version3_building = SimpleNamespace(version="3", status="provisioning", created_at=100)
+    version3_active = SimpleNamespace(version="3", status="active", created_at=100)
+    responses = iter([[version2], [version3_building], [version3_active]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+    deploy_count = 0
+
+    def run_deploy(_service: str) -> deploy_sequential.DeployAttempt:
+        nonlocal deploy_count
+        deploy_count += 1
+        return deploy_sequential.DeployAttempt(1, "409 Conflict: agent already exists")
+
+    state = deploy_sequential.deploy_agent_service(
+        "literature-agent",
+        operations,
+        "https://example.test/projects/research",
+        run_deploy=run_deploy,
+        persist=lambda _service, _version, _endpoint: None,
+        attempts=2,
+        delay_seconds=0,
+        sleep=lambda _delay: None,
+        now=lambda: 100.0,
+    )
+
+    assert deploy_count == 1
+    assert state.version == "3"
+
+
+def test_non_conflict_early_failure_waits_for_remote_version_to_become_active() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    version3_building = SimpleNamespace(version="3", status="provisioning", created_at=100)
+    version3_active = SimpleNamespace(version="3", status="active", created_at=100)
+    responses = iter([[version2], [version3_building], [version3_active]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+
+    state = deploy_sequential.deploy_agent_service(
+        "literature-agent",
+        operations,
+        "https://example.test/projects/research",
+        run_deploy=lambda _service: deploy_sequential.DeployAttempt(1, "ImageError"),
+        persist=lambda _service, _version, _endpoint: None,
+        attempts=2,
+        delay_seconds=0,
+        sleep=lambda _delay: None,
+        now=lambda: 100.0,
+    )
+
+    assert state.version == "3"
+
+
+def test_sequential_agent_deploy_retries_after_conflicting_version_fails() -> None:
+    version2 = SimpleNamespace(version="2", status="active", created_at=50)
+    version3_building = SimpleNamespace(version="3", status="provisioning", created_at=100)
+    version3_failed = SimpleNamespace(version="3", status="failed", created_at=100)
+    version4_active = SimpleNamespace(version="4", status="active", created_at=200)
+    responses = iter([[version2], [version3_building], [version3_failed], [version4_active]])
+    operations = SimpleNamespace(
+        list_versions=lambda _name, **_kwargs: next(responses)
+    )
+    deploy_attempts = iter(
+        [
+            deploy_sequential.DeployAttempt(1, "409 Conflict: agent already exists"),
+            deploy_sequential.DeployAttempt(0, "Done"),
+        ]
+    )
+    deploy_count = 0
+
+    def run_deploy(_service: str) -> deploy_sequential.DeployAttempt:
+        nonlocal deploy_count
+        deploy_count += 1
+        return next(deploy_attempts)
+
+    state = deploy_sequential.deploy_agent_service(
+        "literature-agent",
+        operations,
+        "https://example.test/projects/research",
+        run_deploy=run_deploy,
+        persist=lambda _service, _version, _endpoint: None,
+        attempts=2,
+        delay_seconds=0,
+        sleep=lambda _delay: None,
+        now=iter([100.0, 200.0]).__next__,
+    )
+
+    assert deploy_count == 2
+    assert state.version == "4"
 
 
 def test_container_apps_exist_only_in_deploy_time_modules() -> None:
@@ -123,11 +499,16 @@ def test_container_apps_exist_only_in_deploy_time_modules() -> None:
 
 def test_acr_pins_the_managed_identity_pull_contract() -> None:
     module = (ROOT / "infra" / "modules" / "acr.bicep").read_text(encoding="utf-8")
+    brownfield = (ROOT / "infra" / "brownfield.bicep").read_text(encoding="utf-8")
 
     assert "Microsoft.ContainerRegistry/registries@2025-11-01" in module
     assert "roleAssignmentMode: 'LegacyRegistryPermissions'" in module
     assert "azureADAuthenticationAsArmPolicy" in module
     assert "status: 'enabled'" in module
+    assert "uniqueString(foundryAccount.id, foundryProjectName)" in module
+    assert "name: acrConnectionName" in module
+    assert "uniqueString(foundryAccount.id, projectName)" in brownfield
+    assert "${accountName}/${projectName}/${acrConnectionName}" in brownfield
 
 
 @pytest.mark.parametrize("service", ["api", "web"])
@@ -383,11 +764,15 @@ def test_shared_toolbox_creates_one_version_while_readiness_retries(
         connector.id: f"https://gateway.example/{connector.id}/mcp"
         for connector in connector_definitions()
     }
+    connector_connection_ids = connector_project_connection_ids(
+        "/subscriptions/test/resourceGroups/test/providers/Microsoft.CognitiveServices/accounts/test/projects/research"
+    )
 
     endpoint = postprovision._reconcile_shared_toolbox(
         cast(Any, object()),
         project_endpoint="https://example.test/api/projects/research",
         connector_targets=connector_targets,
+        connector_connection_ids=connector_connection_ids,
     )
 
     assert endpoint.endswith("/toolboxes/research-shared/mcp?api-version=v1")
@@ -451,3 +836,19 @@ def test_foundry_readiness_retry_honors_server_delay() -> None:
     assert result == "ready"
     assert attempts == 2
     assert sleeps == [30]
+
+
+def test_server_retry_after_is_capped() -> None:
+    assert postprovision._parse_retry_after("3600") == 300
+
+    response = SimpleNamespace(
+        status_code=429,
+        headers={"Retry-After": "3600", "x-ms-request-id": "request-1"},
+        text="slow down",
+    )
+    error = __import__("scripts.provider_onboarding", fromlist=["ApimRequestError"]).ApimRequestError(
+        "PUT",
+        "/apis/test",
+        response,
+    )
+    assert error.retry_after == 300

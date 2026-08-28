@@ -242,14 +242,16 @@ export async function decideApproval(
 
 export async function testConnector(
   connectorId: string,
+  projectId?: string,
 ): Promise<ConnectorSetting> {
   return apiFetch<ConnectorSetting>(`/connectors/${connectorId}/test`, {
     method: "POST",
-  });
+  }, projectId);
 }
 
 export async function updateConnector(
   connector: ConnectorSetting,
+  projectId?: string,
 ): Promise<ConnectorSetting> {
   return apiFetch<ConnectorSetting>(`/connectors/${connector.id}`, {
     method: "PUT",
@@ -257,17 +259,18 @@ export async function updateConnector(
       enabled: connector.enabled,
       assigned_agents: connector.assigned_agents,
     }),
-  });
+  }, projectId);
 }
 
 export async function updateConnectorCredential(
   connectorId: string,
   apiKey: string | null,
+  projectId?: string,
 ): Promise<ConnectorSetting> {
   return apiFetch<ConnectorSetting>(`/connectors/${connectorId}/credential`, {
     method: "PUT",
     body: JSON.stringify({ api_key: apiKey }),
-  });
+  }, projectId);
 }
 
 export async function updateSettings(
@@ -276,7 +279,7 @@ export async function updateSettings(
   return apiFetch<ProjectSettings>("/settings", {
     method: "PUT",
     body: JSON.stringify(settings),
-  });
+  }, settings.project_id);
 }
 
 export async function ingestLibraryItem(payload: {

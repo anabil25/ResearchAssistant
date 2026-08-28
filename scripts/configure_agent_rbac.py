@@ -39,12 +39,24 @@ def run_json(command: list[str]) -> Any:
 
 
 def agent_instance_principal_id(value: Any) -> str:
-    if not isinstance(value, dict):
-        raise RuntimeError("Hosted Agent details are not a JSON object")
-    identity = value.get("instance_identity") or value.get("instanceIdentity")
-    if not isinstance(identity, dict):
+    if isinstance(value, dict):
+        identity = value.get("instance_identity") or value.get("instanceIdentity")
+    else:
+        identity = getattr(value, "instance_identity", None) or getattr(
+            value,
+            "instanceIdentity",
+            None,
+        )
+    if identity is None:
         raise RuntimeError("Hosted Agent details have no instance identity")
-    principal_id = identity.get("principal_id") or identity.get("principalId")
+    if isinstance(identity, dict):
+        principal_id = identity.get("principal_id") or identity.get("principalId")
+    else:
+        principal_id = getattr(identity, "principal_id", None) or getattr(
+            identity,
+            "principalId",
+            None,
+        )
     if not isinstance(principal_id, str) or not principal_id:
         raise RuntimeError("Hosted Agent instance identity has no principal id")
     return principal_id
@@ -108,14 +120,14 @@ def wait_for_role_assignment(
     )
 
 
-def sync_agent_environment_outputs() -> None:
+def sync_agent_environment_outputs() -> dict[str, str]:
     endpoint = required_env("FOUNDRY_PROJECT_ENDPOINT")
     client = AIProjectClient(
         endpoint=endpoint,
         credential=AzureCliCredential(),
         allow_preview=True,
     )
-    found: set[str] = set()
+    principals: dict[str, str] = {}
     for agent in client.agents.list():
         if agent.name not in AGENT_NAMES:
             continue
@@ -125,7 +137,7 @@ def sync_agent_environment_outputs() -> None:
             raise RuntimeError(
                 f"Hosted Agent {agent.name} latest version is {status}"
             )
-        found.add(agent.name)
+        principals[agent.name] = agent_instance_principal_id(latest)
         for key, value in agent_environment_values(
             agent.name,
             str(latest.version),
@@ -138,32 +150,21 @@ def sync_agent_environment_outputs() -> None:
                 text=True,
                 encoding="utf-8",
             )
-    missing = sorted(set(AGENT_NAMES) - found)
+    missing = sorted(set(AGENT_NAMES) - set(principals))
     if missing:
         raise RuntimeError(f"Hosted Agent deployments are missing: {missing}")
+    return principals
 
 
 def main() -> None:
     sync_canonical_azd_outputs()
-    sync_agent_environment_outputs()
+    agent_principals = sync_agent_environment_outputs()
     project_scope = required_env("AZURE_AI_PROJECT_ID")
     # Every hosted agent resolves its own model deployment at startup
     # (shared.factory._resolve_model_deployment_version), so each instance
     # identity -- not just the coordinator's -- needs project data-plane read.
     for agent_name in AGENT_NAMES:
-        agent = run_json(
-            [
-                "azd",
-                "ai",
-                "agent",
-                "show",
-                agent_name,
-                "--output",
-                "json",
-                "--no-prompt",
-            ]
-        )
-        principal_id = agent_instance_principal_id(agent)
+        principal_id = agent_principals[agent_name]
         subprocess.run(
             [
                 AZ_CLI,

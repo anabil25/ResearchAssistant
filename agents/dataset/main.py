@@ -422,7 +422,10 @@ def source_grounded_report(
                 for item in retrieved_sources()
             }
         )
-    session_ids = {item.evidence_id for item in (_REQUEST.get().session_files if _REQUEST.get() else ())}
+    request = _REQUEST.get()
+    session_ids = {
+        item.evidence_id for item in (request.session_files if request else ())
+    }
     allowed_ids = frozenset(set(references) - (session_ids - set(read_session_file_ids())))
     claims = tuple(_normalized_claim(item, allowed_ids) for item in report.claims)
     used_ids = {

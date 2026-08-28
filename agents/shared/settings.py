@@ -51,6 +51,14 @@ class HarnessSettings(BaseModel):
         values = os.environ if environ is None else environ
         try:
             source_manifest = load_baked_source_tree_manifest(source_manifest_path)
+            declared_source_digest = values.get("AGENT_SOURCE_TREE_DIGEST")
+            if (
+                declared_source_digest is not None
+                and declared_source_digest != source_manifest.source_tree_digest
+            ):
+                raise ValueError(
+                    "Deployed source-tree digest does not match the baked manifest"
+                )
             return cls.model_validate(
                 {
                     "foundry_project_endpoint": values.get("FOUNDRY_PROJECT_ENDPOINT", ""),

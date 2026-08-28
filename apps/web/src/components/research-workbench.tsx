@@ -620,7 +620,7 @@ export function ResearchWorkbench() {
           ) : view === "settings" ? (
             <ProjectSettingsView
               key={data?.settings.project_id ?? "settings-loading"}
-              data={data}
+              data={projectSubmitting ? null : data}
               onRefresh={refresh}
             />
           ) : view === "agents" ? (

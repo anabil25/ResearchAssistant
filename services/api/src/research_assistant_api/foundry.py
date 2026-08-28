@@ -5,7 +5,6 @@ import logging
 import re
 import time
 from collections.abc import Iterator
-from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -35,15 +34,23 @@ def parse_hosted_agent_payload(content: str) -> dict[str, Any]:
     """Return the final complete JSON object emitted by a Hosted Agent."""
     decoder = json.JSONDecoder()
     resolved: dict[str, Any] | None = None
+    resolved_start = len(content) + 1
+    resolved_end = -1
     for index, character in enumerate(content):
         if character != "{":
             continue
         try:
-            candidate, _ = decoder.raw_decode(content[index:])
+            candidate, consumed = decoder.raw_decode(content[index:])
         except json.JSONDecodeError:
             continue
-        if isinstance(candidate, dict):
+        candidate_end = index + consumed
+        if isinstance(candidate, dict) and (
+            candidate_end > resolved_end
+            or (candidate_end == resolved_end and index < resolved_start)
+        ):
             resolved = candidate
+            resolved_start = index
+            resolved_end = candidate_end
     if resolved is None:
         raise HostedAgentInvocationError("Hosted Agent returned no valid JSON object.")
     return resolved
@@ -69,10 +76,9 @@ class HostedAgentReply:
 
 @dataclass(frozen=True, slots=True)
 class HostedAgentProgress:
-    type: Literal["activity", "text_delta", "completed"]
+    type: Literal["activity", "completed"]
     activity_id: str | None = None
     activity: HostedAgentActivity | None = None
-    delta: str | None = None
     reply: HostedAgentReply | None = None
 
 
@@ -102,15 +108,7 @@ def _tool_label(name: str) -> str:
 
 
 def _called_tool_name(item: Any) -> str:
-    name = str(getattr(item, "name", "") or "")
-    if name != "call_tool":
-        return name
-    try:
-        arguments = json.loads(str(getattr(item, "arguments", "") or ""))
-    except json.JSONDecodeError:
-        return name
-    called = arguments.get("name") if isinstance(arguments, dict) else None
-    return called if isinstance(called, str) and called else name
+    return str(getattr(item, "name", "") or "")
 
 
 def _tool_activity(item: Any, *, status: str | None = None) -> HostedAgentActivity | None:
@@ -138,106 +136,17 @@ def _tool_activity(item: Any, *, status: str | None = None) -> HostedAgentActivi
 
 
 def response_activity(response: Any) -> tuple[HostedAgentActivity, ...]:
-    """Return public summaries and tool names, never raw reasoning or tool data."""
+    """Return public tool names and statuses, never reasoning or tool data."""
     activity: list[HostedAgentActivity] = []
     for item in getattr(response, "output", ()) or ():
         item_type = str(getattr(item, "type", "") or "")
         status = str(getattr(item, "status", "completed") or "completed")
         if item_type == "reasoning":
-            for summary in getattr(item, "summary", ()) or ():
-                text = str(getattr(summary, "text", "") or "").strip()
-                if text:
-                    activity.append(
-                        HostedAgentActivity(
-                            kind="approach",
-                            label="Approach",
-                            status=status,
-                            detail=text[:500],
-                        )
-                    )
             continue
         tool_activity = _tool_activity(item, status=status)
         if tool_activity is not None:
             activity.append(tool_activity)
     return tuple(activity[:16])
-
-
-class _PublicTextStream:
-    """Extract user-facing text without streaming a specialist's JSON contract."""
-
-    def __init__(self) -> None:
-        self._mode: Literal["unknown", "prose", "structured"] = "unknown"
-        self._buffer = ""
-        self._summary_started = False
-        self._summary_done = False
-        self._escaped = False
-        self._unicode_escape = ""
-
-    def feed(self, delta: str) -> str:
-        if not delta or self._summary_done:
-            return ""
-        if self._mode == "unknown":
-            self._buffer += delta
-            stripped = self._buffer.lstrip()
-            if not stripped:
-                return ""
-            self._mode = "structured" if stripped.startswith("{") else "prose"
-            if self._mode == "prose":
-                public = self._buffer
-                self._buffer = ""
-                return public
-            delta = self._buffer
-            self._buffer = ""
-        if self._mode == "prose":
-            return delta
-        return self._structured_delta(delta)
-
-    def _structured_delta(self, delta: str) -> str:
-        if not self._summary_started:
-            self._buffer += delta
-            match = re.search(r'"summary"\s*:\s*"', self._buffer)
-            if match is None:
-                self._buffer = self._buffer[-80:]
-                return ""
-            delta = self._buffer[match.end() :]
-            self._buffer = ""
-            self._summary_started = True
-
-        public: list[str] = []
-        escapes = {
-            '"': '"',
-            "\\": "\\",
-            "/": "/",
-            "b": "\b",
-            "f": "\f",
-            "n": "\n",
-            "r": "\r",
-            "t": "\t",
-        }
-        for character in delta:
-            if self._unicode_escape:
-                self._unicode_escape += character
-                if len(self._unicode_escape) == 5:
-                    with suppress(ValueError):
-                        public.append(chr(int(self._unicode_escape[1:], 16)))
-                    self._unicode_escape = ""
-                    self._escaped = False
-                continue
-            if self._escaped:
-                if character == "u":
-                    self._unicode_escape = "u"
-                else:
-                    public.append(escapes.get(character, character))
-                    self._escaped = False
-                continue
-            if character == "\\":
-                self._escaped = True
-                continue
-            if character == '"':
-                self._summary_done = True
-                break
-            public.append(character)
-        return "".join(public)
 
 
 def stream_response_events(
@@ -271,10 +180,8 @@ def stream_response_events(
         break
 
     started_at = time.monotonic()
-    public_text = _PublicTextStream()
     activities: dict[str, HostedAgentActivity] = {}
     call_activities: dict[str, str] = {}
-    approach_details: dict[str, str] = {}
     completed = False
     try:
         for event in stream:
@@ -338,47 +245,6 @@ def stream_response_events(
                             activity_id=activity_id,
                             activity=activity,
                         )
-                continue
-            if event_type == "response.reasoning_summary_text.delta":
-                detail = str(getattr(event, "delta", "") or "")
-                activity_id = f"approach-{getattr(event, 'item_id', 'current')}"
-                if detail and (activity_id in activities or len(activities) < 16):
-                    combined = (approach_details.get(activity_id, "") + detail)[:500]
-                    approach_details[activity_id] = combined
-                    activity = HostedAgentActivity(
-                        kind="approach",
-                        label="Approach",
-                        status="in_progress",
-                        detail=combined,
-                    )
-                    activities[activity_id] = activity
-                    yield HostedAgentProgress(
-                        type="activity",
-                        activity_id=activity_id,
-                        activity=activity,
-                    )
-                continue
-            if event_type == "response.reasoning_summary_text.done":
-                activity_id = f"approach-{getattr(event, 'item_id', 'current')}"
-                if activity_id in activities:
-                    previous = activities[activity_id]
-                    activity = HostedAgentActivity(
-                        kind="approach",
-                        label="Approach",
-                        status="completed",
-                        detail=previous.detail,
-                    )
-                    activities[activity_id] = activity
-                    yield HostedAgentProgress(
-                        type="activity",
-                        activity_id=activity_id,
-                        activity=activity,
-                    )
-                continue
-            if event_type == "response.output_text.delta":
-                delta = public_text.feed(str(getattr(event, "delta", "") or ""))
-                if delta:
-                    yield HostedAgentProgress(type="text_delta", delta=delta)
                 continue
             if event_type in {"response.failed", "response.incomplete"}:
                 response = getattr(event, "response", None)
@@ -490,6 +356,11 @@ def create_response_with_retries(client: Any, target: str, payload: dict[str, An
         )
         time.sleep(delay)
         response = client.responses.retrieve(response_id)
+        status = getattr(response, "status", None)
+        if status in {"failed", "cancelled", "incomplete"}:
+            raise HostedAgentInvocationError(
+                _failed_response_detail(response, target, status)
+            )
         if response.output_text.strip():
             return response
     status = getattr(response, "status", "unknown")

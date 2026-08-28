@@ -377,6 +377,7 @@ export function AgentChat({
   const latestResultsRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<ChatThread | null>(null);
+  const retryTurnRef = useRef<{ id: string; text: string } | null>(null);
 
   const ensureThread = useCallback(async (): Promise<ChatThread> => {
       if (threadRef.current) return threadRef.current;
@@ -404,6 +405,7 @@ export function AgentChat({
   useEffect(() => {
     let cancelled = false;
     threadRef.current = null;
+    retryTurnRef.current = null;
     setThread(null);
     setPending([]);
     setBoundAgent(null);
@@ -546,7 +548,10 @@ export function AgentChat({
     const sentAttachments = pending
       .filter((item) => item.state === "ready" && item.attachment)
       .map((item) => item.attachment as ChatAttachment);
-    const clientMessageId = crypto.randomUUID();
+    const retryTurn = retryTurnRef.current;
+    const clientMessageId =
+      retryTurn?.text === text ? retryTurn.id : crypto.randomUUID();
+    retryTurnRef.current = { id: clientMessageId, text };
     const optimistic: ChatMessage = {
       id: clientMessageId,
       role: "user",
@@ -608,12 +613,6 @@ export function AgentChat({
           });
           return;
         }
-        if (event.type === "text_delta") {
-          setStreamingMessage((current) =>
-            current ? { ...current, content: `${current.content}${event.delta}` } : current,
-          );
-          return;
-        }
         if (event.type === "completed") {
           setStreamingMessage({
             ...event.message,
@@ -634,6 +633,7 @@ export function AgentChat({
       const refreshed = await getChatThread(activeThread.id, projectId ?? undefined);
       threadRef.current = refreshed;
       setThread(refreshed);
+      retryTurnRef.current = null;
     } catch (caught) {
       setError(classifyAsyncError(caught).message);
       setThread((current) =>

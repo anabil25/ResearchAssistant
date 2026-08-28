@@ -122,7 +122,6 @@ export type ChatStreamEvent =
       activity_id: string;
       activity: ChatActivity;
     }
-  | { type: "text_delta"; delta: string }
   | { type: "completed"; message: ChatMessage }
   | { type: "error"; detail: string; status: number };
 

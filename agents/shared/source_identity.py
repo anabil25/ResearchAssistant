@@ -16,7 +16,7 @@ class BakedSourceTreeManifest(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid", strict=True)
 
     schema_version: Literal["1"]
-    inclusion_policy_version: Literal["1"]
+    inclusion_policy_version: Literal["1", "2"]
     producer: Literal["research-assistant.git-source-tree"]
     source_commit: str = Field(pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$")
     source_tree: str = Field(pattern=r"^[0-9a-f]{40}([0-9a-f]{24})?$")

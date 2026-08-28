@@ -55,6 +55,7 @@ class ConnectorDefinition:
     assigned_agents: tuple[str, ...]
     terms_url: str
     capabilities: tuple[str, ...]
+    required: bool = False
     auth_kind: str = "None"
     secret_status: str = "Not required"
     test_status: str = "ready"
@@ -186,6 +187,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         assigned_agents=("literature", "screening"),
         terms_url="https://www.ncbi.nlm.nih.gov/home/about/policies/",
         capabilities=("Search", "Metadata"),
+        required=True,
         operations=(
             _search_operation("pubmed"),
             _pubmed_lookup_operation(),
@@ -264,6 +266,7 @@ _CONNECTORS: tuple[ConnectorDefinition, ...] = (
         assigned_agents=("grant",),
         terms_url="https://www.grants.gov/web/grants/legal-privacy.html",
         capabilities=("Opportunities", "Requirements"),
+        required=True,
         operations=(
             _search_operation("grants_gov"),
             _grants_gov_lookup_operation(),

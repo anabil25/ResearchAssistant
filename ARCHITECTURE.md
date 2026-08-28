@@ -281,7 +281,15 @@ The web and API remain warm for the demo profile.
 2. Bicep provisions shared resources, data-plane roles, ACR, and the Container
   Apps environment. ACR explicitly uses legacy RBAC permissions and permits
   ARM-audience authentication for managed-identity image pulls. Provisioning
-  does not create API/web application revisions.
+  does not create API/web application revisions. `FOUNDRY_PROJECT_NAME` is a
+  separately rotatable project key; `FOUNDRY_ACCOUNT_NAME` is the recovery
+  boundary when a purged and recreated account retains stale
+  session/conversation routing metadata.
+  The ACR connection resource name includes a bounded project hash because
+  Foundry enforces connection-name uniqueness across the account, not per
+  project. Postprovision applies the same boundary to all connector project
+  connections and injects those exact IDs into the immutable shared Toolbox;
+  connector labels and agent-facing MCP tool names remain stable.
 3. `postprovision` creates the Search index, uploads synthetic evidence,
    creates connector-specific Foundry project connections, and creates each
    immutable Toolbox candidate once. It polls only that version's MCP endpoint
@@ -289,8 +297,13 @@ The web and API remain warm for the demo profile.
   the exact inventory, promotes the candidate, and validates the consumer
   endpoint. The deterministic memory-store upsert uses a separate bounded
   project-readiness retry.
-4. `azd deploy --all` packages independently, while `uses:` edges stage Azure
-  deployment: six specialists -> coordinator -> API -> web.
+4. The custom `azd up` workflow provisions first, then its `postup` hook deploys
+  one service at a time: AI project, six specialists, coordinator, API, then
+  web. For an early nonzero agent result, it advances only if an SDK version
+  query proves that the attempt created a newer active version. This prevents
+  concurrent create/version writes without treating an old active version as a
+  successful deploy; `uses:` edges retain the same dependency contract for
+  direct service deployments.
 5. The API predeploy gate requires all seven newest Hosted Agent versions to be
   active, synchronizes local version pointers, and verifies each runtime
   identity's Foundry User assignment.

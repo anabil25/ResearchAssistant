@@ -146,6 +146,15 @@ services:
 infra:
     provider: bicep
 hooks:
+    postdown:
+        windows:
+            shell: pwsh
+            run: ./scripts/postdown.ps1
+            interactive: false
+        posix:
+            shell: sh
+            run: ./scripts/postdown.sh
+            interactive: false
     postprovision:
         windows:
             shell: pwsh
@@ -153,6 +162,15 @@ hooks:
         posix:
             shell: sh
             run: ./scripts/postprovision.sh
+    postup:
+        windows:
+            shell: pwsh
+            run: ./scripts/postup.ps1
+            interactive: false
+        posix:
+            shell: sh
+            run: ./scripts/postup.sh
+            interactive: false
     predeploy:
         windows:
             shell: pwsh
@@ -173,7 +191,3 @@ workflows:
             - azd:
                 args:
                     - provision
-            - azd:
-                args:
-                    - deploy
-                    - --all

@@ -146,7 +146,10 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
   ) => {
     setBusyConnector(connector.id);
     setStatus(null);
-    void updateConnector({ ...connector, ...update })
+    void updateConnector(
+      { ...connector, ...update },
+      data?.settings.project_id,
+    )
       .then(async () => {
         await onRefresh();
         setConnectorDrafts((current) => {
@@ -173,7 +176,11 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
     setCredentialBusy(true);
     setStatus(null);
     try {
-      await updateConnectorCredential(connectorId, apiKey);
+      await updateConnectorCredential(
+        connectorId,
+        apiKey,
+        data?.settings.project_id,
+      );
       await onRefresh();
       setCredentialDraft("");
       setStatus({
@@ -196,7 +203,7 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
   const runConnectorTest = (connector: ConnectorSetting) => {
     setBusyConnector(connector.id);
     setStatus(null);
-    void testConnector(connector.id)
+    void testConnector(connector.id, data?.settings.project_id)
       .then(async (updated) => {
         await onRefresh();
         const updatedStatus = connectorStatusInfo(updated);
@@ -515,7 +522,7 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
                 <span>
                   <strong>Enable connection</strong>
                   <small>
-                    {["pubmed", "grants_gov"].includes(managedConnector.id)
+                    {managedConnector.required
                       ? "Required baseline connections cannot be disabled."
                       : "Disabled connections are excluded from research runs."}
                   </small>
@@ -526,7 +533,7 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
                   checked={connectorDraft.enabled}
                   disabled={
                     busyConnector === managedConnector.id ||
-                    ["pubmed", "grants_gov"].includes(managedConnector.id)
+                    managedConnector.required
                   }
                   onChange={(event) =>
                     setConnectorDrafts((current) => ({
@@ -554,7 +561,10 @@ export function ConnectionsView({ data, onRefresh }: ConnectionsViewProps) {
                         checked={connectorDraft.assigned_agents.includes(
                           agent,
                         )}
-                        disabled={busyConnector === managedConnector.id}
+                        disabled={
+                          busyConnector === managedConnector.id ||
+                          managedConnector.required
+                        }
                         onChange={(event) => {
                           const assigned = event.target.checked
                             ? [...connectorDraft.assigned_agents, agent]

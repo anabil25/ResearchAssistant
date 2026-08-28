@@ -6,7 +6,13 @@
       "value": "${AZURE_LOCATION}"
     },
     "foundryProjectName": {
-      "value": "${AZURE_ENV_NAME}"
+      "value": "${FOUNDRY_PROJECT_NAME}"
+    },
+    "foundryAccountName": {
+      "value": "${FOUNDRY_ACCOUNT_NAME=}"
+    },
+    "resourceTokenSalt": {
+      "value": "${AZURE_DEPLOYMENT_INCARNATION=}"
     },
     "deployments": {
       "value": [

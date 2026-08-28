@@ -8,6 +8,8 @@ container:
         memory: 2Gi
 description: Routes research work to bounded specialist agents and preserves their evidence.
 environmentVariables:
+    - name: AGENT_SOURCE_TREE_DIGEST
+      value: ${AGENT_SOURCE_TREE_DIGEST}
     - name: AZURE_AI_MODEL_DEPLOYMENT_NAME
       value: gpt-5.4-mini
     - name: RESEARCH_WORKSPACE_TENANT_ID

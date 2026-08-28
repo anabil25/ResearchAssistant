@@ -396,12 +396,12 @@ def source_grounded_report(
     )
     allowed_ids = frozenset(references)
     claims = tuple(_normalized_claim(item, allowed_ids) for item in report.claims)
-    cited_ids = {
+    cited_ids = frozenset(
         evidence_id
         for claim in claims
         for evidence_id in claim.evidence_ids
         if evidence_id in allowed_ids
-    }
+    )
     leads = tuple(dict.fromkeys(item for item in report.lead_record_ids if item.strip()))
     return report.model_copy(
         update={

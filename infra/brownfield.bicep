@@ -107,6 +107,7 @@ var acrPullRoleId = subscriptionResourceId(
   'Microsoft.Authorization/roleDefinitions',
   '7f951dda-4ed3-4680-a7ca-43fe172d538d'
 )
+var acrConnectionName = '${take(acrName, 19)}-${uniqueString(foundryAccount.id, projectName)}'
 
 // Grant the existing project's managed identity AcrPull on the new registry so
 // the hosted agent can pull images using the project identity.
@@ -123,7 +124,7 @@ resource foundryAcrPull 'Microsoft.Authorization/roleAssignments@2022-04-01' = i
 // Project-scoped ContainerRegistry connection so Foundry can resolve the registry
 // by name when running the hosted agent.
 resource acrConnection 'Microsoft.CognitiveServices/accounts/projects/connections@2025-04-01-preview' = if (includeAcr) {
-  name: '${accountName}/${projectName}/${acrName}-conn'
+  name: '${accountName}/${projectName}/${acrConnectionName}'
   properties: {
     category: 'ContainerRegistry'
     target: registry!.properties.loginServer
@@ -146,4 +147,4 @@ resource acrConnection 'Microsoft.CognitiveServices/accounts/projects/connection
 
 output AZURE_CONTAINER_REGISTRY_ENDPOINT string = includeAcr ? registry!.properties.loginServer : ''
 output AZURE_CONTAINER_REGISTRY_RESOURCE_ID string = includeAcr ? registry!.id : ''
-output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = includeAcr ? '${acrName}-conn' : ''
+output AZURE_AI_PROJECT_ACR_CONNECTION_NAME string = includeAcr ? acrConnectionName : ''

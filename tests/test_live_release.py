@@ -5,11 +5,19 @@ from __future__ import annotations
 import os
 
 import httpx
+import pytest
+
+from scripts.verify_release import DEFAULT_GRANT_ID, verify_api_release
 
 LIVE_API_URL = os.environ.get(
     "RESEARCH_LIVE_API_URL",
     "http://localhost:3000/api/backend",
 ).rstrip("/")
+
+pytestmark = pytest.mark.skipif(
+    os.environ.get("RESEARCH_RUN_LIVE_TESTS") != "1",
+    reason="Set RESEARCH_RUN_LIVE_TESTS=1 to run deployed release checks.",
+)
 
 
 def _active_project(client: httpx.Client) -> dict[str, object]:
@@ -79,8 +87,22 @@ def test_live_hosted_agent_session_and_turn() -> None:
         answered = client.post(
             f"/api/agent-chat/threads/{thread['id']}/messages",
             headers=headers,
-            json={"text": "Return one sentence confirming readiness. Do not invent evidence."},
+            json={
+                "text": "Return one sentence confirming readiness. Do not invent evidence.",
+                "client_message_id": "live-release-turn-0001",
+            },
         )
         assert answered.status_code == 200, answered.text
         content = str(answered.json()["content"])
         assert content.strip()
+
+
+def test_live_exact_grant_sse_matches_independent_provider_oracle() -> None:
+    oracle = verify_api_release(
+        LIVE_API_URL,
+        os.environ.get("RESEARCH_RELEASE_GRANT_ID", DEFAULT_GRANT_ID),
+    )
+
+    assert oracle.canonical_url == (
+        f"https://www.grants.gov/search-results-detail/{oracle.grants_gov_id}"
+    )

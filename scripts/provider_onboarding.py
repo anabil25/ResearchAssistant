@@ -8,6 +8,7 @@ agent. All writes are idempotent upserts scoped to ``provider-*`` resources.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import time
 from pathlib import Path
@@ -39,6 +40,7 @@ UNCONFIGURED_CREDENTIAL = "unset"
 APIM_READY_RETRY_DELAYS = (0, 15, 30, 60, 120, 180, 240)
 APIM_TOOL_RETRY_DELAYS = APIM_READY_RETRY_DELAYS
 APIM_TOOL_VERIFY_DELAYS = (0, 5, 15, 30)
+MAX_SERVER_RETRY_SECONDS = 300
 # Tool Search keeps agent context flat once a Toolbox exceeds a handful of tools.
 TOOL_SEARCH_THRESHOLD = 5
 
@@ -47,7 +49,11 @@ class ApimRequestError(RuntimeError):
     def __init__(self, method: str, path: str, response: httpx.Response) -> None:
         self.status_code = response.status_code
         retry_after = response.headers.get("Retry-After")
-        self.retry_after = int(retry_after) if retry_after and retry_after.isdigit() else None
+        self.retry_after = (
+            min(MAX_SERVER_RETRY_SECONDS, int(retry_after))
+            if retry_after and retry_after.isdigit()
+            else None
+        )
         request_id = response.headers.get("x-ms-request-id", "unavailable")
         super().__init__(
             f"{method} {path} failed [{response.status_code}] "
@@ -64,12 +70,27 @@ def provider_connection_id(connector_id: str) -> str:
     return f"provider-{connector_id.replace('_', '-')}-apim"
 
 
+def connector_project_connection_ids(project_id: str) -> dict[str, str]:
+    """Return account-wide unique Foundry connection IDs for one project."""
+    normalized_project_id = project_id.strip().lower()
+    if not normalized_project_id:
+        raise ValueError("A Foundry project resource ID is required")
+    project_hash = hashlib.sha256(normalized_project_id.encode("utf-8")).hexdigest()[:8]
+    connection_ids: dict[str, str] = {}
+    for connector in connector_definitions():
+        connector_hash = hashlib.sha256(connector.id.encode("utf-8")).hexdigest()[:6]
+        slug = connector.id.replace("_", "-")[:12].rstrip("-")
+        connection_ids[connector.id] = f"rc-{slug}-{connector_hash}-{project_hash}"
+    return connection_ids
+
+
 def mcp_endpoint(gateway_url: str, mcp_path: str) -> str:
     return f"{gateway_url.rstrip('/')}/{mcp_path}/mcp"
 
 
 def shared_toolbox_payload(
     connector_targets: dict[str, str],
+    connector_connection_ids: dict[str, str],
     guardrail_id: str = "",
     vector_store_ids: list[str] | None = None,
 ) -> dict[str, Any]:
@@ -86,7 +107,10 @@ def shared_toolbox_payload(
     """
     connectors = connector_definitions()
     expected_connector_ids = {connector.id for connector in connectors}
-    if set(connector_targets) != expected_connector_ids:
+    if (
+        set(connector_targets) != expected_connector_ids
+        or set(connector_connection_ids) != expected_connector_ids
+    ):
         raise ValueError("The shared Toolbox requires the complete governed connector catalog")
 
     tools: list[dict[str, Any]] = [
@@ -119,7 +143,7 @@ def shared_toolbox_payload(
                 "type": "mcp",
                 "server_label": connector.id,
                 "server_url": connector_targets[connector.id],
-                "project_connection_id": connector.toolbox_connection_id,
+                "project_connection_id": connector_connection_ids[connector.id],
                 "description": connector.description,
                 "require_approval": "never",
                 "tool_configs": {
