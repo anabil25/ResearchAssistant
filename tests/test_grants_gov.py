@@ -322,6 +322,92 @@ def test_reconciliation_rejects_model_authored_receipt_payload() -> None:
     assert reconciled.value.opportunities == ()
 
 
+def test_buffered_grant_stream_forwards_observable_tool_activity() -> None:
+    record = GrantsGovRecord(
+        grants_gov_id="357744",
+        opportunity_number="RFA-HG-25-009",
+        title="Supporting Talented Early Career Researchers in Genomics",
+        agency="National Institutes of Health",
+        status="posted",
+        canonical_url="https://www.grants.gov/search-results-detail/357744",
+    )
+    receipts = {
+        "357744": GrantsGovReceipt(
+            record=record,
+            verified_at="2026-08-29T00:00:00+00:00",
+        )
+    }
+    model_report = GrantReport(
+        summary="One opportunity was selected.",
+        selected_opportunities=(
+            OpportunitySelection(
+                grants_gov_id="357744",
+                relevance=OpportunityRelevance.DIRECT,
+                relevance_rationale="The exact requested opportunity.",
+            ),
+        ),
+    )
+
+    async def run() -> list[AgentResponseUpdate]:
+        async def source_updates() -> AsyncIterator[AgentResponseUpdate]:
+            yield AgentResponseUpdate(
+                contents=[
+                    Content.from_function_call(
+                        "call-1",
+                        "grants_gov___lookup",
+                        arguments={"identifier": "357744"},
+                    )
+                ],
+                role="assistant",
+            )
+            yield AgentResponseUpdate(
+                contents=[Content.from_function_result("call-1", result="{}")],
+                role="assistant",
+            )
+            yield AgentResponseUpdate(
+                contents=[Content.from_text(model_report.model_dump_json())],
+                role="assistant",
+            )
+
+        def finalize(_updates: object) -> AgentResponse[GrantReport]:
+            return AgentResponse[GrantReport](
+                messages=[
+                    Message(
+                        role="assistant",
+                        contents=[model_report.model_dump_json()],
+                    )
+                ],
+                value=model_report,
+                response_format=GrantReport,
+            )
+
+        source = ResponseStream[AgentResponseUpdate, AgentResponse[GrantReport]](
+            source_updates(),
+            finalizer=finalize,
+        )
+        stream = EnvelopeMiddleware._buffered_reconciled_stream(
+            source,
+            RequestMode.WORK,
+            exact_id="357744",
+            receipts=receipts,
+        )
+        return [update async for update in stream]
+
+    corpus_token = _CORPUS.set({})
+    try:
+        emitted = asyncio.run(run())
+    finally:
+        _CORPUS.reset(corpus_token)
+
+    emitted_types = [[item.type for item in update.contents] for update in emitted]
+    assert ["function_call"] in emitted_types
+    assert ["function_result"] in emitted_types
+    assert emitted_types[-1] == ["text"]
+    assert not any("text" in types for types in emitted_types[:-1])
+    resolved = GrantReport.model_validate_json(emitted[-1].text)
+    assert [item.grants_gov_id for item in resolved.opportunities] == ["357744"]
+
+
 def test_grants_gov_lookup_returns_one_normalized_verified_record() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert request.method == "POST"

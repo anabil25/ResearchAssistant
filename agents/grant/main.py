@@ -823,6 +823,28 @@ def _tool_connector_id(name: str) -> str | None:
     return connector_id if separator and connector_id and operation else None
 
 
+_OBSERVABLE_CONTENT_TYPES = frozenset({"function_call", "function_result"})
+
+
+def _observable_activity_update(
+    update: AgentResponseUpdate,
+) -> AgentResponseUpdate | None:
+    """Return only the tool call and completion items of a streamed update."""
+    contents = [
+        item for item in update.contents if item.type in _OBSERVABLE_CONTENT_TYPES
+    ]
+    if not contents:
+        return None
+    return AgentResponseUpdate(
+        contents=contents,
+        role=update.role,
+        author_name=update.author_name,
+        agent_id=update.agent_id,
+        response_id=update.response_id,
+        message_id=update.message_id,
+    )
+
+
 class GrantToolBoundary(FunctionMiddleware):
     """Admit configured connectors and capture Grants.gov lookup receipts."""
 
@@ -1219,8 +1241,12 @@ class EnvelopeMiddleware(AgentMiddleware):
         receipts: Mapping[str, GrantsGovReceipt],
     ) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
         async def updates() -> AsyncGenerator[AgentResponseUpdate, None]:
-            async for _ in source:
-                pass
+            async for update in source:
+                # Buffering withholds model prose, so tool calls are replayed
+                # separately to keep the turn's observable actions on the wire.
+                observable = _observable_activity_update(update)
+                if observable is not None:
+                    yield observable
             reconciled = cls._reconcile(
                 await source.get_final_response(),
                 mode,
