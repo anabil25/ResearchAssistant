@@ -290,6 +290,8 @@ class GrantsGovRecord(BaseModel):
     posted_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     close_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
     archive_date: str | None = Field(default=None, pattern=r"^\d{4}-\d{2}-\d{2}$")
+    award_ceiling: int | None = Field(default=None, ge=0)
+    award_floor: int | None = Field(default=None, ge=0)
     canonical_url: str = Field(min_length=1, max_length=2048)
 
     @model_validator(mode="after")

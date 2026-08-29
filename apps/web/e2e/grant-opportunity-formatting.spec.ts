@@ -13,6 +13,8 @@ const validOpportunity = {
   posted_date: "2024-12-16",
   close_date: "2027-02-26",
   archive_date: "2027-04-03",
+  award_ceiling: 1250000,
+  award_floor: 250000,
   canonical_url: canonicalUrl,
   relevance: "unassessed",
   relevance_rationale: "Verified on Grants.gov; review the full notice to confirm project fit.",
@@ -225,6 +227,7 @@ test("verified grants render as exact responsive policy-approved links", async (
   await expect(results.getByText("5 results")).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Opportunity" })).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Agency" })).toBeVisible();
+  await expect(results.getByRole("columnheader", { name: "Award" })).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Availability" })).toBeVisible();
   await expect(results.getByRole("columnheader", { name: "Fit" })).toBeVisible();
   const link = results.getByRole("link", {
@@ -237,6 +240,7 @@ test("verified grants render as exact responsive policy-approved links", async (
   await expect(link).toBeFocused();
   await expect(results.getByText("MALFORMED", { exact: false })).toHaveCount(0);
   await expect(results).toContainText("National Institutes of Health");
+  await expect(results).toContainText("$250K\u2013$1.3M");
   await expect(results).toContainText("Closes Feb 26, 2027");
   await expect(results).toContainText("Review fit");
   await expect(results).toContainText(validOpportunity.title);

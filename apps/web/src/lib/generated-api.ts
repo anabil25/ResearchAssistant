@@ -5107,6 +5107,10 @@ export interface components {
             agency: string;
             /** Archive Date */
             archive_date?: string | null;
+            /** Award Ceiling */
+            award_ceiling?: number | null;
+            /** Award Floor */
+            award_floor?: number | null;
             /** Canonical Url */
             canonical_url: string;
             /** Close Date */

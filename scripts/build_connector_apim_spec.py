@@ -553,6 +553,12 @@ def _grants_gov_lookup_policy() -> str:
         var posted = synopsis == null ? null : (string)synopsis["postingDateStr"];
         var closes = synopsis == null ? null : (string)synopsis["responseDateStr"];
         var archive = synopsis == null ? null : (string)synopsis["archiveDateStr"];
+        var ceilingText = synopsis == null ? null : (string)synopsis["awardCeiling"];
+        var floorText = synopsis == null ? null : (string)synopsis["awardFloor"];
+        long ceilingAmount;
+        long floorAmount;
+        var hasCeiling = Int64.TryParse(ceilingText, out ceilingAmount) && ceilingAmount > 0;
+        var hasFloor = Int64.TryParse(floorText, out floorAmount) && floorAmount > 0;
         records.Add(new JObject(
             new JProperty("grants_gov_id", returnedId),
             new JProperty("opportunity_number", (string)data["opportunityNumber"]),
@@ -562,6 +568,8 @@ def _grants_gov_lookup_policy() -> str:
             new JProperty("posted_date", posted != null && posted.Length >= 10 ? posted.Substring(0, 10) : null),
             new JProperty("close_date", closes != null && closes.Length >= 10 ? closes.Substring(0, 10) : null),
             new JProperty("archive_date", archive != null && archive.Length >= 10 ? archive.Substring(0, 10) : null),
+            new JProperty("award_ceiling", hasCeiling ? (JToken)new JValue(ceilingAmount) : (JToken)JValue.CreateNull()),
+            new JProperty("award_floor", hasFloor ? (JToken)new JValue(floorAmount) : (JToken)JValue.CreateNull()),
             new JProperty("canonical_url", "https://www.grants.gov/search-results-detail/" + returnedId)
         ));
     }} else {{

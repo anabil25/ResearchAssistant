@@ -70,6 +70,8 @@ def _lookup_payload() -> dict[str, object]:
                 "postingDateStr": "2024-12-16-00-00-00",
                 "responseDateStr": "2027-02-26-00-00-00",
                 "archiveDateStr": "2027-04-03-00-00-00",
+                "awardCeiling": "1250000",
+                "awardFloor": "none",
             },
             "errorMessages": [],
         },
@@ -433,6 +435,8 @@ def test_grants_gov_lookup_returns_one_normalized_verified_record() -> None:
             "posted_date": "2024-12-16",
             "close_date": "2027-02-26",
             "archive_date": "2027-04-03",
+            "award_ceiling": 1_250_000,
+            "award_floor": None,
             "canonical_url": "https://www.grants.gov/search-results-detail/357744",
         }
     ]

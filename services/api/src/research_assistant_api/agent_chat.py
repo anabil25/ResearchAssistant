@@ -1221,10 +1221,6 @@ def _render_agent_reply(
             lines.append("\n**Evidence**\n")
             lines.extend(evidence_lines)
 
-    if payload.get("ready_for_review") is not None:
-        state = "Ready for review" if payload["ready_for_review"] else "Not ready for review"
-        lines.append(f"\n**Status:** {state}")
-
     return "\n".join(line for line in lines if line is not None).strip()
 
 

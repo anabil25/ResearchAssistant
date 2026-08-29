@@ -1,6 +1,6 @@
 "use client";
 
-import { BadgeCheck, ExternalLink } from "lucide-react";
+import { ExternalLink } from "lucide-react";
 
 import type { VerifiedGrantOpportunity } from "@/lib/types";
 import {
@@ -16,6 +16,26 @@ function displayDate(value: string | null): string | null {
     dateStyle: "medium",
     timeZone: "UTC",
   }).format(parsed);
+}
+
+function compactUsd(value: number): string {
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    notation: "compact",
+    maximumFractionDigits: 1,
+  }).format(value);
+}
+
+function awardAmount(opportunity: VerifiedGrantOpportunity): string | null {
+  const ceiling = opportunity.award_ceiling ?? 0;
+  const floor = opportunity.award_floor ?? 0;
+  if (ceiling > 0 && floor > 0 && floor !== ceiling) {
+    return `${compactUsd(floor)}\u2013${compactUsd(ceiling)}`;
+  }
+  if (ceiling > 0) return compactUsd(ceiling);
+  if (floor > 0) return `${compactUsd(floor)}+`;
+  return null;
 }
 
 function exactGrantUrl(opportunity: VerifiedGrantOpportunity): string | null {
@@ -57,10 +77,7 @@ export function GrantOpportunityList({
   return (
     <section className="grant-results" aria-label="Verified grant opportunities">
       <header className="grant-results-header">
-        <span>
-          <BadgeCheck size={16} aria-hidden="true" />
-          Verified opportunities
-        </span>
+        <span>Verified opportunities</span>
         <small>
           {linkedOpportunities.length} {linkedOpportunities.length === 1 ? "result" : "results"}
         </small>
@@ -73,6 +90,7 @@ export function GrantOpportunityList({
           <colgroup>
             <col className="grant-col-opportunity" />
             <col className="grant-col-agency" />
+            <col className="grant-col-award" />
             <col className="grant-col-availability" />
             <col className="grant-col-fit" />
           </colgroup>
@@ -80,6 +98,7 @@ export function GrantOpportunityList({
             <tr>
               <th scope="col">Opportunity</th>
               <th scope="col">Agency</th>
+              <th scope="col">Award</th>
               <th scope="col">Availability</th>
               <th scope="col">Fit</th>
             </tr>
@@ -90,6 +109,7 @@ export function GrantOpportunityList({
               const closes = displayDate(opportunity.close_date);
               const archived = displayDate(opportunity.archive_date);
               const status = opportunity.status.replaceAll("_", " ");
+              const award = awardAmount(opportunity);
               const date = closes
                 ? `Closes ${closes}`
                 : posted
@@ -120,6 +140,9 @@ export function GrantOpportunityList({
                     <small>{opportunity.relevance_rationale}</small>
                   </td>
                   <td data-label="Agency">{opportunity.agency}</td>
+                  <td className="grant-award" data-label="Award">
+                    {award ?? <span className="grant-award-empty">Not stated</span>}
+                  </td>
                   <td data-label="Availability">
                     <span className="grant-status">{status}</span>
                     <small>{date}</small>

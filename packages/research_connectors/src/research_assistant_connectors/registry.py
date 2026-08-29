@@ -641,6 +641,14 @@ class ResearchConnectorRegistry:
             return text[:10]
         return None
 
+    @staticmethod
+    def _grants_gov_amount(value: Any) -> int | None:
+        # Grants.gov reports award amounts as digit strings, "none", or "0".
+        text = str(value or "").strip()
+        if not text.isascii() or not text.isdecimal():
+            return None
+        return int(text) or None
+
     @classmethod
     def _grants_gov_search_record(cls, item: dict[str, Any]) -> dict[str, Any] | None:
         opportunity_id = str(item.get("id") or "").strip()
@@ -674,6 +682,8 @@ class ResearchConnectorRegistry:
             "posted_date": cls._grants_gov_date(synopsis.get("postingDateStr")),
             "close_date": cls._grants_gov_date(synopsis.get("responseDateStr")),
             "archive_date": cls._grants_gov_date(synopsis.get("archiveDateStr")),
+            "award_ceiling": cls._grants_gov_amount(synopsis.get("awardCeiling")),
+            "award_floor": cls._grants_gov_amount(synopsis.get("awardFloor")),
             "canonical_url": f"https://www.grants.gov/search-results-detail/{opportunity_id}",
         }
 

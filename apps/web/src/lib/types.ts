@@ -81,6 +81,8 @@ export interface VerifiedGrantOpportunity {
   posted_date: string | null;
   close_date: string | null;
   archive_date: string | null;
+  award_ceiling: number | null;
+  award_floor: number | null;
   canonical_url: string;
   relevance: "direct" | "adjacent" | "unassessed";
   relevance_rationale: string;

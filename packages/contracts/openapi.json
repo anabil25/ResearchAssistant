@@ -7559,6 +7559,30 @@
             ],
             "title": "Archive Date"
           },
+          "award_ceiling": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Award Ceiling"
+          },
+          "award_floor": {
+            "anyOf": [
+              {
+                "minimum": 0.0,
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Award Floor"
+          },
           "canonical_url": {
             "maxLength": 2048,
             "minLength": 1,

@@ -6124,25 +6124,38 @@ button.library-row {
 
 .grant-results-table {
   width: 100%;
-  min-width: 650px;
+  min-width: 720px;
   border-collapse: collapse;
   table-layout: fixed;
 }
 
 .grant-results-table .grant-col-opportunity {
-  width: 46%;
+  width: 40%;
 }
 
 .grant-results-table .grant-col-agency {
-  width: 20%;
+  width: 18%;
+}
+
+.grant-results-table .grant-col-award {
+  width: 13%;
 }
 
 .grant-results-table .grant-col-availability {
-  width: 20%;
+  width: 17%;
 }
 
 .grant-results-table .grant-col-fit {
-  width: 14%;
+  width: 12%;
+}
+
+.grant-results-table .grant-award {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.grant-award-empty {
+  color: var(--muted);
 }
 
 .grant-results-table th {
