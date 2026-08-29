@@ -52,9 +52,10 @@ param tags object = {}
 @description('Optional salt to vary resource names across re-provisions.')
 param resourceTokenSalt string = ''
 
-@description('Optional Foundry project name override. Empty uses the deterministic shared resource token.')
+@description('Foundry project name. 3-32 alphanumeric/hyphen chars.')
+@minLength(3)
 @maxLength(32)
-param foundryProjectName string = ''
+param foundryProjectName string
 
 @description('Optional Foundry account name override. Empty uses the deterministic shared resource token.')
 @maxLength(64)

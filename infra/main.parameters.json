@@ -5,11 +5,8 @@
     "location": {
       "value": "${AZURE_LOCATION}"
     },
-    "resourceGroupName": {
-      "value": "${AZURE_ENV_NAME}"
-    },
     "foundryProjectName": {
-      "value": "${FOUNDRY_PROJECT_NAME=}"
+      "value": "${FOUNDRY_PROJECT_NAME}"
     },
     "foundryAccountName": {
       "value": "${FOUNDRY_ACCOUNT_NAME=}"

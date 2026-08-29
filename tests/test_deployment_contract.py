@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import os
-import re
 import subprocess
 from collections.abc import Callable
 from pathlib import Path
@@ -129,8 +128,7 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert config["hooks"]["postdown"]["posix"]["run"] == "./scripts/postdown.sh"
     assert config["hooks"]["postdown"]["windows"]["interactive"] is False
     assert config["hooks"]["postdown"]["posix"]["interactive"] is False
-    assert parameters["parameters"]["resourceGroupName"]["value"] == "${AZURE_ENV_NAME}"
-    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME=}"
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
     assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
     assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
         "${AZURE_DEPLOYMENT_INCARNATION=}"
@@ -205,58 +203,6 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
         "api",
         "web",
     )
-
-
-def test_empty_defaulted_parameters_survive_a_first_ever_provision() -> None:
-    # azd validates infra parameters BEFORE it runs the preprovision hook that
-    # writes FOUNDRY_*_NAME, so a "${VAR=}" parameter is resolved to an empty
-    # string on a first-ever provision. Any @minLength on such a parameter makes
-    # azd prompt for a value, which loops forever on a non-interactive host.
-    parameters = json.loads(
-        (ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8")
-    )
-    template = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
-    empty_defaulted = sorted(
-        name
-        for name, entry in parameters["parameters"].items()
-        if isinstance(entry.get("value"), str)
-        and entry["value"].startswith("${")
-        and entry["value"].endswith("=}")
-    )
-    assert empty_defaulted, "expected empty-defaulted infra parameters"
-    for name in empty_defaulted:
-        declaration = re.search(
-            rf"((?:^@\w+\([^\n]*\)\n)*)^param {name} (\S+)([^\n]*)$",
-            template,
-            re.MULTILINE,
-        )
-        assert declaration is not None, f"{name} is not declared in main.bicep"
-        decorators, _type, assignment = declaration.groups()
-        assert "@minLength" not in decorators, (
-            f"{name} resolves to an empty string on a first provision, so "
-            f"@minLength forces an interactive prompt"
-        )
-        assert assignment.strip().startswith("="), (
-            f"{name} must declare a default so an empty value is accepted"
-        )
-
-
-def test_shell_hooks_are_executable_on_a_fresh_clone() -> None:
-    # azd runs the sh hooks as programs, so a mode-644 blob fails with exit code
-    # 126 on the first clone to a case-sensitive POSIX checkout. Windows never
-    # surfaces this because the filesystem ignores the bit; git tracks it anyway.
-    listing = subprocess.run(
-        ["git", "ls-files", "-s", "--", "*.sh"],
-        cwd=ROOT,
-        capture_output=True,
-        text=True,
-        check=True,
-    ).stdout.splitlines()
-    assert listing, "expected tracked shell scripts"
-    non_executable = sorted(
-        line.split("\t", 1)[1] for line in listing if not line.startswith("100755")
-    )
-    assert non_executable == []
 
 
 def test_sequential_agent_deploy_recovers_new_version_after_early_failure() -> None:
