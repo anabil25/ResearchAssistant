@@ -130,7 +130,7 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
         ),
     )
 
-    async def run() -> AgentResponse[GrantReport]:
+    async def run() -> tuple[list[AgentResponseUpdate], AgentResponse[GrantReport]]:
         async def updates() -> AsyncIterator[AgentResponseUpdate]:
             if False:
                 yield AgentResponseUpdate()
@@ -250,12 +250,15 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
 
         await EnvelopeMiddleware().process(context, call_next)
         assert isinstance(context.result, ResponseStream)
-        async for _update in context.result:
-            pass
-        return cast(AgentResponse[GrantReport], await context.result.get_final_response())
+        emitted = [update async for update in context.result]
+        final = cast(AgentResponse[GrantReport], await context.result.get_final_response())
+        return emitted, final
 
-    final = asyncio.run(run())
+    emitted, final = asyncio.run(run())
 
+    assert len(emitted) == 1
+    emitted_report = GrantReport.model_validate_json(emitted[0].text)
+    assert [item.grants_gov_id for item in emitted_report.opportunities] == ["357744"]
     assert isinstance(final.value, GrantReport)
     assert len(final.value.opportunities) == 1
     opportunity = final.value.opportunities[0]

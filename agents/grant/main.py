@@ -38,10 +38,12 @@ from agent_framework import (
     AgentLoopMiddleware,
     AgentMiddleware,
     AgentResponse,
+    AgentResponseUpdate,
     ChatContext,
     ChatMiddleware,
     ChatResponse,
     ChatResponseUpdate,
+    Content,
     FunctionInvocationContext,
     FunctionMiddleware,
     InlineSkill,
@@ -1193,13 +1195,11 @@ class EnvelopeMiddleware(AgentMiddleware):
                     raise RuntimeError(
                         "Streaming grant invocation did not return a ResponseStream."
                     )
-                context.result = context.result.with_result_hook(
-                    lambda response: self._reconcile(
-                        response,
-                        mode,
-                        exact_id=request.opportunity_id,
-                        receipts=receipts,
-                    )
+                context.result = self._buffered_reconciled_stream(
+                    context.result,
+                    mode,
+                    exact_id=request.opportunity_id,
+                    receipts=receipts,
                 )
             elif isinstance(context.result, AgentResponse):
                 context.result = self._reconcile(
@@ -1208,6 +1208,41 @@ class EnvelopeMiddleware(AgentMiddleware):
                     exact_id=request.opportunity_id,
                     receipts=receipts,
                 )
+
+    @classmethod
+    def _buffered_reconciled_stream(
+        cls,
+        source: ResponseStream[AgentResponseUpdate, AgentResponse[Any]],
+        mode: RequestMode,
+        *,
+        exact_id: str | None,
+        receipts: Mapping[str, GrantsGovReceipt],
+    ) -> ResponseStream[AgentResponseUpdate, AgentResponse[Any]]:
+        async def updates() -> AsyncGenerator[AgentResponseUpdate, None]:
+            async for _ in source:
+                pass
+            reconciled = cls._reconcile(
+                await source.get_final_response(),
+                mode,
+                exact_id=exact_id,
+                receipts=receipts,
+            )
+            resolved = GrantReport.model_validate(reconciled.value)
+            yield AgentResponseUpdate(
+                contents=[Content.from_text(resolved.model_dump_json())],
+                role="assistant",
+                agent_id=reconciled.agent_id,
+                response_id=reconciled.response_id,
+                finish_reason=reconciled.finish_reason,
+            )
+
+        return ResponseStream(
+            updates(),
+            finalizer=lambda emitted: AgentResponse.from_updates(
+                emitted,
+                output_format_type=GrantReport,
+            ),
+        )
 
     @staticmethod
     def _request(messages: list[Message]) -> GrantRequest | None:
