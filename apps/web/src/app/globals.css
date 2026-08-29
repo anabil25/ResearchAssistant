@@ -6103,15 +6103,6 @@ button.library-row {
   border-bottom: 1px solid var(--line-strong);
 }
 
-.grant-results-header > span {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  color: var(--forest);
-  font-size: var(--font-size-label);
-  font-weight: 750;
-}
-
 .grant-results-header small {
   color: var(--muted);
   font-size: var(--font-size-caption);

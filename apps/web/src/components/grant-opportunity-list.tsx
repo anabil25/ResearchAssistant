@@ -77,7 +77,6 @@ export function GrantOpportunityList({
   return (
     <section className="grant-results" aria-label="Verified grant opportunities">
       <header className="grant-results-header">
-        <span>Verified opportunities</span>
         <small>
           {linkedOpportunities.length} {linkedOpportunities.length === 1 ? "result" : "results"}
         </small>
