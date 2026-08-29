@@ -16,7 +16,7 @@
             "version": "1.32.0"
         }
     },
-    "postCreateCommand": "./.devcontainer/post-create.sh",
+    "postCreateCommand": "python3 --version && node --version && azd version && az version --output tsv",
     "remoteUser": "vscode",
     "hostRequirements": {
         "cpus": 4,
