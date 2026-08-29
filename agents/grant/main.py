@@ -792,6 +792,30 @@ def _record_grants_gov_lookup(
         return
 
 
+def _record_grants_gov_response_lookups(
+    response: AgentResponse[Any],
+    receipts: dict[str, GrantsGovReceipt],
+) -> None:
+    lookup_call_ids = {
+        content.call_id
+        for message in response.messages
+        for content in message.contents
+        if content.type == "function_call"
+        and content.call_id
+        and content.name
+        and _tool_connector_id(content.name) == "grants_gov"
+        and content.name.partition("___")[2].casefold().endswith("lookup")
+    }
+    for message in response.messages:
+        for content in message.contents:
+            if (
+                content.type == "function_result"
+                and content.call_id in lookup_call_ids
+                and content.exception is None
+            ):
+                _record_grants_gov_lookup(content.result, receipts=receipts)
+
+
 def _tool_connector_id(name: str) -> str | None:
     connector_id, separator, operation = name.partition("___")
     return connector_id if separator and connector_id and operation else None
@@ -1250,6 +1274,8 @@ class EnvelopeMiddleware(AgentMiddleware):
         exact_id: str | None,
         receipts: Mapping[str, GrantsGovReceipt],
     ) -> AgentResponse[Any]:
+        verified_receipts = dict(receipts)
+        _record_grants_gov_response_lookups(response, verified_receipts)
         report = final_report(response)
         if mode == RequestMode.EMPTY:
             resolved = empty_report()
@@ -1269,7 +1295,7 @@ class EnvelopeMiddleware(AgentMiddleware):
             opportunities = _verified_opportunities(
                 source_free_report,
                 exact_id=exact_id,
-                receipts=receipts,
+                receipts=verified_receipts,
             )
             claims = _safe_model_claims(
                 source_free_report.claims,
@@ -1303,7 +1329,7 @@ class EnvelopeMiddleware(AgentMiddleware):
                 _corpus(),
                 _ledger(),
                 exact_id=exact_id,
-                receipts=receipts,
+                receipts=verified_receipts,
             )
         messages = list(response.messages)
         payload = resolved.model_dump_json()

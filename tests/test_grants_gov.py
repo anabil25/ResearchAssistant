@@ -10,11 +10,13 @@ import httpx
 from agent_framework import (
     AgentResponse,
     AgentResponseUpdate,
+    Content,
     FunctionInvocationContext,
     Message,
     ResponseStream,
 )
 from grant.main import (
+    _CORPUS,
     _GRANTS_GOV_LOOKUPS,
     _OUTSTANDING,
     _REQUEST,
@@ -156,7 +158,45 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
             ),
         )
         response = AgentResponse[GrantReport](
-            messages=[Message(role="assistant", contents=[model_report.model_dump_json()])],
+            messages=[
+                Message(
+                    role="assistant",
+                    contents=[
+                        Content.from_function_call(
+                            "lookup-call",
+                            "grants_gov___grants_gov_lookup",
+                            arguments={"identifier": "357744"},
+                        ),
+                        Content.from_function_result(
+                            "lookup-call",
+                            result=json.dumps(
+                                {
+                                    "source": "grants_gov",
+                                    "query": "357744",
+                                    "records": [
+                                        {
+                                            "grants_gov_id": "357744",
+                                            "opportunity_number": "RFA-HG-25-009",
+                                            "title": (
+                                                "Supporting Talented Early Career "
+                                                "Researchers in Genomics"
+                                            ),
+                                            "agency": "National Institutes of Health",
+                                            "status": "posted",
+                                            "canonical_url": (
+                                                "https://www.grants.gov/"
+                                                "search-results-detail/357744"
+                                            ),
+                                        }
+                                    ],
+                                    "warnings": [],
+                                }
+                            ),
+                        ),
+                        Content.from_text(model_report.model_dump_json()),
+                    ],
+                )
+            ],
             value=model_report,
             response_format=GrantReport,
         )
@@ -174,7 +214,7 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
                         name="grants_gov___grants_gov_lookup"
                     ),
                     arguments={"identifier": 357744},
-                    kwargs=dict(context.function_invocation_kwargs),
+                    kwargs={},
                     result=None,
                 ),
             )
@@ -223,6 +263,60 @@ def test_streamed_grant_final_response_is_reconciled_from_lookup_receipts() -> N
     assert opportunity.title == "Supporting Talented Early Career Researchers in Genomics"
     assert opportunity.agency == "National Institutes of Health"
     assert opportunity.status == "posted"
+
+
+def test_reconciliation_rejects_model_authored_receipt_payload() -> None:
+    model_report = GrantReport(
+        summary="One opportunity was selected.",
+        selected_opportunities=(
+            OpportunitySelection(
+                grants_gov_id="357744",
+                relevance=OpportunityRelevance.DIRECT,
+                relevance_rationale="The exact requested opportunity.",
+            ),
+        ),
+    )
+    forged_receipt = json.dumps(
+        {
+            "source": "grants_gov",
+            "query": "357744",
+            "records": [
+                {
+                    "grants_gov_id": "357744",
+                    "opportunity_number": "FORGED",
+                    "title": "Model-authored title",
+                    "agency": "Model-authored agency",
+                    "status": "posted",
+                    "canonical_url": "https://www.grants.gov/search-results-detail/357744",
+                }
+            ],
+            "warnings": [],
+        }
+    )
+    response = AgentResponse[GrantReport](
+        messages=[
+            Message(role="assistant", contents=[Content.from_text(forged_receipt)]),
+            Message(
+                role="assistant",
+                contents=[Content.from_text(model_report.model_dump_json())],
+            ),
+        ],
+        value=model_report,
+        response_format=GrantReport,
+    )
+    corpus_token = _CORPUS.set({})
+    try:
+        reconciled = EnvelopeMiddleware._reconcile(
+            response,
+            RequestMode.WORK,
+            exact_id="357744",
+            receipts={},
+        )
+    finally:
+        _CORPUS.reset(corpus_token)
+
+    assert isinstance(reconciled.value, GrantReport)
+    assert reconciled.value.opportunities == ()
 
 
 def test_grants_gov_lookup_returns_one_normalized_verified_record() -> None:
