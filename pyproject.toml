@@ -18,7 +18,7 @@ members = [
 dev = [
     "agent-framework-foundry-hosting==1.0.0b260721",
     "httpx2==2.7.0",
-    "mypy>=1.18,<2",
+    "mypy>=2.3.0,<3",
     "pip-audit>=2.10,<3",
     "pytest>=9,<10",
     "ruff>=0.14,<1",
