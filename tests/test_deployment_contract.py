@@ -206,6 +206,24 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     )
 
 
+def test_shell_hooks_are_executable_on_a_fresh_clone() -> None:
+    # azd runs the sh hooks as programs, so a mode-644 blob fails with exit code
+    # 126 on the first clone to a case-sensitive POSIX checkout. Windows never
+    # surfaces this because the filesystem ignores the bit; git tracks it anyway.
+    listing = subprocess.run(
+        ["git", "ls-files", "-s", "--", "*.sh"],
+        cwd=ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    ).stdout.splitlines()
+    assert listing, "expected tracked shell scripts"
+    non_executable = sorted(
+        line.split("\t", 1)[1] for line in listing if not line.startswith("100755")
+    )
+    assert non_executable == []
+
+
 def test_sequential_agent_deploy_recovers_new_version_after_early_failure() -> None:
     version2 = SimpleNamespace(version="2", status="active", created_at=50)
     version3_building = SimpleNamespace(version="3", status="provisioning", created_at=100)
