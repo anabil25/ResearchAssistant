@@ -451,8 +451,10 @@ def test_bicep_model_parameters_match_azure_manifest() -> None:
         azure_manifest["services"]["ai-project"]["deployments"]
     )
     assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
-    assert "resourceGroupName" not in parameters["parameters"]
-    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
+    # A first-ever provision has no local azd config, so every required parameter
+    # must resolve from the environment azd seeds or from a default.
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "${AZURE_ENV_NAME}"
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME=}"
     assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
     assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
         "${AZURE_DEPLOYMENT_INCARNATION=}"

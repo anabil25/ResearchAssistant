@@ -128,7 +128,8 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert config["hooks"]["postdown"]["posix"]["run"] == "./scripts/postdown.sh"
     assert config["hooks"]["postdown"]["windows"]["interactive"] is False
     assert config["hooks"]["postdown"]["posix"]["interactive"] is False
-    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "${AZURE_ENV_NAME}"
+    assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME=}"
     assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
     assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
         "${AZURE_DEPLOYMENT_INCARNATION=}"
