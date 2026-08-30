@@ -3,6 +3,8 @@ set -eu
 
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+. "$script_dir/ensure-azure-cli.sh"
+research_ensure_azure_cli --verify
 (cd "$repo_root" && python3 -m scripts.build_agent_source_tree >/dev/null)
 python3 "$script_dir/deployment_incarnation.py" ensure
 

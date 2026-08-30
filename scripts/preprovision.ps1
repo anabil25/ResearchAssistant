@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
+. "$PSScriptRoot\ensure-azure-cli.ps1" -Verify
 Push-Location $repoRoot
 python -m scripts.build_agent_source_tree | Out-Null
 $sourceIdentityExitCode = $LASTEXITCODE

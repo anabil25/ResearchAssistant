@@ -6,6 +6,13 @@ set -eu
 # derived Foundry project name.
 script_dir="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
 repo_root="$(CDPATH= cd -- "$script_dir/.." && pwd)"
+
+# preup is the first hook `azd up` runs, so it is the only place that can install
+# the Azure CLI before preprovision's ARM preflight shells out to it. Run it
+# ahead of the environment check so a bare-azd machine is repaired either way.
+. "$script_dir/ensure-azure-cli.sh"
+research_ensure_azure_cli --verify
+
 python="$repo_root/.venv-provision/bin/python"
 if [ ! -x "$python" ]; then
   python="python3"

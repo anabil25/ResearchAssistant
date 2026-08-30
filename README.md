@@ -32,11 +32,15 @@ Run these before either path:
 
 ```powershell
 azd version
-az version
 python --version
 uv --version
 node --version
 ```
+
+`azd up` installs the Azure CLI itself when it is missing (`azd tool install
+az-cli`), so `az version` is an optional check rather than a setup step. You do
+still have to sign the CLI in — the provisioning preflight reads your Azure
+account through it.
 
 If `uv` is missing, install it first:
 
@@ -166,7 +170,7 @@ flows.
 | Tool | Required version | Check | Install |
 |------|----------------|-------|---------|
 | Azure Developer CLI (`azd`) | 1.32.0 | `azd version` | https://aka.ms/azd-install |
-| Azure CLI (`az`) | 2.84+ | `az version` | https://aka.ms/azure-cli |
+| Azure CLI (`az`) | 2.84+ | `az version` | Installed by `azd up`: the `preup` hook runs `azd tool install az-cli` when the CLI is missing, and the provisioning preflight enforces this minimum. Manual: https://aka.ms/azure-cli |
 | `azure.ai.agents` azd extension | 1.0.0-beta.12 | `azd extension list --installed` | `azd extension install azure.ai.agents --version 1.0.0-beta.12` |
 | `azure.ai.projects` azd extension | 1.0.0-beta.7 | `azd extension list --installed` | Installed with the Agents extension |
 | `microsoft.foundry` azd extension | 1.0.0-beta.2 | `azd extension list --installed` | `azd extension install microsoft.foundry --version 1.0.0-beta.2` |

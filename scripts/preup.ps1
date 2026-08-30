@@ -5,6 +5,12 @@ $PSNativeCommandUseErrorActionPreference = $true
 # deployment identity has to exist by the end of this hook or azd prompts for the
 # derived Foundry project name.
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
+
+# preup is the first hook `azd up` runs, so it is the only place that can install
+# the Azure CLI before preprovision's ARM preflight shells out to it. Run it
+# ahead of the environment check so a bare-azd machine is repaired either way.
+. "$PSScriptRoot\ensure-azure-cli.ps1" -Verify
+
 $provisionPython = Join-Path $repoRoot ".venv-provision\Scripts\python.exe"
 $python = if (Test-Path $provisionPython) { $provisionPython } else { "python" }
 

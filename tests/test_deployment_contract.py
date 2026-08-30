@@ -4,6 +4,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import subprocess
 from collections.abc import Callable, Mapping
 from pathlib import Path
@@ -62,6 +63,10 @@ _BICEP_PARAMETER = re.compile(
 _AZD_SUBSTITUTION = re.compile(
     r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<default>[^}]*))?\}"
 )
+# A shell invocation of the Azure CLI, never of `azd` and never of a path segment.
+_SHELL_AZ_CALL = re.compile(r"(?<![\w./$-])az\s+[a-z]")
+_SCRIPT_MODULE = re.compile(r"scripts\.(\w+)|[/\\](\w+)\.py")
+_AZ_STUB = '#!/bin/sh\nprintf \'{{ "azure-cli": "{version}" }}\\n\'\n'
 
 
 def _azure_yaml() -> dict[str, Any]:
@@ -89,6 +94,66 @@ def _posix_hook_scripts() -> set[str]:
                 continue
             targets.add((base / target).resolve().relative_to(ROOT).as_posix())
     return targets
+
+
+def _hook_scripts() -> set[Path]:
+    """Every hook script azd runs, on both platforms, derived from azure.yaml."""
+    config = _azure_yaml()
+    groups: list[tuple[Path, Any]] = [(ROOT, config.get("hooks") or {})]
+    for service in (config.get("services") or {}).values():
+        groups.append((ROOT / service.get("project", "."), service.get("hooks") or {}))
+
+    scripts: set[Path] = set()
+    for base, hooks in groups:
+        for hook in hooks.values():
+            for platform in ("windows", "posix"):
+                run = (hook.get(platform) or {}).get("run")
+                if run:
+                    scripts.add((base / shlex.split(run)[0]).resolve())
+    return scripts
+
+
+def _uncommented(body: str) -> str:
+    """Both hook shells comment with `#`; prose about `az` is not a call to it."""
+    return "\n".join(
+        line for line in body.splitlines() if not line.lstrip().startswith("#")
+    )
+
+
+def _azure_cli_consumers() -> set[str]:
+    """scripts/ modules that shell out to `az` or authenticate through it."""
+    consumers: set[str] = set()
+    for module in (ROOT / "scripts").glob("*.py"):
+        source = module.read_text(encoding="utf-8")
+        if "AZ_CLI" in source or "AzureCliCredential" in source:
+            consumers.add(module.stem)
+    return consumers
+
+
+def _first_azure_cli_use(body: str, consumers: set[str]) -> int | None:
+    positions = [match.start() for match in _SHELL_AZ_CALL.finditer(body)]
+    positions += [
+        match.start()
+        for match in _SCRIPT_MODULE.finditer(body)
+        if (match.group(1) or match.group(2)) in consumers
+    ]
+    return min(positions) if positions else None
+
+
+def _write_posix_stub(path: Path, body: str) -> None:
+    path.write_text(body, encoding="utf-8", newline="\n")
+    path.chmod(0o755)
+
+
+def _posix_stub_bin(tmp_path: Path) -> Path:
+    """A hermetic PATH: the stubs plus only the utilities the guard and stubs use."""
+    stub_bin = tmp_path / "bin"
+    stub_bin.mkdir()
+    for utility in ("chmod", "cp", "head", "sed", "sort"):
+        source = shutil.which(utility)
+        assert source is not None, f"{utility} is required to exercise the guard"
+        os.symlink(source, stub_bin / utility)
+    return stub_bin
 
 
 def _git_index_modes(paths: set[str]) -> dict[str, str]:
@@ -386,6 +451,206 @@ def test_posix_hooks_are_executable_in_the_git_index() -> None:
     assert {"scripts/preup.sh", "scripts/verify-deployment.sh"} <= targets
 
     assert _git_index_modes(targets) == {target: "100755" for target in targets}
+
+
+def test_azd_up_bootstraps_the_azure_cli_before_any_hook_needs_it() -> None:
+    # A pristine machine has azd and nothing else, so the first hook that shells out
+    # to `az` died with "az: not found" (exit 127). Every hook that reaches the CLI —
+    # directly or through a scripts/ module that uses it — must load the bootstrap
+    # first, because azd starts each hook as its own process.
+    consumers = _azure_cli_consumers()
+    assert {
+        "configure_agent_rbac",
+        "deploy_sequential",
+        "deployment_incarnation",
+        "postprovision",
+        "verify_deployment",
+        "verify_release",
+    } <= consumers
+
+    guarded: set[str] = set()
+    for script in sorted(_hook_scripts()):
+        body = _uncommented(script.read_text(encoding="utf-8"))
+        first_use = _first_azure_cli_use(body, consumers)
+        if first_use is None:
+            continue
+        guard = body.find("ensure-azure-cli")
+        assert guard != -1, f"{script.name} needs the Azure CLI but never bootstraps it"
+        assert guard < first_use, f"{script.name} uses the Azure CLI before bootstrapping it"
+        guarded.add(script.name)
+
+    assert {
+        "preprovision.ps1",
+        "preprovision.sh",
+        "preup.ps1",
+        "preup.sh",
+    } <= guarded
+
+
+def test_azure_cli_bootstrap_uses_the_azd_tool_manifest() -> None:
+    posix = (ROOT / "scripts" / "ensure-azure-cli.sh").read_text(encoding="utf-8")
+    windows = (ROOT / "scripts" / "ensure-azure-cli.ps1").read_text(encoding="utf-8")
+    for body in (posix, windows):
+        assert "azd tool install az-cli" in body
+        # azd owns the per-platform recipe. A hand-rolled installer would drift from
+        # it, pin nothing, and assume privileges the acceptance contract never grants.
+        for hand_rolled in (
+            "apt-get",
+            "brew",
+            "choco",
+            "curl",
+            "Invoke-RestMethod",
+            "Invoke-WebRequest",
+            "sudo",
+            "winget",
+        ):
+            assert hand_rolled not in _uncommented(body)
+
+    # `azd tool` ships in the azd release this project already pins.
+    assert _azure_yaml()["requiredVersions"]["azd"] == "=1.32.0"
+    # One declared Azure CLI floor: README prerequisites and both bootstrap scripts.
+    readme = (ROOT / "README.md").read_text(encoding="utf-8")
+    assert "| Azure CLI (`az`) | 2.84+ |" in readme
+    assert "RESEARCH_AZURE_CLI_MINIMUM_VERSION='2.84.0'" in posix
+    assert '$researchAzureCliMinimumVersion = [version]"2.84.0"' in windows
+
+
+def test_windows_bootstrap_republishes_path_for_later_hooks() -> None:
+    # winget records the new CLI directory in the machine and user PATH, which a
+    # process azd already started never sees, so every Windows hook re-reads both.
+    windows = (ROOT / "scripts" / "ensure-azure-cli.ps1").read_text(encoding="utf-8")
+    assert '[Environment]::GetEnvironmentVariable("Path", "Machine")' in windows
+    assert '[Environment]::GetEnvironmentVariable("Path", "User")' in windows
+    assert "$env:PATH = ((@($scopes) + @($env:PATH)) -join [IO.Path]::PathSeparator)" in windows
+
+
+@pytest.mark.parametrize(
+    ("argument", "installed", "published", "azd_exit", "expected_code", "expected_message"),
+    [
+        ("--verify", None, "2.84.0", 0, 0, ""),
+        ("--verify", "2.90.1", None, 0, 0, ""),
+        ("--verify", "2.80.0", None, 0, 1, "older than the supported minimum"),
+        ("", "2.80.0", None, 0, 0, ""),
+        ("", None, None, 1, 1, "aka.ms/azure-cli"),
+        ("", None, None, 0, 1, "still not on PATH"),
+    ],
+)
+def test_posix_azure_cli_bootstrap(
+    tmp_path: Path,
+    argument: str,
+    installed: str | None,
+    published: str | None,
+    azd_exit: int,
+    expected_code: int,
+    expected_message: str,
+) -> None:
+    shell = shutil.which("sh")
+    if shell is None:  # pragma: no cover - Windows developer machines
+        pytest.skip("POSIX shell unavailable")
+
+    stub_bin = _posix_stub_bin(tmp_path)
+    if installed is not None:
+        _write_posix_stub(stub_bin / "az", _AZ_STUB.format(version=installed))
+    published_az = tmp_path / "published-az"
+    if published is not None:
+        _write_posix_stub(published_az, _AZ_STUB.format(version=published))
+
+    log = tmp_path / "azd.log"
+    _write_posix_stub(
+        stub_bin / "azd",
+        "#!/bin/sh\n"
+        f'echo "azd $*" >> "{log}"\n'
+        f'if [ -f "{published_az}" ]; then\n'
+        f'  cp "{published_az}" "{stub_bin}/az"\n'
+        "fi\n"
+        f"exit {azd_exit}\n",
+    )
+    driver = tmp_path / "driver.sh"
+    _write_posix_stub(
+        driver,
+        "#!/bin/sh\nset -eu\n"
+        f'. "{ROOT / "scripts" / "ensure-azure-cli.sh"}"\n'
+        f"research_ensure_azure_cli {argument}\n"
+        "command -v az\n",
+    )
+
+    completed = subprocess.run(
+        [shell, str(driver)],
+        capture_output=True,
+        text=True,
+        env={"PATH": str(stub_bin), "HOME": str(tmp_path)},
+    )
+
+    assert completed.returncode == expected_code, completed.stderr
+    assert expected_message in completed.stderr
+    called_azd = log.read_text(encoding="utf-8") if log.exists() else ""
+    if installed is None:
+        assert "tool install az-cli" in called_azd
+    else:
+        # An already-usable CLI must never be reinstalled on every hook.
+        assert called_azd == ""
+
+
+def test_windows_azure_cli_bootstrap_gates_version_and_refreshes_path(tmp_path: Path) -> None:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None or os.name != "nt":  # pragma: no cover - non-Windows agents
+        pytest.skip("Windows PowerShell host unavailable")
+
+    guard = ROOT / "scripts" / "ensure-azure-cli.ps1"
+    log = tmp_path / "azd.log"
+    (tmp_path / "azd.ps1").write_text(
+        f'Add-Content -Path "{log}" -Value "azd $args"\nexit 0\n', encoding="utf-8"
+    )
+
+    def run(version: str, verify: str) -> subprocess.CompletedProcess[str]:
+        (tmp_path / "az.ps1").write_text(
+            f"Write-Output '{{ \"azure-cli\": \"{version}\" }}'\n", encoding="utf-8"
+        )
+        return subprocess.run(
+            [
+                pwsh,
+                "-NoProfile",
+                "-NonInteractive",
+                "-Command",
+                "$ErrorActionPreference = 'Stop'; "
+                "$PSNativeCommandUseErrorActionPreference = $true; "
+                f"$env:PATH = '{tmp_path}'; . '{guard}'{verify}",
+            ],
+            capture_output=True,
+            text=True,
+        )
+
+    supported = run("2.90.1", " -Verify")
+    assert supported.returncode == 0, supported.stderr
+    assert not log.exists(), "an already-usable CLI must never be reinstalled"
+
+    unsupported = run("2.80.0", " -Verify")
+    assert unsupported.returncode == 1
+    assert "older than the supported minimum" in unsupported.stderr
+
+    assert run("2.80.0", "").returncode == 0
+
+    republished = subprocess.run(
+        [
+            pwsh,
+            "-NoProfile",
+            "-NonInteractive",
+            "-Command",
+            f"$ErrorActionPreference = 'Stop'; $env:PATH = '{tmp_path}'; "
+            f". '{guard}'; Update-ResearchPathFromMachine; $env:PATH",
+        ],
+        capture_output=True,
+        text=True,
+    )
+    assert republished.returncode == 0, republished.stderr
+    machine_path = subprocess.run(
+        [pwsh, "-NoProfile", "-NonInteractive", "-Command",
+         "[Environment]::GetEnvironmentVariable('Path', 'Machine')"],
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert republished.stdout.strip().startswith(machine_path)
+    assert str(tmp_path) in republished.stdout
 
 
 def test_sequential_agent_deploy_recovers_new_version_after_early_failure() -> None:

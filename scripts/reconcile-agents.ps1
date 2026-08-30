@@ -2,6 +2,7 @@ $ErrorActionPreference = "Stop"
 $PSNativeCommandUseErrorActionPreference = $true
 
 $repoRoot = Resolve-Path "$PSScriptRoot\.."
+. "$PSScriptRoot\ensure-azure-cli.ps1"
 $python = Join-Path $repoRoot ".venv-provision\Scripts\python.exe"
 if (-not (Test-Path $python)) {
   & "$PSScriptRoot\ensure-provision-env.ps1"
