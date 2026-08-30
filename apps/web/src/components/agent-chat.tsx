@@ -222,11 +222,11 @@ function AgentActivityPanel({
 function AgentAnswer({
   message,
   live = false,
-  resultsRef,
+  responseRef,
 }: {
   message: ChatMessage;
   live?: boolean;
-  resultsRef?: RefObject<HTMLDivElement | null>;
+  responseRef?: RefObject<HTMLDivElement | null>;
 }) {
   const [expanded, setExpanded] = useState(false);
   const opportunities = message.opportunities ?? [];
@@ -245,32 +245,23 @@ function AgentAnswer({
 
   return (
     <>
+      <div
+        ref={hasOpportunities ? responseRef : undefined}
+        className="agent-chat-answer"
+        data-collapsed={isLong && !expanded ? "true" : "false"}
+      >
+        {renderedAnswer ?? (live ? (
+        <p className="agent-chat-live-answer">
+          <CircleDashed className="spin" size={14} aria-hidden="true" />
+          Preparing the response...
+        </p>
+        ) : null)}
+      </div>
       {hasOpportunities ? (
-        <div ref={resultsRef} className="agent-chat-results-anchor">
+        <div className="agent-chat-results-anchor">
           <GrantOpportunityList opportunities={opportunities} />
         </div>
       ) : null}
-      {renderedAnswer && hasOpportunities ? (
-        <details className="agent-chat-analysis">
-          <summary>
-            <span>Analysis and limitations</span>
-            <ChevronDown size={15} aria-hidden="true" />
-          </summary>
-          <div className="agent-chat-answer">{renderedAnswer}</div>
-        </details>
-      ) : (
-        <div
-          className="agent-chat-answer"
-          data-collapsed={isLong && !expanded ? "true" : "false"}
-        >
-          {renderedAnswer ?? (live ? (
-          <p className="agent-chat-live-answer">
-            <CircleDashed className="spin" size={14} aria-hidden="true" />
-            Preparing the response...
-          </p>
-          ) : null)}
-        </div>
-      )}
       {isLong ? (
         <button
           type="button"
@@ -298,11 +289,11 @@ interface LiveChatMessage extends Omit<ChatMessage, "activity"> {
 function ChatMessageEntry({
   message,
   live = false,
-  resultsRef,
+  responseRef,
 }: {
   message: ChatMessage;
   live?: boolean;
-  resultsRef?: RefObject<HTMLDivElement | null>;
+  responseRef?: RefObject<HTMLDivElement | null>;
 }) {
   return (
     <article
@@ -321,7 +312,7 @@ function ChatMessageEntry({
         {live ? <em className="agent-chat-live-label">Live</em> : null}
       </div>
       {message.role === "assistant" ? (
-        <AgentAnswer message={message} live={live} resultsRef={resultsRef} />
+        <AgentAnswer message={message} live={live} responseRef={responseRef} />
       ) : (
         <p className="agent-chat-text">{message.content}</p>
       )}
@@ -374,7 +365,7 @@ export function AgentChat({
   const [dragging, setDragging] = useState(false);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const transcriptEndRef = useRef<HTMLDivElement | null>(null);
-  const latestResultsRef = useRef<HTMLDivElement | null>(null);
+  const latestResponseRef = useRef<HTMLDivElement | null>(null);
   const composerRef = useRef<HTMLTextAreaElement | null>(null);
   const threadRef = useRef<ChatThread | null>(null);
   const retryTurnRef = useRef<{ id: string; text: string } | null>(null);
@@ -434,10 +425,10 @@ export function AgentChat({
 
   useEffect(() => {
     // jsdom and older engines omit scrollIntoView; autoscroll is cosmetic.
-    const results = !sending ? latestResultsRef.current : null;
-    const target = results ?? transcriptEndRef.current;
+    const response = !sending ? latestResponseRef.current : null;
+    const target = response ?? transcriptEndRef.current;
     if (typeof target?.scrollIntoView === "function") {
-      target.scrollIntoView({ block: results ? "start" : "end" });
+      target.scrollIntoView({ block: response ? "start" : "end" });
     }
   }, [
     thread?.messages.length,
@@ -748,9 +739,9 @@ export function AgentChat({
           <ChatMessageEntry
             key={message.id}
             message={message}
-            resultsRef={
+            responseRef={
               message.id === latestOpportunityMessageId
-                ? latestResultsRef
+                ? latestResponseRef
                 : undefined
             }
           />

@@ -287,6 +287,10 @@ def test_verified_grant_opportunities_remain_structured_exact_links() -> None:
     assert opportunities[0].canonical_url == canonical_url
     assert opportunities[0].opportunity_number == "RFA-HG-25-009"
     rendered = _render_agent_reply(raw)
+    assert (
+        "RFA-HG-25-009 is the strongest match for this request: "
+        "The opportunity explicitly supports genomics research."
+    ) in rendered
     assert "RFA-HG-25-009 is directly relevant." not in rendered
     assert "Grants.gov lists RFA-HG-25-009 as posted." not in rendered
     assert "A second Grants.gov result was also retrieved." not in rendered

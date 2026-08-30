@@ -1137,6 +1137,24 @@ def _is_grants_gov_evidence(value: object) -> bool:
     )
 
 
+def _grant_conversation_lead(
+    opportunities: list[VerifiedGrantOpportunity],
+) -> str:
+    first = opportunities[0]
+    rationale = first.relevance_rationale.strip()
+    if len(opportunities) > 1:
+        return (
+            f"I found {len(opportunities)} opportunities. "
+            f"{first.opportunity_number} ranks first for this request: {rationale}"
+        )
+    if first.relevance == "unassessed":
+        return f"I verified {first.opportunity_number} against Grants.gov. {rationale}"
+    return (
+        f"{first.opportunity_number} is the strongest match for this request: "
+        f"{rationale}"
+    )
+
+
 def _render_agent_reply(
     raw: str,
     *,
@@ -1161,9 +1179,12 @@ def _render_agent_reply(
         and isinstance(item, dict)
         and item.get("evidence_id")
     }
-    lines: list[str] = (
-        [] if opportunities else [str(payload.get("summary") or "").strip()]
+    summary = (
+        _grant_conversation_lead(opportunities)
+        if opportunities
+        else str(payload.get("summary") or "").strip()
     )
+    lines: list[str] = [summary] if summary else []
 
     claims = payload.get("claims") or []
     if isinstance(claims, list) and claims:

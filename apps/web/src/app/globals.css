@@ -6088,6 +6088,10 @@ button.library-row {
   position: relative;
 }
 
+.agent-chat-answer + .agent-chat-results-anchor {
+  margin-top: 12px;
+}
+
 .grant-results {
   min-width: 0;
   margin: 2px 0 14px;
@@ -6242,36 +6246,6 @@ button.library-row {
 
 .grant-fit[data-relevance="unassessed"] {
   color: var(--muted);
-}
-
-.agent-chat-analysis {
-  margin-top: 10px;
-  padding-top: 9px;
-  border-top: 1px solid var(--line);
-}
-
-.agent-chat-analysis > summary {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  color: var(--forest);
-  font-size: var(--font-size-caption);
-  font-weight: 700;
-  cursor: pointer;
-  list-style: none;
-}
-
-.agent-chat-analysis > summary::-webkit-details-marker {
-  display: none;
-}
-
-.agent-chat-analysis[open] > summary svg {
-  transform: rotate(180deg);
-}
-
-.agent-chat-analysis .agent-chat-answer {
-  margin-top: 10px;
 }
 
 .agent-chat-live-answer {
