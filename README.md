@@ -193,8 +193,8 @@ The deploying identity needs one of:
 > ⚠️ Plain **Contributor is NOT enough** — it will fail on role assignments
 > in the Bicep modules with an authorization error.
 
-Every resource `azd up` creates (single resource group `rg-<env>`) and the
-roles it assigns:
+Every resource `azd up` creates (a single resource group named after your azd
+environment) and the roles it assigns:
 
 | Resource | ARM type | Role(s) assigned to managed identity |
 |----------|----------|--------------------------------------|
@@ -342,11 +342,16 @@ azd up
 
 **Prompts you'll see during `azd up`:**
 
-1. **Environment name** — a short name; drives `rg-<name>` and the resource
-   token.
+1. **Environment name** — a short name; it is also used verbatim as the
+   resource group name, and it drives the resource token.
 2. **Azure subscription** — pick the one where you have Owner / UAA.
 3. **Region** — pick one satisfying the model + Hosted Agent availability
    above.
+
+These are the only three prompts. Every other Bicep input is derived: the
+resource group name binds to the environment name, and a `preup` hook writes
+the Foundry deployment identity before azd resolves
+`infra/main.parameters.json`, so azd never asks for `foundryProjectName`.
 
 **What happens next (unattended):**
 

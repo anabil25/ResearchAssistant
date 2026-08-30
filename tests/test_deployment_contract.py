@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import os
+import re
+import shlex
 import subprocess
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
@@ -14,6 +16,11 @@ import yaml
 from research_assistant_core.connector_catalog import connector_definitions
 
 from scripts import build_agent_source_tree, deploy_sequential, postprovision
+from scripts.deployment_incarnation import (
+    DeploymentIdentity,
+    ensure_deployment_identity,
+    rotate_deployment_identity,
+)
 from scripts.postprovision import (
     AmbiguousToolboxCreate,
     FoundryProjectUnavailable,
@@ -42,12 +49,67 @@ AGENTS = {
     "screening-agent",
 }
 SPECIALISTS = AGENTS - {"research-coordinator"}
+# The only values azd itself resolves before it substitutes infra/main.parameters.json
+# on a first `azd up`: the environment name, subscription, and region prompts.
+NATIVE_AZD_INPUTS = {
+    "AZURE_ENV_NAME": "researchassistant-first-run",
+    "AZURE_LOCATION": "eastus2",
+    "AZURE_SUBSCRIPTION_ID": "00000000-0000-0000-0000-000000000000",
+}
+_BICEP_PARAMETER = re.compile(
+    r"^param\s+(?P<name>\w+)\s+[\w\[\]]+(?P<default>\s*=.*)?$", re.MULTILINE
+)
+_AZD_SUBSTITUTION = re.compile(
+    r"\$\{(?P<name>[A-Za-z_][A-Za-z0-9_]*)(?:=(?P<default>[^}]*))?\}"
+)
 
 
 def _azure_yaml() -> dict[str, Any]:
     payload = yaml.safe_load((ROOT / "azure.yaml").read_text(encoding="utf-8"))
     assert isinstance(payload, dict)
     return cast(dict[str, Any], payload)
+
+
+def _posix_hook_scripts() -> set[str]:
+    """Repo-relative POSIX hook targets azd executes directly, derived from azure.yaml."""
+    config = _azure_yaml()
+    groups: list[tuple[Path, Any]] = [(ROOT, config.get("hooks") or {})]
+    for service in (config.get("services") or {}).values():
+        groups.append((ROOT / service.get("project", "."), service.get("hooks") or {}))
+
+    targets: set[str] = set()
+    for base, hooks in groups:
+        for hook in hooks.values():
+            run = (hook.get("posix") or {}).get("run")
+            if not run:
+                continue
+            target = shlex.split(run)[0]
+            if not target.startswith("."):
+                # An interpreter invocation such as `sh foo.sh` carries no mode contract.
+                continue
+            targets.add((base / target).resolve().relative_to(ROOT).as_posix())
+    return targets
+
+
+def _git_index_modes(paths: set[str]) -> dict[str, str]:
+    try:
+        listing = subprocess.run(
+            ["git", "ls-files", "--stage", "-z", "--", *sorted(paths)],
+            cwd=ROOT,
+            capture_output=True,
+            text=True,
+            check=True,
+        ).stdout
+    except (OSError, subprocess.CalledProcessError) as error:  # pragma: no cover - no git
+        pytest.skip(f"git index unavailable: {error}")
+
+    modes: dict[str, str] = {}
+    for entry in listing.split("\0"):
+        if not entry:
+            continue
+        metadata, path = entry.split("\t", 1)
+        modes[path] = metadata.split()[0]
+    return modes
 
 
 def _healthy_state(service: str, image: str) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -98,6 +160,115 @@ def _healthy_state(service: str, image: str) -> tuple[dict[str, Any], dict[str, 
     return app, revision
 
 
+def _bicep_parameters_without_defaults() -> set[str]:
+    template = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+    return {
+        match.group("name")
+        for match in _BICEP_PARAMETER.finditer(template)
+        if match.group("default") is None
+    }
+
+
+def _resolved_azd_parameters(values: Mapping[str, str]) -> dict[str, Any]:
+    """Substitute azd environment values into the parameters file the way azd does."""
+
+    def substitute(match: re.Match[str]) -> str:
+        return values.get(match.group("name")) or (match.group("default") or "")
+
+    document = (ROOT / "infra" / "main.parameters.json").read_text(encoding="utf-8")
+    parameters = json.loads(_AZD_SUBSTITUTION.sub(substitute, document))["parameters"]
+    return {name: body["value"] for name, body in parameters.items()}
+
+
+def _parameters_azd_would_prompt_for(values: Mapping[str, str]) -> set[str]:
+    """azd prompts for a template parameter that has neither a bound value nor a default."""
+    resolved = _resolved_azd_parameters(values)
+    return {
+        name
+        for name in _bicep_parameters_without_defaults()
+        if resolved.get(name, "") == ""
+    }
+
+
+def _preup_identity(
+    values: dict[str, str], incarnation: str
+) -> DeploymentIdentity | None:
+    return ensure_deployment_identity(
+        values,
+        set_value=values.__setitem__,
+        token_factory=lambda: incarnation,
+    )
+
+
+def test_only_the_preup_identity_stands_between_native_inputs_and_provisioning() -> None:
+    # resourceGroupName must never depend on a hook: azd can resolve it from the
+    # environment name alone, exactly as preprovision and the down verifier do.
+    assert _parameters_azd_would_prompt_for(NATIVE_AZD_INPUTS) == {"foundryProjectName"}
+    assert _resolved_azd_parameters(NATIVE_AZD_INPUTS)["resourceGroupName"] == (
+        NATIVE_AZD_INPUTS["AZURE_ENV_NAME"]
+    )
+
+
+def test_deployment_identity_is_written_before_azd_resolves_bicep_inputs() -> None:
+    # azd substitutes infra/main.parameters.json before the preprovision hook runs,
+    # so preprovision alone cannot keep foundryProjectName off the prompt surface.
+    hooks = _azure_yaml()["hooks"]
+    assert hooks["preup"]["windows"]["run"] == "./scripts/preup.ps1"
+    assert hooks["preup"]["posix"]["run"] == "./scripts/preup.sh"
+    assert hooks["preup"]["windows"]["interactive"] is False
+    assert hooks["preup"]["posix"]["interactive"] is False
+    for script in ("preup.ps1", "preup.sh"):
+        body = (ROOT / "scripts" / script).read_text(encoding="utf-8")
+        assert "scripts.deployment_incarnation ensure" in body
+        assert "AZURE_ENV_NAME" in body
+
+
+def test_first_azd_up_resolves_every_bicep_input_without_prompting() -> None:
+    values = dict(NATIVE_AZD_INPUTS)
+    identity = _preup_identity(values, "0123456789ab")
+    assert identity is not None
+
+    assert _parameters_azd_would_prompt_for(values) == set()
+    resolved = _resolved_azd_parameters(values)
+    assert resolved["resourceGroupName"] == values["AZURE_ENV_NAME"]
+    assert resolved["foundryProjectName"] == identity.foundry_project_name
+    assert resolved["foundryAccountName"] == identity.foundry_account_name
+    assert resolved["resourceTokenSalt"] == identity.incarnation
+
+    # An empty project name must stay unrepresentable rather than letting Bicep
+    # invent a name the recorded identity does not know about.
+    template = (ROOT / "infra" / "main.bicep").read_text(encoding="utf-8")
+    assert "@minLength(3)\n@maxLength(32)\nparam foundryProjectName string\n" in template
+    assert "@minLength(1)\n@maxLength(90)\nparam resourceGroupName string\n" in template
+
+
+def test_repeat_and_post_down_azd_up_stay_off_the_prompt_surface() -> None:
+    values = dict(NATIVE_AZD_INPUTS)
+    first = _preup_identity(values, "0123456789ab")
+    assert first is not None
+
+    def _unexpected_token() -> str:
+        raise AssertionError("A repeat up must reuse the committed incarnation.")
+
+    repeated = ensure_deployment_identity(
+        values, set_value=values.__setitem__, token_factory=_unexpected_token
+    )
+    assert repeated == first
+    assert _parameters_azd_would_prompt_for(values) == set()
+
+    rotated = rotate_deployment_identity(
+        values, set_value=values.__setitem__, token_factory=lambda: "cafebabe0123"
+    )
+    assert rotated.foundry_account_name != first.foundry_account_name
+    assert rotated.foundry_project_name != first.foundry_project_name
+    assert _parameters_azd_would_prompt_for(values) == set()
+    resolved = _resolved_azd_parameters(values)
+    assert resolved["resourceGroupName"] == values["AZURE_ENV_NAME"]
+    assert resolved["foundryProjectName"] == rotated.foundry_project_name
+    assert resolved["foundryAccountName"] == rotated.foundry_account_name
+    assert resolved["resourceTokenSalt"] == rotated.incarnation
+
+
 def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     config = _azure_yaml()
     services = config["services"]
@@ -128,6 +299,7 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
     assert config["hooks"]["postdown"]["posix"]["run"] == "./scripts/postdown.sh"
     assert config["hooks"]["postdown"]["windows"]["interactive"] is False
     assert config["hooks"]["postdown"]["posix"]["interactive"] is False
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "${AZURE_ENV_NAME}"
     assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
     assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
     assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
@@ -203,6 +375,17 @@ def test_azure_yaml_declares_the_release_dependency_graph() -> None:
         "api",
         "web",
     )
+
+
+def test_posix_hooks_are_executable_in_the_git_index() -> None:
+    # A fresh Linux clone runs these by relative path, so a 100644 blob mode fails the
+    # hook with "Permission denied" (exit 126) before azd reaches Azure. Windows clones
+    # report core.filemode=false, so only the recorded index mode is a portable contract.
+    targets = _posix_hook_scripts()
+    # A root hook plus a service hook whose run line carries `../../` and an argument.
+    assert {"scripts/preup.sh", "scripts/verify-deployment.sh"} <= targets
+
+    assert _git_index_modes(targets) == {target: "100755" for target in targets}
 
 
 def test_sequential_agent_deploy_recovers_new_version_after_early_failure() -> None:

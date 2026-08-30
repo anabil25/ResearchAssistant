@@ -185,6 +185,15 @@ hooks:
         posix:
             shell: sh
             run: ./scripts/preprovision.sh
+    preup:
+        windows:
+            shell: pwsh
+            run: ./scripts/preup.ps1
+            interactive: false
+        posix:
+            shell: sh
+            run: ./scripts/preup.sh
+            interactive: false
 workflows:
     up:
         steps:

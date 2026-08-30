@@ -451,7 +451,7 @@ def test_bicep_model_parameters_match_azure_manifest() -> None:
         azure_manifest["services"]["ai-project"]["deployments"]
     )
     assert parameters["parameters"]["location"]["value"] == "${AZURE_LOCATION}"
-    assert "resourceGroupName" not in parameters["parameters"]
+    assert parameters["parameters"]["resourceGroupName"]["value"] == "${AZURE_ENV_NAME}"
     assert parameters["parameters"]["foundryProjectName"]["value"] == "${FOUNDRY_PROJECT_NAME}"
     assert parameters["parameters"]["foundryAccountName"]["value"] == "${FOUNDRY_ACCOUNT_NAME=}"
     assert parameters["parameters"]["resourceTokenSalt"]["value"] == (
